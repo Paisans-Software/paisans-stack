@@ -24,9 +24,9 @@ paisans check
 
 Command names are provisional.
 
-## Two design rules that everything else follows from
+## Design rules that everything else follows from
 
-**1. The cluster always runs, even when it has one node.**
+### Rule 1: the cluster always runs, even when it has one node
 
 A single-site install runs Postgres under Patroni, with etcd and a local
 HAProxy, as a cluster of one. It would be simpler to install plain Postgres and
@@ -35,12 +35,49 @@ on live member data, not an addition. Running the control plane from the start
 costs a single-site adopter roughly 150 MB and some extra moving parts. It buys
 an upgrade path that cannot corrupt anything.
 
-**2. Applications always talk to a local HAProxy.**
+### Rule 2: applications always talk to a local HAProxy
 
 Every stack connects to `127.0.0.1:5000` from the first install, where a local
 HAProxy holds a backend list that initially has one entry. Adding a site grows
 that list. No application configuration changes, ever. This one indirection is
 what makes a second site an operation rather than a project.
+
+### Rule 3: object storage from the first install
+
+The same logic as rule 1, applied to files. **Garage ships out of the box**,
+single-node at `init`, replicated across sites when one is added.
+
+Starting with media on local disk and moving it later is a migration, not an
+addition — and for a federated instance it is a migration with consequences
+outside the deployment. Mbin's own procedure is sync, shut down, sync again, and
+its documentation warns that changing media URLs breaks links on remote
+instances that have already cached them. Remote servers hold references we
+cannot recall.
+
+What Garage actually absorbs is narrower than "all file storage", and the
+toolkit should not overstate it:
+
+| Stack | S3 support | Notes |
+|-------|-----------|-------|
+| Mbin | full | `S3_KEY`/`S3_SECRET`/`S3_BUCKET`/`S3_REGION`/`S3_ENDPOINT`, plus switching `public_uploads_filesystem` to the S3 adapter in `config/packages/oneup_flysystem.yaml`. Upstream strongly advises a media reverse proxy so URLs stay stable across provider changes |
+| Outline | full | `FILE_STORAGE=s3` with the `AWS_*` variables; non-AWS endpoints need `AWS_S3_FORCE_PATH_STYLE=true`. Known upstream bug: the bucket must not be named `outline` |
+| Synapse | partial | `synapse-s3-storage-provider` is a *storage provider* that supplements the media store. **A local media directory is still required.** `store_synchronous: True` writes to S3 immediately; the bucket prefix cannot be changed once media exists |
+| Pocket ID | unverified | keeps an `/app/data` directory regardless of database backend. Whether anything user-visible remains there once Postgres is configured has not been checked |
+| WriteFreely | none | no object storage support; see the open question about this stack |
+
+So some node-local state survives. That is acceptable as long as it is known and
+either reproducible or non-critical — but it must be enumerated before a failover
+is trusted, not discovered during one.
+
+### Rule 4: the domain is a one-way door
+
+Federation identity is the hostname. Mbin's actor keys are bound to it, and
+remote instances have recorded it. Changing a community's domain after it has
+federated is a rebuild, not a rename.
+
+`init --domain` should say so at the prompt, in plain words. It is the one
+choice here that cannot be walked back, and it is made in the first thirty
+seconds by someone who has not read anything yet.
 
 ## Adding a site, and the constraint that shapes it
 
@@ -50,25 +87,60 @@ survive one loss; **2 members survive nothing and are strictly worse than 1.**
 So a join must take the cluster from one voter to three in a single operation —
 the second site and a witness together. It can never rest at two.
 
+## The witness is a third location, not a cloud account
+
 A witness is a voting member that stores no data and serves no traffic. It
 exists so that when two sites cannot reach each other, exactly one of them can
 still form a majority and know it is safe to serve.
 
-## The witness is a third failure domain, not a cloud account
+**A small always-on cloud VM is the suggested default**, for two reasons: it is
+the third failure domain most organizers can actually obtain, and it doubles as
+the public entry point for sites on residential connections whose addresses
+change. One box, two jobs.
 
-A small always-on cloud VM is the **default**, because it is the easiest third
-failure domain for most organizers to obtain, and because it doubles as the
-public entry point for sites on residential connections with changing addresses.
+**It is not required.** What is required is a location that fails independently
+of both sites. Another organizer's house works. A machine at a workplace, or a
+friend's spare room, works.
 
-It is not required. What is required is a third location that fails
-independently of both sites. Another organizer's house works. A machine at a
-workplace or a friend's spare room works.
+### A witness must never share a failure domain with a voter
 
-Declining a witness entirely is supported, and means giving up automatic
-failover: two sites with two voters cannot safely promote anyone, so promotion
-becomes a documented manual step. That is a legitimate choice. It is not a
-degraded version of the same thing, and the toolkit should say so plainly
-rather than pretending otherwise.
+Running a witness container beside the database on a single server is worse than
+having no witness at all, and the toolkit must refuse it.
+
+One site with one etcd member has quorum 1. It works, and the only thing that
+stops it is the machine itself — which would stop Postgres anyway. Add a witness
+on that same machine and quorum becomes 2 of 2: now the witness container
+crashing takes the database down with it, while Postgres is perfectly healthy.
+The machine dying still loses everything, because both members were always in
+the same place. A tiebreaker between two things that can always reach each other,
+or are both gone at once, breaks no ties.
+
+**One site correctly runs exactly one etcd member.** That is a stable supported
+configuration, not a compromise awaiting a fix, and the toolkit should not
+pretend otherwise by installing a placeholder.
+
+### Nothing here is permanent
+
+A witness holds no data, so relocating one is cheap and scriptable — remove the
+member, add the new one. Start with whatever third location is available and
+move it when a better one appears.
+
+If a gateway VM is in use, the third location already exists before anyone asks
+for a witness: the join enables the witness role on a machine already running,
+rather than provisioning a new one.
+
+| Stage | etcd members | Witness |
+|-------|--------------|---------|
+| `init`, no gateway | 1 | none — correct, not missing |
+| `init` with gateway | 1 | gateway serves ingress; witness role dormant |
+| `site add` | 3 | enable on the gateway, or name a third location |
+| later | 3 | `witness move` relocates it |
+
+Declining a witness entirely is supported and means **giving up automatic
+failover**: two sites with two voters cannot safely promote anyone, so `site add`
+configures plain streaming replication with a documented manual promote instead.
+That is a legitimate choice. It is a different mode, not a slightly degraded
+version of the same one, and the toolkit should say so plainly.
 
 ## Design documents
 
