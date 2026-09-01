@@ -37,7 +37,7 @@ an upgrade path that cannot corrupt anything.
 
 ### Rule 2: applications always talk to a local HAProxy
 
-Every stack with `cluster` placement connects to `127.0.0.1:5000` from the first
+Every stack with a `cluster` placement connects to its cluster's local HAProxy port (`127.0.0.1:5000` for the default cluster) from the first
 install, where a local HAProxy holds a backend list that initially has one entry.
 Adding a site grows that list. No application configuration changes, ever. This
 one indirection is what makes a second site an operation rather than a project.
@@ -112,7 +112,7 @@ So each stack in the inventory declares where it runs:
 | Placement | What it means | Availability |
 |-----------|---------------|--------------|
 | `pinned: <site>` | ordinary self-contained deployment at one named location | that location's |
-| `cluster` | shares the HA Postgres cluster, follows the primary | survives losing one site |
+| `cluster: <name>` | joins the named HA Postgres cluster, follows its primary | survives losing one site |
 
 **`pinned` is the plain case and needs nothing built.** It is the app exactly as
 upstream ships it: its own compose file, its own Postgres container, its own
@@ -184,6 +184,57 @@ data directory on its own device; or a box big enough, with monitoring.
 The toolkit should **warn** here rather than refuse. Unlike a co-located witness,
 which is incoherent, this is merely risky — and the risk is acceptable if it is
 chosen rather than stumbled into.
+
+#### An app may have its own cluster
+
+`cluster` takes a **name**, so a community that wants high availability for one
+app but not another is not forced into all-or-nothing:
+
+```yaml
+mbin:      { placement: { cluster: mbin } }   # its own HA cluster
+outline:   { placement: { cluster: main } }
+pocket-id: { placement: { cluster: main } }
+synapse:   { placement: { pinned: home-a } }
+```
+
+**This is not a second copy of the HA machinery.** Patroni's FAQ is explicit that
+multiple clusters share one DCS as long as their namespace and scope differ; the
+only failure is reusing a namespace/scope pair, where the second cluster finds a
+mismatched Postgres system identifier and correctly refuses to manage its
+database.
+
+| Built once, shared | Duplicated per cluster |
+|--------------------|------------------------|
+| etcd (3 voters including the witness) | a Spilo pair, one container per site, with its own `SCOPE` |
+| WireGuard mesh | a HAProxy port (5000, 5001, …) |
+| Gateway and Caddy | a WAL-G prefix in Garage |
+| Garage | |
+
+So "one shared Postgres cluster for everything" is not an architectural rule —
+it is **the default value**, every app on `cluster: main`. Naming a second
+cluster costs another Spilo container per site and a port.
+
+It also recovers something the single-cluster default gives up: with one
+cluster, a failover moves every app at once. Per-app clusters make blast radius
+a per-app decision.
+
+Three real costs, and the toolkit should not push anyone toward many clusters:
+
+* **Memory.** Each cluster is a real Postgres — its own shared buffers, WAL
+  writer and autovacuum workers on every node. On home hardware this binds
+  before CPU does.
+* **Rehearsals multiply.** Each cluster has its own failover to drill. They no
+  longer fail over together, which is the point, but it is N drills.
+* **The watchdog is an open question.** Patroni arms `/dev/watchdog` before
+  promoting, and the documentation does not say what happens when two Patroni
+  instances share a host. `/dev/watchdog` is a single character device normally
+  opened exclusively, so the second instance may fail to arm it — and under
+  `watchdog: mode: required` that means **it refuses to become primary**, which
+  presents as a broken cluster rather than a misconfiguration. **Test this
+  before running more than one cluster per host.** Likely answers are that one
+  cluster takes the watchdog and the rest run without it (weaker fencing, still
+  safe unless Patroni itself hangs), or that separate devices can be provided.
+  Not yet verified either way.
 
 #### Consequence for routing
 
