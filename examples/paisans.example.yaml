@@ -1,0 +1,101 @@
+# paisans.yaml — the whole deployment, declared.
+#
+# This file is PLAIN and safe to commit. It holds no secrets: those live in
+# secrets.enc.yaml, encrypted with sops + age. Keeping them apart means routine
+# topology edits — adding an app, changing a hostname — need no decryption key,
+# and a change can be reviewed by someone who cannot read the secrets.
+#
+# It declares INTENT, never STATUS. Which node is currently primary lives in
+# etcd and is read with `paisans failover status`. A config file that records
+# runtime state drifts, and someone trusts a stale value during an incident.
+
+version: 1
+
+community:
+  name: "Example Community"
+  # ONE-WAY DOOR. Federation identity is the hostname, and remote instances
+  # have recorded it. Changing this after federating is a rebuild, not a rename.
+  domain: example.org
+
+sites:
+  home-a:
+    roles: [data, apps]
+    address: 10.44.0.1          # WireGuard address, stable forever
+    endpoint: null              # residential, changing address: dials out
+    ssh: home-a.local           # bootstrap route, before the mesh exists
+
+  home-b:
+    roles: [data, apps]
+    address: 10.44.0.2
+    endpoint: null
+    ssh: home-b.local
+
+  vm:
+    roles: [gateway, witness]
+    address: 10.44.0.3
+    endpoint: vm.example.org:51820   # stable: the homes dial here
+    ssh: vm.example.org
+
+clusters:
+  main:
+    sites: [home-a, home-b]
+    port: 5000                  # local HAProxy port apps connect to
+    postgres_version: "18"
+    synchronous: true
+    synchronous_strict: false   # degrade to standalone rather than block writes
+
+  # A second cluster costs a Spilo pair and a port — not another etcd, not
+  # another witness. Use one when an app needs its own failover blast radius.
+  #
+  # forum:
+  #   sites: [home-a, home-b]
+  #   port: 5001
+  #   postgres_version: "18"
+
+etcd:
+  members: [home-a, home-b, vm]
+  # Defaults (100ms / 1000ms) assume one datacenter. Measure real RTT through
+  # the tunnel and set these; identical on every member. Leaving the defaults
+  # produces phantom elections every time a home connection hiccups.
+  heartbeat_ms: 200
+  election_timeout_ms: 2000
+
+storage:
+  garage:
+    sites: [home-a, home-b]
+    replication: 2
+
+apps:
+  talk:
+    kind: mbin
+    hostname: talk.example.org
+    placement: { cluster: main }
+
+  docs:
+    kind: outline
+    hostname: docs.example.org
+    placement: { cluster: main }
+    settings:
+      # Non-AWS S3 endpoints need path style. Upstream bug: the bucket must
+      # not be named "outline".
+      s3_force_path_style: true
+      s3_bucket: docs-uploads
+
+  auth:
+    kind: pocket-id
+    hostname: id.example.org
+    placement: { cluster: main }
+    settings:
+      # Not `s3`. Uploads are ~1 MB of avatars and branding; in Postgres they
+      # ride streaming replication with no sync job, and the service that gates
+      # every other one gains no dependency on object storage being up.
+      file_backend: database
+
+  chat:
+    kind: synapse
+    hostname: chat.example.org
+    # Pinned: its S3 module supplements the media store rather than replacing
+    # it, so a local media directory is always required and it cannot follow a
+    # failover cleanly. Pinned means app, database and media together — a
+    # half-pinned app is less available than either site.
+    placement: { pinned: vm }

@@ -6,9 +6,16 @@
 *.pem
 secrets/
 
-# Site inventories name real hosts; keep the example, not the real one.
-sites.yaml
-!sites.example.yaml
+# A real deployment's config names real hosts. The toolkit repo ships only
+# examples; a deployment keeps its own config directory elsewhere.
+paisans.yaml
+!examples/paisans.example.yaml
+
+# secrets.enc.yaml IS meant to be committed — but only ever encrypted. Refuse
+# the decrypted form outright: it is the one mistake with no undo once pushed.
+secrets.yaml
+secrets.dec.yaml
+*.dec.yaml
 
 # Local state
 archive/

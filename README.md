@@ -305,6 +305,116 @@ configures plain streaming replication with a documented manual promote instead.
 That is a legitimate choice. It is a different mode, not a slightly degraded
 version of the same one, and the toolkit should say so plainly.
 
+## Configuration
+
+A deployment is declared in two files, kept in its own directory (usually its
+own private git repo). The toolkit ships examples under `examples/`.
+
+| File | Contents | Committable |
+|------|----------|-------------|
+| `paisans.yaml` | topology, sites, clusters, apps, placements, versions | yes, plain |
+| `secrets.enc.yaml` | every credential, encrypted with sops + age | yes, encrypted |
+
+They are separate on purpose. Editing topology is the common operation, and
+with one combined file every edit would decrypt everything into an editor and a
+temporary file. Split, a hostname change needs no key at all, and a change can
+be reviewed by someone who cannot read the secrets.
+
+See [`examples/paisans.example.yaml`](examples/paisans.example.yaml) and
+[`examples/secrets.example.yaml`](examples/secrets.example.yaml).
+
+### The config declares intent; etcd holds truth
+
+Nothing about current state belongs in these files — not which node is primary,
+not replication lag. `paisans failover status` reads etcd. A config file that
+starts recording status drifts, and someone trusts a stale value during an
+incident.
+
+### Three kinds of secret
+
+Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.
+
+| Kind | Examples | Origin |
+|------|----------|--------|
+| **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys, Mercure JWT, RabbitMQ and Valkey passwords | created at `init`, never typed or seen |
+| **Pasted** | Cloudflare API token, SMTP credentials | issued elsewhere, supplied by a human |
+| **Captured** | OIDC client secrets | minted by a running service, then recorded |
+
+The captured case matters. An identity provider mints a client secret and the
+app needs the identical value; recording it here makes it reproducible instead
+of existing on exactly one host. But minting one is a privileged mutation that
+belongs to a human — the toolkit records the value after the fact and must not
+automate the approval away.
+
+### `.env` files are build artifacts
+
+`paisans apply` renders them. Nobody edits them, and `apply` refuses to clobber
+one that has local modifications until the difference is resolved.
+
+```
+WORKSTATION                        HOST                          CONTAINER
+───────────                        ────                          ─────────
+paisans.yaml      ─┐
+secrets.enc.yaml  ─┤ render
+age key           ─┘   │
+                       │ ssh push
+                       ▼
+                  /srv/talk/.env   (plaintext, 0600) ──► env vars
+                  /srv/talk/compose.yaml
+                  caddy/, haproxy.cfg, patroni env
+                                                       docker compose up -d
+```
+
+`sops` and `age` are installed on the workstation only. Hosts do not have them.
+Containers never know they exist, and nothing is written *into* a container —
+Compose passes env at start. Changing a secret therefore means re-render plus
+`compose up -d` to **recreate**; a `restart` will not pick it up.
+
+### Decryption happens on a workstation, not on a host
+
+Rendering locally and pushing means no age key ever reaches a host. That
+follows the existing posture: on a shared host, users with `sudo` or `docker`
+membership are root-equivalent, so a decryption key there is readable by
+someone other than its owner.
+
+Hosts end up with plaintext `.env` regardless — Compose requires it — so the
+gain is not host hardening. It is **blast radius**: root on one host yields that
+host's rendered secrets, not the gateway's WireGuard key or another site's
+credentials. The complete set exists only encrypted.
+
+Decrypting on the hosts instead is simpler to automate and gives unattended
+deploys. A single-admin fork may prefer it. It should not be the default, and
+choosing it should print what it gives up.
+
+Two honest limits, which belong in any doc that describes this:
+
+* **Encryption protects the secret everywhere it is stored, not where it is
+  used.** The host's `.env` is plaintext. What changes is that it becomes a
+  disposable build artifact rather than the only copy in existence.
+* **Environment variables are visible** in `docker inspect` and
+  `/proc/<pid>/environ`. `env_file` does not change that. Encrypted at rest
+  does not mean hidden at runtime.
+
+### Backup and restore
+
+`paisans backup` must produce **four** things. Any three of them is a partial
+restore that looks complete until someone goes looking for their account.
+
+| Artifact | Holds | Without it |
+|----------|-------|------------|
+| `paisans.yaml` | topology | nothing knows what to build |
+| `secrets.enc.yaml` | credentials | every secret must be regenerated and every OIDC client re-minted |
+| Database dumps / WAL archive | member accounts, posts, settings | the community is empty |
+| Object storage | media, uploads, attachments | posts render with broken images |
+
+The config files capture **infrastructure**, not **application state**. Groups,
+magazines, moderation, collections, and anything set through an admin panel
+live in the database. A community's identity provider configuration is
+particularly easy to assume is in the config when it is not.
+
+The age private keys are the fifth thing, and they must be backed up somewhere
+other than the repo they decrypt.
+
 ## Design documents
 
 The full design lives in the community's Outline instance, in Operations. This
