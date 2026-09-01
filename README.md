@@ -37,10 +37,13 @@ an upgrade path that cannot corrupt anything.
 
 ### Rule 2: applications always talk to a local HAProxy
 
-Every stack connects to `127.0.0.1:5000` from the first install, where a local
-HAProxy holds a backend list that initially has one entry. Adding a site grows
-that list. No application configuration changes, ever. This one indirection is
-what makes a second site an operation rather than a project.
+Every stack with `cluster` placement connects to `127.0.0.1:5000` from the first
+install, where a local HAProxy holds a backend list that initially has one entry.
+Adding a site grows that list. No application configuration changes, ever. This
+one indirection is what makes a second site an operation rather than a project.
+
+Pinned stacks talk to their own database directly and are not affected — see
+rule 5.
 
 ### Rule 3: object storage from the first install
 
@@ -96,6 +99,97 @@ federated is a rebuild, not a rename.
 `init --domain` should say so at the prompt, in plain words. It is the one
 choice here that cannot be walked back, and it is made in the first thirty
 seconds by someone who has not read anything yet.
+
+### Rule 5: placement is a per-app property, and pinned is the plain case
+
+Not every app can follow a failover. Synapse is the first example — its S3
+support supplements the media store rather than replacing it, so a local media
+directory is always required — but this is a property every app has, not a
+Synapse special case.
+
+So each stack in the inventory declares where it runs:
+
+| Placement | What it means | Availability |
+|-----------|---------------|--------------|
+| `pinned: <site>` | ordinary self-contained deployment at one named location | that location's |
+| `cluster` | shares the HA Postgres cluster, follows the primary | survives losing one site |
+
+**`pinned` is the plain case and needs nothing built.** It is the app exactly as
+upstream ships it: its own compose file, its own Postgres container, its own
+volumes. No etcd, no Patroni, no HAProxy, no shared cluster. A single-site
+install is every app pinned to the only site, which is why this costs a new
+adopter nothing.
+
+`cluster` is the opt-in variant: drop the stack's own `postgres` service, point
+it at `127.0.0.1:5000`, put its media in Garage. Two compose profiles per app,
+and the toolkit picks one.
+
+Pinned is not restricted to a cloud VM — pinning to a home is equally valid. The
+cloud VM is one location among several.
+
+#### A pinned app must be pinned all the way down
+
+The tempting half-measure is to pin the app but leave it using the shared
+cluster. Do not. It then needs **both** its own location and the cluster site to
+be reachable, so its availability becomes the product of two sites — **worse
+than either alone** — and every query crosses the WAN.
+
+**A half-pinned app is less available than either site.** Pinning moves a
+failure domain; it does not remove one. App, database and media go together or
+the placement is a lie.
+
+Backups still centralise to Garage. Only replication and failover are given up.
+
+#### Moving a pinned app
+
+Because a pinned stack is self-contained, relocating it is ordinary work:
+
+```
+docker compose down                     # stop first — see below
+tar czf stack.tgz /srv/<stack>
+scp stack.tgz newhost:
+# on the new host: untar, open firewall, docker compose up -d
+# then update the DNS A record
+```
+
+Four things make that sequence true rather than nearly true:
+
+* **Stop the stack before archiving.** Tarring a live Postgres volume produces a
+  torn copy that may restore and then fail later. Stop it, or `pg_dump` instead.
+* **Use bind mounts under `/srv/<stack>/`, not named volumes.** This is why the
+  tar is one line instead of a `--volumes-from` dance, so the toolkit should lay
+  pinned stacks out that way from the start.
+* **Lower the DNS TTL before the move**, not during it.
+* **The hostname must not change** — same name, new address. For an ActivityPub
+  app the domain is its identity (see rule 4); moving hosts is routine, moving
+  domains is a rebuild.
+
+For a stack with large media, two `rsync` passes — one while running, one after
+stopping — beat a single tar.
+
+`app move` should exist as a command, and should say plainly that it involves
+downtime. It is a migration, not a configuration flip.
+
+#### Do not pin an app onto the witness without thinking
+
+If the cloud VM is both the etcd witness and the host for a pinned app, they
+compete. etcd's stability depends on fsync latency, and a busy application with
+its own database is not a quiet neighbour. Disk contention there means missed
+heartbeats, spurious elections, and **the database failing over for no reason**
+because something else was compacting.
+
+In order of preference: a separate VM for pinned apps; the same VM with etcd's
+data directory on its own device; or a box big enough, with monitoring.
+
+The toolkit should **warn** here rather than refuse. Unlike a co-located witness,
+which is incoherent, this is merely risky — and the risk is acceptable if it is
+chosen rather than stumbled into.
+
+#### Consequence for routing
+
+The gateway's Caddy configuration becomes inventory-driven: a pinned app's
+hostname points at its location, everything else follows the current primary.
+A template job, not an orchestrator job.
 
 ## Adding a site, and the constraint that shapes it
 
