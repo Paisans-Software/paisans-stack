@@ -60,6 +60,10 @@ storage:
     sites: [home-a, home-b]
     replication: 2
 
+# Every app is rendered with trusted proxies set to the mesh subnet, never to a
+# specific host. That is what lets the gateway role move between machines later
+# without breaking client-address handling. It is expensive to retrofit and
+# fails quietly, so it is not configurable here.
 apps:
   talk:
     kind: mbin

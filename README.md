@@ -395,6 +395,306 @@ particularly easy to assume is in the config when it is not.
 The age private keys are the fifth thing, and they must be backed up somewhere
 other than the repo they decrypt.
 
+## Bootstrapping a site
+
+`apply` renders configuration on a workstation and pushes it over SSH — but the
+WireGuard mesh those files create does not exist yet. First contact with any host
+has to happen over a path that is not the tunnel.
+
+That is what `ssh:` in a site block is: the **bootstrap route**. A LAN address, a
+public hostname, whatever the operator can actually reach on day one. Used once
+per site and never again; afterwards everything goes over the mesh addresses.
+
+**It must be a real address the operator already has.** Not an overlay network,
+not a name that only resolves inside one deployment's private mesh. A toolkit
+that quietly depended on one would work on the machines it was written for and
+fail on every fork.
+
+### Where WireGuard keys are generated
+
+On the workstation, not on the host — which is the opposite of the usual advice,
+for a reason.
+
+Generating on the host and reading the public key back means the private key
+never traverses anything. But then it exists in exactly one place, it is not in
+`secrets.enc.yaml`, and rebuilding a dead node produces a *new* identity that
+every peer must be reconfigured to accept.
+
+Generating on the workstation puts the key in the encrypted file with everything
+else. Rebuilding a node from bare metal restores the **same** identity and no
+peer changes at all. The key travels over SSH — the same channel already trusted
+to carry every other rendered secret.
+
+### `init` — one site, no mesh
+
+There is nothing to tunnel to yet.
+
+```
+paisans init --domain example.org --site home-a --ssh home-a.local
+```
+
+1. Preflight over SSH. Refuse loudly rather than proceed on a warning.
+2. Generate every secret — WireGuard keypair, database passwords, object storage
+   keys — into `secrets.enc.yaml`.
+3. Render and push.
+4. **Bring up `wg0` with this site's address and an empty peer list.**
+5. Spilo as a cluster of one, etcd as a single member, HAProxy with one backend,
+   Garage single-node.
+6. Apps start, pointed at `127.0.0.1:5000`.
+
+Step 4 is the one that is easy to skip and expensive to add later. A `wg0` with
+zero peers still provides `10.44.0.1`, and every service binds to it from the
+first install. Joining a site then only **adds peers** — no service is
+reconfigured and no address changes.
+
+Same principle as running the cluster at one node: build the final shape
+immediately, then grow it.
+
+### `site add` — the gateway and witness
+
+The straightforward case, because the VM has a stable address and is the one
+thing everything else can dial.
+
+```
+paisans site add vm --roles gateway,witness --ssh vm.example.org
+```
+
+1. Preflight the VM.
+2. Generate its keypair; record it.
+3. Render the VM's `wg0`: peer home-a, no endpoint — home-a dials out.
+4. Render home-a's `wg0`: peer vm **with** an endpoint, and `PersistentKeepalive`
+   so the NAT mapping stays open.
+5. Push both; bring both up.
+6. **Verify handshakes in both directions.** Stop here on failure.
+7. etcd stays a single member. The VM does not become a voter yet, because two
+   voters are worse than one.
+
+### `site add` — a second data site, and the one hard problem
+
+```
+paisans site add home-b --roles data,apps --ssh home-b.local
+```
+
+Home-b reaches the VM the same way home-a does. Fine.
+
+**But home-a and home-b are both behind NAT with changing addresses, and neither
+has an endpoint the other can dial.** WireGuard needs one side to know where to
+send the first packet, and neither does.
+
+Three ways out:
+
+* **Relay home↔home through the VM.** Works immediately with no new machinery.
+  Cost: with `synchronous_mode: true` every commit waits a round trip, so writes
+  pay home-a → VM → home-b instead of going direct. Largely mitigated by siting
+  the VM near the homes, which costs nothing.
+* **Dynamic DNS per home.** Each home gets a resolvable endpoint. Two problems:
+  WireGuard resolves endpoints at load and does not re-resolve on its own, and
+  **publishing a home's public address in DNS is a privacy decision**, not merely
+  a technical one.
+* **Endpoint discovery through the VM.** Homes report their current address; the
+  VM distributes it. This is rebuilding part of what a coordination service does,
+  and it is real work for a toolkit meant to stay small.
+
+**Recommendation: relay, and site the VM near the homes.** Then measure. Direct
+home-to-home is an optimisation to pursue if the measurement is bad, not a
+prerequisite — and relaying keeps the networking to static configuration with no
+daemon and no coordination service, which is why plain WireGuard was chosen.
+
+### The staged gate, and the half-joined site
+
+**Never touch etcd membership until every tunnel is verified.** The reason is
+arithmetic: going from one member to three with both new members unreachable
+leaves one of three, no majority, and **the cluster stops.** A working
+single-site deployment can be taken down by trying to add to it.
+
+So a join is staged, and every stage is a gate:
+
+| Stage | Gate before proceeding |
+|-------|------------------------|
+| 1. Preflight | every check passes |
+| 2. WireGuard pushed and up | **handshake verified in both directions, from both sides** |
+| 3. etcd one → three, atomically | all three members report healthy |
+| 4. Spilo joins, clones, streams | replication lag converging |
+| 5. HAProxy backends, watchdog, Garage | smoke test passes |
+
+Failing at stage 2 rolls back cleanly: drop the peer entries, leave the running
+cluster untouched. Failing at stage 3 or later is harder to undo, which is
+exactly why stage 2's gate must be strict.
+
+`site add` must be **idempotent** — re-running after a fixed network problem
+resumes rather than restarting.
+
+### Preflight
+
+Half the design's assumptions are mechanically checkable, and every unchecked one
+will eventually be violated:
+
+* SSH reachable; privilege escalation works
+* Docker present and recent enough
+* **OS and glibc major version match the existing sites** — mismatched collation
+  libraries between replicas risk corruption
+* Kernel WireGuard available; `/dev/watchdog` present
+* Ports free: 51820, 2379/2380, 5000
+* The mesh subnet does not collide with anything the host already routes
+* Clock synchronised — etcd and Patroni both depend on it
+* Storage is local, not network-attached, with room
+* **Round-trip time measured to every existing site**, and etcd's heartbeat and
+  election timeout derived from it rather than guessed
+
+That last one turns a documented manual step into an automatic one, which is the
+difference between a tuning rule people follow and one they read once.
+
+## Moving the gateway
+
+A single site runs `roles: [data, apps, gateway]` — the same machine serving the
+public internet and holding the database. That is correct for one site, and total
+failure of that site is the expected behaviour of having one site.
+
+Once a **second data site** exists, the gateway should move off both of them.
+
+The reason is that otherwise the failover does not reach the public path. If
+home-a is the gateway and home-a dies, the database fails over in about a minute
+— but public DNS still points at home-a, and nothing is reachable until a record
+changes and propagates. Automatic database failover sitting behind a manual DNS
+change is not automatic.
+
+The gateway's job is to be **the address that never moves**, and a residential
+connection cannot be that.
+
+### Make it an overlap, not a cutover
+
+The move should never be "stop here, start there."
+
+```
+1. The new gateway comes up, obtains certificates, and serves —
+   while the old one is still serving
+2. Verify the new gateway answers correctly for every hostname
+3. Repoint DNS
+4. Wait out the old TTL; the old gateway keeps serving stragglers throughout
+5. Stop the old gateway
+```
+
+No gap, and reversible at any point before step 5 — repoint DNS back and the old
+gateway is still running. That is the difference between an easy migration and a
+nervous one.
+
+This works because the new gateway can reach the apps over the mesh, which was
+established when its site joined. The ordering already holds.
+
+### DNS-01 is what makes step 1 possible
+
+With HTTP-01, a server can only obtain a certificate for a name that already
+points at it — so the new gateway cannot hold valid certificates until DNS moves,
+and DNS should not move to a server without them.
+
+**DNS-01 does not require inbound reachability.** The new gateway proves control
+of the domain through the DNS provider's API and can hold fully valid
+certificates before serving a single request.
+
+Consequence: no certificate state is migrated. The new gateway issues its own.
+
+### Trusted proxies must be the mesh subnet — set this at `init`
+
+This is the one item that is expensive to retrofit, and it fails quietly.
+
+Applications behind a reverse proxy decide which upstream to trust for
+`X-Forwarded-For`. If that is set to a specific host because that host was the
+gateway on day one, then the moment a different node starts proxying, every
+request arrives from an untrusted source. The symptoms are unpleasant and
+indirect: wrong client addresses in logs and rate limiting, possibly broken
+redirects, and for anything checking addresses during a session, broken logins.
+
+**Set trusted proxies to the mesh subnet from the first install.** Then any node
+in the mesh can front the apps and the gateway role becomes genuinely portable.
+
+Same principle as apps connecting to `127.0.0.1:5000` rather than a named
+database host: an application should not know what is on the other side of an
+indirection.
+
+### What travels with the role
+
+The **auth gate goes with the gateway.** It sits on the edge beside the reverse
+proxy and is part of it, not a separate app. The toolkit should treat reverse
+proxy and auth gate as one unit rather than letting someone move half of it.
+
+OIDC callback URLs point at the public domain, not at the gateway host, so they
+need no change. Worth stating plainly, because "will this break single sign-on"
+is the first question anyone asks about this move.
+
+### It is a config change
+
+```yaml
+sites:
+  home-a: { roles: [data, apps] }        # gateway removed
+  vm:     { roles: [gateway, witness] }  # gateway added
+```
+
+`apply` then performs the overlap above. Two things it should do unasked: lower
+the DNS TTL well in advance and restore it afterwards, and refuse to stop the old
+gateway until the new one has answered correctly for every hostname.
+
+Rollback is moving the role back and applying again.
+
+## Worked example: should the identity provider live on the gateway?
+
+A reasonable question, and the answer is more interesting than a flat no.
+
+First, a modelling point. `pocket-id` is not a site role — **sites declare roles,
+apps declare placement**:
+
+```yaml
+sites:
+  vm: { roles: [gateway, witness, apps] }   # the vm may host apps
+
+apps:
+  auth:
+    placement: { pinned: vm }               # the actual move
+```
+
+Roles say what a site provides; placement says where an app runs. Keep those
+separate or every new app becomes a new role.
+
+It is feasible. It is not advisable.
+
+**Pinning gives up failover.** On `cluster` placement the identity provider rides
+the HA database and survives losing a site entirely. Pinned to the gateway, its
+availability becomes exactly that machine's, with no failover at all.
+
+The natural counterargument is that losing the gateway blacks out public access
+anyway, so the identity provider being there costs nothing extra. That is true,
+and it is why this is not a silly idea. But it means the move **gains nothing** —
+it survives nothing it would not otherwise have survived — while the costs are
+all real:
+
+* **A second database to operate**, separately backed up and upgraded, outside
+  the archive that covers everything else. That partly undoes "one story instead
+  of four", for the app that least needs it.
+* **Gateway sizing.** A witness box is specified for a reverse proxy, a tunnel
+  and etcd. Adding a database and an application roughly doubles it.
+* **fsync contention with etcd** — the same risk recorded above, whose failure
+  mode is spurious database failovers.
+
+**And the argument that settles it: the gateway is the public attack surface;
+the identity provider is the crown jewels.** Co-locating them puts the service
+holding every member's credentials on the most internet-exposed machine in the
+deployment. Today it sits behind the gateway on a host with no inbound
+reachability at all.
+
+There is a superficially similar argument in the other direction — isolate the
+identity provider so compromising an application host does not yield it. But
+that points at a separate *unexposed* host, not at the one running the public
+web server.
+
+**Recommendation: leave it on `cluster` placement.** It gets high availability
+for free, its uploads ride replication when `FILE_BACKEND` is `database`, it
+stays off the public-facing box, and it needs no second database.
+
+The one scenario that would change this: if authentication outages became the
+dominant complaint *and* the gateway itself were made redundant. With two
+gateways, "the gateway died" stops meaning "everything is dark", and pinning the
+identity provider to the more reliable tier starts to buy something. That is a
+different design.
+
 ## Design documents
 
 The full design lives in the community's Outline instance, in Operations. This
