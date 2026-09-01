@@ -62,12 +62,30 @@ toolkit should not overstate it:
 | Mbin | full | `S3_KEY`/`S3_SECRET`/`S3_BUCKET`/`S3_REGION`/`S3_ENDPOINT`, plus switching `public_uploads_filesystem` to the S3 adapter in `config/packages/oneup_flysystem.yaml`. Upstream strongly advises a media reverse proxy so URLs stay stable across provider changes |
 | Outline | full | `FILE_STORAGE=s3` with the `AWS_*` variables; non-AWS endpoints need `AWS_S3_FORCE_PATH_STYLE=true`. Known upstream bug: the bucket must not be named `outline` |
 | Synapse | partial | `synapse-s3-storage-provider` is a *storage provider* that supplements the media store. **A local media directory is still required.** `store_synchronous: True` writes to S3 immediately; the bucket prefix cannot be changed once media exists |
-| Pocket ID | unverified | keeps an `/app/data` directory regardless of database backend. Whether anything user-visible remains there once Postgres is configured has not been checked |
+| Pocket ID | full, plus better | `FILE_BACKEND` takes `filesystem` (default), `s3`, or **`database`**. See the note below — `database` is the recommendation |
 | WriteFreely | none | no object storage support; see the open question about this stack |
 
-So some node-local state survives. That is acceptable as long as it is known and
-either reproducible or non-critical — but it must be enumerated before a failover
-is trusted, not discovered during one.
+**Pocket ID should use `FILE_BACKEND=database`, not S3.** Its uploads are
+profile pictures and admin-uploaded branding — on a real deployment, about a
+megabyte in total. Putting them in Postgres means they ride streaming
+replication with everything else: a promoted site has them already, with no sync
+job and no reconciliation. It also removes a dependency from the one service
+that gates every other one — if object storage is unavailable, sign-in still
+works. Consistency with the other stacks is worth less here than keeping the
+identity provider's dependency list as short as possible.
+
+Left on the default `filesystem` backend, `data/uploads` holds
+`profile-pictures/<userId>.png`, generated initials avatars under
+`profile-pictures/defaults/`, and `application-images/` (favicon, background,
+email logo). None of it is in the database. A site promoted without it serves
+broken avatars and silently reverts to stock branding mid-incident — not an
+outage, but an alarming one to look at, and the branding is configured state
+that an admin set deliberately.
+
+That leaves **Synapse as the only stack with unavoidable node-local state**,
+because its S3 support supplements the media store rather than replacing it. Its
+local media directory has to be replicated out of band, or accepted as lost on
+promotion. Either is defensible; leaving it undecided is not.
 
 ### Rule 4: the domain is a one-way door
 
