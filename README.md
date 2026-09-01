@@ -695,11 +695,37 @@ gateways, "the gateway died" stops meaning "everything is dark", and pinning the
 identity provider to the more reliable tier starts to buy something. That is a
 different design.
 
-## Design documents
+## Where documentation lives
 
-The full design lives in the community's Outline instance, in Operations. This
-repository will carry implementation notes and runbooks specific to the toolkit
-as they are written.
+**Generic material is canonical here.** Architecture, runbooks and the recovery
+procedure — at a level true for any community, naming no hosts — live in this
+repository. A community that has lost everything can still read them, because
+they are not hosted on the thing that failed.
+
+That is the whole point. The outage that started this design took the stack down
+and the documentation with it, including the instructions for recovering the
+stack. Documentation that shares a failure domain with its subject is not
+available when it is needed.
+
+**Community-specific material stays with the community.** Its current state,
+decision log, deployment particulars and governance are not generic, and
+publishing them here would leak a deployment's shape to a third party. That is
+the same boundary described under *Relationship to `paisans.community`*, and it
+is a privacy control rather than tidiness.
+
+**Operators may mirror these documents into their own wiki**, so sysadmins read
+them where they read everything else. Two rules keep that honest:
+
+* **The mirror is one-way and labelled as a copy.** Edits happen here. Without
+  that, the two drift and nobody can tell which is current — which is worse than
+  having one copy.
+* **Nothing crosses the other way.** Convenience is exactly how a hostname ends
+  up in a public repository.
+
+**Recovery needs four things, and only the first is here:** this documentation,
+plus the deployment's config, its secrets, and its data. See the backup contract
+above. Documentation tells you what to rebuild; it contains nothing to rebuild
+it *from*.
 
 ## Relationship to `paisans.community`
 
