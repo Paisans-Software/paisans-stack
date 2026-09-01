@@ -707,6 +707,15 @@ and the documentation with it, including the instructions for recovering the
 stack. Documentation that shares a failure domain with its subject is not
 available when it is needed.
 
+A [Charter template](docs/charter-template.md) is included for the same reason.
+It carries the two operational sections that transfer between communities
+unaltered — decision authority, and the blast-radius tiers that say how much
+human involvement an action requires — so that after a catastrophic loss the
+rules governing the recovery are readable before the wiki is back. It is a
+**floor**: a community's own Charter supersedes it entirely and may well be
+stricter. The mission, values and every community-specific choice are absent by
+design.
+
 **Community-specific material stays with the community.** Its current state,
 decision log, deployment particulars and governance are not generic, and
 publishing them here would leak a deployment's shape to a third party. That is
