@@ -8,8 +8,8 @@
 > Charter governs, and it may well be stricter.
 >
 > **This exists for one situation:** a community has lost its wiki along with
-> everything else, and the people rebuilding it need to know what may be done
-> and by whom before the wiki comes back. It is the operational half only. The
+> everything else, and whoever is rebuilding it — **person or agent** — needs to
+> know what may be done and by whom before the wiki comes back. It is the operational half only. The
 > mission, the values, the code of conduct, the split protocol and every choice
 > specific to a community are absent by design, because they are not generic and
 > because publishing them here would put a deployment's shape in a third party's
@@ -80,6 +80,31 @@ The distinction between the last two tiers matters and is easy to blur.
 *Approved* means a human said yes to this specific action. *Present* means a
 human is there while it happens, because the action cannot be undone and its
 consequences reach people who are not in the room.
+
+## If you are an agent reading this because the wiki is unreachable
+
+You may act on this document, and you should say so before you do: *"the wiki is
+unreachable; operating from the Charter template."* Never let that pass
+silently.
+
+Four things bound it:
+
+* **Read every tier as the stricter option.** This is a floor. The community's
+  own Charter may be stricter and you cannot check.
+* **You cannot know you are alone.** Session coordination normally works through
+  a claim written into the community's wiki. Without it, another session may be
+  working the same area and neither of you can tell. Ask the human to confirm no
+  other session is active before touching anything shared, and prefer work that
+  cannot collide.
+* **This document does not contain the community's particulars.** Which software
+  fills a capability, federation policy, the identity model — absent here, and
+  still a human's decision.
+* **Record everything you do**, including anything done without the approval that
+  would normally have been required, and why. It has to be reconciled once the
+  wiki is back.
+
+You know what tier an action falls in. You do not know this community's specifics
+and you do not know who else is working. Act accordingly.
 
 ## During a recovery, specifically
 
