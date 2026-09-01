@@ -36,21 +36,16 @@ sites:
     endpoint: vm.example.org:51820   # stable: the homes dial here
     ssh: vm.example.org
 
-clusters:
-  main:
-    sites: [home-a, home-b]
-    port: 5000                  # local HAProxy port apps connect to
-    postgres_version: "18"
-    synchronous: true
-    synchronous_strict: false   # degrade to standalone rather than block writes
-
-  # A second cluster costs a Spilo pair and a port — not another etcd, not
-  # another witness. Use one when an app needs its own failover blast radius.
-  #
-  # forum:
-  #   sites: [home-a, home-b]
-  #   port: 5001
-  #   postgres_version: "18"
+# One cluster. Multiple named clusters are out of scope: one cluster holds many
+# databases and replicates them together, so every app in it gets HA for free.
+# "HA for one app but not another" saves nothing. An app that must not share it
+# is `pinned` instead.
+cluster:
+  sites: [home-a, home-b]
+  port: 5000                  # local HAProxy port apps connect to
+  postgres_version: "18"
+  synchronous: true
+  synchronous_strict: false     # degrade to standalone rather than block writes
 
 etcd:
   members: [home-a, home-b, vm]
@@ -69,12 +64,12 @@ apps:
   talk:
     kind: mbin
     hostname: talk.example.org
-    placement: { cluster: main }
+    placement: cluster
 
   docs:
     kind: outline
     hostname: docs.example.org
-    placement: { cluster: main }
+    placement: cluster
     settings:
       # Non-AWS S3 endpoints need path style. Upstream bug: the bucket must
       # not be named "outline".
@@ -84,7 +79,7 @@ apps:
   auth:
     kind: pocket-id
     hostname: id.example.org
-    placement: { cluster: main }
+    placement: cluster
     settings:
       # Not `s3`. Uploads are ~1 MB of avatars and branding; in Postgres they
       # ride streaming replication with no sync job, and the service that gates
