@@ -1,0 +1,129 @@
+# Development
+
+The toolkit is a single Go binary. Contributors need a Go toolchain;
+operators need nothing.
+
+## Build
+
+```
+go build ./cmd/paisans
+```
+
+Go 1.26 or newer. There is no code generation step and no Makefile.
+
+## Run
+
+Two commands exist so far, and neither touches a network or a host.
+
+```
+paisans validate --config examples/paisans.example.yaml
+paisans render   --config examples/paisans.example.yaml \
+                 --secrets secrets.enc.yaml --out ./out
+```
+
+`validate` loads a declaration and prints every problem it finds, rather than
+stopping at the first, because fixing a file one error per run is miserable. It
+exits non zero when anything was refused.
+
+`render` validates, then writes per site artifacts under `--out`. It writes
+files and stops: pushing them to a host is a later slice.
+
+The example validates with exactly one warning, and that warning is
+deliberate. Its Synapse stack is pinned to the site that also holds the witness
+role, which the design warns about rather than refuses.
+
+## Refuse and warn
+
+The distinction is the point of the tool and it is not a matter of severity
+taste.
+
+**Refuse** means the configuration is incoherent: it describes something that
+cannot work, so rendering it would produce artifacts that damage a deployment.
+A witness sharing a failure domain with its only voter is the worked example.
+
+**Warn** means the configuration is legitimate but risky, and the risk is fine
+when it is chosen rather than stumbled into. Pinning an app onto the witness
+host is the worked example.
+
+Every rule traces to a rule in `README.md`. If you believe one is missing, say
+so in the pull request rather than adding it: policy that is not in the README
+is policy nobody agreed to.
+
+## Tests
+
+```
+go vet ./...
+go test ./...
+```
+
+Three kinds of test carry most of the weight.
+
+**Rule tests** live in `internal/validate`. Each fixture in
+`internal/validate/testdata` is the valid one with exactly one thing broken and
+is named for the rule it breaks, so a rule that fires on the wrong fixture is a
+failure rather than a puzzle.
+
+**Golden tree tests** live in `internal/render`. The tree under
+`internal/render/testdata/golden` is checked in, because it is the
+specification of what an operator receives: a diff there is a change in what
+lands on a host. Regenerate it deliberately, and read the diff:
+
+```
+go test ./internal/render -update
+```
+
+**A determinism test** renders twice and compares byte for byte. Nothing
+rendered may carry a timestamp or depend on map iteration order, or a diff
+between two renders stops meaning anything.
+
+## Fixtures and secrets
+
+`internal/render/testdata/secrets.fixture.yaml` is plaintext on purpose. Every
+value in it is a fixed placeholder, and its WireGuard private keys are repeated
+bytes chosen so the derived public keys are stable across runs. Nothing in this
+repository is a credential, and nothing in it may become one.
+
+The encrypted path is exercised without an encrypted file ever being committed:
+`internal/config/secrets_test.go` generates an age identity, encrypts a fixture
+in memory, writes it to a temporary directory, and reads it back. That test is
+also the proof that sops and age are genuinely embedded, because it starts no
+process.
+
+`sops` and `age` are Go libraries here, not binaries. Neither has to be
+installed, on a workstation or anywhere else.
+
+## Layout
+
+| Path | Holds |
+|------|-------|
+| `cmd/paisans` | the command, flag parsing, and how findings are printed |
+| `internal/config` | loading `paisans.yaml`, and decrypting `secrets.enc.yaml` |
+| `internal/validate` | the rules, and nothing else |
+| `internal/render` | placement, templates, and the writer |
+| `internal/render/templates` | the artifacts themselves, as `text/template` files |
+
+Templating is `text/template` from the standard library. No template engine is
+inherited, per the language decision in `docs/decisions.md`.
+
+## Things the code enforces that are easy to undo by accident
+
+* **Trusted proxies are the mesh subnet**, never a host address. This is
+  expensive to retrofit and fails quietly, so it is not configurable and a test
+  asserts it.
+* **The mesh subnet is a fixed /24**, not the tightest network containing
+  today's addresses. Computing it tightly would widen it when a site is added,
+  which would silently change `TRUSTED_PROXIES` everywhere.
+* **A pinned stack uses bind mounts under `/srv/<stack>/`**, never named
+  volumes, so relocating it is one `tar`. A test walks every rendered compose
+  file to confirm it.
+* **A clustered app has no Postgres service of its own** and connects to
+  `127.0.0.1:5000`. A pinned app gets its own container: an app that is pinned
+  must be pinned all the way down.
+* **Output is deterministic.** Sort before you iterate a map.
+
+## What is not here yet
+
+No SSH, no Docker, no etcd, and none of `init`, `site add`, `apply`,
+`failover` or `backup`. Secret generation does not exist either. If you find
+yourself writing a transport layer, that is the next slice and it wants its own
+review.
