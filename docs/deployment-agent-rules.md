@@ -1,34 +1,46 @@
-# Charter template — operational sections
+# Deployment agent rules
 
-> **This is a template, not a charter.** It is a **floor**, and it is not
-> authoritative for any community.
+> **This is a template, and it is a floor.** It is not authoritative for any
+> community.
 >
-> Every community's own Charter — which lives in that community's wiki, not here
-> — supersedes this document entirely. Where the two differ, the community's
-> Charter governs, and it may well be stricter.
+> It governs agents operating a *deployed* paisans stack. It does not govern
+> agents working on the paisans-stack toolkit itself, which has its own
+> `AGENTS.md` at the root of that repository.
 >
-> **This exists for one situation:** a community has lost its wiki along with
-> everything else, and whoever is rebuilding it — **person or agent** — needs to
-> know what may be done and by whom before the wiki comes back. It is the operational half only. The
-> mission, the values, the code of conduct, the split protocol and every choice
-> specific to a community are absent by design, because they are not generic and
-> because publishing them here would put a deployment's shape in a third party's
-> repository.
+> **Copy it into your deployment's own configuration repository as `AGENTS.md`**
+> and edit it to fit. Under that name, every agent that opens that repository
+> reads it without being told to.
 >
-> **After restoring from backup, replace this with the real thing.** See
-> *After a restore* at the end.
+> **A community's Charter still governs.** The Charter is that community's
+> mission, values and code of conduct, and it lives in the community's wiki, not
+> here. This file is a rulebook derived from those values, not a substitute for
+> them. Where a rule here conflicts with the community's Charter, or with an
+> explicit instruction from the community's admins, the Charter wins and the
+> rule here is the one that is wrong.
+>
+> **The second situation it exists for** is a community that has lost its wiki
+> along with everything else, where whoever is rebuilding it (person or agent)
+> needs to know what may be done and by whom before the wiki comes back. That is
+> why the rules here are written to stand alone. The mission, the values, the
+> code of conduct, the split protocol and every choice specific to a community
+> are absent by design, because they are not generic and because publishing them
+> here would put a deployment's shape in a third party's repository.
+>
+> **After restoring from backup, reconcile against the real thing.** See *After
+> a restore* at the end.
 
 ## What this covers
 
-Two sections, chosen because they are the ones that transfer between
-communities without alteration:
+Two things, chosen because they are the ones that transfer between communities
+without alteration:
 
-* **Decision authority** — what an agent may settle alone, and what belongs to a
+* **Decision authority**: what an agent may settle alone, and what belongs to a
   human.
-* **Blast radius** — how dangerous an action is, and how much human involvement
+* **Blast radius**: how dangerous an action is, and how much human involvement
   it therefore requires.
 
-Everything else in a real Charter is community-specific.
+Everything a community decides for itself is out of scope here, starting with
+its values. Those live in its Charter.
 
 ## Decision authority
 
@@ -84,21 +96,21 @@ consequences reach people who are not in the room.
 ## If you are an agent reading this because the wiki is unreachable
 
 You may act on this document, and you should say so before you do: *"the wiki is
-unreachable; operating from the Charter template."* Never let that pass
+unreachable; operating from the agent rules template."* Never let that pass
 silently.
 
 Four things bound it:
 
 * **Read every tier as the stricter option.** This is a floor. The community's
-  own Charter may be stricter and you cannot check.
+  own rules may be stricter and you cannot check.
 * **You cannot know you are alone.** Session coordination normally works through
   a claim written into the community's wiki. Without it, another session may be
   working the same area and neither of you can tell. Ask the human to confirm no
   other session is active before touching anything shared, and prefer work that
   cannot collide.
 * **This document does not contain the community's particulars.** Which software
-  fills a capability, federation policy, the identity model — absent here, and
-  still a human's decision.
+  fills a capability, federation policy, the identity model: all absent here,
+  and all still a human's decision.
 * **Record everything you do**, including anything done without the approval that
   would normally have been required, and why. It has to be reconciled once the
   wiki is back.
@@ -115,29 +127,33 @@ need it, and the approval requirement should be met by asking rather than
 inferring from the emergency.
 
 Emergencies are exactly when "they would obviously have said yes" feels most
-reasonable and is most often wrong. If the community's own Charter is
-unreachable, assume it is **stricter** than this document, not more permissive.
+reasonable and is most often wrong. If the community's own rules are
+unreachable, assume they are **stricter** than this document, not more
+permissive.
 
 ## After a restore
 
 Once the wiki is back:
 
-1. **Read the community's own Charter.** It supersedes this file completely.
-2. **Re-check every assumption made during the recovery** against it. Anything
-   done under this template that the real Charter would have gated differently
-   should be recorded, and raised with the community's admins.
+1. **Read the community's own `AGENTS.md` and its Charter.** Its own rules
+   replace this template, and its Charter governs both.
+2. **Re-check every assumption made during the recovery** against them. Anything
+   done under this template that the community's own rules would have gated
+   differently should be recorded, and raised with the community's admins.
 3. **Record what was done while the wiki was unavailable**, including anything
    done without the approval that would normally have been required, and why.
-4. **Confirm this template still matches** the operational sections of the real
-   Charter. If they have diverged, the real Charter is right and this file needs
-   updating upstream.
+4. **Reconcile this template with what the recovery taught you.** If the
+   community's own rules differ, theirs are right. If the difference is
+   something any community would want, it belongs upstream in the toolkit
+   repository as well.
 
 ## For an operator adopting this stack
 
-Copy these two sections into your own Charter and edit them to fit. They are
-deliberately generic, and a real community will want to be more specific — about
-who "a human" is, about which services count as sanctioned, and about anything
-its own history has taught it.
+Copy this file into your deployment's configuration repository as `AGENTS.md`
+and edit it to fit. It is deliberately generic, and a real community will want
+to be more specific (Eg: who counts as "a human", which services are sanctioned,
+which hosts an agent may reach, and anything its own history has taught it).
 
-Then write the parts this template does not contain, which are the parts that
-make a community itself.
+Then write your Charter, which is the part this template does not contain and
+cannot: the mission, the values and the code of conduct that these rules exist
+to serve.

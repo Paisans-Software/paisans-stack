@@ -707,14 +707,18 @@ and the documentation with it, including the instructions for recovering the
 stack. Documentation that shares a failure domain with its subject is not
 available when it is needed.
 
-A [Charter template](docs/charter-template.md) is included for the same reason.
-It carries the two operational sections that transfer between communities
-unaltered — decision authority, and the blast-radius tiers that say how much
-human involvement an action requires — so that after a catastrophic loss the
-rules governing the recovery are readable before the wiki is back. It is a
-**floor**: a community's own Charter supersedes it entirely and may well be
-stricter. The mission, values and every community-specific choice are absent by
-design.
+A template for [deployment agent rules](docs/deployment-agent-rules.md) is
+included for the same reason. It carries the two things that transfer between
+communities unaltered (decision authority, and the blast-radius tiers that say
+how much human involvement an action requires), so that after a catastrophic
+loss the rules governing the recovery are readable before the wiki is back.
+Operators copy it into their own configuration repository as `AGENTS.md`, where
+every agent reads it without being told to.
+
+It is a **floor**, and it is not a Charter. A community's Charter is its
+mission, values and code of conduct; it stays in the community's wiki and it
+governs these rules rather than being replaced by them. Those values, and every
+community-specific choice, are absent here by design.
 
 **Community-specific material stays with the community.** Its current state,
 decision log, deployment particulars and governance are not generic, and
