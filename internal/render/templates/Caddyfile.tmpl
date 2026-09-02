@@ -1,0 +1,24 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Inventory driven: a pinned app's hostname points at its location, everything
+# else is proxied to the sites holding the apps role. DNS-01 is used rather
+# than HTTP-01, so a gateway can hold valid certificates before any DNS record
+# points at it. That is what makes moving the gateway an overlap rather than a
+# cutover.
+{
+	email admin@{{ .Domain }}
+	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+}
+{{ range .Routes }}
+{{ .Hostname }} {
+	reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
+{{- if gt (len .Upstreams) 1 }}
+		# first, not round robin: the apps sites are not interchangeable
+		# during a failover, and a dead one must simply be skipped.
+		lb_policy first
+		fail_duration 10s
+{{- end }}
+		header_up X-Forwarded-Proto https
+	}
+}
+{{ end -}}

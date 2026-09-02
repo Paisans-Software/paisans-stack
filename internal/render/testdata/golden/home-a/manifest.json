@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "etc/wireguard/wg0.conf",
+      "sha256": "514803373c3e16b86c4ecc2c5d842ec2fd9c5bf0d40e95fe651f607ad82ee76e",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/auth/.env",
+      "sha256": "b1b7131c6e4102272554a102075ef740499697f4cd497ec12ce6fe484f26b2dd",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/auth/compose.yaml",
+      "sha256": "0d1604b89d875740093ebe97bf6d4b23231361f631a3ca1877cc1608dca15a7d",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/docs/.env",
+      "sha256": "4d5d02c974c397417451d095de2a9a366083092b4f85a331d5c196dcec567710",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/docs/compose.yaml",
+      "sha256": "9481f19288220526253e786a49efd50a21ba1f9826a4ab4493f35c18d5758346",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/compose.yaml",
+      "sha256": "ce7f1b2309e99066425dda490f28aa9c65b04adc6382ed11c029af1a6990ffb5",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/garage/garage.toml",
+      "sha256": "93ab479f97a0faeaa10e2e02e3c9461f02f475604743a0c6e2985fdf2710b0c0",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/infra/haproxy/haproxy.cfg",
+      "sha256": "60c7be2b671d4bb18703a12c33914a8226dce60be123bef5299f8002544e071e",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/patroni.env",
+      "sha256": "dcd75809911ffce4eaaae1fffdb7032db9fc2c0424b529c80d8e8fd671f75d4c",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/talk/.env",
+      "sha256": "26cde4ab97828d08c8c287b3e04c9fa88f4bd9693649743ab02d518cff3e2ac5",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/talk/compose.yaml",
+      "sha256": "eadc53b022ccfffe630b04e1f210bc909c240b868ac7f6c5e2b5c1bc53ff7d89",
+      "mode": "0644"
+    }
+  ]
+}

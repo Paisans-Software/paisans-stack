@@ -2,6 +2,12 @@
 .env
 .env.*
 !.env.example
+
+# The golden tree is rendered output, checked in so that a change to what
+# lands on a host shows up as a reviewable diff. Its .env files are built from
+# the fixture secrets, where every value is a fixed placeholder. Nothing real
+# goes in this directory.
+!internal/render/testdata/golden/**/.env
 *.key
 *.pem
 secrets/
@@ -18,6 +24,7 @@ secrets.dec.yaml
 *.dec.yaml
 
 # Local state
+out/
 archive/
 *.log
 .DS_Store

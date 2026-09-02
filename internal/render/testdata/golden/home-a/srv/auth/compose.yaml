@@ -1,0 +1,16 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# auth has cluster placement: no Postgres service of its own, and a
+# connection to the local HAProxy on 127.0.0.1:5000.
+name: paisans-auth
+
+services:
+  app:
+    image: ghcr.io/pocket-id/pocket-id:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "1411:1411"
+    volumes:
+      - /srv/auth/data:/data

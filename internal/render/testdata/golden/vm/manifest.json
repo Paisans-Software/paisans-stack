@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "etc/wireguard/wg0.conf",
+      "sha256": "9c7469d79404d6a1f0e51511baf9ec4d7332013885476f8e9cdc1de42e8c7388",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/chat/.env",
+      "sha256": "983ecb6eaa9f2b46ab8e52e5e2750b07552ee13c956b30e8757bc0e9854c6b7c",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/chat/compose.yaml",
+      "sha256": "3881838a4add84a4639012c5066f099d13f6f493c268838e987d734a1ee14d54",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/caddy/Caddyfile",
+      "sha256": "31ed4aca5b040e6f797cdfada2ccf24396accce48df04713d74e0b92524e5164",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/caddy/caddy.env",
+      "sha256": "c872fd3970f718116c024df7445c63f7335c7c21ac611ff85da6a830fab95d35",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/infra/compose.yaml",
+      "sha256": "1245fda7b0676704335d4dded24347d654162de0e494fc1d7d4be1172bacd44f",
+      "mode": "0644"
+    }
+  ]
+}
