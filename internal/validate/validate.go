@@ -115,7 +115,11 @@ func Check(cfg *config.Config) Result {
 	c.undeclaredSites()
 	c.placementShape()
 	c.outlineBucketName()
+	c.clusterSiteWithoutData()
+	c.clusterAppWithoutAppsSite()
+	c.garageReplicationExceedsSites()
 
+	c.evenVoters()
 	c.pinnedOntoWitness()
 	c.gatewayOnDataSite()
 	c.pocketIDFileBackend()
@@ -162,6 +166,84 @@ func (c *checker) twoVoters() {
 			"exactly two etcd voters (%s and %s). Two voters are strictly worse than one: a majority of two is two, so either failing stops the cluster. Declare one member, or three.",
 			c.cfg.Etcd.Members[0], c.cfg.Etcd.Members[1])
 	}
+}
+
+// clusterSiteWithoutData refuses a cluster member that does not hold the data
+// role.
+//
+// The roles say what a site provides and the cluster list says which sites
+// hold the database. A site named in the cluster without the data role
+// declares both that it stores data and that it does not, and the two
+// renderings disagree: it would receive HAProxy backends pointing at a Patroni
+// that was never rendered for it. There is no reading of this that works, so
+// it is a refusal rather than a warning.
+func (c *checker) clusterSiteWithoutData() {
+	for i, name := range c.cfg.Cluster.Sites {
+		site, ok := c.cfg.Sites[name]
+		if !ok {
+			continue // undeclaredSites reports this
+		}
+		if site.Has(config.RoleData) {
+			continue
+		}
+		c.refuse("cluster-site-without-data-role", fmt.Sprintf("cluster.sites[%d]", i),
+			"names site %q, which does not hold the data role. A site in the cluster runs Patroni and stores the database. Add the data role to %s, or remove it from the cluster.", name, name)
+	}
+}
+
+// clusterAppWithoutAppsSite refuses cluster placement when nowhere can run it.
+//
+// Cluster placement means the app runs on the sites holding the apps role and
+// connects to the local proxy. With no such site the placement names no
+// location at all, so the app would be declared and never rendered anywhere,
+// which is the quietest possible failure.
+func (c *checker) clusterAppWithoutAppsSite() {
+	if len(c.cfg.AppsSites()) > 0 {
+		return
+	}
+	for _, name := range c.cfg.AppNames() {
+		if c.cfg.Apps[name].Placement.Mode != config.PlacementCluster {
+			continue
+		}
+		c.refuse("cluster-app-without-apps-site", fmt.Sprintf("apps.%s.placement", name),
+			"is `cluster`, but no site holds the apps role, so there is nowhere to run it. Give a site the apps role, or pin the app to a site.")
+	}
+}
+
+// garageReplicationExceedsSites refuses a replication factor larger than the
+// number of Garage nodes.
+//
+// Garage will not store an object it cannot place on the requested number of
+// distinct nodes. The deployment comes up, the buckets exist, and every upload
+// fails, which looks like an application bug rather than a configuration one.
+func (c *checker) garageReplicationExceedsSites() {
+	garage := c.cfg.Storage.Garage
+	if garage.Replication == 0 || len(garage.Sites) == 0 {
+		return
+	}
+	if garage.Replication <= len(garage.Sites) {
+		return
+	}
+	c.refuse("garage-replication-exceeds-sites", "storage.garage.replication",
+		"is %d, but only %d site(s) run Garage. Garage cannot place a copy on a node that does not exist, so every upload fails while everything else looks healthy. Lower the factor, or add a Garage site.",
+		garage.Replication, len(garage.Sites))
+}
+
+// evenVoters warns about an even number of etcd members above two.
+//
+// Quorum is a majority, so four members need three and tolerate one loss:
+// exactly what three members tolerate, with an extra machine that can fail and
+// an extra vote to collect on every write. An even count buys nothing and adds
+// a failure domain. Two is refused separately, because two is worse than one
+// rather than merely pointless.
+func (c *checker) evenVoters() {
+	count := len(c.cfg.Etcd.Members)
+	if count <= 2 || count%2 != 0 {
+		return
+	}
+	c.warn("even-etcd-voters", "etcd.members",
+		"declares %d voters. A majority of %d is %d, which is the same number of losses %d members tolerate, so the extra member adds a machine that can fail and a vote to collect without improving anything. Prefer %d.",
+		count, count, count/2+1, count-1, count-1)
 }
 
 // undeclaredSites refuses any reference to a site that does not exist. A

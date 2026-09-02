@@ -58,6 +58,10 @@ etcd:
 storage:
   garage:
     sites: [home-a, home-b]
+    # A factor of 2 across 2 sites means a write needs both of them: losing a
+    # site keeps the database available through failover but stops uploads.
+    # That is a trade, not a free win, and it is the reason a third Garage
+    # location is worth considering.
     replication: 2
 
 # Every app is rendered with trusted proxies set to the mesh subnet, never to a
