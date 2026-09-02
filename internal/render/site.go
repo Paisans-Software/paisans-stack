@@ -45,10 +45,6 @@ type peerView struct {
 type route struct {
 	Hostname  string
 	Upstreams []string
-	// Private hostnames are served only behind a VPN, so nothing on the
-	// internet can answer an HTTP challenge for them and DNS-01 is the only
-	// way to obtain a certificate.
-	Private bool
 }
 
 func (p *planner) renderSite(site *siteView) ([]File, error) {
@@ -125,28 +121,22 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	}
 
 	if site.IsGateway {
-		routes := p.routes()
 		caddyfile, err := p.renderTemplate("Caddyfile.tmpl", map[string]any{
-			"Domain":     p.cfg.Community.Domain,
-			"Routes":     routes,
-			"NeedsDNS01": anyPrivate(routes),
+			"Domain": p.cfg.Community.Domain,
+			"Routes": p.routes(),
 		})
 		if err != nil {
 			return nil, err
 		}
 		files = append(files, File{Path: base + "srv/infra/caddy/Caddyfile", Content: caddyfile, Mode: 0o644})
 
-		if anyPrivate(routes) {
-			// The zone wide API credential is only placed on a host that
-			// actually needs it.
-			env, err := p.renderTemplate("caddy.env.tmpl", map[string]any{
-				"CloudflareAPIToken": p.secrets.External["cloudflare_api_token"],
-			})
-			if err != nil {
-				return nil, err
-			}
-			files = append(files, File{Path: base + "srv/infra/caddy/caddy.env", Content: env, Mode: 0o600})
+		env, err := p.renderTemplate("caddy.env.tmpl", map[string]any{
+			"CloudflareAPIToken": p.secrets.External["cloudflare_api_token"],
+		})
+		if err != nil {
+			return nil, err
 		}
+		files = append(files, File{Path: base + "srv/infra/caddy/caddy.env", Content: env, Mode: 0o600})
 	}
 
 	for _, app := range site.Apps {
@@ -295,23 +285,10 @@ func (p *planner) routes() []route {
 				upstreams = append(upstreams, fmt.Sprintf("%s:%d", p.sites[hostName].Address, port))
 			}
 		}
-		out = append(out, route{
-			Hostname:  app.Hostname,
-			Upstreams: upstreams,
-			Private:   app.Reachable() == config.ExposurePrivate,
-		})
+		out = append(out, route{Hostname: app.Hostname, Upstreams: upstreams})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })
 	return out
-}
-
-func anyPrivate(routes []route) bool {
-	for _, r := range routes {
-		if r.Private {
-			return true
-		}
-	}
-	return false
 }
 
 func (p *planner) clusterMembers() []clusterMember {

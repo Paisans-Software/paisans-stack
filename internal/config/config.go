@@ -107,39 +107,7 @@ type App struct {
 	Kind      Kind           `yaml:"kind"`
 	Hostname  string         `yaml:"hostname"`
 	Placement Placement      `yaml:"placement"`
-	Exposure  Exposure       `yaml:"exposure"`
 	Settings  map[string]any `yaml:"settings"`
-}
-
-// Exposure says who can reach an app's hostname, and it decides how its
-// certificate is obtained.
-//
-// A public hostname resolves to the gateway and is reachable from the
-// internet, so it proves control the ordinary way, over HTTP. A private
-// hostname is served only behind a VPN, so nothing on the internet can reach
-// it to answer a challenge and DNS-01 is the only option left.
-//
-// DNS-01 is not the default. It requires an API credential for the whole zone
-// on the machine that uses it, which is a larger grant than a public community
-// needs to hand out for a certificate it could obtain by answering a request.
-type Exposure string
-
-const (
-	// ExposurePublic is reachable from the internet through the gateway.
-	ExposurePublic Exposure = "public"
-	// ExposurePrivate is reachable only over a VPN, for example Tailscale.
-	ExposurePrivate Exposure = "private"
-)
-
-var knownExposures = map[Exposure]bool{ExposurePublic: true, ExposurePrivate: true}
-
-// Reachable returns the exposure, defaulting to public. An unset exposure is
-// the ordinary case and must be the safer one.
-func (a App) Reachable() Exposure {
-	if a.Exposure == "" {
-		return ExposurePublic
-	}
-	return a.Exposure
 }
 
 // PlacementMode is where an app runs. There are exactly two, and pinned is the
@@ -332,9 +300,6 @@ func (c *Config) structural() error {
 		}
 		if app.Hostname == "" {
 			add("apps.%s.hostname: required. It is the public name the gateway routes to.", name)
-		}
-		if app.Exposure != "" && !knownExposures[app.Exposure] {
-			add("apps.%s.exposure: unknown exposure %q. It is either public, the default, or private for a hostname served only behind a VPN.", name, app.Exposure)
 		}
 	}
 	if len(problems) == 0 {

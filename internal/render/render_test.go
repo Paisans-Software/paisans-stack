@@ -152,10 +152,10 @@ func TestNoNamedVolumes(t *testing.T) {
 	}
 }
 
-// A public hostname answers an HTTP challenge and needs no credential. DNS-01
-// is used only where the VPN makes HTTP-01 impossible, and the zone wide token
-// is written only to a gateway that actually needs it.
-func TestCertificateChallengeFollowsExposure(t *testing.T) {
+// DNS-01 for every hostname, so a gateway can hold valid certificates before
+// any DNS record points at it. That is what makes moving the gateway an
+// overlap rather than a cutover.
+func TestGatewayUsesDNSChallenge(t *testing.T) {
 	files := map[string]string{}
 	for _, f := range build(t).Files {
 		files[f.Path] = f.Content
@@ -164,20 +164,16 @@ func TestCertificateChallengeFollowsExposure(t *testing.T) {
 	if !ok {
 		t.Fatal("no Caddyfile was rendered for the gateway")
 	}
-	blocks := strings.Split(caddyfile, "\n\n")
-	for _, block := range blocks {
-		if strings.HasPrefix(block, "notes.example.org") {
-			if !strings.Contains(block, "dns cloudflare") {
-				t.Errorf("a private hostname was not given DNS-01:\n%s", block)
-			}
-			continue
-		}
-		if strings.Contains(block, "dns cloudflare") {
-			t.Errorf("a public hostname was given DNS-01:\n%s", block)
-		}
+	if !strings.Contains(caddyfile, "acme_dns cloudflare") {
+		t.Errorf("the gateway does not use DNS-01:\n%s", caddyfile)
 	}
 	if _, ok := files["vm/srv/infra/caddy/caddy.env"]; !ok {
-		t.Error("the DNS provider token was not rendered for a gateway that needs it")
+		t.Error("the DNS provider token was not rendered for the gateway")
+	}
+	for path := range files {
+		if strings.HasSuffix(path, "caddy.env") && !strings.HasPrefix(path, "vm/") {
+			t.Errorf("%s holds the zone token on a site that is not the gateway", path)
+		}
 	}
 }
 

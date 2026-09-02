@@ -105,25 +105,32 @@ installed, on a workstation or anywhere else.
 Templating is `text/template` from the standard library. No template engine is
 inherited, per the language decision in `docs/decisions.md`.
 
-## Certificates follow exposure, not convenience
+## Certificates use DNS-01, everywhere
 
-An app declares `exposure: public` (the default) or `exposure: private`.
+With HTTP-01 a server can only obtain a certificate for a name that already
+points at it. A new gateway could therefore not hold valid certificates until
+DNS moved, and DNS should not be moved to a server without them. DNS-01 proves
+control through the provider's API and needs no inbound reachability, so a new
+gateway can be fully ready before a single record changes. That is what makes
+moving the gateway an overlap rather than a cutover, and reversible at every
+step until the old one is stopped.
 
-A public hostname resolves to the gateway, so it proves control by answering a
-request: HTTP-01, no credential anywhere. A private hostname is served only
-behind a VPN, so nothing on the internet can reach it to answer a challenge and
-DNS-01 is the only option left.
+It is also the only option for a hostname served behind a VPN, where nothing on
+the internet can reach the host to answer a challenge.
 
-DNS-01 is deliberately not the default. It needs an API token for the whole
-zone sitting on the gateway, which is the most internet exposed machine in the
-deployment, and that is a large grant to hold for a name that could simply
-answer a request. The token is rendered only onto a gateway that actually has a
-private hostname to serve.
+The cost is a token with DNS edit rights on the zone, sitting on the gateway,
+which is the most internet exposed machine in the deployment. Two things bound
+it. The token is scoped to one zone, never an account wide credential. And an
+operator who wants it narrower can CNAME every `_acme-challenge` record into a
+challenge only zone and scope the token to that zone, leaving a credential on
+the gateway that can write challenges and nothing else. The toolkit does not
+require that arrangement, and it does not prevent it.
 
-The cost of this choice is recorded honestly: `README.md` argues for DNS-01
-because it lets a new gateway hold valid certificates before DNS points at it,
-which is what makes moving the gateway an overlap rather than a cutover. With
-HTTP-01 on public names, that overlap is no longer available for them.
+Weighed against the alternative: anyone with root on the gateway already
+terminates TLS for every hostname and holds every private key, so they can
+already read and alter all traffic. The token adds reach past that machine,
+which is why scoping it matters and why account wide credentials are not
+acceptable here.
 
 ## Every app has its own database credential
 
