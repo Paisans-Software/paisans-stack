@@ -105,6 +105,40 @@ installed, on a workstation or anywhere else.
 Templating is `text/template` from the standard library. No template engine is
 inherited, per the language decision in `docs/decisions.md`.
 
+## Certificates follow exposure, not convenience
+
+An app declares `exposure: public` (the default) or `exposure: private`.
+
+A public hostname resolves to the gateway, so it proves control by answering a
+request: HTTP-01, no credential anywhere. A private hostname is served only
+behind a VPN, so nothing on the internet can reach it to answer a challenge and
+DNS-01 is the only option left.
+
+DNS-01 is deliberately not the default. It needs an API token for the whole
+zone sitting on the gateway, which is the most internet exposed machine in the
+deployment, and that is a large grant to hold for a name that could simply
+answer a request. The token is rendered only onto a gateway that actually has a
+private hostname to serve.
+
+The cost of this choice is recorded honestly: `README.md` argues for DNS-01
+because it lets a new gateway hold valid certificates before DNS points at it,
+which is what makes moving the gateway an overlap rather than a cutover. With
+HTTP-01 on public names, that overlap is no longer available for them.
+
+## Every app has its own database credential
+
+There is no fallback and no shared password. One cluster holds every app's
+database, so a credential shared between apps is a credential that reads every
+other app's data, and the admin password is worse again: it creates and drops
+roles, and an operator uses it.
+
+`secrets.enc.yaml` therefore carries `apps.<name>.database_password` for every
+app, clustered or pinned, and rendering fails by name when one is missing.
+
+Creating those roles in Postgres is not implemented. Nothing in this slice
+touches a running database, so the credentials are rendered and the roles that
+use them are a job for `apply`.
+
 ## Things the code enforces that are easy to undo by accident
 
 * **Trusted proxies are the mesh subnet**, never a host address. This is
