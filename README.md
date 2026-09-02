@@ -330,10 +330,10 @@ of existing on exactly one host. But minting one is a privileged mutation that
 belongs to a human — the toolkit records the value after the fact and must not
 automate the approval away.
 
-### `.env` files are build artifacts
+### Rendered configuration is a build artifact
 
-`paisans apply` renders them. Nobody edits them, and `apply` refuses to clobber
-one that has local modifications until the difference is resolved.
+`paisans apply` renders it. Nobody edits it, and `apply` refuses to clobber a
+rendered file that has local modifications until the difference is resolved.
 
 ```
 WORKSTATION                        HOST                          CONTAINER
@@ -343,16 +343,58 @@ secrets.enc.yaml  ─┤ render
 age key           ─┘   │
                        │ ssh push
                        ▼
-                  /srv/talk/.env   (plaintext, 0600) ──► env vars
-                  /srv/talk/compose.yaml
+                  /srv/<stack>/.env       (plaintext, 0600) ──► env vars
+                  /srv/<stack>/config.ini (plaintext, 0600) ──► bind mount
+                  /srv/<stack>/compose.yaml
                   caddy/, haproxy.cfg, patroni env
                                                        docker compose up -d
 ```
 
 `sops` and `age` are installed on the workstation only. Hosts do not have them.
 Containers never know they exist, and nothing is written *into* a container —
-Compose passes env at start. Changing a secret therefore means re-render plus
-`compose up -d` to **recreate**; a `restart` will not pick it up.
+Compose passes env at start. Changing a secret in an `.env` therefore means
+re-render plus `compose up -d` to **recreate**; a `restart` will not pick it up.
+A secret in a bind-mounted file is cheaper to change, for the reason below.
+
+#### A `kind` ships a template set, not a single `.env`
+
+Not every application is configured through environment variables, and the
+stacks named in this document are already split on it. Mbin reads `.env`.
+WriteFreely reads an INI file, `config.ini`, whose `[server]`, `[app]`,
+`[database]` and `[oauth.generic]` sections carry everything it needs, SSO
+client credentials and `disable_password_auth` included
+([config reference](https://writefreely.org/docs/latest/admin/config)). Synapse
+reads [`homeserver.yaml`](https://element-hq.github.io/synapse/latest/usage/configuration/homeserver_sample_config.html).
+
+So the unit the toolkit ships per `kind` is a **template directory**, and
+`apply` renders every file in it:
+
+```
+templates/mbin/            templates/writefreely/
+  compose.yaml.tmpl          compose.yaml.tmpl
+  .env.tmpl                  config.ini.tmpl
+  caddy.snippet.tmpl         caddy.snippet.tmpl
+```
+
+The alternative is to treat `.env` as the shape and bolt on a per-app escape
+hatch for anything that is not one. That inverts the majority and the exception
+for no gain, because nothing in the secrets path is env-specific: every rule
+above holds file by file, whatever the format. A rendered `config.ini` is a
+build artifact, is written 0600, receives its secrets at render time on the
+workstation, and is refused a clobber when locally edited, on exactly the same
+terms as a rendered `.env`.
+
+One consequence runs against the intuition and is worth stating plainly.
+Environment variables are readable through `docker inspect` and
+`/proc/<pid>/environ`, as the limits below say. A bind-mounted file at 0600 is
+not. **File-configured applications are the better case here, not the awkward
+one**, and where an application accepts either, the file is preferred.
+
+Reload differs as well. A changed `.env` needs `compose up -d` to recreate the
+container, because Compose passes environment only at start. A changed
+bind-mounted file needs a restart at most, and the container keeps its identity.
+`apply` should take the narrower action rather than recreating a stack it did
+not have to, since a recreate is an outage however brief.
 
 ### Decryption happens on a workstation, not on a host
 
