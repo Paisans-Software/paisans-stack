@@ -4,7 +4,11 @@ Toolkit for installing and operating a paisans community stack: a private,
 federated community on hardware its organizers control.
 
 **Status: nothing is implemented yet.** This repository holds the design and
-will hold the scripts. Do not expect anything here to run.
+will hold the implementation. Do not expect anything here to run.
+
+Written in **Go**, distributed as a single static binary so an operator needs no
+runtime — see [docs/decisions.md](docs/decisions.md) for why, and why not
+Terraform, Ansible or shell.
 
 ## What it is meant to do
 
