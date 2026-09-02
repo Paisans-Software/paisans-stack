@@ -16,7 +16,7 @@ sites:
     ssh: home-a.local
   home-b:
     roles: [data, apps]
-    address: 10.44.0.2
+    address: 10.99.0.2
     ssh: home-b.local
   vm:
     roles: [gateway, witness]
@@ -38,7 +38,7 @@ etcd:
 
 storage:
   garage:
-    sites: [home-a]
+    sites: [home-a, home-b]
     replication: 2
 
 apps:

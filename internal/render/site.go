@@ -224,15 +224,10 @@ func (p *planner) renderWireGuard(site *siteView) (string, error) {
 		}
 	}
 
-	prefix := strings.SplitN(p.mesh, "/", 2)
-	meshPrefix := "24"
-	if len(prefix) == 2 {
-		meshPrefix = prefix[1]
-	}
 	return p.renderTemplate("wg0.conf.tmpl", map[string]any{
 		"Site":       site,
 		"PrivateKey": private,
-		"MeshPrefix": meshPrefix,
+		"MeshPrefix": p.cfg.Mesh.Prefix(),
 		"IsRelay":    isRelay,
 		"Peers":      peers,
 	})

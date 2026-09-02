@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"sort"
 
@@ -46,6 +47,7 @@ var knownKinds = map[Kind]bool{
 type Config struct {
 	Version   int             `yaml:"version"`
 	Community Community       `yaml:"community"`
+	Mesh      Mesh            `yaml:"mesh"`
 	Sites     map[string]Site `yaml:"sites"`
 	Cluster   Cluster         `yaml:"cluster"`
 	Etcd      Etcd            `yaml:"etcd"`
@@ -61,6 +63,39 @@ type Community struct {
 	// Domain is a one way door. Federation identity is the hostname and remote
 	// instances have recorded it, so changing it after federating is a rebuild.
 	Domain string `yaml:"domain"`
+}
+
+// Mesh is the private network every site sits on.
+//
+// The subnet is declared rather than derived. Applications are rendered to
+// trust it for forwarded client addresses, so it has to be a value that never
+// changes: deriving the tightest network containing today's site addresses
+// would widen it the moment a site was added, silently rewriting
+// TRUSTED_PROXIES in every app. Declaring it also lets an operator pick a
+// range that does not collide with something their hosts already route.
+type Mesh struct {
+	Subnet string `yaml:"subnet"`
+}
+
+// Prefix returns the subnet's prefix length, for rendering an interface
+// address. It assumes the subnet has already been checked.
+func (m Mesh) Prefix() int {
+	_, network, err := net.ParseCIDR(m.Subnet)
+	if err != nil {
+		return 0
+	}
+	ones, _ := network.Mask.Size()
+	return ones
+}
+
+// Contains reports whether an address sits inside the mesh.
+func (m Mesh) Contains(address string) bool {
+	_, network, err := net.ParseCIDR(m.Subnet)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(address)
+	return ip != nil && network.Contains(ip)
 }
 
 type Site struct {
@@ -269,6 +304,21 @@ func (c *Config) structural() error {
 	if c.Community.Domain == "" {
 		add("community.domain: required. It is the community's federation identity and cannot be changed later.")
 	}
+	switch {
+	case c.Mesh.Subnet == "":
+		add("mesh.subnet: required. Declare the private network every site sits on, for example 10.44.0.0/24. It is what applications trust for forwarded client addresses, so it is declared rather than guessed and it never changes.")
+	default:
+		ip, network, err := net.ParseCIDR(c.Mesh.Subnet)
+		switch {
+		case err != nil:
+			add("mesh.subnet: %q is not a network in CIDR notation. Write it as an address and a prefix length, for example 10.44.0.0/24.", c.Mesh.Subnet)
+		case ip.To4() == nil:
+			add("mesh.subnet: %q is IPv6. The mesh is IPv4 only for now.", c.Mesh.Subnet)
+		case !ip.Equal(network.IP):
+			add("mesh.subnet: %q is a host address inside a network, not the network itself. Write %s.", c.Mesh.Subnet, network.String())
+		}
+	}
+
 	if len(c.Sites) == 0 {
 		add("sites: required. Declare at least one site.")
 	}

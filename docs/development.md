@@ -151,9 +151,11 @@ use them are a job for `apply`.
 * **Trusted proxies are the mesh subnet**, never a host address. This is
   expensive to retrofit and fails quietly, so it is not configurable and a test
   asserts it.
-* **The mesh subnet is a fixed /24**, not the tightest network containing
-  today's addresses. Computing it tightly would widen it when a site is added,
-  which would silently change `TRUSTED_PROXIES` everywhere.
+* **The mesh subnet is declared in `mesh.subnet`**, not derived from the site
+  addresses. Deriving the tightest network that fits them would widen it the
+  moment a site was added, silently changing `TRUSTED_PROXIES` in every app.
+  Declaring it also lets an operator avoid a range their hosts already route.
+  Every site address must sit inside it, and that is a refusal.
 * **A pinned stack uses bind mounts under `/srv/<stack>/`**, never named
   volumes, so relocating it is one `tar`. A test walks every rendered compose
   file to confirm it.

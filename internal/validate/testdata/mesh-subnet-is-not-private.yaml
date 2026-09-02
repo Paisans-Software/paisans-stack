@@ -7,20 +7,20 @@ community:
   domain: example.org
 
 mesh:
-  subnet: 10.44.0.0/24
+  subnet: 203.0.113.0/24
 
 sites:
   home-a:
     roles: [data, apps]
-    address: 10.44.0.1
+    address: 203.0.113.1
     ssh: home-a.local
   home-b:
     roles: [data, apps]
-    address: 10.44.0.2
+    address: 203.0.113.2
     ssh: home-b.local
   vm:
     roles: [gateway, witness]
-    address: 10.44.0.3
+    address: 203.0.113.3
     endpoint: vm.example.org:51820
     ssh: vm.example.org
 
@@ -38,7 +38,7 @@ etcd:
 
 storage:
   garage:
-    sites: [home-a]
+    sites: [home-a, home-b]
     replication: 2
 
 apps:

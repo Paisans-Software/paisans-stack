@@ -6,6 +6,9 @@ community:
   name: "Fixture Community"
   domain: example.org
 
+mesh:
+  subnet: 10.44.0.0/24
+
 sites:
   home-a:
     roles: [data, apps]

@@ -12,6 +12,7 @@ package validate
 
 import (
 	"fmt"
+	"net"
 	"sort"
 
 	"github.com/josephquigley/paisans-stack/internal/config"
@@ -118,8 +119,10 @@ func Check(cfg *config.Config) Result {
 	c.clusterSiteWithoutData()
 	c.clusterAppWithoutAppsSite()
 	c.garageReplicationExceedsSites()
+	c.siteOutsideMesh()
 
 	c.evenVoters()
+	c.meshIsNotPrivate()
 	c.pinnedOntoWitness()
 	c.gatewayOnDataSite()
 	c.pocketIDFileBackend()
@@ -244,6 +247,50 @@ func (c *checker) evenVoters() {
 	c.warn("even-etcd-voters", "etcd.members",
 		"declares %d voters. A majority of %d is %d, which is the same number of losses %d members tolerate, so the extra member adds a machine that can fail and a vote to collect without improving anything. Prefer %d.",
 		count, count, count/2+1, count-1, count-1)
+}
+
+// siteOutsideMesh refuses a site address that is not in the declared mesh.
+//
+// Applications trust the mesh subnet for forwarded client addresses, and every
+// service binds to a mesh address. A site outside it is unreachable over the
+// tunnel and its traffic would arrive from an untrusted source, so nothing
+// about the deployment works as described.
+func (c *checker) siteOutsideMesh() {
+	if c.cfg.Mesh.Subnet == "" {
+		return // the loader has already reported this
+	}
+	for _, name := range c.cfg.SiteNames() {
+		address := c.cfg.Sites[name].Address
+		if address == "" || c.cfg.Mesh.Contains(address) {
+			continue
+		}
+		c.refuse("site-address-outside-mesh", fmt.Sprintf("sites.%s.address", name),
+			"is %s, which is outside mesh.subnet %s. Every site binds its services to a mesh address, and applications trust that subnet for forwarded client addresses. Give the site an address inside it, or widen the mesh.",
+			address, c.cfg.Mesh.Subnet)
+	}
+}
+
+// meshIsNotPrivate warns about a mesh on publicly routable space.
+//
+// Preflight checks that the subnet does not collide with anything a host
+// already routes, and that check needs a host. This is the part that can be
+// checked from a file: a mesh on public address space collides with the real
+// internet everywhere at once, and the symptom is a host that can no longer
+// reach whoever actually owns those addresses.
+func (c *checker) meshIsNotPrivate() {
+	if c.cfg.Mesh.Subnet == "" {
+		return
+	}
+	_, network, err := net.ParseCIDR(c.cfg.Mesh.Subnet)
+	if err != nil {
+		return // the loader has already reported this
+	}
+	if network.IP.IsPrivate() || network.IP.IsLoopback() || network.IP.IsLinkLocalUnicast() {
+		return
+	}
+	c.warn("mesh-subnet-is-not-private", "mesh.subnet",
+		"is %s, which is publicly routable address space. Every host would route those addresses into the tunnel instead of to whoever owns them. Use RFC 1918 space, for example 10.44.0.0/24, unless this range is genuinely yours.",
+		c.cfg.Mesh.Subnet)
 }
 
 // undeclaredSites refuses any reference to a site that does not exist. A

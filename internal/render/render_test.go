@@ -121,6 +121,46 @@ func TestTrustedProxiesAreTheMeshSubnet(t *testing.T) {
 	}
 }
 
+// The mesh subnet is whatever the file declares, not a constant in the code.
+// It reaches both the trusted proxy list and the WireGuard interface address.
+func TestMeshSubnetComesFromTheConfiguration(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Mesh.Subnet = "10.77.0.0/16"
+	for name, site := range cfg.Sites {
+		site.Address = strings.Replace(site.Address, "10.44.0.", "10.77.0.", 1)
+		cfg.Sites[name] = site
+	}
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawEnv, sawInterface bool
+	for _, f := range plan.Files {
+		if strings.HasSuffix(f.Path, "/.env") {
+			sawEnv = true
+			if !strings.Contains(f.Content, "TRUSTED_PROXIES=10.77.0.0/16") {
+				t.Errorf("%s did not follow the declared mesh:\n%s", f.Path, f.Content)
+			}
+		}
+		if strings.HasSuffix(f.Path, "wg0.conf") {
+			sawInterface = true
+			if !strings.Contains(f.Content, "/16\n") {
+				t.Errorf("%s did not use the declared prefix length:\n%s", f.Path, f.Content)
+			}
+		}
+	}
+	if !sawEnv || !sawInterface {
+		t.Fatal("the test did not reach the files it checks")
+	}
+}
+
 // No named volumes anywhere: a stack under /srv relocates with one tar.
 func TestNoNamedVolumes(t *testing.T) {
 	for _, f := range build(t).Files {

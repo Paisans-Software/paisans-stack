@@ -22,6 +22,8 @@ const minimal = `version: 1
 community:
   name: "Fixture"
   domain: example.org
+mesh:
+  subnet: 10.44.0.0/24
 sites:
   home-a:
     roles: [data, apps]
@@ -81,6 +83,8 @@ func TestStructuralProblemsAreReportedTogether(t *testing.T) {
 	body := `version: 2
 community:
   name: "Fixture"
+mesh:
+  subnet: 10.44.0.5/24
 sites:
   home-a:
     roles: [data, wizard]
@@ -96,7 +100,7 @@ apps:
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"version:", "community.domain:", "sites.home-a.roles:", "sites.home-a.address:",
+		"version:", "community.domain:", "mesh.subnet:", "sites.home-a.roles:", "sites.home-a.address:",
 		"sites.home-a.ssh:", "apps.talk.kind:", "apps.talk.hostname:",
 	} {
 		if !strings.Contains(msg, want) {

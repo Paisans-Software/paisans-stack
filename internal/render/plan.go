@@ -92,16 +92,7 @@ type planner struct {
 // already refused anything incoherent: a planner that re-checks policy is a
 // second place for the rules to drift.
 func Build(cfg *config.Config, secrets *config.Secrets) (*Plan, error) {
-	addresses := make([]string, 0, len(cfg.Sites))
-	for _, name := range cfg.SiteNames() {
-		addresses = append(addresses, cfg.Sites[name].Address)
-	}
-	mesh, err := meshSubnet(addresses)
-	if err != nil {
-		return nil, err
-	}
-
-	p := &planner{cfg: cfg, secrets: secrets, mesh: mesh, sites: map[string]*siteView{}}
+	p := &planner{cfg: cfg, secrets: secrets, mesh: cfg.Mesh.Subnet, sites: map[string]*siteView{}}
 	for _, name := range cfg.SiteNames() {
 		site := cfg.Sites[name]
 		p.order = append(p.order, name)
