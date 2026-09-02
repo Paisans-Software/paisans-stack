@@ -60,3 +60,11 @@ apps:
     kind: synapse
     hostname: chat.example.org
     placement: { pinned: vm }
+  notes:
+    kind: writefreely
+    hostname: notes.example.org
+    # Served only behind the VPN, so nothing on the internet can answer an
+    # HTTP challenge for this name and DNS-01 is the only way to a
+    # certificate.
+    exposure: private
+    placement: cluster

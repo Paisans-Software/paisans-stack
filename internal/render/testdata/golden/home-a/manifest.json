@@ -8,7 +8,7 @@
     },
     {
       "path": "srv/auth/.env",
-      "sha256": "b1b7131c6e4102272554a102075ef740499697f4cd497ec12ce6fe484f26b2dd",
+      "sha256": "1a434b432559cd7b0a8dc0068392b104442aca08049bcc76c1875165877d1dd2",
       "mode": "0600"
     },
     {
@@ -18,7 +18,7 @@
     },
     {
       "path": "srv/docs/.env",
-      "sha256": "4d5d02c974c397417451d095de2a9a366083092b4f85a331d5c196dcec567710",
+      "sha256": "55d7ea6bd5647750c57eebfb8558f51f46ca57f3f76f4c95d283e5f464916737",
       "mode": "0600"
     },
     {
@@ -47,8 +47,18 @@
       "mode": "0600"
     },
     {
+      "path": "srv/notes/.env",
+      "sha256": "04c1107c7ca491f2a101f0e9ee6f9b5648b76b396581f7c9f53251803ebb573d",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/notes/compose.yaml",
+      "sha256": "b9019627d956ddd627055a224196c3746a85794d53b6bc6b6f599bb547afca2b",
+      "mode": "0644"
+    },
+    {
       "path": "srv/talk/.env",
-      "sha256": "26cde4ab97828d08c8c287b3e04c9fa88f4bd9693649743ab02d518cff3e2ac5",
+      "sha256": "9a33338f81a76b03073699eedf50dc4f3c97dee62c27b6ab30b8290fdc04b593",
       "mode": "0600"
     },
     {

@@ -152,6 +152,72 @@ func TestNoNamedVolumes(t *testing.T) {
 	}
 }
 
+// A public hostname answers an HTTP challenge and needs no credential. DNS-01
+// is used only where the VPN makes HTTP-01 impossible, and the zone wide token
+// is written only to a gateway that actually needs it.
+func TestCertificateChallengeFollowsExposure(t *testing.T) {
+	files := map[string]string{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+	}
+	caddyfile, ok := files["vm/srv/infra/caddy/Caddyfile"]
+	if !ok {
+		t.Fatal("no Caddyfile was rendered for the gateway")
+	}
+	blocks := strings.Split(caddyfile, "\n\n")
+	for _, block := range blocks {
+		if strings.HasPrefix(block, "notes.example.org") {
+			if !strings.Contains(block, "dns cloudflare") {
+				t.Errorf("a private hostname was not given DNS-01:\n%s", block)
+			}
+			continue
+		}
+		if strings.Contains(block, "dns cloudflare") {
+			t.Errorf("a public hostname was given DNS-01:\n%s", block)
+		}
+	}
+	if _, ok := files["vm/srv/infra/caddy/caddy.env"]; !ok {
+		t.Error("the DNS provider token was not rendered for a gateway that needs it")
+	}
+}
+
+// Every app has its own database credential. A shared one reads every other
+// app's data, since one cluster holds them all.
+func TestEachAppHasItsOwnDatabasePassword(t *testing.T) {
+	seen := map[string]string{}
+	for _, f := range build(t).Files {
+		if !strings.HasSuffix(f.Path, "/.env") {
+			continue
+		}
+		parts := strings.Split(f.Path, "/")
+		app := parts[len(parts)-2]
+		for _, line := range strings.Split(f.Content, "\n") {
+			if !strings.Contains(line, "fixture-not-a-secret-") || !strings.Contains(line, "-db") {
+				continue
+			}
+			value := line[strings.Index(line, "fixture-not-a-secret-"):]
+			if previous, ok := seen[value]; ok && previous != app {
+				t.Errorf("%s and %s share a database credential", previous, app)
+			}
+			seen[value] = app
+		}
+	}
+	if len(seen) < 4 {
+		t.Fatalf("expected a distinct credential per app, found %d", len(seen))
+	}
+	if strings.Contains(strings.Join(keys(seen), " "), "admin") {
+		t.Error("an app was given the cluster admin password")
+	}
+}
+
+func keys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 // The manifest is what lets a later apply tell an untouched artifact from one
 // somebody edited on the host.
 func TestManifestCoversEveryFile(t *testing.T) {

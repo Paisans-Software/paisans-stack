@@ -18,12 +18,12 @@
     },
     {
       "path": "srv/infra/caddy/Caddyfile",
-      "sha256": "31ed4aca5b040e6f797cdfada2ccf24396accce48df04713d74e0b92524e5164",
+      "sha256": "89be8dc5e0d66d57a054fac69093c79fa1b2b640c15fffadd9139536e1f5e279",
       "mode": "0644"
     },
     {
       "path": "srv/infra/caddy/caddy.env",
-      "sha256": "c872fd3970f718116c024df7445c63f7335c7c21ac611ff85da6a830fab95d35",
+      "sha256": "851bfe248ba185a05d3c098e7e6c2d73f2c7a91f2de779eee7d9dd29be38c595",
       "mode": "0600"
     },
     {

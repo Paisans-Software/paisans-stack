@@ -118,17 +118,25 @@ func (p *planner) setOIDC(set func(string, string), app, publicURL string) {
 	set("OIDC_REDIRECT_URL", publicURL+"/oauth/callback")
 }
 
-// appDatabasePassword prefers a per app credential and falls back to the
-// cluster admin password. A pinned app runs its own Postgres and should have
-// its own credential, so the fallback is reported rather than silent.
+// appDatabasePassword returns an app's own database credential. There is no
+// fallback to a shared password, and that is the point.
+//
+// One cluster holds every app's database, so a credential shared between apps
+// is a credential that reads every other app's data. Handing them the admin
+// password is worse still: it can create and drop roles, and it is the
+// password an operator uses. An app compromise should cost that app's data and
+// stop there.
+//
+// A pinned app runs its own Postgres, so its credential is not shared with
+// anything by construction, but it still gets its own rather than borrowing
+// the cluster's.
 func (p *planner) appDatabasePassword(planned plannedApp) (string, error) {
 	if secret := p.appSecret(planned.Name, "database_password"); secret != "" {
 		return secret, nil
 	}
-	if p.secrets.Cluster.AdminPassword == "" {
-		return "", fmt.Errorf("secrets: apps.%s.database_password is unset and cluster.admin_password is empty. Set one of them", planned.Name)
-	}
-	return p.secrets.Cluster.AdminPassword, nil
+	return "", fmt.Errorf(
+		"secrets apps.%s.database_password: required, and there is no fallback. Every app connects with its own role and its own password, so that one app's credential does not read another app's database. Generate one and record it",
+		planned.Name)
 }
 
 func (p *planner) appSecret(app, key string) string {

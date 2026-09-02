@@ -1,13 +1,16 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
 # Inventory driven: a pinned app's hostname points at its location, everything
-# else is proxied to the sites holding the apps role. DNS-01 is used rather
-# than HTTP-01, so a gateway can hold valid certificates before any DNS record
-# points at it. That is what makes moving the gateway an overlap rather than a
-# cutover.
+# else is proxied to the sites holding the apps role.
+#
+# Certificates are obtained over HTTP-01 by default, which needs no credential
+# and no API access at all. DNS-01 is used only for a hostname served behind a
+# VPN, where nothing on the internet can reach the host to answer a challenge.
+# It is not the default because it requires a zone wide API token on the
+# gateway, which is a large grant to hold for a name that could simply answer
+# a request.
 {
 	email admin@example.org
-	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 }
 
 chat.example.org {
@@ -28,6 +31,20 @@ docs.example.org {
 
 id.example.org {
 	reverse_proxy 10.44.0.1:1411 10.44.0.2:1411 {
+		# first, not round robin: the apps sites are not interchangeable
+		# during a failover, and a dead one must simply be skipped.
+		lb_policy first
+		fail_duration 10s
+		header_up X-Forwarded-Proto https
+	}
+}
+
+notes.example.org {
+	# Served only behind the VPN, so HTTP-01 cannot reach it.
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	reverse_proxy 10.44.0.1:8080 10.44.0.2:8080 {
 		# first, not round robin: the apps sites are not interchangeable
 		# during a failover, and a dead one must simply be skipped.
 		lb_policy first
