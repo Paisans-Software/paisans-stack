@@ -69,6 +69,13 @@ apps:
     kind: mbin
     hostname: talk.example.org
     placement: cluster
+    # Optional. Keys are service names in the kind's compose template; any key
+    # left out takes the default that kind ships. Declaring the reference is
+    # what makes running a fork, or holding a version back, a config edit.
+    # `latest` is refused: it makes two runs of `apply` differ from identical
+    # inputs. A digest (@sha256:...) is accepted and is the stronger form.
+    images:
+      app: ghcr.io/example-org/mbin:v1.2.3
 
   docs:
     kind: outline

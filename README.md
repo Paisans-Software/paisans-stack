@@ -314,6 +314,59 @@ not replication lag. `paisans failover status` reads etcd. A config file that
 starts recording status drifts, and someone trusts a stale value during an
 incident.
 
+### The image an app runs is declared, not implied
+
+`kind` selects which template set renders. It does not decide which image runs.
+Keeping those separate is what lets an operator move to a fork, hold a version
+back, or take an upgrade on their own schedule, without the toolkit shipping a
+release for it:
+
+```yaml
+apps:
+  talk:
+    kind: mbin
+    hostname: talk.example.org
+    placement: cluster
+    images:
+      app: ghcr.io/example-org/mbin:v1.2.3
+```
+
+Every key is optional and an unset one takes the default its `kind` ships, so an
+adopter who never opens this stanza runs a tested set.
+
+**A map, not a single `image`.** A stack is several containers, and naming only
+the application one would work until the first operator needed a different
+Valkey. The keys are service names in the `kind`'s compose template, which also
+means an unknown key is a typo the toolkit can refuse rather than ignore.
+
+**One full reference per key, not `image` plus `tag`.** Switching to a fork
+changes registry, repository and tag together. Split into two fields, a
+half-finished switch parses cleanly and pulls something nobody intended.
+
+**Changing `images` is not changing `kind`.** A fork that renames an environment
+variable, moves a config path or adds a required setting needs a different
+template set, and that is a new `kind`. The `images` map is for a different
+build of the same software, and pointing it at software that merely resembles
+the original produces a stack that renders and then fails at boot.
+
+**Floating tags are refused, not warned about.** `latest` makes two runs of
+`apply` produce different deployments from identical inputs, which contradicts
+the premise that the config plus the secrets reconstruct the stack. That is
+incoherent rather than risky, so it takes a refusal by the rule above. A digest
+(`@sha256:...`) is accepted and is the stronger form.
+
+**A version change is not verified to be safe.** Many of these applications run
+schema migrations at boot, against live member data, and a downgrade after one
+is usually not a downgrade at all. The toolkit cannot know which release does
+that, and must not imply it checked: it warns on a changed reference, names the
+backup contract, and proceeds. Verifying upstream's upgrade notes is the
+operator's work.
+
+**`paisans check` compares the running image against the declared one.** Someone
+will eventually run `docker compose pull` on a host, and the difference between
+what is declared and what is running is exactly the kind of drift that is
+invisible until a rebuild produces a different stack.
+
 ### Three kinds of secret
 
 Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.
