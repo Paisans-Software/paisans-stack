@@ -23,6 +23,9 @@ secrets.yaml
 secrets.dec.yaml
 *.dec.yaml
 
+# Worktrees live at .worktrees/<name>, inside the repo. Checkouts, not content.
+.worktrees/
+
 # Local state
 out/
 archive/
