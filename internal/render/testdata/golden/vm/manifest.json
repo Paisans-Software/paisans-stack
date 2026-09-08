@@ -38,7 +38,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/blog.caddy",
-      "sha256": "8ac28feb3c10b65e8ec1ea91fee94b608975a41be57102d9184c8a48887c4560",
+      "sha256": "3b8d153a3792d9c4599d108e1c4702a8a356eaa3e0271cf556a6a96161050e1f",
       "mode": "0644"
     },
     {

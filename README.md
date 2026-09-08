@@ -136,6 +136,17 @@ and the toolkit picks one.
 Pinned is not restricted to a cloud VM — pinning to a home is equally valid. The
 cloud VM is one location among several.
 
+**An app that keeps its data outside the cluster can only be pinned, and
+`cluster` is refused for it.** Cluster placement means running on every site
+with the apps role and sharing one database through the local proxy. An
+application storing its data anywhere else gets neither half: it would be
+rendered onto each of those sites with its own separate storage, so one
+hostname would serve two deployments that diverge the moment anybody writes,
+and a failover would move readers between them. WriteFreely is the case that
+exists, having never supported Postgres and running on a SQLite file in its own
+data directory. Pinning it is not a downgrade, because that was always its
+availability.
+
 #### A pinned app must be pinned all the way down
 
 The tempting half-measure is to pin the app but leave it using the shared

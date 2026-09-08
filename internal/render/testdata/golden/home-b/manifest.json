@@ -17,16 +17,6 @@
       "mode": "0644"
     },
     {
-      "path": "srv/blog/compose.yaml",
-      "sha256": "760606ed8bd458d82cf252a49ffd669e1f1a14e1cb3bc06e257d4728c3928573",
-      "mode": "0644"
-    },
-    {
-      "path": "srv/blog/config.ini",
-      "sha256": "24bb5458e0c90aff00b05998edfb3cf1fa7a29b7dd6115fedee3319c27b7dea7",
-      "mode": "0600"
-    },
-    {
       "path": "srv/docs/.env",
       "sha256": "5a63b27493a9f5ed28b5b99473e5c3c2b0661a17133780d72921ea9533d3a683",
       "mode": "0600"

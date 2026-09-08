@@ -118,3 +118,22 @@ apps:
     # failover cleanly. Pinned means app, database and media together — a
     # half-pinned app is less available than either site.
     placement: { pinned: vm }
+
+  blog:
+    kind: writefreely
+    hostname: blog.example.org
+    # Pinned, and it has no choice: WriteFreely has never supported Postgres,
+    # so it cannot join the cluster and runs on a SQLite file in its own data
+    # directory. Cluster placement would give it one file per site, which is
+    # two divergent blogs behind one hostname, and is refused.
+    #
+    # Pinning to a home is as valid as pinning to the gateway. Its availability
+    # is that site's, and its backups are that file.
+    placement: { pinned: home-a }
+    settings:
+      # WriteFreely reads config.ini rather than an environment, and this is
+      # what the [app] section is rendered from. A rendered file carrying a
+      # client secret is written 0600 and bind mounted, where `docker inspect`
+      # cannot reach it.
+      site_name: Example Community
+      oidc_display_name: Example

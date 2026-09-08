@@ -124,6 +124,7 @@ func Check(cfg *config.Config) Result {
 	c.siteOutsideMesh()
 	c.imageServices()
 	c.floatingImages()
+	c.clusterPlacementWithoutACluster()
 
 	c.evenVoters()
 	c.meshIsNotPrivate()
@@ -353,6 +354,32 @@ func (c *checker) outlineBucketName() {
 			c.refuse("outline-bucket-named-outline", fmt.Sprintf("apps.%s.settings.s3_bucket", name),
 				"is \"outline\". Upstream Outline cannot use a bucket of that name. Choose another, for example %s-uploads.", name)
 		}
+	}
+}
+
+// clusterPlacementWithoutACluster refuses cluster placement for an application
+// that cannot join the cluster.
+//
+// Cluster placement means the app runs on every site holding the apps role and
+// shares one database through the local proxy. An application that stores its
+// data anywhere else gets neither half of that: it would be rendered onto each
+// apps site with its own file, so one hostname would serve two deployments
+// that diverge from the moment anybody writes to them, and a failover would
+// move readers between them.
+//
+// WriteFreely is the case that exists, having never supported Postgres. It is
+// refused rather than warned about because there is no reading of it that
+// works, and pinning is not a downgrade: it is the plain case, and the app's
+// availability becomes its site's, which is what it was always going to be.
+func (c *checker) clusterPlacementWithoutACluster() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Placement.Mode != config.PlacementCluster || kinds.UsesPostgres(app.Kind) {
+			continue
+		}
+		c.refuse("cluster-placement-without-a-cluster", fmt.Sprintf("apps.%s.placement", name),
+			"is `cluster`, but %s keeps its data outside the Postgres cluster, so there is nothing for it to join. It would be rendered onto every apps site with its own separate storage, which is two deployments behind one hostname. Pin it to a site instead.",
+			app.Kind)
 	}
 }
 
