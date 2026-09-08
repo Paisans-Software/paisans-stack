@@ -226,6 +226,10 @@ The gateway's Caddy configuration becomes inventory-driven: a pinned app's
 hostname points at its location, everything else follows the current primary.
 A template job, not an orchestrator job.
 
+It is assembled rather than written: each `kind` ships its own Caddy snippet in
+its template set, and the gateway file holds only what is cross-cutting. See
+*The template set owns everything app-specific, routing and shims included*.
+
 ## Adding a site, and the constraint that shapes it
 
 etcd quorum is a majority: 1 member survives nothing but works; 3 members
@@ -314,6 +318,59 @@ not replication lag. `paisans failover status` reads etcd. A config file that
 starts recording status drifts, and someone trusts a stale value during an
 incident.
 
+### The image an app runs is declared, not implied
+
+`kind` selects which template set renders. It does not decide which image runs.
+Keeping those separate is what lets an operator move to a fork, hold a version
+back, or take an upgrade on their own schedule, without the toolkit shipping a
+release for it:
+
+```yaml
+apps:
+  talk:
+    kind: mbin
+    hostname: talk.example.org
+    placement: cluster
+    images:
+      app: ghcr.io/example-org/mbin:v1.2.3
+```
+
+Every key is optional and an unset one takes the default its `kind` ships, so an
+adopter who never opens this stanza runs a tested set.
+
+**A map, not a single `image`.** A stack is several containers, and naming only
+the application one would work until the first operator needed a different
+Valkey. The keys are service names in the `kind`'s compose template, which also
+means an unknown key is a typo the toolkit can refuse rather than ignore.
+
+**One full reference per key, not `image` plus `tag`.** Switching to a fork
+changes registry, repository and tag together. Split into two fields, a
+half-finished switch parses cleanly and pulls something nobody intended.
+
+**Changing `images` is not changing `kind`.** A fork that renames an environment
+variable, moves a config path or adds a required setting needs a different
+template set, and that is a new `kind`. The `images` map is for a different
+build of the same software, and pointing it at software that merely resembles
+the original produces a stack that renders and then fails at boot.
+
+**Floating tags are refused, not warned about.** `latest` makes two runs of
+`apply` produce different deployments from identical inputs, which contradicts
+the premise that the config plus the secrets reconstruct the stack. That is
+incoherent rather than risky, so it takes a refusal by the rule above. A digest
+(`@sha256:...`) is accepted and is the stronger form.
+
+**A version change is not verified to be safe.** Many of these applications run
+schema migrations at boot, against live member data, and a downgrade after one
+is usually not a downgrade at all. The toolkit cannot know which release does
+that, and must not imply it checked: it warns on a changed reference, names the
+backup contract, and proceeds. Verifying upstream's upgrade notes is the
+operator's work.
+
+**`paisans check` compares the running image against the declared one.** Someone
+will eventually run `docker compose pull` on a host, and the difference between
+what is declared and what is running is exactly the kind of drift that is
+invisible until a rebuild produces a different stack.
+
 ### Three kinds of secret
 
 Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.
@@ -330,10 +387,10 @@ of existing on exactly one host. But minting one is a privileged mutation that
 belongs to a human — the toolkit records the value after the fact and must not
 automate the approval away.
 
-### `.env` files are build artifacts
+### Rendered configuration is a build artifact
 
-`paisans apply` renders them. Nobody edits them, and `apply` refuses to clobber
-one that has local modifications until the difference is resolved.
+`paisans apply` renders it. Nobody edits it, and `apply` refuses to clobber a
+rendered file that has local modifications until the difference is resolved.
 
 ```
 WORKSTATION                        HOST                          CONTAINER
@@ -343,16 +400,133 @@ secrets.enc.yaml  ─┤ render
 age key           ─┘   │
                        │ ssh push
                        ▼
-                  /srv/talk/.env   (plaintext, 0600) ──► env vars
-                  /srv/talk/compose.yaml
+                  /srv/<stack>/.env       (plaintext, 0600) ──► env vars
+                  /srv/<stack>/config.ini (plaintext, 0600) ──► bind mount
+                  /srv/<stack>/compose.yaml
                   caddy/, haproxy.cfg, patroni env
                                                        docker compose up -d
 ```
 
 `sops` and `age` are installed on the workstation only. Hosts do not have them.
 Containers never know they exist, and nothing is written *into* a container —
-Compose passes env at start. Changing a secret therefore means re-render plus
-`compose up -d` to **recreate**; a `restart` will not pick it up.
+Compose passes env at start. Changing a secret in an `.env` therefore means
+re-render plus `compose up -d` to **recreate**; a `restart` will not pick it up.
+A secret in a bind-mounted file is cheaper to change, for the reason below.
+
+#### A `kind` ships a template set, not a single `.env`
+
+Not every application is configured through environment variables, and the
+stacks named in this document are already split on it. Mbin reads `.env`.
+WriteFreely reads an INI file, `config.ini`, whose `[server]`, `[app]`,
+`[database]` and `[oauth.generic]` sections carry everything it needs, SSO
+client credentials and `disable_password_auth` included
+([config reference](https://writefreely.org/docs/latest/admin/config)). Synapse
+reads [`homeserver.yaml`](https://element-hq.github.io/synapse/latest/usage/configuration/homeserver_sample_config.html).
+
+So the unit the toolkit ships per `kind` is a **template directory**, and
+`apply` renders every file in it:
+
+```
+templates/mbin/                             templates/writefreely/
+  compose.yaml.tmpl                           compose.yaml.tmpl
+  .env.tmpl                                   config.ini.tmpl
+  caddy.snippet.tmpl                          caddy.snippet.tmpl
+  config/packages/oneup_flysystem.yaml.tmpl
+```
+
+**A template's path is its destination.** The layout under `templates/<kind>/`
+mirrors the layout under `/srv/<stack>/` on the host, so where a rendered file
+lands is read off the tree rather than held in a mapping somewhere else. A file
+the application expects at a path inside its own image is bind-mounted there by
+that kind's `compose.yaml`.
+
+The alternative is to treat `.env` as the shape and bolt on a per-app escape
+hatch for anything that is not one. That inverts the majority and the exception
+for no gain, because nothing in the secrets path is env-specific: every rule
+above holds file by file, whatever the format. A rendered `config.ini` is a
+build artifact, is written 0600, receives its secrets at render time on the
+workstation, and is refused a clobber when locally edited, on exactly the same
+terms as a rendered `.env`.
+
+One consequence runs against the intuition and is worth stating plainly.
+Environment variables are readable through `docker inspect` and
+`/proc/<pid>/environ`, as the limits below say. A bind-mounted file at 0600 is
+not. **File-configured applications are the better case here, not the awkward
+one**, and where an application accepts either, the file is preferred.
+
+Reload differs as well. A changed `.env` needs `compose up -d` to recreate the
+container, because Compose passes environment only at start. A changed
+bind-mounted file needs a restart at most, and the container keeps its identity.
+`apply` should take the narrower action rather than recreating a stack it did
+not have to, since a recreate is an outage however brief.
+
+#### The template set owns everything app-specific, routing and shims included
+
+The template directory is not just the files an application reads at startup. It
+is **everything the deployment needs that is knowledge about that application**,
+and two categories are easy to leave out.
+
+**Its Caddy snippet.** Routing is rarely uniform across a stack. Mbin's
+documentation advises a media reverse proxy so URLs survive a provider change
+(rule 3). A Matrix homeserver needs its `.well-known` responses and federation
+listener. An auth gate has to be told which callback paths to leave alone or it
+breaks the sign-in it exists to protect. Each of those is a fact about one
+application, so it lives beside that application's other templates and arrives
+and leaves with it.
+
+**Its shims.** Where upstream ships a file the deployment has to override, the
+override is a template like any other. Rule 3 already names one, and it is small
+enough to show. Mbin's `config/packages/oneup_flysystem.yaml` defines both a
+local adapter and an S3 adapter, and binds uploads to the local one:
+
+```yaml
+  filesystems:
+    public_uploads_filesystem:
+      adapter: default_adapter
+      #adapter: kbin.s3_adapter
+```
+
+Rule 3 puts media in Garage from the first install, so the rendered override is
+that file with the adapter switched to `kbin.s3_adapter`
+([Mbin's S3 documentation](https://docs.joinmbin.org/admin/optional-features/s3_storage/)).
+The `S3_*` variables in `.env` supply the endpoint and credentials; this file is
+what decides whether they are used at all, which is why setting the variables
+alone appears to work and silently keeps writing to local disk. It renders to
+`/srv/talk/config/packages/oneup_flysystem.yaml` and is bind-mounted over the
+copy in the image. Entrypoint wrappers, module configuration and other
+dropped-in override files work the same way.
+
+**A shim is a rendered, readable file in the template directory, never a private
+image build.** Baking one into an image moves it somewhere an operator cannot
+read during an incident, and quietly makes the `images` reference above a lie
+about what is running.
+
+A shim is also a deliberate divergence from a file that upstream owns, and
+upstream can change that file underneath it. There is no way to remove that
+cost, so make it visible instead: **a shim template names the upstream path it
+overrides and what it changes**, in a comment at the top, and a changed image
+reference is the thing to go looking at when a stack starts behaving as though
+the override is not there.
+
+The rejected alternative is one gateway Caddyfile template that knows every
+`kind` through conditionals. Two things go wrong with it. Adding an application
+becomes a diff in a file that every other application shares, so the cost of
+adding one grows with how many are already there. And a mistake in one
+application's routing takes the whole gateway config with it, rather than one
+host block.
+
+That leaves the gateway's own template holding only what is genuinely
+cross-cutting: TLS and the DNS-01 configuration, the trusted proxy setting
+(fixed to the mesh subnet, not configurable), the auth gate, and one host block
+per app that includes that app's snippet. A snippet never hardcodes where its
+application runs; it receives the location from the inventory at render, which
+is what keeps a pinned app and a cluster app the same shape.
+
+One consequence follows from assembling a shared file out of per-app parts, and
+it takes a gate: **`apply` validates the assembled gateway configuration before
+reloading it, and refuses to reload one that does not validate.** A rendered
+snippet that is wrong should cost the operator an error message on the
+workstation, not the public address of every application at once.
 
 ### Decryption happens on a workstation, not on a host
 
