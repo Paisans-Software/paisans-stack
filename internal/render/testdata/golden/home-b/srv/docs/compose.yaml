@@ -6,7 +6,7 @@ name: paisans-docs
 
 services:
   app:
-    image: docker.getoutline.com/outlinewiki/outline:latest
+    image: outlinewiki/outline:1.10.0
     restart: unless-stopped
     env_file:
       - .env

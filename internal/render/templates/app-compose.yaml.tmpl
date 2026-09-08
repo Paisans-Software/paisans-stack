@@ -12,7 +12,7 @@ name: paisans-{{ .App.Name }}
 
 services:
   app:
-    image: {{ .Image }}
+    image: {{ .App.Image "app" }}
     restart: unless-stopped
     env_file:
       - .env
@@ -25,7 +25,7 @@ services:
       - postgres
 
   postgres:
-    image: postgres:{{ .PostgresVersion }}-alpine
+    image: {{ .App.Image "postgres" }}
     restart: unless-stopped
     environment:
       POSTGRES_DB: {{ .App.DBName }}

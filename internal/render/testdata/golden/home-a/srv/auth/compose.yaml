@@ -6,7 +6,7 @@ name: paisans-auth
 
 services:
   app:
-    image: ghcr.io/pocket-id/pocket-id:latest
+    image: ghcr.io/pocket-id/pocket-id:v2.14.0
     restart: unless-stopped
     env_file:
       - .env

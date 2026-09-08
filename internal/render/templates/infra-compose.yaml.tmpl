@@ -31,7 +31,7 @@ services:
 {{- end }}
 {{- if .Site.IsData }}
   patroni:
-    image: ghcr.io/zalando/spilo-{{ .PostgresVersion }}:latest
+    image: ghcr.io/zalando/spilo-{{ .PostgresVersion }}:{{ .SpiloTag }}
     restart: unless-stopped
     network_mode: host
     env_file:

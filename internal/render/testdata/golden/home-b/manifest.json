@@ -13,7 +13,7 @@
     },
     {
       "path": "srv/auth/compose.yaml",
-      "sha256": "0d1604b89d875740093ebe97bf6d4b23231361f631a3ca1877cc1608dca15a7d",
+      "sha256": "652025a1ad4e0c9e77035ed460645817ad77c34c666098fce816c085050d98bd",
       "mode": "0644"
     },
     {
@@ -23,12 +23,12 @@
     },
     {
       "path": "srv/docs/compose.yaml",
-      "sha256": "9481f19288220526253e786a49efd50a21ba1f9826a4ab4493f35c18d5758346",
+      "sha256": "a16de4fcff31962c6c2a4c2bf5d77d1adcee2b600c20945d0200869d33396137",
       "mode": "0644"
     },
     {
       "path": "srv/infra/compose.yaml",
-      "sha256": "7d6b94f730c9f250c270553c54da9acfd168b0d6b9f84b4ff5fc421a1721c245",
+      "sha256": "dfe9d8e55f7c41e9503135a66a8c4edf6f9b5fd8e0a2d477456f843e9d81dbf3",
       "mode": "0644"
     },
     {
@@ -53,7 +53,7 @@
     },
     {
       "path": "srv/notes/compose.yaml",
-      "sha256": "b9019627d956ddd627055a224196c3746a85794d53b6bc6b6f599bb547afca2b",
+      "sha256": "a97b8be6e12523141c179dad2e24b1de1185935f30edbd4935af30f8e4ad2727",
       "mode": "0644"
     },
     {
@@ -63,7 +63,7 @@
     },
     {
       "path": "srv/talk/compose.yaml",
-      "sha256": "eadc53b022ccfffe630b04e1f210bc909c240b868ac7f6c5e2b5c1bc53ff7d89",
+      "sha256": "a4ace3fa932e9cd02627146dfa1bc00689fcd96c68eb72a8fe4fd18790ead1a4",
       "mode": "0644"
     }
   ]

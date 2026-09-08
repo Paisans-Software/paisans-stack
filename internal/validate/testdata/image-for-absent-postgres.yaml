@@ -1,5 +1,5 @@
-# The fixture deployment. It exercises both placements: three clustered apps
-# and one pinned, on three sites with one stable endpoint.
+# A coherent three site deployment. Every fixture in this directory is a
+# variation on this one, so that a test names exactly the thing it breaks.
 version: 1
 
 community:
@@ -42,18 +42,14 @@ storage:
     replication: 2
 
 apps:
-  talk:
-    kind: mbin
-    hostname: talk.example.org
-    placement: cluster
-    images:
-      app: ghcr.io/example-org/mbin:v1.10.1-fork
   docs:
     kind: outline
     hostname: docs.example.org
     placement: cluster
+    images:
+      # cluster placement means no database of its own, so nothing renders this.
+      postgres: postgres:17-alpine
     settings:
-      s3_force_path_style: true
       s3_bucket: docs-uploads
   auth:
     kind: pocket-id
@@ -61,13 +57,3 @@ apps:
     placement: cluster
     settings:
       file_backend: database
-  chat:
-    kind: synapse
-    hostname: chat.example.org
-    placement: { pinned: vm }
-    images:
-      postgres: postgres:17-alpine
-  notes:
-    kind: writefreely
-    hostname: notes.example.org
-    placement: cluster

@@ -6,7 +6,7 @@ name: paisans-talk
 
 services:
   app:
-    image: ghcr.io/mbinorg/mbin:latest
+    image: ghcr.io/example-org/mbin:v1.10.1-fork
     restart: unless-stopped
     env_file:
       - .env

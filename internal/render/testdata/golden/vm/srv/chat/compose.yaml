@@ -7,7 +7,7 @@ name: paisans-chat
 
 services:
   app:
-    image: ghcr.io/element-hq/synapse:latest
+    image: ghcr.io/element-hq/synapse:v1.160.0
     restart: unless-stopped
     env_file:
       - .env
@@ -19,7 +19,7 @@ services:
       - postgres
 
   postgres:
-    image: postgres:18-alpine
+    image: postgres:17-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: chat

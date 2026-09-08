@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/josephquigley/paisans-stack/internal/config"
+	"github.com/josephquigley/paisans-stack/internal/kinds"
 	"github.com/josephquigley/paisans-stack/internal/render"
 )
 
@@ -100,6 +101,62 @@ func TestPlacementShapesTheStack(t *testing.T) {
 	}
 	if !strings.Contains(pinned, "/srv/chat/postgres:/var/lib/postgresql/data") {
 		t.Error("a pinned stack does not use bind mounts under /srv")
+	}
+}
+
+// A declared image reaches the compose file, and a service nobody declared
+// takes the default its kind ships. Both halves matter: the first is what makes
+// running a fork a config edit, and the second is what an adopter who never
+// opens the stanza receives.
+func TestDeclaredImagesWinAndDefaultsFillIn(t *testing.T) {
+	files := map[string]string{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+	}
+
+	talk := files["home-a/srv/talk/compose.yaml"]
+	if !strings.Contains(talk, "image: ghcr.io/example-org/mbin:v1.10.1-fork") {
+		t.Errorf("the declared image did not reach the compose file:\n%s", talk)
+	}
+
+	docs := files["home-a/srv/docs/compose.yaml"]
+	fallback, ok := kinds.DefaultImage(config.KindOutline, "app")
+	if !ok {
+		t.Fatal("outline ships no default image")
+	}
+	if !strings.Contains(docs, "image: "+fallback) {
+		t.Errorf("an app that declared no image did not take its kind default %q:\n%s", fallback, docs)
+	}
+
+	// A pinned app may choose its own database image; a clustered one has no
+	// database service to choose for.
+	chat := files["vm/srv/chat/compose.yaml"]
+	if !strings.Contains(chat, "image: postgres:17-alpine") {
+		t.Errorf("a pinned app's declared database image was not used:\n%s", chat)
+	}
+}
+
+// Nothing the toolkit renders may carry a floating tag. A default that failed
+// its own validation rule would be the toolkit refusing configuration it wrote
+// itself.
+func TestRenderedImagesArePinned(t *testing.T) {
+	for _, f := range build(t).Files {
+		if !strings.HasSuffix(f.Path, "compose.yaml") {
+			continue
+		}
+		for _, line := range strings.Split(f.Content, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "image: ") {
+				continue
+			}
+			ref := strings.TrimPrefix(line, "image: ")
+			if strings.Contains(ref, "{{") || strings.Contains(ref, "$") {
+				continue
+			}
+			if !kinds.ParseReference(ref).Pinned() {
+				t.Errorf("%s renders %q, which does not name one build", f.Path, ref)
+			}
+		}
 	}
 }
 

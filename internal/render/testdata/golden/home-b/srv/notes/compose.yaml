@@ -6,7 +6,7 @@ name: paisans-notes
 
 services:
   app:
-    image: ghcr.io/writefreely/writefreely:latest
+    image: ghcr.io/writefreely/writefreely:v0.17.1
     restart: unless-stopped
     env_file:
       - .env

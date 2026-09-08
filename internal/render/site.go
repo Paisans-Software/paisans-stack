@@ -19,15 +19,20 @@ var templateFS embed.FS
 
 var templates = template.Must(template.ParseFS(templateFS, "templates/*.tmpl"))
 
-// image is the container image for an application kind. Versions are pinned
-// here rather than floating, because a deployment that changes underneath an
-// operator is a deployment nobody can reason about.
-var image = map[string]string{
-	"mbin":        "ghcr.io/mbinorg/mbin:latest",
-	"outline":     "docker.getoutline.com/outlinewiki/outline:latest",
-	"pocket-id":   "ghcr.io/pocket-id/pocket-id:latest",
-	"synapse":     "ghcr.io/element-hq/synapse:latest",
-	"writefreely": "ghcr.io/writefreely/writefreely:latest",
+// spiloTag is the Spilo image tag for a Postgres major version.
+//
+// Spilo publishes one repository per major version and the tags do not run in
+// step across them, so a single tag cannot serve every version and `latest`
+// cannot serve any: the toolkit refuses a floating tag in an operator's
+// configuration and must not render one itself. Each was checked against ghcr
+// on 2026-09-08.
+//
+// A major version with no entry is an error rather than a guess, because
+// guessing produces a compose file that pulls nothing and fails on the host.
+var spiloTag = map[string]string{
+	"16": "3.3-p3",
+	"17": "4.0-p3",
+	"18": "4.1-p2",
 }
 
 type clusterMember struct {
@@ -57,6 +62,12 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	}
 	files = append(files, File{Path: base + "etc/wireguard/wg0.conf", Content: wg, Mode: 0o600})
 
+	spilo, ok := spiloTag[p.postgresVersion()]
+	if !ok {
+		return nil, fmt.Errorf(
+			"cluster.postgres_version: %q has no Spilo image known to this toolkit. Spilo publishes one repository per major version with its own tags, so there is nothing to fall back to. Use one of %s, or add the tag",
+			p.postgresVersion(), strings.Join(sortedKeys(spiloTag), ", "))
+	}
 	infra, err := p.renderTemplate("infra-compose.yaml.tmpl", map[string]any{
 		"Site":               site,
 		"Scope":              p.scope(),
@@ -64,6 +75,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		"HeartbeatMS":        p.heartbeatMS(),
 		"ElectionTimeoutMS":  p.electionTimeoutMS(),
 		"PostgresVersion":    p.postgresVersion(),
+		"SpiloTag":           spilo,
 	})
 	if err != nil {
 		return nil, err
@@ -141,10 +153,8 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 
 	for _, app := range site.Apps {
 		compose, err := p.renderTemplate("app-compose.yaml.tmpl", map[string]any{
-			"App":             app,
-			"Image":           image[string(app.Kind)],
-			"ClusterPort":     p.clusterPort(),
-			"PostgresVersion": p.postgresVersion(),
+			"App":         app,
+			"ClusterPort": p.clusterPort(),
 		})
 		if err != nil {
 			return nil, err
@@ -249,6 +259,17 @@ func publicKey(private string) (string, error) {
 		return "", fmt.Errorf("is not a usable curve25519 key: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(pub), nil
+}
+
+// sortedKeys returns a map's keys in sorted order, for a message that lists
+// them.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (p *planner) relays() []string {
