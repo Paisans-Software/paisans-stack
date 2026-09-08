@@ -1,0 +1,26 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Routing for {{ .App.Name }}, imported by the gateway's block for
+# {{ .Hostname }}.
+#
+# Everything reaches the homeserver, including /.well-known/matrix/server and
+# /.well-known/matrix/client. Synapse serves both itself: serve_server_wellknown
+# is set in homeserver.yaml, and public_baseurl is what makes it answer the
+# client one. Writing that JSON here instead would be a second copy of the
+# server's own identity, in a file that nothing checks against it.
+#
+# Federation therefore arrives on 443 rather than 8448, which is the point of
+# delegating it: nothing else has to listen on a second port.
+reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
+{{- if gt (len .Upstreams) 1 }}
+	# first, not round robin: the apps sites are not interchangeable during a
+	# failover, and a dead one must simply be skipped.
+	lb_policy first
+	fail_duration 10s
+{{- end }}
+	header_up X-Forwarded-Proto https
+	# Media and event uploads are larger than a default proxy read allows for.
+	transport http {
+		read_timeout 5m
+	}
+}

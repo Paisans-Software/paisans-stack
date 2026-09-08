@@ -70,6 +70,8 @@ services:
       - caddy.env
     volumes:
       - /srv/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # One file per application, imported by that application's host block.
+      - /srv/infra/caddy/snippets:/etc/caddy/snippets:ro
       - /srv/infra/caddy/data:/data
       - /srv/infra/caddy/config:/config
 {{- end }}

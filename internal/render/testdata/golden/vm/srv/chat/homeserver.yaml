@@ -7,6 +7,10 @@
 
 server_name: "chat.example.org"
 public_baseurl: "https://chat.example.org/"
+# Serve /.well-known/matrix/server ourselves, so federation arrives on 443
+# rather than on 8448 and nothing else has to listen on a second port. The
+# client one at /.well-known/matrix/client comes from public_baseurl above.
+serve_server_wellknown: true
 pid_file: /data/homeserver.pid
 report_stats: false
 log_config: "/data/log.config"

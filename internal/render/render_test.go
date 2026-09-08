@@ -226,6 +226,56 @@ func TestEverySecretBearingFileIs0600(t *testing.T) {
 	}
 }
 
+// Routing is assembled from per kind snippets rather than written into one
+// file that knows every kind. The gateway keeps what is cross cutting; each app
+// brings its own block, wherever it runs.
+func TestTheGatewayImportsEachAppsOwnSnippet(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	caddyfile, ok := files["vm/srv/infra/caddy/Caddyfile"]
+	if !ok {
+		t.Fatal("the gateway rendered no Caddyfile")
+	}
+	for _, app := range []string{"talk", "docs", "auth", "notes", "chat"} {
+		snippet := "vm/srv/infra/caddy/snippets/" + app + ".caddy"
+		if _, ok := files[snippet]; !ok {
+			t.Errorf("%s was not rendered onto the gateway", snippet)
+		}
+		if !strings.Contains(caddyfile.Content, "import /etc/caddy/snippets/"+app+".caddy") {
+			t.Errorf("the Caddyfile does not import %s's snippet:\n%s", app, caddyfile.Content)
+		}
+	}
+
+	// The gateway holds no application specific routing of its own. A proxy
+	// directive here would be the conditional file this design rejects,
+	// growing with every application added.
+	if strings.Contains(caddyfile.Content, "reverse_proxy") {
+		t.Errorf("the gateway file routes an application itself:\n%s", caddyfile.Content)
+	}
+
+	// A snippet is rendered onto the gateway, never into the app's own
+	// directory, because that is not where it is read.
+	for path := range files {
+		if strings.HasSuffix(path, "caddy.snippet") || strings.Contains(path, "/srv/talk/caddy") {
+			t.Errorf("%s put an app's routing beside the app", path)
+		}
+	}
+
+	// A snippet never hardcodes where its app runs: a pinned app gets one
+	// upstream and a clustered one gets every apps site, both from inventory.
+	pinned := files["vm/srv/infra/caddy/snippets/chat.caddy"].Content
+	if !strings.Contains(pinned, "10.44.0.3:8008") {
+		t.Errorf("a pinned app's snippet does not point at its site:\n%s", pinned)
+	}
+	clustered := files["vm/srv/infra/caddy/snippets/talk.caddy"].Content
+	if !strings.Contains(clustered, "10.44.0.1:8080 10.44.0.2:8080") {
+		t.Errorf("a clustered app's snippet does not point at both apps sites:\n%s", clustered)
+	}
+}
+
 // Trusted proxies are the mesh subnet and never a host address, which is what
 // lets the gateway role move later without breaking client address handling.
 func TestTrustedProxiesAreTheMeshSubnet(t *testing.T) {

@@ -130,6 +130,14 @@ what names, in what format; Go decides nothing about an application's
 configuration.** That is why two of the five kinds can be configured by files
 rather than environment at all.
 
+One file in a set is not rendered beside the app: `caddy.snippet.tmpl` lands on
+every gateway, at `/srv/infra/caddy/snippets/<app>.caddy`, because that is where
+it is read. The gateway's own `Caddyfile` keeps only what is cross cutting,
+certificates and the trusted proxy range, and gives each app a host block that
+imports its snippet. A snippet never hardcodes where its application runs: it
+receives the upstreams from the inventory, which is what keeps a pinned app and
+a clustered app the same shape.
+
 Embedding uses `//go:embed all:templates`. Without `all:` embed skips files
 beginning with a dot, and every environment configured kind ships a `.env`
 template.
@@ -216,6 +224,16 @@ use them are a job for `apply`.
 ## What is not here yet
 
 No SSH, no Docker, no etcd, and none of `init`, `site add`, `apply`,
-`failover` or `backup`. Secret generation does not exist either. If you find
+`failover` or `backup`. The gateway configuration is assembled from per app
+snippets, so `apply` will have to validate the assembled file and refuse to
+reload one that does not validate: a wrong snippet should cost an error message
+on the workstation rather than the public address of every application at once.
+There is nothing to reload yet, so that gate lands with `apply`.
+
+Mbin's media reverse proxy is not rendered either. Upstream advises one on a
+hostname of its own so media URLs survive a change of storage provider, and
+remote instances cache those URLs, so adding it later is a migration rather than
+an addition. It needs a hostname in the configuration and a site block of its
+own, which is a decision to take deliberately. Secret generation does not exist either. If you find
 yourself writing a transport layer, that is the next slice and it wants its own
 review.

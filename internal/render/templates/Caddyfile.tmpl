@@ -10,20 +10,27 @@
 # inbound reachability at all, which is what makes moving the gateway an
 # overlap rather than a cutover. It is also the only option for a hostname
 # served behind a VPN, where nothing on the internet can answer a challenge.
+#
+# This file holds only what is cross cutting: certificates, the trusted proxy
+# range, and one host block per application. How an application is routed is a
+# fact about that application, so it lives in that kind's own snippet and is
+# imported here. The rejected alternative was one file that knows every kind
+# through conditionals, where adding an application means editing a file every
+# other application shares and one mistake takes the whole gateway down rather
+# than one host block.
 {
 	email admin@{{ .Domain }}
 	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+
+	servers {
+		# The mesh, never a host address, so the gateway role can move without
+		# rewriting this. Applications behind it see the real client address
+		# because this server is the only thing in front of them.
+		trusted_proxies static {{ .TrustedProxies }}
+	}
 }
 {{ range .Routes }}
 {{ .Hostname }} {
-	reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
-{{- if gt (len .Upstreams) 1 }}
-		# first, not round robin: the apps sites are not interchangeable
-		# during a failover, and a dead one must simply be skipped.
-		lb_policy first
-		fail_duration 10s
-{{- end }}
-		header_up X-Forwarded-Proto https
-	}
+	import {{ .Snippet }}
 }
 {{ end -}}

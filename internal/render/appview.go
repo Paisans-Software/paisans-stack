@@ -53,6 +53,12 @@ type appValues struct {
 	// mount a rendered file need it to say where the file lives.
 	DataPath string
 
+	// Upstreams is where the gateway sends this app's traffic: one address for
+	// a pinned app, every apps site for a clustered one. A snippet never
+	// hardcodes a location, which is what keeps a pinned app and a clustered
+	// app the same shape.
+	Upstreams []string
+
 	secrets map[string]any
 	set     map[string]any
 }
@@ -163,6 +169,7 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		ForcePathStyle: v.SettingBool("s3_force_path_style", true),
 	}
 	v.OIDC = p.oidcFor(planned)
+	v.Upstreams = p.upstreams(planned.Name)
 	return v, nil
 }
 

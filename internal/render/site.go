@@ -80,8 +80,12 @@ type peerView struct {
 }
 
 type route struct {
+	App       string
 	Hostname  string
 	Upstreams []string
+	// Snippet is where the app's own routing lives on the gateway, as the
+	// container sees it. The host block imports it rather than containing it.
+	Snippet string
 }
 
 func (p *planner) renderSite(site *siteView) ([]File, error) {
@@ -166,13 +170,20 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 
 	if site.IsGateway {
 		caddyfile, err := p.renderTemplate("Caddyfile.tmpl", map[string]any{
-			"Domain": p.cfg.Community.Domain,
-			"Routes": p.routes(),
+			"Domain":         p.cfg.Community.Domain,
+			"Routes":         p.routes(),
+			"TrustedProxies": p.mesh,
 		})
 		if err != nil {
 			return nil, err
 		}
 		files = append(files, File{Path: base + "srv/infra/caddy/Caddyfile", Content: caddyfile, Mode: 0o644})
+
+		snippets, err := p.renderSnippets(base)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, snippets...)
 
 		env, err := p.renderTemplate("caddy.env.tmpl", map[string]any{
 			"CloudflareAPIToken": p.secrets.External["cloudflare_api_token"],
@@ -192,6 +203,61 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	}
 
 	return files, nil
+}
+
+// snippetTemplate is the file in a kind's set that describes how the gateway
+// routes to it. It is rendered onto the gateway rather than beside the app,
+// because that is where it is read.
+const snippetTemplate = "caddy.snippet.tmpl"
+
+// snippetDir is where snippets land on the gateway, and snippetMount is the
+// same directory as the Caddy container sees it. The Caddyfile imports by the
+// second, because Caddy reads it from inside the container.
+const (
+	snippetDir   = "srv/infra/caddy/snippets/"
+	snippetMount = "/etc/caddy/snippets/"
+)
+
+// renderSnippets renders every app's routing onto a gateway.
+//
+// It walks the whole configuration rather than the gateway's own apps: a
+// gateway routes to applications that run elsewhere, which is the usual case.
+func (p *planner) renderSnippets(base string) ([]File, error) {
+	var files []File
+	for _, name := range p.cfg.AppNames() {
+		app := p.cfg.Apps[name]
+		planned, err := p.plannedFor(name, app)
+		if err != nil {
+			return nil, err
+		}
+		values, err := p.values(planned, app)
+		if err != nil {
+			return nil, err
+		}
+		path := "templates/" + string(app.Kind) + "/" + snippetTemplate
+		content, err := p.renderFile(path, values)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, File{Path: base + snippetDir + name + ".caddy", Content: content, Mode: 0o644})
+	}
+	return files, nil
+}
+
+// plannedFor rebuilds an app's planned form for the gateway, which needs its
+// hostname and port without caring where it runs.
+func (p *planner) plannedFor(name string, app config.App) (plannedApp, error) {
+	return plannedApp{
+		Name:     name,
+		Kind:     app.Kind,
+		Hostname: app.Hostname,
+		Pinned:   app.Placement.Mode == config.PlacementPinned,
+		Site:     app.Placement.Site,
+		Port:     appPort[app.Kind],
+		DBName:   dbIdentifier(name),
+		DBUser:   dbIdentifier(name),
+		Images:   p.appImages(app),
+	}, nil
 }
 
 // renderTemplateSet renders every file in a kind's template directory.
@@ -221,6 +287,10 @@ func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error)
 		}
 		if !strings.HasSuffix(path, ".tmpl") {
 			return fmt.Errorf("%s is in a template set but is not a template. Every file in a set is rendered, so there is nowhere for a plain file to go", path)
+		}
+		if strings.TrimPrefix(path, dir+"/") == snippetTemplate {
+			// Routing belongs to the gateway, not to the app's own directory.
+			return nil
 		}
 		rel := strings.TrimSuffix(strings.TrimPrefix(path, dir+"/"), ".tmpl")
 		mode := uint32(0o644)
@@ -368,28 +438,41 @@ func (p *planner) relays() []string {
 	return out
 }
 
-// routes is the gateway's inventory: a pinned app points at its location, and
-// a clustered app points at every site holding the apps role.
+// routes is the gateway's inventory: one host block per app, each importing
+// that app's own snippet.
 func (p *planner) routes() []route {
 	var out []route
 	for _, name := range p.cfg.AppNames() {
-		app := p.cfg.Apps[name]
-		var upstreams []string
-		port := appPort[app.Kind]
-		if app.Placement.Mode == config.PlacementPinned {
-			site, ok := p.sites[app.Placement.Site]
-			if !ok {
-				continue
-			}
-			upstreams = []string{fmt.Sprintf("%s:%d", site.Address, port)}
-		} else {
-			for _, hostName := range p.cfg.AppsSites() {
-				upstreams = append(upstreams, fmt.Sprintf("%s:%d", p.sites[hostName].Address, port))
-			}
-		}
-		out = append(out, route{Hostname: app.Hostname, Upstreams: upstreams})
+		out = append(out, route{
+			App:       name,
+			Hostname:  p.cfg.Apps[name].Hostname,
+			Upstreams: p.upstreams(name),
+			Snippet:   snippetMount + name + ".caddy",
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })
+	return out
+}
+
+// upstreams is where an app's traffic goes: its own location when pinned, and
+// every site holding the apps role when clustered.
+func (p *planner) upstreams(name string) []string {
+	app, ok := p.cfg.Apps[name]
+	if !ok {
+		return nil
+	}
+	port := appPort[app.Kind]
+	if app.Placement.Mode == config.PlacementPinned {
+		site, ok := p.sites[app.Placement.Site]
+		if !ok {
+			return nil
+		}
+		return []string{fmt.Sprintf("%s:%d", site.Address, port)}
+	}
+	var out []string
+	for _, hostName := range p.cfg.AppsSites() {
+		out = append(out, fmt.Sprintf("%s:%d", p.sites[hostName].Address, port))
+	}
 	return out
 }
 
