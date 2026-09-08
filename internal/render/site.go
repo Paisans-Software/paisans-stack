@@ -5,6 +5,8 @@ import (
 	"embed"
 	"encoding/base64"
 	"fmt"
+	"io/fs"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/template"
@@ -14,10 +16,40 @@ import (
 	"github.com/josephquigley/paisans-stack/internal/config"
 )
 
-//go:embed templates/*.tmpl
+// The `all:` prefix matters: without it embed skips files beginning with a
+// dot, and every kind configured by environment ships a `.env` template.
+//
+//go:embed all:templates
 var templateFS embed.FS
 
-var templates = template.Must(template.ParseFS(templateFS, "templates/*.tmpl"))
+// templates holds the infrastructure templates, which are shared by every
+// deployment. An application's templates are not here: each kind owns a
+// directory under templates/, rendered as a set, so that adding an application
+// adds a directory rather than a branch in a file every other application
+// shares.
+var templates = template.Must(template.New("infra").Funcs(templateFuncs).ParseFS(templateFS, "templates/*.tmpl"))
+
+// templateFuncs is the whole function surface a template gets. It is small on
+// purpose: logic that needs more than this belongs in Go, where it can be
+// tested.
+var templateFuncs = template.FuncMap{
+	"quote": quote,
+	"yesno": func(b bool) string {
+		if b {
+			return "true"
+		}
+		return "false"
+	},
+}
+
+// secretSuffix marks a template whose rendered file is written 0600.
+//
+// The mode travels with the template rather than in a table somewhere else,
+// for the same reason the destination path does: a file and the facts about it
+// should not be able to drift apart. Everything else is 0644, because a
+// rendered file a container's own user cannot read is a stack that does not
+// start.
+const secretSuffix = ".secret"
 
 // spiloTag is the Spilo image tag for a Postgres major version.
 //
@@ -152,23 +184,77 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	}
 
 	for _, app := range site.Apps {
-		compose, err := p.renderTemplate("app-compose.yaml.tmpl", map[string]any{
-			"App":         app,
-			"ClusterPort": p.clusterPort(),
-		})
+		appFiles, err := p.renderTemplateSet(base, app)
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/" + app.Name + "/compose.yaml", Content: compose, Mode: 0o644})
-
-		env, err := p.renderTemplate("app.env.tmpl", map[string]any{"Env": app.Env})
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, File{Path: base + "srv/" + app.Name + "/.env", Content: env, Mode: 0o600})
+		files = append(files, appFiles...)
 	}
 
 	return files, nil
+}
+
+// renderTemplateSet renders every file in a kind's template directory.
+//
+// A template's path is its destination: templates/<kind>/config/packages/x.yaml
+// lands at /srv/<stack>/config/packages/x.yaml, so nothing holds a separate
+// mapping of template to location and a new file in a set needs no code.
+func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error) {
+	dir := "templates/" + string(app.Kind)
+	entries, err := fs.ReadDir(templateFS, dir)
+	if err != nil {
+		return nil, fmt.Errorf("kind %s ships no template set: %w", app.Kind, err)
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("kind %s ships an empty template set, so the stack would be rendered with no configuration at all", app.Kind)
+	}
+
+	values, err := p.values(app, p.cfg.Apps[app.Name])
+	if err != nil {
+		return nil, err
+	}
+
+	var files []File
+	err = fs.WalkDir(templateFS, dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(path, ".tmpl") {
+			return fmt.Errorf("%s is in a template set but is not a template. Every file in a set is rendered, so there is nowhere for a plain file to go", path)
+		}
+		rel := strings.TrimSuffix(strings.TrimPrefix(path, dir+"/"), ".tmpl")
+		mode := uint32(0o644)
+		if strings.HasSuffix(rel, secretSuffix) {
+			rel = strings.TrimSuffix(rel, secretSuffix)
+			mode = 0o600
+		}
+
+		content, err := p.renderFile(path, values)
+		if err != nil {
+			return err
+		}
+		files = append(files, File{Path: base + "srv/" + app.Name + "/" + rel, Content: content, Mode: mode})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// renderFile renders one template from a kind's set. Each is parsed on its own
+// rather than into the shared set, so that two kinds may name a file the same
+// thing, which they routinely do.
+func (p *planner) renderFile(path string, values appValues) (string, error) {
+	tmpl, err := template.New(filepath.Base(path)).Funcs(templateFuncs).ParseFS(templateFS, path)
+	if err != nil {
+		return "", fmt.Errorf("parsing %s: %w", path, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, values); err != nil {
+		return "", fmt.Errorf("rendering %s: %w", path, err)
+	}
+	return buf.String(), nil
 }
 
 func (p *planner) renderTemplate(name string, data any) (string, error) {

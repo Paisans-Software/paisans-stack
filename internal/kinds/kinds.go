@@ -67,8 +67,12 @@ var catalogue = map[config.Kind][]Service{
 	config.KindWriteFreely: {
 		// v0.17.2 is tagged on GitHub but no image was published for it; the
 		// newest reference that resolves is v0.17.1.
+		//
+		// No database service: WriteFreely supports MySQL and SQLite and has
+		// never supported Postgres, so it runs on a SQLite file in its own data
+		// directory. That is what keeps one blog from adding a second database
+		// engine to operate.
 		{Name: "app", Image: "ghcr.io/writefreely/writefreely:v0.17.1", Purpose: "the application"},
-		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
 }
 
@@ -99,6 +103,16 @@ func DefaultImage(kind config.Kind, service string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// UsesPostgres reports whether a kind stores its data in Postgres at all.
+//
+// Only WriteFreely does not, and the difference is load bearing rather than
+// cosmetic: an app that uses no Postgres needs no database role, no password
+// and no place in the cluster, so requiring one would refuse a configuration
+// that is entirely correct.
+func UsesPostgres(kind config.Kind) bool {
+	return Has(kind, PostgresService)
 }
 
 // ServiceNames returns a kind's service names, sorted, for an error message

@@ -54,7 +54,6 @@ type plannedApp struct {
 	Pinned    bool
 	Site      string
 	Port      int
-	Env       []envVar
 	OwnsDB    bool
 	DBName    string
 	DBUser    string
@@ -64,14 +63,6 @@ type plannedApp struct {
 	// otherwise. The template reads it rather than deciding, so what runs is
 	// decided in one place.
 	Images map[string]string
-}
-
-// Image returns the reference for a service, for the compose template.
-func (a plannedApp) Image(service string) string { return a.Images[service] }
-
-type envVar struct {
-	Key   string
-	Value string
 }
 
 type siteView struct {
@@ -194,11 +185,6 @@ func (p *planner) planApp(name string, app config.App, site *siteView, pinned bo
 		DBUser:   dbIdentifier(name),
 	}
 	planned.Images = p.appImages(app)
-	env, err := p.appEnv(planned, app)
-	if err != nil {
-		return plannedApp{}, err
-	}
-	planned.Env = env
 	return planned, nil
 }
 

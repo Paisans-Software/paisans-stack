@@ -6,31 +6,34 @@
 # to be reachable, which makes it less available than either alone.
 {{- else }}
 # {{ .App.Name }} has cluster placement: no Postgres service of its own, and a
-# connection to the local HAProxy on 127.0.0.1:{{ .ClusterPort }}.
+# connection to the local HAProxy on {{ .DBHost }}:{{ .DBPort }}.
 {{- end }}
 name: paisans-{{ .App.Name }}
 
 services:
   app:
-    image: {{ .App.Image "app" }}
+    image: {{ .Image "app" }}
     restart: unless-stopped
     env_file:
       - .env
     ports:
       - "{{ .App.Port }}:{{ .App.Port }}"
     volumes:
-      - /srv/{{ .App.Name }}/data:/data
+      - {{ .DataPath }}/data:/data
+      # Upstream binds uploads to the local adapter. The shim switches it to
+      # S3; see the comment at the top of that file.
+      - {{ .DataPath }}/config/packages/oneup_flysystem.yaml:/app/config/packages/oneup_flysystem.yaml:ro
 {{- if .App.Pinned }}
     depends_on:
       - postgres
 
   postgres:
-    image: {{ .App.Image "postgres" }}
+    image: {{ .Image "postgres" }}
     restart: unless-stopped
     environment:
-      POSTGRES_DB: {{ .App.DBName }}
-      POSTGRES_USER: {{ .App.DBUser }}
+      POSTGRES_DB: {{ .DBName }}
+      POSTGRES_USER: {{ .DBUser }}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
     volumes:
-      - /srv/{{ .App.Name }}/postgres:/var/lib/postgresql/data
+      - {{ .DataPath }}/postgres:/var/lib/postgresql/data
 {{- end }}

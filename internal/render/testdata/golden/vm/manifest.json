@@ -8,13 +8,18 @@
     },
     {
       "path": "srv/chat/.env",
-      "sha256": "983ecb6eaa9f2b46ab8e52e5e2750b07552ee13c956b30e8757bc0e9854c6b7c",
+      "sha256": "01cbe5b00a1796596d12f5836008dbef258f049f3cc7803636350ca6906f258b",
       "mode": "0600"
     },
     {
       "path": "srv/chat/compose.yaml",
-      "sha256": "ea80c47203d267d98c7cca255503180ca3c15cfa9dbdca1715c9ad57a7d60135",
+      "sha256": "c3ba1401c0fc5fc9abb2f8c76cf053d0247810bab099df5fad7e5d81464a9cc4",
       "mode": "0644"
+    },
+    {
+      "path": "srv/chat/homeserver.yaml",
+      "sha256": "809e4d8c490e4284b4ce32570ef29ba3ed4c9f7db58a417fc1b8be6487c5c6a3",
+      "mode": "0600"
     },
     {
       "path": "srv/infra/caddy/Caddyfile",

@@ -160,13 +160,84 @@ func TestRenderedImagesArePinned(t *testing.T) {
 	}
 }
 
+// Not every application is configured by environment variables, and a design
+// that can only render an .env cannot configure two of the five kinds here.
+// WriteFreely reads an INI file and Synapse reads homeserver.yaml, and both
+// carry credentials, so both must be rendered and both must be 0600.
+func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	cases := []struct {
+		path    string
+		mode    uint32
+		carries string
+	}{
+		{"home-a/srv/notes/config.ini", 0o600, "type = sqlite3"},
+		{"vm/srv/chat/homeserver.yaml", 0o600, "name: psycopg2"},
+		{"home-a/srv/talk/.env", 0o600, "DATABASE_URL="},
+		{"home-a/srv/talk/compose.yaml", 0o644, "name: paisans-talk"},
+		// A template's path is its destination, nested directories included.
+		{"home-a/srv/talk/config/packages/oneup_flysystem.yaml", 0o644, "kbin.s3_adapter"},
+	}
+	for _, tc := range cases {
+		f, ok := files[tc.path]
+		if !ok {
+			t.Errorf("%s was not rendered", tc.path)
+			continue
+		}
+		if f.Mode != tc.mode {
+			t.Errorf("%s rendered %04o, want %04o", tc.path, f.Mode, tc.mode)
+		}
+		if !strings.Contains(f.Content, tc.carries) {
+			t.Errorf("%s does not contain %q:\n%s", tc.path, tc.carries, f.Content)
+		}
+	}
+
+	// The blog has no Postgres anywhere: no service, no role, no connection
+	// string. A configuration pointing it at the cluster would be a lie.
+	for path, f := range files {
+		if !strings.HasPrefix(path, "home-a/srv/notes/") {
+			continue
+		}
+		if strings.Contains(f.Content, "postgresql://") {
+			t.Errorf("%s hands WriteFreely a Postgres connection, which it has never supported:\n%s", path, f.Content)
+		}
+	}
+}
+
+// A secret in a bind mounted file is not visible through `docker inspect` or
+// /proc/<pid>/environ, which is the reason a file configured application is the
+// better case rather than the awkward one. That only holds if the file is 0600.
+func TestEverySecretBearingFileIs0600(t *testing.T) {
+	needles := []string{"fixture-not-a-secret", "client-secret"}
+	for _, f := range build(t).Files {
+		carries := false
+		for _, needle := range needles {
+			if strings.Contains(f.Content, needle) {
+				carries = true
+			}
+		}
+		if carries && f.Mode != 0o600 {
+			t.Errorf("%s carries a credential and is %04o, not 0600", f.Path, f.Mode)
+		}
+	}
+}
+
 // Trusted proxies are the mesh subnet and never a host address, which is what
 // lets the gateway role move later without breaking client address handling.
 func TestTrustedProxiesAreTheMeshSubnet(t *testing.T) {
+	// Not every kind takes a trusted proxy setting, and one of those that does
+	// is not configured by environment at all, so the assertion is about every
+	// rendered file that mentions one rather than about `.env` files.
+	var saw int
 	for _, f := range build(t).Files {
-		if !strings.HasSuffix(f.Path, "/.env") {
+		if !strings.Contains(f.Content, "TRUSTED_PROXIES") {
 			continue
 		}
+		saw++
 		if !strings.Contains(f.Content, "TRUSTED_PROXIES=10.44.0.0/24") {
 			t.Errorf("%s does not trust the mesh subnet:\n%s", f.Path, f.Content)
 		}
@@ -175,6 +246,9 @@ func TestTrustedProxiesAreTheMeshSubnet(t *testing.T) {
 				t.Errorf("%s trusts a specific host", f.Path)
 			}
 		}
+	}
+	if saw == 0 {
+		t.Fatal("no rendered file set a trusted proxy, so this proved nothing")
 	}
 }
 
@@ -200,7 +274,7 @@ func TestMeshSubnetComesFromTheConfiguration(t *testing.T) {
 	}
 	var sawEnv, sawInterface bool
 	for _, f := range plan.Files {
-		if strings.HasSuffix(f.Path, "/.env") {
+		if strings.Contains(f.Content, "TRUSTED_PROXIES") {
 			sawEnv = true
 			if !strings.Contains(f.Content, "TRUSTED_PROXIES=10.77.0.0/16") {
 				t.Errorf("%s did not follow the declared mesh:\n%s", f.Path, f.Content)

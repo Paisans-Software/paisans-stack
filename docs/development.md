@@ -99,11 +99,50 @@ installed, on a workstation or anywhere else.
 | `cmd/paisans` | the command, flag parsing, and how findings are printed |
 | `internal/config` | loading `paisans.yaml`, and decrypting `secrets.enc.yaml` |
 | `internal/validate` | the rules, and nothing else |
+| `internal/kinds` | what an application kind is: its compose services, and the image each runs by default |
 | `internal/render` | placement, templates, and the writer |
-| `internal/render/templates` | the artifacts themselves, as `text/template` files |
+| `internal/render/templates` | the infrastructure templates, plus one directory per kind |
 
 Templating is `text/template` from the standard library. No template engine is
 inherited, per the language decision in `docs/decisions.md`.
+
+### A kind ships a template directory
+
+`internal/render/templates/<kind>/` is a set, and every file in it is rendered.
+Two conventions make a set need no code of its own.
+
+**A template's path is its destination.** `templates/mbin/config/packages/
+oneup_flysystem.yaml.tmpl` lands at
+`/srv/<stack>/config/packages/oneup_flysystem.yaml`, so where a file goes is
+read off the tree rather than held in a mapping somewhere else. Adding a file
+to a set is adding a file.
+
+**A `.secret.tmpl` suffix means the rendered file is 0600.** Everything else is
+0644. The mode travels with the template for the same reason the destination
+does, and 0644 is the default because a rendered file the container's own user
+cannot read is a stack that does not start.
+
+The set is given one value, `appValues` in `internal/render/appview.go`, which
+holds what needs the whole deployment to know: the database host for this app's
+placement, the object storage endpoint, this app's own secrets and its client at
+the identity provider. **The template decides what goes into which file, under
+what names, in what format; Go decides nothing about an application's
+configuration.** That is why two of the five kinds can be configured by files
+rather than environment at all.
+
+Embedding uses `//go:embed all:templates`. Without `all:` embed skips files
+beginning with a dot, and every environment configured kind ships a `.env`
+template.
+
+### Where a claim about upstream software comes from
+
+Every environment variable name, configuration key and image tag in a template
+set is checked against upstream before it is written, and the check is recorded
+in a comment where it is not obvious. Some of it is counter intuitive and does
+not survive being recalled: WriteFreely's `[oauth.generic]` endpoints are paths
+appended to `host` rather than URLs, upstream Mbin ships named OAuth providers
+and no generic OIDC one, and Spilo publishes a separate image repository per
+Postgres major version whose tags do not run in step.
 
 ## Certificates use DNS-01, everywhere
 
@@ -140,7 +179,10 @@ other app's data, and the admin password is worse again: it creates and drops
 roles, and an operator uses it.
 
 `secrets.enc.yaml` therefore carries `apps.<name>.database_password` for every
-app, clustered or pinned, and rendering fails by name when one is missing.
+app that uses Postgres, clustered or pinned, and rendering fails by name when
+one is missing. WriteFreely is the exception and needs none: it has never
+supported Postgres and runs on a SQLite file in its own data directory, which
+is what keeps one blog from adding a second database engine to operate.
 
 Creating those roles in Postgres is not implemented. Nothing in this slice
 touches a running database, so the credentials are rendered and the roles that
@@ -162,6 +204,13 @@ use them are a job for `apply`.
 * **A clustered app has no Postgres service of its own** and connects to
   `127.0.0.1:5000`. A pinned app gets its own container: an app that is pinned
   must be pinned all the way down.
+* **Nothing rendered carries a floating image tag.** `latest` is refused in an
+  operator's configuration, so a default that floated would be the toolkit
+  refusing what it writes itself. A test walks every rendered compose file.
+* **A file carrying a credential is 0600.** A bind mounted file at 0600 is not
+  readable through `docker inspect` or `/proc/<pid>/environ`, which is the whole
+  reason a file configured application is the better case. A test asserts it
+  against the fixture's placeholder credentials.
 * **Output is deterministic.** Sort before you iterate a map.
 
 ## What is not here yet

@@ -8,17 +8,17 @@
     },
     {
       "path": "srv/auth/.env",
-      "sha256": "1a434b432559cd7b0a8dc0068392b104442aca08049bcc76c1875165877d1dd2",
+      "sha256": "c3633ab929424a769e1d87dac04a376a198947627091371f9d6a1361f8556478",
       "mode": "0600"
     },
     {
       "path": "srv/auth/compose.yaml",
-      "sha256": "652025a1ad4e0c9e77035ed460645817ad77c34c666098fce816c085050d98bd",
+      "sha256": "0b01f094b0c5ef48e257d8af7a28ab9e4a12a8bd445e567978c5627202d01b52",
       "mode": "0644"
     },
     {
       "path": "srv/docs/.env",
-      "sha256": "55d7ea6bd5647750c57eebfb8558f51f46ca57f3f76f4c95d283e5f464916737",
+      "sha256": "b7848f1de2f648719d5ad039b0eb035129d32b9a4dc3af1ac9da4a21172218f4",
       "mode": "0600"
     },
     {
@@ -47,23 +47,28 @@
       "mode": "0600"
     },
     {
-      "path": "srv/notes/.env",
-      "sha256": "04c1107c7ca491f2a101f0e9ee6f9b5648b76b396581f7c9f53251803ebb573d",
-      "mode": "0600"
-    },
-    {
       "path": "srv/notes/compose.yaml",
-      "sha256": "a97b8be6e12523141c179dad2e24b1de1185935f30edbd4935af30f8e4ad2727",
+      "sha256": "0ee884126f1740873de14b129b9d8e32d6b9675754b18a600e036e0fb27432b7",
       "mode": "0644"
     },
     {
+      "path": "srv/notes/config.ini",
+      "sha256": "52d9854cbc6efe13e0f0abe88f51ee14199f72d7e3f6604a2639f2c65022f754",
+      "mode": "0600"
+    },
+    {
       "path": "srv/talk/.env",
-      "sha256": "9a33338f81a76b03073699eedf50dc4f3c97dee62c27b6ab30b8290fdc04b593",
+      "sha256": "1b602d0e20e4d194b6af5da2131a6c727a82378f2e6725c89674ce210f96e6a1",
       "mode": "0600"
     },
     {
       "path": "srv/talk/compose.yaml",
-      "sha256": "a4ace3fa932e9cd02627146dfa1bc00689fcd96c68eb72a8fe4fd18790ead1a4",
+      "sha256": "0df0cc43b70de788fc3b0207125bff37508a3cf31c7b925de0c5c510bb627393",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/talk/config/packages/oneup_flysystem.yaml",
+      "sha256": "9e676d3569b2fe39d5ce151f4dbfbbf065fbe020b1b194f547320a0a309d4efd",
       "mode": "0644"
     }
   ]

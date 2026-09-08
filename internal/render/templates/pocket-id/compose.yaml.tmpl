@@ -1,0 +1,35 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# The identity provider gates every other application, so it holds no state of
+# its own that a promoted site would lack: its uploads go in the database
+# rather than on disk, where they ride streaming replication with no sync job.
+{{- if .App.Pinned }}
+#
+# Pinned to {{ .App.Site }}: its own database, at its own site.
+{{- end }}
+name: paisans-{{ .App.Name }}
+
+services:
+  app:
+    image: {{ .Image "app" }}
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "{{ .App.Port }}:{{ .App.Port }}"
+    volumes:
+      - {{ .DataPath }}/data:/app/data
+{{- if .App.Pinned }}
+    depends_on:
+      - postgres
+
+  postgres:
+    image: {{ .Image "postgres" }}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: {{ .DBName }}
+      POSTGRES_USER: {{ .DBUser }}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - {{ .DataPath }}/postgres:/var/lib/postgresql/data
+{{- end }}

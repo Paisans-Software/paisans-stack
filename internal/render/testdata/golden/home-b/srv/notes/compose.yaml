@@ -1,16 +1,26 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
-# notes has cluster placement: no Postgres service of its own, and a
-# connection to the local HAProxy on 127.0.0.1:5000.
+# WriteFreely supports MySQL and SQLite and has never supported Postgres, so it
+# takes no part in the Postgres cluster whatever its placement says about the
+# rest of the stack. It runs on SQLite, in a file under /srv/notes, which
+# is what makes it a self contained stack rather than a second database engine
+# to operate: no Galera, no arbitrator, no second set of failover semantics for
+# one blog.
+#
+# Its availability is its site's, and its backups are the file. Nothing here
+# replicates.
 name: paisans-notes
 
 services:
   app:
     image: ghcr.io/writefreely/writefreely:v0.17.1
     restart: unless-stopped
-    env_file:
-      - .env
     ports:
       - "8080:8080"
     volumes:
       - /srv/notes/data:/data
+      # WriteFreely reads a file, not an environment. Its SSO client secret is
+      # in here, which is why it is bind mounted at 0600 rather than passed as
+      # environment: `docker inspect` and /proc/<pid>/environ would show the
+      # latter.
+      - /srv/notes/config.ini:/data/config.ini:ro
