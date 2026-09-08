@@ -1,0 +1,24 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Object storage ships from the first install, single node at init and
+# replicated once a site is added. Starting on local disk and moving later is a
+# migration with consequences outside the deployment: remote instances hold
+# media URLs we cannot recall.
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "lmdb"
+
+replication_factor = {{ .Replication }}
+
+rpc_bind_addr = "{{ .Site.Address }}:3901"
+rpc_public_addr = "{{ .Site.Address }}:3901"
+rpc_secret = "{{ .RPCSecret }}"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "{{ .Site.Address }}:3900"
+root_domain = ".s3.{{ .Domain }}"
+
+[admin]
+api_bind_addr = "{{ .Site.Address }}:3903"
+admin_token = "{{ .AdminToken }}"

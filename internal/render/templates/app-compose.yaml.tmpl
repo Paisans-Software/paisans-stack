@@ -1,0 +1,36 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+{{- if .App.Pinned }}
+# {{ .App.Name }} is pinned to {{ .App.Site }}: app, database and media
+# together. A half pinned app needs both its own location and the cluster site
+# to be reachable, which makes it less available than either alone.
+{{- else }}
+# {{ .App.Name }} has cluster placement: no Postgres service of its own, and a
+# connection to the local HAProxy on 127.0.0.1:{{ .ClusterPort }}.
+{{- end }}
+name: paisans-{{ .App.Name }}
+
+services:
+  app:
+    image: {{ .Image }}
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "{{ .App.Port }}:{{ .App.Port }}"
+    volumes:
+      - /srv/{{ .App.Name }}/data:/data
+{{- if .App.Pinned }}
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:{{ .PostgresVersion }}-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: {{ .App.DBName }}
+      POSTGRES_USER: {{ .App.DBUser }}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - /srv/{{ .App.Name }}/postgres:/var/lib/postgresql/data
+{{- end }}

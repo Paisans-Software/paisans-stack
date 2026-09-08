@@ -1,0 +1,26 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Every clustered application connects to 127.0.0.1:{{ .ClusterPort }} from the
+# first install. This backend list starts with one entry and grows when a site
+# is added. No application configuration changes, ever: that one indirection is
+# what makes a second site an operation rather than a project.
+global
+    maxconn 500
+
+defaults
+    log     global
+    mode    tcp
+    retries 2
+    timeout client  30m
+    timeout connect 4s
+    timeout server  30m
+    timeout check   5s
+
+listen postgres
+    bind 127.0.0.1:{{ .ClusterPort }}
+    option httpchk GET /primary
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+{{- range .ClusterMembers }}
+    server {{ .Name }} {{ .Address }}:{{ $.PostgresPort }} maxconn 100 check port {{ $.PatroniAPIPort }}
+{{- end }}

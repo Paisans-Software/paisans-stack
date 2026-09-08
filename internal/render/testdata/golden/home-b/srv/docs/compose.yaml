@@ -1,0 +1,16 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# docs has cluster placement: no Postgres service of its own, and a
+# connection to the local HAProxy on 127.0.0.1:5000.
+name: paisans-docs
+
+services:
+  app:
+    image: docker.getoutline.com/outlinewiki/outline:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    volumes:
+      - /srv/docs/data:/data

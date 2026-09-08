@@ -1,0 +1,29 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Inventory driven: a pinned app's hostname points at its location, everything
+# else is proxied to the sites holding the apps role.
+#
+# DNS-01 for every hostname. With HTTP-01 a server can only obtain a
+# certificate for a name that already points at it, so a new gateway could not
+# hold valid certificates until DNS moved, and DNS should not move to a server
+# without them. DNS-01 proves control through the provider's API and needs no
+# inbound reachability at all, which is what makes moving the gateway an
+# overlap rather than a cutover. It is also the only option for a hostname
+# served behind a VPN, where nothing on the internet can answer a challenge.
+{
+	email admin@{{ .Domain }}
+	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+}
+{{ range .Routes }}
+{{ .Hostname }} {
+	reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
+{{- if gt (len .Upstreams) 1 }}
+		# first, not round robin: the apps sites are not interchangeable
+		# during a failover, and a dead one must simply be skipped.
+		lb_policy first
+		fail_duration 10s
+{{- end }}
+		header_up X-Forwarded-Proto https
+	}
+}
+{{ end -}}

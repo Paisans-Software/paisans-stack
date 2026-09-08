@@ -1,0 +1,39 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Infrastructure for site vm. Bind mounts under /srv, never named
+# volumes, so relocating a stack is a tar rather than a volumes-from dance.
+name: paisans-infra
+
+services:
+  etcd:
+    image: gcr.io/etcd-development/etcd:v3.5.16
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - /usr/local/bin/etcd
+      - --name=vm
+      - --data-dir=/var/lib/etcd
+      - --listen-peer-urls=http://10.44.0.3:2380
+      - --listen-client-urls=http://10.44.0.3:2379,http://127.0.0.1:2379
+      - --initial-advertise-peer-urls=http://10.44.0.3:2380
+      - --advertise-client-urls=http://10.44.0.3:2379
+      - --initial-cluster=home-a=http://10.44.0.1:2380,home-b=http://10.44.0.2:2380,vm=http://10.44.0.3:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=paisans
+      # Measured from real round trip through the tunnel, not guessed. The
+      # defaults assume one datacenter and produce phantom elections every
+      # time a home connection hiccups.
+      - --heartbeat-interval=200
+      - --election-timeout=2000
+    volumes:
+      - /srv/infra/etcd:/var/lib/etcd
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - caddy.env
+    volumes:
+      - /srv/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/infra/caddy/data:/data
+      - /srv/infra/caddy/config:/config

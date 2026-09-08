@@ -17,6 +17,15 @@ community:
   # have recorded it. Changing this after federating is a rebuild, not a rename.
   domain: example.org
 
+mesh:
+  # The private network every site sits on. Declared, not derived: applications
+  # are rendered to trust this subnet for forwarded client addresses, so it has
+  # to be a value that never changes. Deriving the tightest network around
+  # today's addresses would widen it the moment a site was added, silently
+  # rewriting TRUSTED_PROXIES in every app. Pick a range your hosts do not
+  # already route.
+  subnet: 10.44.0.0/24
+
 sites:
   home-a:
     roles: [data, apps]
@@ -58,6 +67,10 @@ etcd:
 storage:
   garage:
     sites: [home-a, home-b]
+    # A factor of 2 across 2 sites means a write needs both of them: losing a
+    # site keeps the database available through failover but stops uploads.
+    # That is a trade, not a free win, and it is the reason a third Garage
+    # location is worth considering.
     replication: 2
 
 # Every app is rendered with trusted proxies set to the mesh subnet, never to a

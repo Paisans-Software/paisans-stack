@@ -1,0 +1,56 @@
+# A coherent three site deployment. Every fixture in this directory is a
+# variation on this one, so that a test names exactly the thing it breaks.
+version: 1
+
+community:
+  name: "Fixture Community"
+  domain: example.org
+
+mesh:
+  subnet: 10.44.0.0/24
+
+sites:
+  home-a:
+    roles: [data, apps]
+    address: 10.44.0.1
+    ssh: home-a.local
+  home-b:
+    roles: [data, apps]
+    address: 10.44.0.2
+    ssh: home-b.local
+  vm:
+    roles: [gateway, witness]
+    address: 10.44.0.3
+    endpoint: vm.example.org:51820
+    ssh: vm.example.org
+
+cluster:
+  sites: [home-a, home-c]
+  port: 5000
+  postgres_version: "18"
+  synchronous: true
+  synchronous_strict: false
+
+etcd:
+  members: [home-a, home-b, vm]
+  heartbeat_ms: 200
+  election_timeout_ms: 2000
+
+storage:
+  garage:
+    sites: [home-a, home-b]
+    replication: 2
+
+apps:
+  docs:
+    kind: outline
+    hostname: docs.example.org
+    placement: cluster
+    settings:
+      s3_bucket: docs-uploads
+  auth:
+    kind: pocket-id
+    hostname: id.example.org
+    placement: cluster
+    settings:
+      file_backend: database

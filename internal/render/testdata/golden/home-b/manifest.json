@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "etc/wireguard/wg0.conf",
+      "sha256": "b69d4095c543fbfe4bc0192d77e5956848a8739c13ebe74c307553cb8eefd3ce",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/auth/.env",
+      "sha256": "27ab38ce13150b78f2dee363ae26d6089265686f9874eb98010ae9c52df5c1d9",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/auth/compose.yaml",
+      "sha256": "0d1604b89d875740093ebe97bf6d4b23231361f631a3ca1877cc1608dca15a7d",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/docs/.env",
+      "sha256": "903035e09d6339197ccaffd5f02a0e776e2ad59355351adc2a0a59d2c190d722",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/docs/compose.yaml",
+      "sha256": "9481f19288220526253e786a49efd50a21ba1f9826a4ab4493f35c18d5758346",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/compose.yaml",
+      "sha256": "7d6b94f730c9f250c270553c54da9acfd168b0d6b9f84b4ff5fc421a1721c245",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/garage/garage.toml",
+      "sha256": "c6cfcdb8f399c1a1e00473261ab48d5a8bbc24596d198e47d291be18d0291ac0",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/infra/haproxy/haproxy.cfg",
+      "sha256": "60c7be2b671d4bb18703a12c33914a8226dce60be123bef5299f8002544e071e",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/patroni.env",
+      "sha256": "aaab73a1b130089dbcbe3162ca035a80431cfd4e1e99ec8217151cd4c72cfc9a",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/notes/.env",
+      "sha256": "0436a91c84aedca0b6fa5f7f71c241bb8f46519118441ad4b6284d5bd94c217b",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/notes/compose.yaml",
+      "sha256": "b9019627d956ddd627055a224196c3746a85794d53b6bc6b6f599bb547afca2b",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/talk/.env",
+      "sha256": "987b05c6ea9d4197d18c2809066cd8a1dcd0b41fe31b1543729ac45d96e9d3c5",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/talk/compose.yaml",
+      "sha256": "eadc53b022ccfffe630b04e1f210bc909c240b868ac7f6c5e2b5c1bc53ff7d89",
+      "mode": "0644"
+    }
+  ]
+}

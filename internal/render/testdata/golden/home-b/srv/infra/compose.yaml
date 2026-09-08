@@ -1,0 +1,55 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Infrastructure for site home-b. Bind mounts under /srv, never named
+# volumes, so relocating a stack is a tar rather than a volumes-from dance.
+name: paisans-infra
+
+services:
+  etcd:
+    image: gcr.io/etcd-development/etcd:v3.5.16
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - /usr/local/bin/etcd
+      - --name=home-b
+      - --data-dir=/var/lib/etcd
+      - --listen-peer-urls=http://10.44.0.2:2380
+      - --listen-client-urls=http://10.44.0.2:2379,http://127.0.0.1:2379
+      - --initial-advertise-peer-urls=http://10.44.0.2:2380
+      - --advertise-client-urls=http://10.44.0.2:2379
+      - --initial-cluster=home-a=http://10.44.0.1:2380,home-b=http://10.44.0.2:2380,vm=http://10.44.0.3:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=paisans
+      # Measured from real round trip through the tunnel, not guessed. The
+      # defaults assume one datacenter and produce phantom elections every
+      # time a home connection hiccups.
+      - --heartbeat-interval=200
+      - --election-timeout=2000
+    volumes:
+      - /srv/infra/etcd:/var/lib/etcd
+  patroni:
+    image: ghcr.io/zalando/spilo-18:latest
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - patroni.env
+    volumes:
+      - /srv/infra/postgres:/home/postgres/pgdata
+    # Fencing needs the watchdog, and there is exactly one Patroni per data
+    # bearing host, so there is exactly one claimant for the device.
+    devices:
+      - /dev/watchdog:/dev/watchdog
+  haproxy:
+    image: haproxy:3.0-alpine
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /srv/infra/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+  garage:
+    image: dxflrs/garage:v1.0.1
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /srv/infra/garage/garage.toml:/etc/garage.toml:ro
+      - /srv/infra/garage/meta:/var/lib/garage/meta
+      - /srv/infra/garage/data:/var/lib/garage/data

@@ -1,0 +1,29 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# chat is pinned to vm: app, database and media
+# together. A half pinned app needs both its own location and the cluster site
+# to be reachable, which makes it less available than either alone.
+name: paisans-chat
+
+services:
+  app:
+    image: ghcr.io/element-hq/synapse:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8008:8008"
+    volumes:
+      - /srv/chat/data:/data
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chat
+      POSTGRES_USER: chat
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - /srv/chat/postgres:/var/lib/postgresql/data
