@@ -175,7 +175,7 @@ func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
 		mode    uint32
 		carries string
 	}{
-		{"home-a/srv/notes/config.ini", 0o600, "type = sqlite3"},
+		{"home-a/srv/blog/config.ini", 0o600, "type = sqlite3"},
 		{"vm/srv/chat/homeserver.yaml", 0o600, "name: psycopg2"},
 		{"home-a/srv/talk/.env", 0o600, "DATABASE_URL="},
 		{"home-a/srv/talk/compose.yaml", 0o644, "name: paisans-talk"},
@@ -199,7 +199,7 @@ func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
 	// The blog has no Postgres anywhere: no service, no role, no connection
 	// string. A configuration pointing it at the cluster would be a lie.
 	for path, f := range files {
-		if !strings.HasPrefix(path, "home-a/srv/notes/") {
+		if !strings.HasPrefix(path, "home-a/srv/blog/") {
 			continue
 		}
 		if strings.Contains(f.Content, "postgresql://") {
@@ -239,7 +239,7 @@ func TestTheGatewayImportsEachAppsOwnSnippet(t *testing.T) {
 	if !ok {
 		t.Fatal("the gateway rendered no Caddyfile")
 	}
-	for _, app := range []string{"talk", "docs", "auth", "notes", "chat"} {
+	for _, app := range []string{"talk", "docs", "auth", "blog", "chat"} {
 		snippet := "vm/srv/infra/caddy/snippets/" + app + ".caddy"
 		if _, ok := files[snippet]; !ok {
 			t.Errorf("%s was not rendered onto the gateway", snippet)

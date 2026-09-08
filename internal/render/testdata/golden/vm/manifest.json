@@ -23,7 +23,7 @@
     },
     {
       "path": "srv/infra/caddy/Caddyfile",
-      "sha256": "f80a30790932d79f48547d37fb94ed20abb2de6c809b770e1ff71a782933dbef",
+      "sha256": "c18e5a00e23a4fe43790043a884262a73137a30a87179902757b8c4ed661bfb8",
       "mode": "0644"
     },
     {
@@ -37,6 +37,11 @@
       "mode": "0644"
     },
     {
+      "path": "srv/infra/caddy/snippets/blog.caddy",
+      "sha256": "8ac28feb3c10b65e8ec1ea91fee94b608975a41be57102d9184c8a48887c4560",
+      "mode": "0644"
+    },
+    {
       "path": "srv/infra/caddy/snippets/chat.caddy",
       "sha256": "0c48f0d6f7167002746a838bc6aceda57bc34d582a51d00b9e56387f7a4a7211",
       "mode": "0644"
@@ -44,11 +49,6 @@
     {
       "path": "srv/infra/caddy/snippets/docs.caddy",
       "sha256": "7785654743fe6347de3895686346af6da5ee7cfde231789fcdcb7aead6ea7740",
-      "mode": "0644"
-    },
-    {
-      "path": "srv/infra/caddy/snippets/notes.caddy",
-      "sha256": "6b2d6aa22dd5487c61f708f754b6d267fe2020561d3526ab03ed20cf1e829094",
       "mode": "0644"
     },
     {

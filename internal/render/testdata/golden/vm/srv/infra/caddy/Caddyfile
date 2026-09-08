@@ -30,6 +30,10 @@
 	}
 }
 
+blog.example.org {
+	import /etc/caddy/snippets/blog.caddy
+}
+
 chat.example.org {
 	import /etc/caddy/snippets/chat.caddy
 }
@@ -40,10 +44,6 @@ docs.example.org {
 
 id.example.org {
 	import /etc/caddy/snippets/auth.caddy
-}
-
-notes.example.org {
-	import /etc/caddy/snippets/notes.caddy
 }
 
 talk.example.org {

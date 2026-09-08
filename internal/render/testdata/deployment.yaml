@@ -67,7 +67,7 @@ apps:
     placement: { pinned: vm }
     images:
       postgres: postgres:17-alpine
-  notes:
+  blog:
     kind: writefreely
-    hostname: notes.example.org
+    hostname: blog.example.org
     placement: cluster

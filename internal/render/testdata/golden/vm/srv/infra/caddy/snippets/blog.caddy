@@ -1,7 +1,7 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
-# Routing for notes, imported by the gateway's block for
-# notes.example.org. Nothing about this application needs routing
+# Routing for blog, imported by the gateway's block for
+# blog.example.org. Nothing about this application needs routing
 # beyond the proxy itself, which is worth stating: a snippet that is plain is a
 # fact about the application, not a file waiting to be filled in.
 reverse_proxy 10.44.0.1:8080 10.44.0.2:8080 {
