@@ -119,6 +119,20 @@ would render and then meet the missing database at the first sign in. The same
 reasoning refuses `writefreely`, which has never supported Postgres, so the
 refusal is the existing shape rather than a special case for Matrix.
 
+**"The authentication service's database" is Matrix Authentication Service,
+and the `synapse` kind renders it as a second container beside the
+homeserver, not as a setting inside it.** Synapse stopped being where a
+member logs in: it is a resource server now, and MAS is what owns the login,
+holds sessions, and talks to the identity provider on the homeserver's
+behalf. The identity provider itself sits upstream of MAS, one hop further
+out than every other application's OIDC client, which is why registering it
+takes a different redirect URI. `paisans init` prints that URI, in the form
+`https://<hostname>/upstream/callback/<ulid>`, alongside every other owed
+secret, because a client registered against the wrong path fails at the end
+of the first sign in rather than at registration. MAS keeps its own Postgres
+database beside the homeserver's, which is part of why `placement: cluster`
+is refused above: a clustered site has nowhere to put either.
+
 So each stack in the inventory declares where it runs:
 
 | Placement | What it means | Availability |
@@ -602,6 +616,13 @@ apps:
 rather than implied by which Caddy snippet somebody remembered to import. It is
 access policy, and access policy belongs in the configuration, not in a hand
 edited include.
+
+**Leaving `gate` out of an app's stanza means the same thing as `gate: none`:
+ungated, reachable by anyone who can resolve the hostname.** That default has
+to be stated here, not only in a doc comment, because it is the one setting
+where forgetting it is indistinguishable from choosing it: an app with no
+`gate` key renders exactly like an app that explicitly opted out, and nothing
+at render time flags the absence as a decision skipped rather than made.
 
 **A gate on an app of kind `synapse` is refused**, which is the rule below
 enforced rather than merely stated. The case that makes this load bearing is a
