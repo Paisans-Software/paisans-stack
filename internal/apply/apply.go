@@ -76,8 +76,25 @@ type Plan struct {
 	Transport string
 	Changes   []Change
 	Actions   []Action
+	// GatewayChanging is set when this site runs the gateway and its Caddy is
+	// about to change or be reloaded. That is the question every gate on the
+	// gateway is really asking, and it has two answers rather than one:
+	//
+	//   - a routing file changed, so the running Caddy is told to reload
+	//   - srv/infra/compose.yaml changed, so the container is replaced, which
+	//     is how the image itself moves
+	//
+	// The second is the flagship workflow: a pull request bumps the Caddy
+	// digest and merging it changes exactly that one file on the host. It is
+	// an environment path rather than a routing one, so it yields an ordinary
+	// `up -d` in the Actions loop, and `up -d` exits 0 as soon as the
+	// container starts. A Caddy that cannot load its configuration dies a
+	// moment later and the apply has already reported success. Checking only
+	// before a reload would leave exactly that path unchecked.
+	GatewayChanging bool
 	// GatewayReload is set when this site serves the public entry point and a
-	// routing file changed.
+	// routing file changed. It is the narrower of the two: a new image is
+	// picked up by the recreate, not by a reload.
 	GatewayReload bool
 	// ACMEModule is the Caddy DNS module this deployment's gateway must have,
 	// as `caddy list-modules` prints it. Empty when this site runs no gateway.
@@ -115,6 +132,20 @@ const remoteRoot = "/"
 // this on the host", and without it every apply would be a blind overwrite.
 const manifestPath = "/srv/.paisans-manifest.json"
 
+// gatewayCaddyfile and gatewayCompose are the two rendered files that say a
+// site runs the gateway and that its Caddy is about to be replaced, as paths
+// relative to a site's root in the rendered tree.
+//
+// gatewayCompose is the whole infrastructure stack's compose file rather than
+// a Caddy specific one: the gateway shares it with etcd and Patroni, so a
+// change to it may or may not be the Caddy image. The check is cheap and
+// wrongly running it costs one container start, while wrongly skipping it
+// costs the public address of every application.
+const (
+	gatewayCaddyfile = "srv/infra/caddy/Caddyfile"
+	gatewayCompose   = "srv/infra/compose.yaml"
+)
+
 // Build decides what one site's apply would do, without doing any of it.
 //
 // The order matters and is the whole design. Every file is compared against
@@ -132,6 +163,12 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 	prefix := site + "/"
 	stacks := map[string]bool{}
 	envChanged := map[string]bool{}
+	// Whether this site runs the gateway at all, and which of the two ways its
+	// Caddy is about to change. render only emits a Caddyfile for a site
+	// holding the gateway role, so its presence in the rendered tree is the
+	// signal, regardless of whether it changed: an image only apply changes no
+	// routing file at all.
+	var isGateway, routingChanged, gatewayComposeChanged bool
 	for _, file := range plan.Files {
 		if !strings.HasPrefix(file.Path, prefix) {
 			continue
@@ -141,6 +178,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 			continue
 		}
 		remote := remoteRoot + rel
+
+		if rel == gatewayCaddyfile {
+			isGateway = true
+		}
 
 		change := Change{
 			Path:    remote,
@@ -178,7 +219,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 				}
 			}
 			if isRouting(rel) {
-				out.GatewayReload = true
+				routingChanged = true
+			}
+			if rel == gatewayCompose {
+				gatewayComposeChanged = true
 			}
 		}
 	}
@@ -196,7 +240,9 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
 
-	if out.GatewayReload {
+	out.GatewayReload = isGateway && routingChanged
+	out.GatewayChanging = isGateway && (routingChanged || gatewayComposeChanged)
+	if out.GatewayChanging {
 		out.ACMEModule = acmeModule
 	}
 
@@ -224,11 +270,18 @@ func Execute(plan *Plan, t Transport) error {
 	}
 
 	// The gateway's configuration is assembled from per app snippets, so a
-	// wrong snippet is a wrong file for every hostname at once. Validate before
-	// reloading, and refuse to reload what does not validate: the cost of a
-	// mistake should be an error message on the workstation, not the public
-	// address of every application.
-	if plan.GatewayReload && plan.ACMEModule != "" {
+	// wrong snippet is a wrong file for every hostname at once. Check the
+	// binary and the configuration before the gateway changes at all, and
+	// refuse rather than proceed: the cost of a mistake should be an error
+	// message on the workstation, not the public address of every application.
+	//
+	// These gates run on GatewayChanging rather than on GatewayReload, and
+	// both run before the Actions loop below, because the loop is where an
+	// image change lands. `docker compose up -d` returns as soon as the
+	// container starts, so a Caddy that cannot load its configuration is
+	// reported as a successful apply and is discovered by whoever visits the
+	// site.
+	if plan.GatewayChanging && plan.ACMEModule != "" {
 		// Ask the binary rather than trusting the image's name. A DNS provider
 		// is compiled into Caddy, so a wrong image or a provider no module
 		// answers to both produce a gateway that cannot load its own
@@ -252,10 +305,13 @@ func Execute(plan *Plan, t Transport) error {
 		}
 	}
 
-	if plan.GatewayReload {
+	if plan.GatewayChanging {
 		if out, err := t.Run("docker compose -f /srv/infra/compose.yaml exec -T caddy caddy validate --config /etc/caddy/Caddyfile"); err != nil {
-			return fmt.Errorf("%s: the assembled gateway configuration does not validate, so it was not reloaded:\n%s", plan.Site, out)
+			return fmt.Errorf("%s: the assembled gateway configuration does not validate, so the gateway was not changed:\n%s", plan.Site, out)
 		}
+	}
+
+	if plan.GatewayReload {
 		if _, err := t.Run("docker compose -f /srv/infra/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"); err != nil {
 			return fmt.Errorf("%s: reloading the gateway: %w", plan.Site, err)
 		}

@@ -74,6 +74,26 @@ func plan(t *testing.T) *render.Plan {
 	return built
 }
 
+// planWith renders the fixture with one thing changed, for a test about what
+// an apply does when a single file moves.
+func planWith(t *testing.T, change func(*config.Config)) *render.Plan {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "render", "testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := config.LoadSecrets(filepath.Join("..", "render", "testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	change(cfg)
+	built, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return built
+}
+
 // acmeModule is the module this fixture's declared provider needs, computed
 // the same way cmd/paisans/main.go computes it for a real apply. The fixture
 // declares "desec" (internal/render/testdata/deployment.yaml).
@@ -288,6 +308,61 @@ func TestAGatewayWithoutItsProviderModuleIsNotReloaded(t *testing.T) {
 	}
 	if host.ran("caddy validate") {
 		t.Error("the configuration was validated before the binary was known to support it, which wastes the clearer error")
+	}
+}
+
+// Bumping the gateway's image changes exactly one file, srv/infra/compose.yaml,
+// and that is an environment path rather than a routing one: no routing file
+// changes, so nothing is reloaded and the container is replaced by the Actions
+// loop instead. `up -d` returns as soon as the container starts, so a Caddy
+// without the module would die a moment later and the apply would report
+// success. The check has to run for this path, and has to run before the
+// recreate.
+func TestAnImageOnlyChangeIsStillChecked(t *testing.T) {
+	host := newHost()
+	first, err := apply.Build("vm", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+
+	// An image carrying the same provider, declared rather than published:
+	// the one line the sibling repository's digest bump would move.
+	moved := planWith(t, func(cfg *config.Config) {
+		cfg.ACME.Image = "ghcr.io/example-org/caddy-desec:2.11.4"
+	})
+	host.commands = nil
+	host.fail = "list-modules"
+
+	p, err := apply.Build("vm", moved, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes := p.Writes()
+	if len(writes) != 1 || writes[0].Path != "/srv/infra/compose.yaml" {
+		t.Fatalf("an image bump should move one file, got %v", writes)
+	}
+	if p.GatewayReload {
+		t.Error("an image change planned a reload, but a new image arrives by recreate")
+	}
+	if !p.GatewayChanging {
+		t.Fatal("the gateway's own compose file changed and the plan does not call that a gateway change")
+	}
+	if p.ACMEModule == "" {
+		t.Fatal("an image change carries no module to check for, so the image is taken on trust")
+	}
+
+	err = apply.Execute(p, host)
+	if err == nil {
+		t.Fatal("a gateway image with no DNS module was deployed anyway")
+	}
+	if !strings.Contains(err.Error(), p.ACMEModule) {
+		t.Errorf("the refusal does not name the missing module:\n%v", err)
+	}
+	if host.ran("up -d") {
+		t.Error("the gateway container was replaced although the new image failed the check")
 	}
 }
 
