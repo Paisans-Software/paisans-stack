@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -279,7 +280,7 @@ func runApply(args []string) error {
 	}
 
 	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
-	plan, err := apply.Build(*site, rendered, transport)
+	plan, err := apply.Build(*site, rendered, acme.Module(cfg.ACME.Provider), transport)
 	if err != nil {
 		return err
 	}

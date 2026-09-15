@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -73,13 +74,25 @@ func plan(t *testing.T) *render.Plan {
 	return built
 }
 
+// acmeModule is the module this fixture's declared provider needs, computed
+// the same way cmd/paisans/main.go computes it for a real apply. The fixture
+// declares "desec" (internal/render/testdata/deployment.yaml).
+func acmeModule(t *testing.T) string {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "render", "testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return acme.Module(cfg.ACME.Provider)
+}
+
 // A first apply creates everything and records what it wrote. The record is
 // what every later gate depends on.
 func TestFirstApplyCreatesAndRecords(t *testing.T) {
 	host := newHost()
 	rendered := plan(t)
 
-	p, err := apply.Build("home-a", rendered, host)
+	p, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +121,7 @@ func TestFirstApplyCreatesAndRecords(t *testing.T) {
 	// Applying the same thing twice writes nothing and runs nothing. An apply
 	// that restarted containers on every run would make "apply" a thing
 	// operators avoid.
-	second, err := apply.Build("home-a", rendered, host)
+	second, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +138,7 @@ func TestFirstApplyCreatesAndRecords(t *testing.T) {
 func TestAnEditOnTheHostIsRefused(t *testing.T) {
 	host := newHost()
 	rendered := plan(t)
-	first, err := apply.Build("home-a", rendered, host)
+	first, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +149,7 @@ func TestAnEditOnTheHostIsRefused(t *testing.T) {
 	host.files["/srv/talk/.env"] += "\nSOMEONE_EDITED_THIS=1\n"
 	host.commands = nil
 
-	p, err := apply.Build("home-a", rendered, host)
+	p, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +180,7 @@ func TestAPreexistingFileIsNotAdopted(t *testing.T) {
 	host := newHost()
 	host.files["/srv/talk/.env"] = "HAND_WRITTEN=1\n"
 
-	p, err := apply.Build("home-a", plan(t), host)
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +196,7 @@ func TestAPreexistingFileIsNotAdopted(t *testing.T) {
 func TestTheNarrowerActionIsChosen(t *testing.T) {
 	host := newHost()
 	rendered := plan(t)
-	first, err := apply.Build("home-a", rendered, host)
+	first, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +212,7 @@ func TestTheNarrowerActionIsChosen(t *testing.T) {
 	// than about the conflict gate, which has its own test.
 	adopt(t, host, "/srv/blog/config.ini", "/srv/talk/.env")
 
-	p, err := apply.Build("home-a", rendered, host)
+	p, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +242,7 @@ func TestAnInvalidGatewayConfigurationIsNotReloaded(t *testing.T) {
 	host := newHost()
 	host.fail = "caddy validate"
 
-	p, err := apply.Build("vm", plan(t), host)
+	p, err := apply.Build("vm", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +258,36 @@ func TestAnInvalidGatewayConfigurationIsNotReloaded(t *testing.T) {
 	}
 	if host.ran("caddy reload") {
 		t.Error("the gateway was reloaded after validation failed")
+	}
+}
+
+// A gateway is only reloaded once its binary is known to carry the provider's
+// module. This is the only check in the whole change that is evidence rather
+// than inference: an image reference cannot tell you what was compiled into it.
+func TestAGatewayWithoutItsProviderModuleIsNotReloaded(t *testing.T) {
+	host := newHost()
+	host.fail = "list-modules"
+
+	p, err := apply.Build("vm", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ACMEModule == "" {
+		t.Fatal("a gateway plan carries no module to check for")
+	}
+
+	err = apply.Execute(p, host)
+	if err == nil {
+		t.Fatal("a gateway was reloaded without the module its configuration needs")
+	}
+	if !strings.Contains(err.Error(), p.ACMEModule) {
+		t.Errorf("the refusal does not name the missing module:\n%v", err)
+	}
+	if host.ran("caddy reload") {
+		t.Error("the gateway was reloaded after the module check failed")
+	}
+	if host.ran("caddy validate") {
+		t.Error("the configuration was validated before the binary was known to support it, which wastes the clearer error")
 	}
 }
 

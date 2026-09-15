@@ -79,6 +79,9 @@ type Plan struct {
 	// GatewayReload is set when this site serves the public entry point and a
 	// routing file changed.
 	GatewayReload bool
+	// ACMEModule is the Caddy DNS module this deployment's gateway must have,
+	// as `caddy list-modules` prints it. Empty when this site runs no gateway.
+	ACMEModule string
 }
 
 // Conflicts returns the files somebody edited on the host.
@@ -118,7 +121,7 @@ const manifestPath = "/srv/.paisans-manifest.json"
 // both the rendered content and the manifest the last apply left behind, so a
 // conflict is found before a single byte is written. An apply that wrote files
 // as it discovered them could leave a stack half updated and then refuse.
-func Build(site string, plan *render.Plan, t Transport) (*Plan, error) {
+func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Plan, error) {
 	out := &Plan{Site: site, Transport: t.Describe()}
 
 	recorded, err := readManifest(t)
@@ -192,6 +195,11 @@ func Build(site string, plan *render.Plan, t Transport) (*Plan, error) {
 	}
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
+
+	if out.GatewayReload {
+		out.ACMEModule = acmeModule
+	}
+
 	return out, nil
 }
 
@@ -220,6 +228,24 @@ func Execute(plan *Plan, t Transport) error {
 	// reloading, and refuse to reload what does not validate: the cost of a
 	// mistake should be an error message on the workstation, not the public
 	// address of every application.
+	if plan.GatewayReload && plan.ACMEModule != "" {
+		// Ask the binary rather than trusting the image's name. A DNS provider
+		// is compiled into Caddy, so a wrong image or a provider no module
+		// answers to both produce a gateway that cannot load its own
+		// configuration, and neither is visible in a reference string. This
+		// runs before validate on purpose: a binary without the module also
+		// fails to validate, but the missing module error says what to fix and
+		// a parse error does not.
+		command := fmt.Sprintf(
+			"docker compose -f /srv/infra/compose.yaml run --rm --entrypoint caddy caddy list-modules | grep -qx %s",
+			plan.ACMEModule)
+		if out, err := t.Run(command); err != nil {
+			return fmt.Errorf(
+				"%s: the gateway's Caddy has no %s module, so it cannot serve this configuration and was not reloaded. The image it runs was built without that provider:\n%s",
+				plan.Site, plan.ACMEModule, out)
+		}
+	}
+
 	if plan.GatewayReload {
 		if out, err := t.Run("docker compose -f /srv/infra/compose.yaml exec -T caddy caddy validate --config /etc/caddy/Caddyfile"); err != nil {
 			return fmt.Errorf("%s: the assembled gateway configuration does not validate, so it was not reloaded:\n%s", plan.Site, out)
