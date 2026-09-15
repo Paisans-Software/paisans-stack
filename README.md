@@ -820,10 +820,10 @@ the module would never reach the gateway, so it would hold no certificate for
 any hostname. Declaring upstream's own image is **refused** for the same reason,
 and it is the only image a reference alone can be judged by.
 
-An `acme.image` on a tag that does not name one build — `latest`, or no tag at
-all — is **refused**, exactly as a floating tag on an app image is. It matters
-more here than there: a rebuild behind a moving tag can drop the provider's
-module, and a gateway that cannot answer a DNS-01 challenge holds no
+An `acme.image` on a tag that does not name one build, meaning `latest` or no
+tag at all, is **refused**, exactly as a floating tag on an app image is. It
+matters more here than there: a rebuild behind a moving tag can drop the
+provider's module, and a gateway that cannot answer a DNS-01 challenge holds no
 certificate for any hostname in the deployment.
 
 Everything else is checked at `apply`, by asking the binary which modules it has

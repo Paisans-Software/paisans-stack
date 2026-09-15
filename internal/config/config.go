@@ -393,7 +393,11 @@ func (c *Config) structural() error {
 		}
 	}
 	if len(c.GatewaySites()) > 0 && c.ACME.Provider == "" {
-		add("acme.provider: required, because a site holds the gateway role. Certificates are issued over DNS-01, so the provider that answers the challenge has to be named. This toolkit publishes images for cloudflare and desec; any other provider also needs acme.image.")
+		// The providers are deliberately not listed here. This package does not
+		// import internal/acme, by design, so any list written out would be a
+		// second copy in prose that nothing keeps in step with the catalogue.
+		// `validate` names them, built from acme.Providers.
+		add("acme.provider: required, because a site holds the gateway role. Certificates are issued over DNS-01, so the provider that answers the challenge has to be named. It must be one this toolkit publishes an image for, which `paisans validate` will list, or any other provider together with an acme.image carrying its module.")
 	}
 	if len(problems) == 0 {
 		return nil

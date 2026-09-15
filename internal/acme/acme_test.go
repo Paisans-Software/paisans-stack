@@ -33,6 +33,20 @@ func TestSupportedProvidersAreComplete(t *testing.T) {
 			t.Errorf("%s image %q is not pinned by digest, and every tag we publish moves", provider, image)
 		}
 	}
+
+	// One image carries every module, which is what makes switching provider a
+	// configuration edit with no repull, and what lets the sibling repository
+	// move the digest with a single sed across these lines. An edit that
+	// updated one line and not the other would ship the providers on different
+	// digests, and nothing else here would notice.
+	first, _ := acme.Image(providers[0])
+	for _, provider := range providers[1:] {
+		image, _ := acme.Image(provider)
+		if image != first {
+			t.Errorf("%s runs %q and %s runs %q, but one image carries every module and a digest bump moves them together",
+				providers[0], first, provider, image)
+		}
+	}
 }
 
 // A provider nobody published an image for is not an error here: the
