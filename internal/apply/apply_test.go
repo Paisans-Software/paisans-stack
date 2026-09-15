@@ -291,6 +291,39 @@ func TestAGatewayWithoutItsProviderModuleIsNotReloaded(t *testing.T) {
 	}
 }
 
+// A provider the toolkit publishes no image for is the one the check exists
+// for: the adopter built or chose that image themselves and nobody here has
+// run it. The gate has to fire for it exactly as it does for a published
+// provider, which it only can because acme.Module names a module for it.
+func TestAnUnknownProvidersModuleIsCheckedToo(t *testing.T) {
+	module := acme.Module("route53")
+	if module == "" {
+		t.Fatal("an unknown provider has no module, so there is nothing for apply to check")
+	}
+
+	host := newHost()
+	host.fail = "list-modules"
+
+	p, err := apply.Build("vm", plan(t), module, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ACMEModule != module {
+		t.Fatalf("the plan carries module %q, want %q", p.ACMEModule, module)
+	}
+
+	err = apply.Execute(p, host)
+	if err == nil {
+		t.Fatal("a gateway running an adopter's own image was reloaded without checking it")
+	}
+	if !strings.Contains(err.Error(), module) {
+		t.Errorf("the refusal does not name the missing module:\n%v", err)
+	}
+	if host.ran("caddy reload") {
+		t.Error("the gateway was reloaded after the module check failed")
+	}
+}
+
 // adopt records the host's current content as ours, which is what a successful
 // apply does. Tests about something other than the conflict gate use it to get
 // past that gate honestly, rather than by disabling it.

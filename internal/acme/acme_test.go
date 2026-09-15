@@ -42,8 +42,27 @@ func TestUnknownProviderIsReportedNotRefused(t *testing.T) {
 	if _, ok := acme.Image("route53"); ok {
 		t.Error("an image was claimed for a provider this toolkit does not publish")
 	}
-	if module := acme.Module("route53"); module != "" {
-		t.Errorf("a module was claimed for an unknown provider: %q", module)
+}
+
+// An unknown provider still gets a module identifier, and this is load
+// bearing: apply only checks the gateway's binary when it has one to check
+// for, so an empty answer here would skip the check for exactly the provider
+// an adopter brought their own image for, which is the one nobody has tested.
+func TestUnknownProviderStillHasAModuleToCheckFor(t *testing.T) {
+	module := acme.Module("route53")
+	if module == "" {
+		t.Fatal("an unknown provider yields no module, so apply would skip the check that exists for it")
+	}
+	if module != "dns.providers.route53" {
+		t.Errorf("module is %q, want the caddy-dns convention dns.providers.route53", module)
+	}
+	if !strings.HasPrefix(module, "dns.providers.") {
+		t.Errorf("module %q is not shaped like a Caddy DNS module identifier", module)
+	}
+	// A deployment with no gateway declares no provider, and there is then
+	// nothing to check for.
+	if module := acme.Module(""); module != "" {
+		t.Errorf("no provider yielded module %q, so an apply with no gateway would check for it", module)
 	}
 }
 

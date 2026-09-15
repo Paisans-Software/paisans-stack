@@ -236,14 +236,15 @@ func Execute(plan *Plan, t Transport) error {
 		// runs before validate on purpose: a binary without the module also
 		// fails to validate, but the missing module error says what to fix and
 		// a parse error does not.
-		// %q quotes the module identifier. It is trusted today, acme.Module
-		// only ever returns one of a few compile time literals or "", and this
-		// gate does not run when it is empty, but the quoting is what keeps
-		// that trust from being load bearing if a later change lets a
-		// declared override supply its own module string.
+		// The identifier is shell quoted and matched as a fixed string. It is
+		// no longer a compile time literal: acme.Module derives one from
+		// acme.provider for any provider the toolkit publishes no image for,
+		// so the operator's configuration reaches this command line. Single
+		// quoting keeps it an argument rather than shell syntax, and -F keeps
+		// it a literal rather than a pattern whose dots match anything.
 		command := fmt.Sprintf(
-			"docker compose -f /srv/infra/compose.yaml run --rm --no-deps --entrypoint caddy caddy list-modules | grep -qx %q",
-			plan.ACMEModule)
+			"docker compose -f /srv/infra/compose.yaml run --rm --no-deps --entrypoint caddy caddy list-modules | grep -qxF %s",
+			shellQuote(plan.ACMEModule))
 		if out, err := t.Run(command); err != nil {
 			return fmt.Errorf(
 				"%s: the gateway's Caddy has no %s module, so it cannot serve this configuration and was not reloaded. The image it runs was built without that provider:\n%s",

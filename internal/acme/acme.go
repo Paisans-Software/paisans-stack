@@ -77,9 +77,26 @@ func Providers() []string {
 	return out
 }
 
-// Module returns the Caddy module identifier for a provider, empty when the
-// toolkit does not know it.
-func Module(name string) string { return supported[name].Module }
+// Module returns the Caddy module identifier for a provider.
+//
+// For a provider this toolkit publishes an image for, it is the identifier
+// recorded above. For any other, it is `dns.providers.<name>`, which is the
+// convention every caddy-dns module follows, and which is the whole point: the
+// provider an adopter brought their own image for is the one most likely to be
+// wrong, so it is the one the apply time check matters most for. Returning
+// nothing there would silently skip the check on exactly that path.
+//
+// Empty for an empty name, which is a deployment with no gateway anywhere and
+// so nothing to check.
+func Module(name string) string {
+	if name == "" {
+		return ""
+	}
+	if provider, ok := supported[name]; ok {
+		return provider.Module
+	}
+	return "dns.providers." + name
+}
 
 // Image returns the published image for a provider, and whether one exists.
 func Image(name string) (string, bool) {
