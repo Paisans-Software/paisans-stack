@@ -647,6 +647,7 @@ All Phase B work happens in `paisans-stack` on branch `feat/acme-dns-provider`.
 - Consumes: nothing.
 - Produces:
   - `acme.Module(provider string) string` returns the Caddy module identifier, empty for an unknown provider.
+  - `acme.Directive(provider string) string` returns the Caddyfile lines that configure it, tab indented for the global options block.
   - `acme.Image(provider string) (string, bool)` returns the published image reference and whether one exists.
   - `acme.Providers() []string` returns supported provider names, sorted.
   - `acme.IsStockCaddy(reference string) bool` reports whether a reference is upstream's own image.
@@ -774,6 +775,14 @@ type Provider struct {
 	// after a successful build. Do not edit it by hand except to correct it.
 	Image string
 }
+
+// Directive is the Caddyfile form each provider takes, because they do not
+// share one.
+//
+// Cloudflare accepts the token as a bare argument. deSEC requires a block with
+// a `token` subdirective and rejects a bare one, which a build of this image
+// found by failing `caddy validate`. Both forms are from those modules' own
+// documentation: github.com/caddy-dns/cloudflare and github.com/caddy-dns/desec.
 
 // supported is every provider this toolkit publishes an image for. A provider
 // absent here is not refused outright: a deployment may declare its own image,

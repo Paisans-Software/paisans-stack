@@ -175,7 +175,17 @@ toolkit, and the only file carrying the old key is the example.
 
 ### Render
 
-* `Caddyfile.tmpl` writes `acme_dns {{ .ACME.Provider }} {env.ACME_DNS_TOKEN}`.
+* `Caddyfile.tmpl` writes the provider's ACME directive, which is **not one
+  shape for every provider**. Cloudflare takes the token as a bare argument,
+  `acme_dns cloudflare {env.ACME_DNS_TOKEN}`; deSEC requires a block with a
+  `token` subdirective. Both were read from those modules' own documentation
+  after a build rejected the single shape, so `internal/acme` holds the exact
+  lines per provider and the template renders them.
+
+  For a provider the toolkit publishes nothing for, the bare argument form is
+  rendered, because it is the common one. A module needing subdirectives cannot
+  be expressed yet: that is a known gap rather than a silent failure, because
+  `apply` runs `caddy validate` before reloading and a parse error stops it.
 * The Caddy image is our published digest for a supported provider, and the
   declared `acme.image` otherwise.
 * `infra-compose.yaml.tmpl` keeps `image:` and gains no `build:`. No Dockerfile
