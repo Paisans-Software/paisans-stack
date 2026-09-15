@@ -122,3 +122,49 @@ nothing there while costing that recognition.
   at a redirect that a future outage would have to survive.
 * Packages this project publishes now belong to the organisation, which is what
   makes `ghcr.io/paisans-software/...` a name an adopter can be asked to trust.
+
+---
+
+## 2026-09-15: The ACME DNS provider is declared, and its Caddy image is published
+
+**Decided.** A deployment names its DNS provider in `acme.provider`, and pulls a
+Caddy image with that provider's module compiled in from
+`ghcr.io/paisans-software/caddy`. Nothing is built on a host.
+
+### What this fixed as well as abstracted
+
+The toolkit rendered upstream's `caddy:2-alpine` against a configuration saying
+`acme_dns cloudflare`. A DNS provider in Caddy is a module compiled in with
+xcaddy, and upstream's image carries none, so **the rendered gateway could not
+have obtained a certificate at all.** Nobody had run it.
+
+### Why not build on the gateway
+
+It is what a deployment's own stack does, and it works anywhere with no registry
+account. It was declined because the suggested topology puts the gateway role on
+a small machine that is also the etcd witness, and etcd's stability is a
+function of fsync latency. A compile there competes for exactly the resource
+that placement was chosen around, and it repeats on every Caddy upgrade.
+
+The cost is that a deployment's gateway now depends on our registry and on those
+images being rebuilt. `acme.image` is what keeps that from being lock-in.
+
+### Why one image with both modules
+
+Switching provider is then a configuration edit with no image change, no rebuild
+and no repull, which is the point of the abstraction. An adopter carries a module
+they do not use, a few megabytes.
+
+### Why the default is a digest
+
+Every tag `caddy-dns` publishes moves, mirroring upstream, which rebuilds even a
+patch tag when its base image gets a security fix. A digest is the only
+reference that makes two runs of `apply` deploy the same bytes.
+
+### Why an unknown provider is allowed
+
+A closed set would be consistent with how application kinds are treated, and it
+would leave an adopter on another DNS provider waiting for us or forking.
+Instead the provider is declared with an image that carries its module, and the
+module is verified at apply time by asking the binary, since what is compiled
+into a binary is not a property of its name.
