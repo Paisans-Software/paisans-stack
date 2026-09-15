@@ -629,6 +629,22 @@ rather than implied by which Caddy snippet somebody remembered to import. It is
 access policy, and access policy belongs in the configuration, not in a hand
 edited include.
 
+**The gate is enforced at the gateway, and only there. An app's published host
+port is not behind it.** The gate renders as `forward_auth` inside the
+gateway's Caddy site block, so it covers requests that arrive through the
+gateway's hostname. It does not cover the port the app's own compose file
+publishes: `talk` above is `gate: members`, and its stack publishes
+`8080:8080`, so anyone who can open that port on the apps host reaches Mbin
+with no gate in front of it at all. The same is true of every gated app.
+
+That is a real limit, not a subtlety, and the toolkit does not close it for
+you. What keeps it from being an open door today is that the apps hosts are
+expected to be on a private network rather than addressable from the internet,
+which is a property of the deployment and not of anything in this file. **An
+operator who needs the port itself protected has to do it at the host or the
+network** with a firewall rule, a bind address, or a network the host does not
+route, and should not read `gate: members` as having done it.
+
 **Leaving `gate` out of an app's stanza means the same thing as `gate: none`:
 ungated, reachable by anyone who can resolve the hostname.** That default has
 to be stated here, not only in a doc comment, because it is the one setting
