@@ -329,10 +329,7 @@ func TestTrustedProxiesAreTheMeshSubnet(t *testing.T) {
 // The mesh subnet is whatever the file declares, not a constant in the code.
 // It reaches both the trusted proxy list and the WireGuard interface address.
 func TestMeshSubnetComesFromTheConfiguration(t *testing.T) {
-	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -625,10 +622,7 @@ func TestTheGatewayRunsAnImageWithTheModule(t *testing.T) {
 // worth nothing unless it reaches the gateway's compose file in place of the
 // published one.
 func TestADeclaredImageReachesTheGateway(t *testing.T) {
-	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -666,10 +660,7 @@ func TestADeclaredImageReachesTheGateway(t *testing.T) {
 // demand a Caddy image for a site that will never run Caddy, or a config that
 // validation accepts fails to render anyway, over an image nothing needs.
 func TestNoGatewayNeedsNoACMEProvider(t *testing.T) {
-	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -988,10 +979,7 @@ func TestTheApexServesOnlyDelegation(t *testing.T) {
 // would render, review cleanly and leave a federating peer with a 404 that
 // sends it to <server_name>:8448, where nothing listens.
 func TestAHomeserverWithNoDelegationServesItsOwnWellKnown(t *testing.T) {
-	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
 	if err != nil {
 		t.Fatal(err)
