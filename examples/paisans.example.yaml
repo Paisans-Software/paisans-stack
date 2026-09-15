@@ -26,6 +26,21 @@ mesh:
   # already route.
   subnet: 10.44.0.0/24
 
+# Certificates are issued over DNS-01, always. A gateway has to be able to hold
+# valid certificates before DNS points at it, which is what makes moving one an
+# overlap rather than a cutover, and a hostname behind a VPN has nothing on the
+# internet that can answer an HTTP-01 challenge.
+#
+# The provider named here decides two things: the directive in the gateway's
+# Caddyfile, and which image it runs, since a DNS provider in Caddy is a module
+# compiled into the binary rather than a setting.
+acme:
+  provider: cloudflare        # or desec
+  # Only for a provider this toolkit publishes no image for. It must carry that
+  # provider's module, and `apply` checks that it does before reloading
+  # anything.
+  # image: ghcr.io/example-org/caddy-route53:2.11.4
+
 sites:
   home-a:
     roles: [data, apps]

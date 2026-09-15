@@ -38,6 +38,31 @@ apps:
     placement: cluster
 `
 
+// validConfig is a minimal deployment that loads cleanly: a site holding
+// data, apps and gateway, an address inside the mesh subnet, an ssh address,
+// and the acme block a gateway requires.
+const validConfig = `version: 1
+community:
+  name: "Fixture"
+  domain: example.org
+mesh:
+  subnet: 10.44.0.0/24
+acme:
+  provider: desec
+sites:
+  home-a:
+    roles: [data, apps, gateway]
+    address: 10.44.0.1
+    ssh: home-a.local
+etcd:
+  members: [home-a]
+apps:
+  talk:
+    kind: mbin
+    hostname: talk.example.org
+    placement: cluster
+`
+
 func TestLoadsAMinimalFile(t *testing.T) {
 	cfg, err := config.Load(write(t, minimal))
 	if err != nil {
@@ -119,6 +144,43 @@ func TestUnknownKeysAreRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "trusted_proxies") {
 		t.Fatalf("the error does not name the offending key:\n%v", err)
+	}
+}
+
+// Certificates are a deployment wide fact rather than a gateway site's
+// property, because the gateway role moves between machines by design. A
+// deployment with a gateway and no provider cannot obtain a certificate, and
+// that is a missing required field rather than a policy question.
+func TestACMEProviderIsRequiredWhenAGatewayExists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	body := strings.Replace(validConfig, "acme:\n  provider: desec\n", "", 1)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("a deployment with a gateway and no acme provider loaded")
+	}
+	if !strings.Contains(err.Error(), "acme.provider") {
+		t.Errorf("the error does not name the missing key:\n%v", err)
+	}
+}
+
+// The provider is read as declared, and an override image is optional.
+func TestACMEBlockLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	if err := os.WriteFile(path, []byte(validConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ACME.Provider != "desec" {
+		t.Errorf("provider is %q, want desec", cfg.ACME.Provider)
+	}
+	if cfg.ACME.Image != "" {
+		t.Errorf("image is %q, and the fixture declares none", cfg.ACME.Image)
 	}
 }
 
