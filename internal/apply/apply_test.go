@@ -24,6 +24,10 @@ type fakeHost struct {
 	// fail makes any command containing this substring return non zero, which
 	// is how the gates are exercised.
 	fail string
+	// running is whether this host already has a gateway container up. A fresh
+	// host has none, which is the ordinary case on a first apply and the one
+	// that used to make apply impossible to complete.
+	running bool
 }
 
 func newHost() *fakeHost { return &fakeHost{files: map[string]string{}} }
@@ -34,6 +38,14 @@ func (h *fakeHost) Run(command string) (string, error) {
 	h.commands = append(h.commands, command)
 	if h.fail != "" && strings.Contains(command, h.fail) {
 		return "refused by the fake host", fmt.Errorf("exit status 1")
+	}
+	if strings.Contains(command, "ps --status running") {
+		if h.running {
+			return "c0ffee\n", nil
+		}
+		// What `docker compose ps --quiet` prints when the service has no
+		// running container: nothing, and a zero exit.
+		return "\n", nil
 	}
 	return "", nil
 }
@@ -308,6 +320,78 @@ func TestAGatewayWithoutItsProviderModuleIsNotReloaded(t *testing.T) {
 	}
 	if host.ran("caddy validate") {
 		t.Error("the configuration was validated before the binary was known to support it, which wastes the clearer error")
+	}
+}
+
+// A first apply to a fresh host has nothing running: every file is a create,
+// and the container that would serve them is started by the Actions loop at
+// the very end. Validating or reloading through `exec` there asks a container
+// that does not exist yet, which made `paisans apply` unable to complete a
+// first install of a gateway site, and made recovery impossible afterwards,
+// since a dead gateway makes every later apply refuse at the same step.
+func TestAFirstApplyToAFreshHostCompletes(t *testing.T) {
+	host := newHost()
+	host.running = false
+
+	p, err := apply.Build("vm", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatalf("a first apply to a host with nothing running was aborted: %v", err)
+	}
+
+	if !host.ran("caddy validate") {
+		t.Error("the gateway configuration was never validated")
+	}
+	if host.ran("exec -T caddy caddy validate") {
+		t.Error("validation ran through exec, which needs a container this host does not have")
+	}
+	if !host.ran("run --rm --no-deps --entrypoint caddy caddy validate") {
+		t.Error("validation did not use the form that works without a running container")
+	}
+	if host.ran("caddy reload") {
+		t.Error("a container that does not exist was told to reload")
+	}
+	if !host.ran("up -d") {
+		t.Error("the infrastructure stack was never started, so the validated configuration is not live")
+	}
+}
+
+// A gateway that is already up is reloaded rather than left, since the Actions
+// loop may only restart a stack whose environment did not change, and a bind
+// mounted Caddyfile change would otherwise not be picked up.
+func TestARunningGatewayIsReloaded(t *testing.T) {
+	host := newHost()
+	first, err := apply.Build("vm", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+
+	// A routing change and nothing else: a new hostname for an app.
+	moved := planWith(t, func(cfg *config.Config) {
+		app := cfg.Apps["blog"]
+		app.Hostname = "words.example.org"
+		cfg.Apps["blog"] = app
+	})
+	host.running = true
+	host.commands = nil
+
+	p, err := apply.Build("vm", moved, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.GatewayReload {
+		t.Fatal("a routing change planned no reload")
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if !host.ran("caddy reload") {
+		t.Error("a running gateway was not reloaded, so the new routing is not live")
 	}
 }
 

@@ -306,14 +306,33 @@ func Execute(plan *Plan, t Transport) error {
 	}
 
 	if plan.GatewayChanging {
-		if out, err := t.Run("docker compose -f /srv/infra/compose.yaml exec -T caddy caddy validate --config /etc/caddy/Caddyfile"); err != nil {
+		// `run --rm --no-deps`, the same shape as the module check, rather than
+		// `exec`. Nothing has started the infrastructure stack at this point:
+		// the Actions loop below is what does that, and on a first apply to a
+		// fresh host there is no container to exec into at all, so validating
+		// through exec made `apply` unable to complete a first install of a
+		// gateway site. It also made recovery impossible after a gateway died,
+		// since every later apply would refuse at this step. `run` starts a
+		// throwaway container with the service's own image and bind mounts,
+		// which is exactly what validation needs and needs nothing running.
+		if out, err := t.Run("docker compose -f /srv/infra/compose.yaml run --rm --no-deps --entrypoint caddy caddy validate --config /etc/caddy/Caddyfile"); err != nil {
 			return fmt.Errorf("%s: the assembled gateway configuration does not validate, so the gateway was not changed:\n%s", plan.Site, out)
 		}
 	}
 
 	if plan.GatewayReload {
-		if _, err := t.Run("docker compose -f /srv/infra/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"); err != nil {
-			return fmt.Errorf("%s: reloading the gateway: %w", plan.Site, err)
+		// Reload only a Caddy that is running. A stopped or absent gateway is
+		// started by the Actions loop below instead, and it reads the same
+		// configuration this apply just validated, so nothing is skipped by
+		// not reloading it.
+		running, err := t.Run("docker compose -f /srv/infra/compose.yaml ps --status running --quiet caddy")
+		if err != nil {
+			return fmt.Errorf("%s: asking whether the gateway is running: %w", plan.Site, err)
+		}
+		if strings.TrimSpace(running) != "" {
+			if _, err := t.Run("docker compose -f /srv/infra/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"); err != nil {
+				return fmt.Errorf("%s: reloading the gateway: %w", plan.Site, err)
+			}
 		}
 	}
 
