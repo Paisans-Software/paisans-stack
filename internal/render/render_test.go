@@ -781,3 +781,42 @@ func TestTheAuthGateShipsNamedSnippets(t *testing.T) {
 		t.Errorf("the Caddyfile does not import the gate's named snippets:\n%s", caddyfile.Content)
 	}
 }
+
+// Which gate an app sits behind is policy, and it is declared rather than
+// implied by which snippet somebody remembered to import.
+func TestTheGateIsDeclaredPerApp(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+	caddyfile := files["vm/srv/infra/caddy/Caddyfile"].Content
+
+	// talk sits behind the members gate in the fixture.
+	if !strings.Contains(caddyfile, "import gate_members") {
+		t.Errorf("a gated app's host block does not import its gate:\n%s", caddyfile)
+	}
+
+	// A Matrix client is not a browser and will not follow a redirect to a
+	// passkey prompt, so chat and its apex must never be gated.
+	for _, hostname := range []string{"chat.example.org", "example.org"} {
+		block := hostBlock(t, caddyfile, hostname)
+		if strings.Contains(block, "import gate_") {
+			t.Errorf("%s is gated, which breaks every Matrix client:\n%s", hostname, block)
+		}
+	}
+}
+
+// hostBlock returns the text of one host block, so a test can assert about one
+// hostname rather than about the whole file.
+func hostBlock(t *testing.T, caddyfile, hostname string) string {
+	t.Helper()
+	start := strings.Index(caddyfile, "\n"+hostname+" {")
+	if start < 0 {
+		t.Fatalf("no host block for %s", hostname)
+	}
+	end := strings.Index(caddyfile[start+1:], "\n}")
+	if end < 0 {
+		t.Fatalf("unterminated host block for %s", hostname)
+	}
+	return caddyfile[start : start+end]
+}

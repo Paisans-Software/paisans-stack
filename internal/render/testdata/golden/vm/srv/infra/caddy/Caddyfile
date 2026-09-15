@@ -62,6 +62,7 @@ id.example.org {
 }
 
 talk.example.org {
+	import gate_members
 	import /etc/caddy/snippets/talk.caddy
 }
 

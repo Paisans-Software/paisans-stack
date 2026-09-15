@@ -119,6 +119,10 @@ type route struct {
 	// the container sees it. The host block imports it rather than
 	// containing it.
 	Snippet string
+	// Gate is the app's declared gate, carried onto every one of its
+	// hostnames. A gate is access policy for the app, not for one hostname of
+	// it, so every route an app has gets the same value.
+	Gate string
 }
 
 func (p *planner) renderSite(site *siteView) ([]File, error) {
@@ -590,12 +594,21 @@ func (p *planner) routes() []route {
 	var out []route
 	for _, name := range p.cfg.AppNames() {
 		app := p.cfg.Apps[name]
+		gate := app.Gate
+		if gate == "none" {
+			// Carried to the template as empty rather than as the literal
+			// "none", because the template's gate import is guarded on
+			// truthiness: `none` is a value an operator writes, but it means
+			// the same as never having written the key at all.
+			gate = ""
+		}
 		out = append(out, route{
 			App:       name,
 			Role:      kinds.PrimaryRole,
 			Hostname:  app.Hostname,
 			Upstreams: p.upstreams(name),
 			Snippet:   snippetMount + name + ".caddy",
+			Gate:      gate,
 		})
 		for _, role := range sortedKeys(app.Hostnames) {
 			out = append(out, route{
@@ -604,6 +617,7 @@ func (p *planner) routes() []route {
 				Hostname:  app.Hostnames[role],
 				Upstreams: p.upstreams(name),
 				Snippet:   snippetMount + name + "-" + role + ".caddy",
+				Gate:      gate,
 			})
 		}
 	}

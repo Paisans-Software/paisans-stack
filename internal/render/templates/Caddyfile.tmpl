@@ -37,6 +37,9 @@ import {{ . }}
 {{ end -}}
 {{ range .Routes }}
 {{ .Hostname }} {
+{{- if .Gate }}
+	import gate_{{ .Gate }}
+{{- end }}
 	import {{ .Snippet }}
 }
 {{ end -}}

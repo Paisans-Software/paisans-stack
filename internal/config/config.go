@@ -200,6 +200,15 @@ type App struct {
 	// selects a different Caddy snippet, because a second hostname usually
 	// exists to serve something different rather than the same thing twice.
 	Hostnames map[string]string `yaml:"hostnames"`
+
+	// Gate is which auth gate sits in front of this app: none, provisional or
+	// members. Empty means none.
+	//
+	// It is declared rather than inferred because it is access policy. It is
+	// also the setting most likely to be wrong in a way nothing notices: a
+	// gated Matrix hostname authenticates a browser and breaks every client,
+	// because a client will not follow a redirect to a passkey prompt.
+	Gate string `yaml:"gate"`
 }
 
 // PlacementMode is where an app runs. There are exactly two, and pinned is the
@@ -420,6 +429,9 @@ func (c *Config) structural() error {
 			if strings.TrimSpace(app.Hostnames[role]) == "" {
 				add("apps.%s.hostnames.%s: empty. Give a hostname, or remove the role.", name, role)
 			}
+		}
+		if app.Gate != "" && app.Gate != "none" && app.Gate != "provisional" && app.Gate != "members" {
+			add("apps.%s.gate: unknown gate %q. Valid values are none, provisional and members.", name, app.Gate)
 		}
 	}
 	if len(c.GatewaySites()) > 0 && c.ACME.Provider == "" {

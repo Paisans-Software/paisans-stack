@@ -130,6 +130,7 @@ func Check(cfg *config.Config) Result {
 	c.acmeImageIsNotStockCaddy()
 	c.floatingACMEImage()
 	c.hostnameRoles()
+	c.gateWithoutAGate()
 
 	c.evenVoters()
 	c.meshIsNotPrivate()
@@ -602,6 +603,31 @@ func (c *checker) floatingACMEImage() {
 // importing a file that does not exist, so the gateway fails to load its whole
 // configuration, taking every other hostname down with it. That is incoherent
 // rather than risky.
+// gateWithoutAGate refuses an app declaring a gate when the deployment runs
+// none.
+//
+// The import would name a snippet nothing renders, and Caddy fails to load its
+// whole configuration over one missing import, so every hostname goes down
+// rather than one.
+func (c *checker) gateWithoutAGate() {
+	gated := false
+	for _, name := range c.cfg.AppNames() {
+		if g := c.cfg.Apps[name].Gate; g != "" && g != "none" {
+			gated = true
+		}
+	}
+	if !gated {
+		return
+	}
+	for _, name := range c.cfg.AppNames() {
+		if c.cfg.Apps[name].Kind == config.KindOAuth2Proxy {
+			return
+		}
+	}
+	c.refuse("gate-without-a-gate-app", "apps",
+		"an app declares a gate, but no app of kind oauth2-proxy is declared, so nothing renders the snippet the gateway would import. Caddy fails to load its entire configuration over one missing import, so this would take every hostname down rather than one. Declare the gate app, or set gate: none.")
+}
+
 func (c *checker) hostnameRoles() {
 	for _, name := range c.cfg.AppNames() {
 		app := c.cfg.Apps[name]

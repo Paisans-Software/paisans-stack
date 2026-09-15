@@ -23,7 +23,7 @@
     },
     {
       "path": "srv/infra/caddy/Caddyfile",
-      "sha256": "58da88b8b9513fb4ba7e91965201752fdfb007d82e616b0997164a4488b9e2f5",
+      "sha256": "03764b55ffb12727720196e978a0c3d8814ef753fcba43318247399f517f1e6d",
       "mode": "0644"
     },
     {

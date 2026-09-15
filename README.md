@@ -560,6 +560,39 @@ The key is a **role**, not a label: it selects which snippet the kind ships. A
 role a kind does not understand is refused, because the alternative is a
 gateway that fails to load its whole configuration over one missing import.
 
+#### The gate is a per-app property
+
+```yaml
+apps:
+  talk:
+    kind: mbin
+    hostname: talk.example.org
+    gate: members
+  chat:
+    kind: synapse
+    hostname: matrix.example.org
+    gate: none
+```
+
+`gate` is `none`, `provisional` or `members`, and it is declared on the app
+rather than implied by which Caddy snippet somebody remembered to import. It is
+access policy, and access policy belongs in the configuration, not in a hand
+edited include.
+
+The case that makes this load bearing is a negative one. A Matrix hostname must
+never be gated: a Matrix client is not a browser and will not follow a redirect
+to a passkey prompt, so gating a homeserver's API or its `.well-known` apex
+breaks federation and every client's login, not just one member's. Leaving
+gating to a hand edited include means that failure shows up as clients
+mysteriously unable to log in, with nothing in the configuration saying why. A
+declared `gate: none` makes the absence of a gate a fact about the app that a
+reviewer can see, rather than an inference from what nobody wrote.
+
+Declaring a gate when no `oauth2-proxy` app exists is refused, for the same
+reason an unknown hostname role is: the import would name a snippet nothing
+renders, and Caddy fails to load its entire configuration over one missing
+import, taking every hostname down rather than one.
+
 ### Decryption happens on a workstation, not on a host
 
 Rendering locally and pushing means no age key ever reaches a host. That

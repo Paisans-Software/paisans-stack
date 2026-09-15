@@ -49,6 +49,7 @@ apps:
     kind: mbin
     hostname: talk.example.org
     placement: cluster
+    gate: members
     images:
       app: ghcr.io/example-org/mbin:v1.10.1-fork
   docs:
@@ -70,6 +71,7 @@ apps:
     hostnames:
       wellknown: example.org
     placement: { pinned: vm }
+    gate: none
     images:
       postgres: postgres:17-alpine
   blog:
