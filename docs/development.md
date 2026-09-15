@@ -13,10 +13,11 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 
 ## Run
 
-Two commands exist so far, and neither touches a network or a host.
+Three commands exist so far, and none touches a network or a host.
 
 ```
 paisans validate --config examples/paisans.example.yaml
+paisans init     --config examples/paisans.example.yaml
 paisans render   --config examples/paisans.example.yaml \
                  --secrets secrets.enc.yaml --out ./out
 ```
@@ -24,6 +25,26 @@ paisans render   --config examples/paisans.example.yaml \
 `validate` loads a declaration and prints every problem it finds, rather than
 stopping at the first, because fixing a file one error per run is miserable. It
 exits non zero when anything was refused.
+
+`init` generates the secrets a declaration needs and writes them, encrypted to
+the age recipients named in a `.sops.yaml` beside the file. It prints names and
+never values, because a secret printed to a terminal is in a scrollback buffer
+and often in a multiplexer's log as well. Three things about it are load
+bearing:
+
+* **It never replaces a value that exists.** Regenerating a WireGuard key breaks
+  every peer that trusted the old one; regenerating a database password locks an
+  application out of a role that still holds the old one. Re-running `init` is
+  therefore the intended way to fill in a site or an app added to the
+  configuration later, and the second run of an unchanged deployment writes
+  nothing at all.
+* **It generates only what it can.** A DNS token is issued by a provider and an
+  OIDC client secret is minted by a running identity provider, where creating
+  one is a mutation a human approves. Both are reported as owed, with the reason,
+  rather than invented or left silent.
+* **Without an age recipient it writes plaintext and says so loudly.** Refusing
+  would leave an operator holding generated secrets that went nowhere, and a
+  first look at the tool must not require a key.
 
 `render` validates, then writes per site artifacts under `--out`. It writes
 files and stops: pushing them to a host is a later slice.
@@ -99,6 +120,7 @@ installed, on a workstation or anywhere else.
 | `cmd/paisans` | the command, flag parsing, and how findings are printed |
 | `internal/config` | loading `paisans.yaml`, and decrypting `secrets.enc.yaml` |
 | `internal/validate` | the rules, and nothing else |
+| `internal/secretsgen` | what a deployment's secrets are, and which of them the toolkit may invent |
 | `internal/kinds` | what an application kind is: its compose services, and the image each runs by default |
 | `internal/render` | placement, templates, and the writer |
 | `internal/render/templates` | the infrastructure templates, plus one directory per kind |
