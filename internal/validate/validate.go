@@ -130,6 +130,7 @@ func Check(cfg *config.Config) Result {
 	c.acmeImageIsNotStockCaddy()
 	c.floatingACMEImage()
 	c.hostnameRoles()
+	c.duplicateHostname()
 	c.gateWithoutAGate()
 	c.gatedMatrixHostname()
 	c.homeserverMustBePinned()
@@ -678,6 +679,48 @@ func (c *checker) homeserverMustBePinned() {
 		}
 		c.refuse("homeserver-must-be-pinned", fmt.Sprintf("apps.%s.placement", name),
 			"is cluster, and the synapse kind has no clustered form. Its media store cannot follow a failover, because the S3 storage provider supplements a local media directory rather than replacing it, and the kind renders its own Postgres plus the hook that creates the authentication service's database beside it. Pin it: placement: { pinned: <site> }.")
+	}
+}
+
+// duplicateHostname refuses the same public name claimed twice.
+//
+// Every hostname an app declares, primary or role, becomes a site address in
+// the gateway's Caddyfile. Caddy refuses a configuration in which two site
+// blocks claim the same address, because it cannot decide which one a request
+// belongs to, and it refuses the whole file rather than the one block. So a
+// name typed twice takes every hostname in the deployment down, not the one
+// that was duplicated.
+//
+// It became reachable when an app gained the ability to answer on several
+// hostnames: before that an app had exactly one name and a clash needed two
+// apps to be given the same one, which is hard to do by accident. Setting one
+// app's `hostname` to the value another app already uses for a role is not.
+// This is the same failure unknown-hostname-role and gate-without-a-gate-app
+// exist to prevent, arrived at from a different direction.
+func (c *checker) duplicateHostname() {
+	first := map[string]string{} // hostname -> the key that claimed it first
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		claims := []struct{ key, hostname string }{
+			{fmt.Sprintf("apps.%s.hostname", name), app.Hostname},
+		}
+		for _, role := range sortedKeys(app.Hostnames) {
+			claims = append(claims, struct{ key, hostname string }{
+				fmt.Sprintf("apps.%s.hostnames.%s", name, role), app.Hostnames[role],
+			})
+		}
+		for _, claim := range claims {
+			if claim.hostname == "" {
+				continue
+			}
+			if earlier, taken := first[claim.hostname]; taken {
+				c.refuse("duplicate-hostname", claim.key,
+					"is %q, which %s already claims. Every hostname becomes a site address in the gateway's Caddyfile, and Caddy refuses a configuration where two site blocks claim one address rather than choosing between them, so this takes every hostname in the deployment down rather than these two. Give each name to one app and one role.",
+					claim.hostname, earlier)
+				continue
+			}
+			first[claim.hostname] = claim.key
+		}
 	}
 }
 

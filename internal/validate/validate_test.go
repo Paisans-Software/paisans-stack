@@ -48,6 +48,7 @@ func TestRulesFire(t *testing.T) {
 		{"acme-image-is-stock-caddy", "acme-image-is-stock-caddy", validate.Refuse},
 		{"acme-image-is-floating", "acme-image-is-floating", validate.Refuse},
 		{"unknown-hostname-role", "unknown-hostname-role", validate.Refuse},
+		{"duplicate-hostname", "duplicate-hostname", validate.Refuse},
 		{"gate-without-a-gate-app", "gate-without-a-gate-app", validate.Refuse},
 		{"gated-matrix-hostname", "gated-matrix-hostname", validate.Refuse},
 		{"homeserver-must-be-pinned", "homeserver-must-be-pinned", validate.Refuse},

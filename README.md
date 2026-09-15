@@ -582,6 +582,14 @@ The key is a **role**, not a label: it selects which snippet the kind ships. A
 role a kind does not understand is refused, because the alternative is a
 gateway that fails to load its whole configuration over one missing import.
 
+**A hostname may be claimed once, by one app and one role.** Two claims on one
+name are refused. Caddy will not choose between two site blocks that hold the
+same address, and it refuses the whole file rather than the block, so a name
+typed twice takes every hostname in the deployment down rather than the one
+that was duplicated. This is easiest to hit now that an app can declare
+several: setting one app's `hostname` to the value another app already uses for
+a role reads as two unrelated lines.
+
 **For a homeserver, `hostnames.wellknown` is not only routing. It is
 `server_name`.** It becomes the part after the colon in every user identifier
 the homeserver ever mints, and it is written into every room that homeserver
