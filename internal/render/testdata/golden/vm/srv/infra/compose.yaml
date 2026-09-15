@@ -28,7 +28,7 @@ services:
     volumes:
       - /srv/infra/etcd:/var/lib/etcd
   caddy:
-    image: caddy:2-alpine
+    image: ghcr.io/paisans-software/caddy:2.11.4@sha256:a8500d43ecd49f9227779885e7314c30be76e984e848331183ca92c1816de4a4
     restart: unless-stopped
     network_mode: host
     env_file:

@@ -160,7 +160,7 @@ func TestOwedSecretsAreReported(t *testing.T) {
 			t.Errorf("%s is owed with no reason given", o.Name)
 		}
 	}
-	if _, ok := owed["external.cloudflare_api_token"]; !ok {
+	if _, ok := owed["external.acme_dns_token"]; !ok {
 		t.Error("the DNS token was not reported as owed, and certificates need it")
 	}
 	if _, ok := owed["oidc_clients.talk"]; !ok {

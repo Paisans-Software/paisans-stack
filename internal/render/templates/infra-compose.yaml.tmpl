@@ -63,7 +63,7 @@ services:
 {{- end }}
 {{- if .Site.IsGateway }}
   caddy:
-    image: caddy:2-alpine
+    image: {{ .CaddyImage }}
     restart: unless-stopped
     network_mode: host
     env_file:

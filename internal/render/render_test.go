@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -385,7 +386,7 @@ func TestGatewayUsesDNSChallenge(t *testing.T) {
 	if !ok {
 		t.Fatal("no Caddyfile was rendered for the gateway")
 	}
-	if !strings.Contains(caddyfile, "acme_dns cloudflare") {
+	if !strings.Contains(caddyfile, "acme_dns desec") {
 		t.Errorf("the gateway does not use DNS-01:\n%s", caddyfile)
 	}
 	if _, ok := files["vm/srv/infra/caddy/caddy.env"]; !ok {
@@ -545,5 +546,53 @@ func TestEveryKindShipsACommittedTemplateSet(t *testing.T) {
 		if !config {
 			t.Errorf("%s ships no configuration template, so the stack would start unconfigured. Check that it is committed: the repository ignores .env.*", kind)
 		}
+	}
+}
+
+// The provider reaches the gateway's configuration, and the credential is named
+// for what it is rather than for whoever issues it.
+func TestTheDeclaredProviderIsRendered(t *testing.T) {
+	files := map[string]string{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+	}
+
+	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	if !strings.Contains(caddyfile, "acme_dns desec {") {
+		t.Errorf("the gateway does not use the declared provider:\n%s", caddyfile)
+	}
+	if !strings.Contains(caddyfile, "token {env.ACME_DNS_TOKEN}") {
+		t.Errorf("the gateway does not pass the credential to desec's block form:\n%s", caddyfile)
+	}
+	if strings.Contains(caddyfile, "cloudflare") {
+		t.Errorf("a provider nobody declared appears in the gateway config:\n%s", caddyfile)
+	}
+
+	env := files["vm/srv/infra/caddy/caddy.env"]
+	if !strings.Contains(env, "ACME_DNS_TOKEN=") {
+		t.Errorf("the credential is not rendered under a provider neutral name:\n%s", env)
+	}
+	if strings.Contains(env, "CLOUDFLARE") {
+		t.Errorf("a provider's name survives in the environment:\n%s", env)
+	}
+}
+
+// The image a gateway runs is the one that carries the declared provider's
+// module, pinned by digest, and never upstream's own image.
+func TestTheGatewayRunsAnImageWithTheModule(t *testing.T) {
+	files := map[string]string{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+	}
+	infra := files["vm/srv/infra/compose.yaml"]
+	want, ok := acme.Image("desec")
+	if !ok {
+		t.Fatal("desec has no published image")
+	}
+	if !strings.Contains(infra, "image: "+want) {
+		t.Errorf("the gateway does not run the image carrying its provider:\n%s", infra)
+	}
+	if strings.Contains(infra, "image: caddy:") {
+		t.Errorf("the gateway runs upstream's image, which carries no DNS module:\n%s", infra)
 	}
 }

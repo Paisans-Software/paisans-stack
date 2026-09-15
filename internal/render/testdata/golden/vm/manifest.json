@@ -23,12 +23,12 @@
     },
     {
       "path": "srv/infra/caddy/Caddyfile",
-      "sha256": "c18e5a00e23a4fe43790043a884262a73137a30a87179902757b8c4ed661bfb8",
+      "sha256": "47b4c43bcb070892b2bc4b482e03fd82512a10dba97a6f4ca39c9f9de3d0b505",
       "mode": "0644"
     },
     {
       "path": "srv/infra/caddy/caddy.env",
-      "sha256": "bcc5e6a665a4070a463ec5a9d89c37ca20e94bd58c80132a754d2c9fde2acd72",
+      "sha256": "63c1ee176d77ecd7518a773aff4acfc7b4075ecc3ebe659f00909a0167bcdd44",
       "mode": "0600"
     },
     {
@@ -58,7 +58,7 @@
     },
     {
       "path": "srv/infra/compose.yaml",
-      "sha256": "6aac5da7b2610439660f0fe99d1ea52f720d197e60fafc615f7b816a7033c573",
+      "sha256": "a93cba07fcc42ec0939e5eb5e35ae83242429211ced1895806aec056ec163bfd",
       "mode": "0644"
     }
   ]
