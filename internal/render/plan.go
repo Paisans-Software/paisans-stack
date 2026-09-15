@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
-	"github.com/josephquigley/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
 // File is one rendered artifact. Content is complete: rendering never appends

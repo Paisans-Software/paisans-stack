@@ -1,4 +1,4 @@
-module github.com/josephquigley/paisans-stack
+module github.com/paisans-software/paisans-stack
 
 go 1.25.8
 

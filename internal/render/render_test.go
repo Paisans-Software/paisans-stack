@@ -7,9 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
-	"github.com/josephquigley/paisans-stack/internal/kinds"
-	"github.com/josephquigley/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/acme"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden tree from the current output")
@@ -385,7 +386,7 @@ func TestGatewayUsesDNSChallenge(t *testing.T) {
 	if !ok {
 		t.Fatal("no Caddyfile was rendered for the gateway")
 	}
-	if !strings.Contains(caddyfile, "acme_dns cloudflare") {
+	if !strings.Contains(caddyfile, "acme_dns desec") {
 		t.Errorf("the gateway does not use DNS-01:\n%s", caddyfile)
 	}
 	if _, ok := files["vm/srv/infra/caddy/caddy.env"]; !ok {
@@ -544,6 +545,124 @@ func TestEveryKindShipsACommittedTemplateSet(t *testing.T) {
 		}
 		if !config {
 			t.Errorf("%s ships no configuration template, so the stack would start unconfigured. Check that it is committed: the repository ignores .env.*", kind)
+		}
+	}
+}
+
+// The provider reaches the gateway's configuration, and the credential is named
+// for what it is rather than for whoever issues it.
+func TestTheDeclaredProviderIsRendered(t *testing.T) {
+	files := map[string]string{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+	}
+
+	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	if !strings.Contains(caddyfile, "acme_dns desec {") {
+		t.Errorf("the gateway does not use the declared provider:\n%s", caddyfile)
+	}
+	if !strings.Contains(caddyfile, "token {env.ACME_DNS_TOKEN}") {
+		t.Errorf("the gateway does not pass the credential to desec's block form:\n%s", caddyfile)
+	}
+	if strings.Contains(caddyfile, "cloudflare") {
+		t.Errorf("a provider nobody declared appears in the gateway config:\n%s", caddyfile)
+	}
+
+	env := files["vm/srv/infra/caddy/caddy.env"]
+	if !strings.Contains(env, "ACME_DNS_TOKEN=") {
+		t.Errorf("the credential is not rendered under a provider neutral name:\n%s", env)
+	}
+	if strings.Contains(env, "CLOUDFLARE") {
+		t.Errorf("a provider's name survives in the environment:\n%s", env)
+	}
+}
+
+// The image a gateway runs is the one that carries the declared provider's
+// module, pinned by digest, and never upstream's own image.
+func TestTheGatewayRunsAnImageWithTheModule(t *testing.T) {
+	files := map[string]string{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+	}
+	infra := files["vm/srv/infra/compose.yaml"]
+	want, ok := acme.Image("desec")
+	if !ok {
+		t.Fatal("desec has no published image")
+	}
+	if !strings.Contains(infra, "image: "+want) {
+		t.Errorf("the gateway does not run the image carrying its provider:\n%s", infra)
+	}
+	if strings.Contains(infra, "image: caddy:") {
+		t.Errorf("the gateway runs upstream's image, which carries no DNS module:\n%s", infra)
+	}
+}
+
+// The escape hatch has to actually work: a declared image is what keeps a
+// provider the toolkit publishes nothing for from being lock-in, and it is
+// worth nothing unless it reaches the gateway's compose file in place of the
+// published one.
+func TestADeclaredImageReachesTheGateway(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A provider the toolkit publishes no image for, with the adopter's own
+	// image carrying its module. This is the configuration README calls the
+	// anti lock-in path.
+	cfg.ACME.Provider = "route53"
+	cfg.ACME.Image = "ghcr.io/example-org/caddy-route53:2.11.4"
+
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatalf("a declared image and an unpublished provider failed to render: %v", err)
+	}
+	files := map[string]string{}
+	for _, f := range plan.Files {
+		files[f.Path] = f.Content
+	}
+
+	infra := files["vm/srv/infra/compose.yaml"]
+	if !strings.Contains(infra, "image: "+cfg.ACME.Image) {
+		t.Errorf("the gateway does not run the declared image:\n%s", infra)
+	}
+	published, _ := acme.Image("desec")
+	if strings.Contains(infra, published) {
+		t.Errorf("the published image survived a declared one:\n%s", infra)
+	}
+	if caddyfile := files["vm/srv/infra/caddy/Caddyfile"]; !strings.Contains(caddyfile, "acme_dns route53") {
+		t.Errorf("an unpublished provider does not reach the directive:\n%s", caddyfile)
+	}
+}
+
+// A deployment with no gateway site is legitimate: internal/config requires
+// acme.provider only when a site holds the gateway role. The renderer must not
+// demand a Caddy image for a site that will never run Caddy, or a config that
+// validation accepts fails to render anyway, over an image nothing needs.
+func TestNoGatewayNeedsNoACMEProvider(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ACME = config.ACME{}
+	vm := cfg.Sites["vm"]
+	vm.Roles = []config.Role{config.RoleWitness}
+	cfg.Sites["vm"] = vm
+
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatalf("a deployment with no gateway site failed to render: %v", err)
+	}
+	for _, f := range plan.Files {
+		if strings.HasSuffix(f.Path, "caddy/Caddyfile") {
+			t.Errorf("%s was rendered although no site holds the gateway role", f.Path)
 		}
 	}
 }

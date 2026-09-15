@@ -46,14 +46,18 @@ var knownKinds = map[Kind]bool{
 // Config is a whole deployment, declared. It records intent and never status:
 // which node is primary lives in etcd, not here.
 type Config struct {
-	Version   int             `yaml:"version"`
-	Community Community       `yaml:"community"`
-	Mesh      Mesh            `yaml:"mesh"`
-	Sites     map[string]Site `yaml:"sites"`
-	Cluster   Cluster         `yaml:"cluster"`
-	Etcd      Etcd            `yaml:"etcd"`
-	Storage   Storage         `yaml:"storage"`
-	Apps      map[string]App  `yaml:"apps"`
+	Version   int       `yaml:"version"`
+	Community Community `yaml:"community"`
+	Mesh      Mesh      `yaml:"mesh"`
+	// ACME is how certificates are obtained. It is deployment wide rather than
+	// a property of the gateway site, because the gateway role moves between
+	// machines by design and certificates do not move with it.
+	ACME    ACME            `yaml:"acme"`
+	Sites   map[string]Site `yaml:"sites"`
+	Cluster Cluster         `yaml:"cluster"`
+	Etcd    Etcd            `yaml:"etcd"`
+	Storage Storage         `yaml:"storage"`
+	Apps    map[string]App  `yaml:"apps"`
 
 	// Path is where this configuration was read from. Error messages use it.
 	Path string `yaml:"-"`
@@ -97,6 +101,22 @@ func (m Mesh) Contains(address string) bool {
 	}
 	ip := net.ParseIP(address)
 	return ip != nil && network.Contains(ip)
+}
+
+// ACME is the certificate story: which DNS provider answers the challenge, and
+// optionally which Caddy image carries that provider's module.
+//
+// DNS-01 is not configurable. A gateway has to be able to hold valid
+// certificates before DNS points at it, which is what makes moving a gateway an
+// overlap rather than a cutover, and a hostname served behind a VPN has nothing
+// on the internet that can answer an HTTP-01 challenge.
+type ACME struct {
+	// Provider is the Caddy DNS provider name, as it appears in `acme_dns`.
+	Provider string `yaml:"provider"`
+	// Image overrides the Caddy image. It is only meaningful for a provider the
+	// toolkit publishes no image for: an image is the only way that provider's
+	// module reaches the gateway, since nothing is built on a host.
+	Image string `yaml:"image"`
 }
 
 type Site struct {
@@ -371,6 +391,13 @@ func (c *Config) structural() error {
 				add("apps.%s.images.%s: empty. Give a full image reference, or remove the key to take the default this kind ships.", name, service)
 			}
 		}
+	}
+	if len(c.GatewaySites()) > 0 && c.ACME.Provider == "" {
+		// The providers are deliberately not listed here. This package does not
+		// import internal/acme, by design, so any list written out would be a
+		// second copy in prose that nothing keeps in step with the catalogue.
+		// `validate` names them, built from acme.Providers.
+		add("acme.provider: required, because a site holds the gateway role. Certificates are issued over DNS-01, so the provider that answers the challenge has to be named. It must be one this toolkit publishes an image for, which `paisans validate` will list, or any other provider together with an acme.image carrying its module.")
 	}
 	if len(problems) == 0 {
 		return nil
