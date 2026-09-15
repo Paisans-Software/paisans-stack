@@ -34,6 +34,7 @@ type Kind string
 const (
 	KindElement     Kind = "element"
 	KindMbin        Kind = "mbin"
+	KindOAuth2Proxy Kind = "oauth2-proxy"
 	KindOutline     Kind = "outline"
 	KindPocketID    Kind = "pocket-id"
 	KindSynapse     Kind = "synapse"
@@ -41,7 +42,7 @@ const (
 )
 
 var knownKinds = map[Kind]bool{
-	KindElement: true, KindMbin: true, KindOutline: true, KindPocketID: true, KindSynapse: true, KindWriteFreely: true,
+	KindElement: true, KindMbin: true, KindOAuth2Proxy: true, KindOutline: true, KindPocketID: true, KindSynapse: true, KindWriteFreely: true,
 }
 
 // Kinds returns every kind this toolkit knows, sorted. It exists so that a
@@ -402,7 +403,7 @@ func (c *Config) structural() error {
 		if app.Kind == "" {
 			add("apps.%s.kind: required. Say which application this is, for example mbin or outline.", name)
 		} else if !knownKinds[app.Kind] {
-			add("apps.%s.kind: unknown kind %q. This toolkit renders element, mbin, outline, pocket-id, synapse and writefreely.", name, app.Kind)
+			add("apps.%s.kind: unknown kind %q. This toolkit renders element, mbin, oauth2-proxy, outline, pocket-id, synapse and writefreely.", name, app.Kind)
 		}
 		if app.Hostname == "" {
 			add("apps.%s.hostname: required. It is the public name the gateway routes to.", name)

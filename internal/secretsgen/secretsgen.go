@@ -174,6 +174,9 @@ func appSecretKeys(app config.App) []string {
 	if app.Kind == config.KindMbin {
 		keys = append(keys, "mercure_jwt_secret", "rabbitmq_password", "valkey_password")
 	}
+	if app.Kind == config.KindOAuth2Proxy {
+		keys = append(keys, "cookie_secret")
+	}
 	sort.Strings(keys)
 	return keys
 }

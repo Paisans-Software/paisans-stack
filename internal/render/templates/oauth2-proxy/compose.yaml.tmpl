@@ -1,0 +1,66 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Two containers from the same image, deliberately, and neither is decorative:
+#
+#   provisional  PERMISSIVE. Owns the login flow: /oauth2/start, the single
+#                registered callback, /oauth2/sign_out. Mints a session cookie
+#                for ANY authenticated user, member or not.
+#
+#   members      ENFORCING. Carries OAUTH2_PROXY_ALLOWED_GROUPS. Validates the
+#                cookie `provisional` already wrote and answers 403 for anyone
+#                the group setting excludes. It never starts a login of its
+#                own.
+#
+# This shape, and the reason it is two containers rather than one gate with
+# Caddy discriminating on a response header, is generalised from the deployment
+# this kind is built from: rsync/authgate/compose.yaml in paisans.community.
+# One gate that starts logins AND enforces membership can fail a callback
+# before any cookie is written, which strands a provisional visitor cycling
+# the login screen. Splitting the two jobs across two containers is what makes
+# the enforcing instance answerable at all.
+#
+# Ports are fixed rather than derived: provisional listens on 4180, this
+# kind's primary port (internal/render/plan.go's appPort), and members listens
+# on the next port up, 4181 (internal/render/plan.go's gateMembersPort). Both
+# are declared here as literals, matching internal/kinds/kinds.go's service
+# list, rather than computed from one another.
+name: paisans-{{ .App.Name }}
+
+services:
+  provisional:
+    image: {{ .Image "provisional" }}
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "4180:4180"
+    environment:
+      OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4180"
+      # /oauth2/auth answers for Caddy; nothing is proxied through this
+      # container. A static upstream keeps that honest.
+      OAUTH2_PROXY_UPSTREAMS: "static://202"
+    healthcheck:
+      test: ["CMD", "/bin/oauth2-proxy", "--version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  members:
+    image: {{ .Image "members" }}
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "4181:4181"
+    environment:
+      OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4181"
+      # The enforcement itself: who this instance answers 202 for. The name is
+      # the community's access policy, so it is a setting rather than a fixed
+      # value; the live deployment this generalises uses "members".
+      OAUTH2_PROXY_ALLOWED_GROUPS: {{ quote (.Setting "members_group" "members") }}
+      OAUTH2_PROXY_UPSTREAMS: "static://202"
+    healthcheck:
+      test: ["CMD", "/bin/oauth2-proxy", "--version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

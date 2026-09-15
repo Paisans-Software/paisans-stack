@@ -23,7 +23,7 @@
     },
     {
       "path": "srv/infra/caddy/Caddyfile",
-      "sha256": "cb5e9a094c6fa6992e5b388204cf3d1698c6f23e63ce035b883012afdb07421f",
+      "sha256": "58da88b8b9513fb4ba7e91965201752fdfb007d82e616b0997164a4488b9e2f5",
       "mode": "0644"
     },
     {
@@ -54,6 +54,16 @@
     {
       "path": "srv/infra/caddy/snippets/docs.caddy",
       "sha256": "7785654743fe6347de3895686346af6da5ee7cfde231789fcdcb7aead6ea7740",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/caddy/snippets/gate-gates.caddy",
+      "sha256": "f608c2e3455d3e2f483ca292cabdacee1d307cbc42b74720bb6d3c000e808d2c",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/caddy/snippets/gate.caddy",
+      "sha256": "d402a5ee4c402b3180bb7180ce5c128be7f386b57da872f0e71daaf8d9a2960d",
       "mode": "0644"
     },
     {

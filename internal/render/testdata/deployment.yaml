@@ -84,3 +84,7 @@ apps:
     placement: cluster
     settings:
       homeserver: chat.example.org
+  gate:
+    kind: oauth2-proxy
+    hostname: gate.example.org
+    placement: cluster

@@ -723,3 +723,61 @@ func TestAnAppCanHoldSeveralHostnames(t *testing.T) {
 		t.Error("the extra hostname has no snippet of its own")
 	}
 }
+
+// The gate is two instances, not one: a visitor who has authenticated is not
+// yet a member, and the two are allowed to reach different applications.
+func TestTheAuthGateRendersBothInstances(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	compose, ok := files["home-a/srv/gate/compose.yaml"]
+	if !ok {
+		t.Fatal("the gate was not rendered")
+	}
+	for _, service := range []string{"provisional:", "members:"} {
+		if !strings.Contains(compose.Content, service) {
+			t.Errorf("the gate is missing its %s instance:\n%s", service, compose.Content)
+		}
+	}
+
+	env, ok := files["home-a/srv/gate/.env"]
+	if !ok {
+		t.Fatal("the gate rendered no environment")
+	}
+	if env.Mode != 0o600 {
+		t.Errorf("the gate's environment is %04o and it carries a client secret", env.Mode)
+	}
+	if !strings.Contains(env.Content, "OIDC_ISSUER_URL=https://id.example.org") {
+		t.Errorf("the gate does not point at the identity provider:\n%s", env.Content)
+	}
+}
+
+// gate_provisional and gate_members are named snippets, not a hostname's
+// routing: nothing imports this file by path, and they must be defined before
+// anything can import them by name.
+func TestTheAuthGateShipsNamedSnippets(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	gates, ok := files["vm/srv/infra/caddy/snippets/gate-gates.caddy"]
+	if !ok {
+		t.Fatal("the gate's named snippets were not rendered onto the gateway")
+	}
+	for _, name := range []string{"(gate_provisional)", "(gate_members)"} {
+		if !strings.Contains(gates.Content, name) {
+			t.Errorf("the gate's snippet file does not define %s:\n%s", name, gates.Content)
+		}
+	}
+
+	caddyfile, ok := files["vm/srv/infra/caddy/Caddyfile"]
+	if !ok {
+		t.Fatal("no gateway configuration was rendered")
+	}
+	if !strings.Contains(caddyfile.Content, "import /etc/caddy/snippets/gate-gates.caddy") {
+		t.Errorf("the Caddyfile does not import the gate's named snippets:\n%s", caddyfile.Content)
+	}
+}

@@ -1,0 +1,20 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Routing for {{ .App.Name }}, imported by the gateway's block for
+# {{ .Hostname }}. This is the one hostname the identity provider's callback
+# is registered against, and it is NOT gated itself: gating the gate is a
+# redirect loop. Its whole surface is oauth2-proxy's own -
+# /oauth2/start, /oauth2/callback, /oauth2/sign_out, and the /oauth2/auth
+# endpoint that this kind's own gate_provisional and gate_members snippets
+# forward-auth to (see caddy.snippet.gates.tmpl) - so it proxies straight to
+# `provisional`, the permissive instance that owns the login flow, and every
+# authenticated user gets a session cookie regardless of membership.
+reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
+{{- if gt (len .Upstreams) 1 }}
+	# first, not round robin: the apps sites are not interchangeable during a
+	# failover, and a dead one must simply be skipped.
+	lb_policy first
+	fail_duration 10s
+{{- end }}
+	header_up X-Forwarded-Proto https
+}

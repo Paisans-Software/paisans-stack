@@ -28,6 +28,13 @@ type appValues struct {
 	Hostname  string
 	PublicURL string
 
+	// Domain is the community's own domain, community.domain in the
+	// configuration, never an app's own hostname. The oauth2-proxy kind scopes
+	// its cookie to it with a leading dot so one login covers every current
+	// and future subdomain, the same shape as the live authgate stack's
+	// COOKIE_DOMAINS.
+	Domain string
+
 	// TrustedProxies is the mesh subnet, never a host address, so the gateway
 	// role can move without rewriting every application's configuration.
 	TrustedProxies string
@@ -58,6 +65,13 @@ type appValues struct {
 	// hardcodes a location, which is what keeps a pinned app and a clustered
 	// app the same shape.
 	Upstreams []string
+
+	// GateMembersPort and GateMembersUpstreams describe the oauth2-proxy
+	// kind's second instance, the one enforcing "members". They are populated
+	// only for that kind: every other kind's template set has one service on
+	// one port, already covered by Upstreams and App.Port, and needs neither.
+	GateMembersPort      int
+	GateMembersUpstreams []string
 
 	secrets map[string]any
 	set     map[string]any
@@ -149,6 +163,7 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		App:            planned,
 		Hostname:       planned.Hostname,
 		PublicURL:      "https://" + planned.Hostname,
+		Domain:         p.cfg.Community.Domain,
 		TrustedProxies: p.mesh,
 		DBHost:         dbHost,
 		DBPort:         dbPort,
@@ -170,6 +185,10 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	}
 	v.OIDC = p.oidcFor(planned)
 	v.Upstreams = p.upstreams(planned.Name)
+	if planned.Kind == config.KindOAuth2Proxy {
+		v.GateMembersPort = gateMembersPort
+		v.GateMembersUpstreams = p.upstreamsOnPort(planned.Name, gateMembersPort)
+	}
 	return v, nil
 }
 

@@ -219,6 +219,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		caddyfile, err := p.renderTemplate("Caddyfile.tmpl", map[string]any{
 			"Domain":         p.cfg.Community.Domain,
 			"Routes":         p.routes(),
+			"GateSnippets":   p.gateSnippetMounts(),
 			"TrustedProxies": p.mesh,
 			"ACMEDirective":  acme.Directive(p.cfg.ACME.Provider),
 		})
@@ -232,6 +233,12 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			return nil, err
 		}
 		files = append(files, snippets...)
+
+		gateSnippets, err := p.renderGateSnippets(base)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, gateSnippets...)
 
 		env, err := p.renderTemplate("caddy.env.tmpl", map[string]any{
 			"ACMEDNSToken": p.secrets.External["acme_dns_token"],
@@ -309,6 +316,56 @@ func (p *planner) renderSnippets(base string) ([]File, error) {
 		files = append(files, File{Path: base + snippetDir + name + ".caddy", Content: content, Mode: 0o644})
 	}
 	return files, nil
+}
+
+// gateSnippetTemplate defines the oauth2-proxy kind's named Caddy snippets,
+// gate_provisional and gate_members. It is not a hostname's routing: nothing
+// imports it by path, and no host block is rendered for it. A later kind's
+// own snippet imports the names it defines, the same way the deployment this
+// toolkit generalises imports its single `(pocketid_gate)` snippet by name.
+const gateSnippetTemplate = "caddy.snippet.gates.tmpl"
+
+// renderGateSnippets renders every oauth2-proxy app's named gate snippets onto
+// the gateway. It walks every app in the configuration, not just this site's
+// own, for the same reason renderSnippets does: the gateway routes to
+// applications wherever they run.
+func (p *planner) renderGateSnippets(base string) ([]File, error) {
+	var files []File
+	for _, name := range p.cfg.AppNames() {
+		app := p.cfg.Apps[name]
+		if app.Kind != config.KindOAuth2Proxy {
+			continue
+		}
+		planned, err := p.plannedFor(name, app)
+		if err != nil {
+			return nil, err
+		}
+		values, err := p.values(planned, app)
+		if err != nil {
+			return nil, err
+		}
+		path := "templates/" + string(app.Kind) + "/" + gateSnippetTemplate
+		content, err := p.renderFile(path, values)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, File{Path: base + snippetDir + name + "-gates.caddy", Content: content, Mode: 0o644})
+	}
+	return files, nil
+}
+
+// gateSnippetMounts is where each oauth2-proxy app's gate snippet file lands,
+// as the Caddy container sees it. The Caddyfile imports each at the top
+// level, before any site block, because a named Caddy snippet has to be
+// defined before something else can import it by name.
+func (p *planner) gateSnippetMounts() []string {
+	var out []string
+	for _, name := range p.cfg.AppNames() {
+		if p.cfg.Apps[name].Kind == config.KindOAuth2Proxy {
+			out = append(out, snippetMount+name+"-gates.caddy")
+		}
+	}
+	return out
 }
 
 // plannedFor rebuilds an app's planned form for the gateway, which needs its
@@ -561,7 +618,19 @@ func (p *planner) upstreams(name string) []string {
 	if !ok {
 		return nil
 	}
-	port := appPort[app.Kind]
+	return p.upstreamsOnPort(name, appPort[app.Kind])
+}
+
+// upstreamsOnPort is upstreams with the port supplied rather than looked up,
+// for the one case where an app answers on a second, explicitly declared
+// port: the oauth2-proxy kind's members instance. It exists so that finding a
+// members upstream never computes a port from another kind's port, only from
+// the literal gateMembersPort.
+func (p *planner) upstreamsOnPort(name string, port int) []string {
+	app, ok := p.cfg.Apps[name]
+	if !ok {
+		return nil
+	}
 	if app.Placement.Mode == config.PlacementPinned {
 		site, ok := p.sites[app.Placement.Site]
 		if !ok {

@@ -33,11 +33,20 @@ type Plan struct {
 var appPort = map[config.Kind]int{
 	config.KindElement:     80,
 	config.KindMbin:        8080,
+	config.KindOAuth2Proxy: 4180,
 	config.KindOutline:     3000,
 	config.KindPocketID:    1411,
 	config.KindSynapse:     8008,
 	config.KindWriteFreely: 8080,
 }
+
+// gateMembersPort is the oauth2-proxy kind's second instance, one port above
+// the primary. It is a literal here, not appPort[config.KindOAuth2Proxy]+1:
+// the kind ships exactly two fixed ports, both declared explicitly in
+// internal/kinds/kinds.go's service list and in the kind's own templates, so
+// nothing computes a port at render time that those files did not already
+// name.
+const gateMembersPort = 4181
 
 // patroniAPIPort is where Patroni answers the health check HAProxy uses to
 // find the primary. It is fixed by Spilo.
