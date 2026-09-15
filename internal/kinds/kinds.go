@@ -48,6 +48,17 @@ const PostgresService = "postgres"
 // map on service names: a key that does not exist here is a typo, and the
 // toolkit says so rather than ignoring it.
 var catalogue = map[config.Kind][]Service{
+	config.KindElement: {
+		// No database: Element is a static client that talks to a homeserver
+		// the browser reaches directly.
+		//
+		// v1.12.27 checked against ghcr.io on 2026-09-15 by requesting the
+		// manifest for that exact tag, which resolved (200, an OCI image
+		// index). The registry's tag list was paged through in full and
+		// v1.12.27 is the newest non release candidate tag; v1.12.28-rc.1
+		// exists but is a release candidate, not a release.
+		{Name: "app", Image: "ghcr.io/element-hq/element-web:v1.12.27", Purpose: "the web client"},
+	},
 	config.KindMbin: {
 		{Name: "app", Image: "ghcr.io/mbinorg/mbin:v1.10.1", Purpose: "the application"},
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},

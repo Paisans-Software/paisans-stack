@@ -1,0 +1,9 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Routing for web, imported by the gateway's block for
+# web.example.org. A static client needs nothing but the proxy.
+reverse_proxy 10.44.0.1:80 10.44.0.2:80 {
+	lb_policy first
+	fail_duration 10s
+	header_up X-Forwarded-Proto https
+}

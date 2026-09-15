@@ -31,6 +31,7 @@ type Plan struct {
 // gateway needs it to route, and it is a property of the software rather than
 // of a deployment, so it is not configurable.
 var appPort = map[config.Kind]int{
+	config.KindElement:     80,
 	config.KindMbin:        8080,
 	config.KindOutline:     3000,
 	config.KindPocketID:    1411,

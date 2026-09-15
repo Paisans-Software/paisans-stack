@@ -51,3 +51,7 @@ id.example.org {
 talk.example.org {
 	import /etc/caddy/snippets/talk.caddy
 }
+
+web.example.org {
+	import /etc/caddy/snippets/web.caddy
+}

@@ -76,3 +76,9 @@ apps:
     # Pinned because it cannot be anything else: no Postgres, so a SQLite file
     # per apps site would be two divergent blogs behind one hostname.
     placement: { pinned: home-a }
+  web:
+    kind: element
+    hostname: web.example.org
+    placement: cluster
+    settings:
+      homeserver: chat.example.org

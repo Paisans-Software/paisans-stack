@@ -1,0 +1,17 @@
+{
+  "default_server_config": {
+    "m.homeserver": {
+      "base_url": "https://{{ .Setting "homeserver" .Hostname }}",
+      "server_name": "{{ .Setting "server_name" (.Setting "homeserver" .Hostname) }}"
+    }
+  },
+  "brand": "{{ .Setting "brand" "Element" }}",
+  "disable_custom_urls": true,
+  "disable_guests": true,
+  "disable_3pid_login": true,
+  "show_labs_settings": false,
+  "setting_defaults": {
+    "UIFeature.registration": false,
+    "UIFeature.passwordReset": false
+  }
+}

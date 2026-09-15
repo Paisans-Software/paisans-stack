@@ -1,0 +1,15 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Element holds no state. Its runtime configuration is a file the container
+# serves to the browser, which is why it is bind mounted rather than passed as
+# environment: the browser fetches it, so it was never secret.
+name: paisans-{{ .App.Name }}
+
+services:
+  app:
+    image: {{ .Image "app" }}
+    restart: unless-stopped
+    ports:
+      - "{{ .App.Port }}:{{ .App.Port }}"
+    volumes:
+      - {{ .DataPath }}/config.json:/app/config.json:ro

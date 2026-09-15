@@ -666,3 +666,31 @@ func TestNoGatewayNeedsNoACMEProvider(t *testing.T) {
 		}
 	}
 }
+
+// Element is a static web client: no database, no secrets of its own, and a
+// runtime configuration naming the homeserver it talks to.
+func TestElementRendersAClientConfig(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	compose, ok := files["home-a/srv/web/compose.yaml"]
+	if !ok {
+		t.Fatal("the element app was not rendered")
+	}
+	if strings.Contains(compose.Content, "postgres") {
+		t.Error("element was given a database, and it has no state at all")
+	}
+
+	config, ok := files["home-a/srv/web/config.json"]
+	if !ok {
+		t.Fatal("element rendered no runtime configuration")
+	}
+	if !strings.Contains(config.Content, "chat.example.org") {
+		t.Errorf("element's config does not name its homeserver:\n%s", config.Content)
+	}
+	if config.Mode != 0o644 {
+		t.Errorf("element's config is %04o; it carries no secret and wants 0644", config.Mode)
+	}
+}

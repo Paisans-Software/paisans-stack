@@ -32,6 +32,7 @@ var knownRoles = map[Role]bool{RoleData: true, RoleApps: true, RoleGateway: true
 type Kind string
 
 const (
+	KindElement     Kind = "element"
 	KindMbin        Kind = "mbin"
 	KindOutline     Kind = "outline"
 	KindPocketID    Kind = "pocket-id"
@@ -40,7 +41,7 @@ const (
 )
 
 var knownKinds = map[Kind]bool{
-	KindMbin: true, KindOutline: true, KindPocketID: true, KindSynapse: true, KindWriteFreely: true,
+	KindElement: true, KindMbin: true, KindOutline: true, KindPocketID: true, KindSynapse: true, KindWriteFreely: true,
 }
 
 // Config is a whole deployment, declared. It records intent and never status:
@@ -381,7 +382,7 @@ func (c *Config) structural() error {
 		if app.Kind == "" {
 			add("apps.%s.kind: required. Say which application this is, for example mbin or outline.", name)
 		} else if !knownKinds[app.Kind] {
-			add("apps.%s.kind: unknown kind %q. This toolkit renders mbin, outline, pocket-id, synapse and writefreely.", name, app.Kind)
+			add("apps.%s.kind: unknown kind %q. This toolkit renders element, mbin, outline, pocket-id, synapse and writefreely.", name, app.Kind)
 		}
 		if app.Hostname == "" {
 			add("apps.%s.hostname: required. It is the public name the gateway routes to.", name)
