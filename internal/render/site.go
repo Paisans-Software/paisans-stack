@@ -15,6 +15,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
 // The `all:` prefix matters: without it embed skips files beginning with a
@@ -107,11 +108,16 @@ type peerView struct {
 }
 
 type route struct {
-	App       string
+	App string
+	// Role is here so a later task can gate the host block on it: whether an
+	// import belongs in this block is a fact about which hostname it is, not
+	// about the app in general.
+	Role      string
 	Hostname  string
 	Upstreams []string
-	// Snippet is where the app's own routing lives on the gateway, as the
-	// container sees it. The host block imports it rather than containing it.
+	// Snippet is where this hostname's own routing lives on the gateway, as
+	// the container sees it. The host block imports it rather than
+	// containing it.
 	Snippet string
 }
 
@@ -248,9 +254,16 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 }
 
 // snippetTemplate is the file in a kind's set that describes how the gateway
-// routes to it. It is rendered onto the gateway rather than beside the app,
-// because that is where it is read.
-const snippetTemplate = "caddy.snippet.tmpl"
+// routes to it on its primary hostname. It is rendered onto the gateway
+// rather than beside the app, because that is where it is read.
+//
+// snippetPrefix matches it and every extra hostname's own snippet, such as
+// caddy.snippet.wellknown.tmpl, all of which belong to the gateway for the
+// same reason.
+const (
+	snippetTemplate = "caddy.snippet.tmpl"
+	snippetPrefix   = "caddy.snippet."
+)
 
 // snippetDir is where snippets land on the gateway, and snippetMount is the
 // same directory as the Caddy container sees it. The Caddyfile imports by the
@@ -260,15 +273,17 @@ const (
 	snippetMount = "/etc/caddy/snippets/"
 )
 
-// renderSnippets renders every app's routing onto a gateway.
+// renderSnippets renders every hostname's routing onto a gateway.
 //
 // It walks the whole configuration rather than the gateway's own apps: a
 // gateway routes to applications that run elsewhere, which is the usual case.
+// One route renders one snippet, from the template its role selects, because
+// two hostnames on the same app can serve entirely different things.
 func (p *planner) renderSnippets(base string) ([]File, error) {
 	var files []File
-	for _, name := range p.cfg.AppNames() {
-		app := p.cfg.Apps[name]
-		planned, err := p.plannedFor(name, app)
+	for _, r := range p.routes() {
+		app := p.cfg.Apps[r.App]
+		planned, err := p.plannedFor(r.App, app)
 		if err != nil {
 			return nil, err
 		}
@@ -276,10 +291,20 @@ func (p *planner) renderSnippets(base string) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		path := "templates/" + string(app.Kind) + "/" + snippetTemplate
+		// The snippet names the hostname it serves, not the app's primary: the
+		// apex snippet for a homeserver has to say the apex, never the API
+		// name, or its own comments would lie about which name reaches it.
+		values.Hostname = r.Hostname
+		values.PublicURL = "https://" + r.Hostname
+
+		path := "templates/" + string(app.Kind) + "/" + kinds.SnippetFor(r.Role)
 		content, err := p.renderFile(path, values)
 		if err != nil {
 			return nil, err
+		}
+		name := r.App
+		if r.Role != kinds.PrimaryRole {
+			name = r.App + "-" + r.Role
 		}
 		files = append(files, File{Path: base + snippetDir + name + ".caddy", Content: content, Mode: 0o644})
 	}
@@ -351,8 +376,9 @@ func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error)
 		if !strings.HasSuffix(path, ".tmpl") {
 			return fmt.Errorf("%s is in a template set but is not a template. Every file in a set is rendered, so there is nowhere for a plain file to go", path)
 		}
-		if strings.TrimPrefix(path, dir+"/") == snippetTemplate {
-			// Routing belongs to the gateway, not to the app's own directory.
+		if strings.HasPrefix(strings.TrimPrefix(path, dir+"/"), snippetPrefix) {
+			// Routing belongs to the gateway, not to the app's own directory,
+			// whichever hostname it is for.
 			return nil
 		}
 		rel := strings.TrimSuffix(strings.TrimPrefix(path, dir+"/"), ".tmpl")
@@ -501,17 +527,28 @@ func (p *planner) relays() []string {
 	return out
 }
 
-// routes is the gateway's inventory: one host block per app, each importing
-// that app's own snippet.
+// routes is the gateway's inventory: one host block per hostname, each
+// importing the snippet for that hostname's role.
 func (p *planner) routes() []route {
 	var out []route
 	for _, name := range p.cfg.AppNames() {
+		app := p.cfg.Apps[name]
 		out = append(out, route{
 			App:       name,
-			Hostname:  p.cfg.Apps[name].Hostname,
+			Role:      kinds.PrimaryRole,
+			Hostname:  app.Hostname,
 			Upstreams: p.upstreams(name),
 			Snippet:   snippetMount + name + ".caddy",
 		})
+		for _, role := range sortedKeys(app.Hostnames) {
+			out = append(out, route{
+				App:       name,
+				Role:      role,
+				Hostname:  app.Hostnames[role],
+				Upstreams: p.upstreams(name),
+				Snippet:   snippetMount + name + "-" + role + ".caddy",
+			})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })
 	return out

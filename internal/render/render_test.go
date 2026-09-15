@@ -694,3 +694,32 @@ func TestElementRendersAClientConfig(t *testing.T) {
 		t.Errorf("element's config is %04o; it carries no secret and wants 0644", config.Mode)
 	}
 }
+
+// One app can answer on several hostnames, and each gets its own routing. The
+// case that forces it: a Matrix homeserver serves its API on one name and its
+// .well-known delegation on the apex, and those are not the same routing.
+func TestAnAppCanHoldSeveralHostnames(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	caddyfile, ok := files["vm/srv/infra/caddy/Caddyfile"]
+	if !ok {
+		t.Fatal("no gateway configuration was rendered")
+	}
+	for _, hostname := range []string{"chat.example.org", "example.org"} {
+		if !strings.Contains(caddyfile.Content, "\n"+hostname+" {") {
+			t.Errorf("the gateway has no host block for %s:\n%s", hostname, caddyfile.Content)
+		}
+	}
+
+	// Each hostname imports its own snippet, because the apex serves only the
+	// delegation documents while the primary serves the whole API.
+	if _, ok := files["vm/srv/infra/caddy/snippets/chat.caddy"]; !ok {
+		t.Error("the primary hostname has no snippet")
+	}
+	if _, ok := files["vm/srv/infra/caddy/snippets/chat-wellknown.caddy"]; !ok {
+		t.Error("the extra hostname has no snippet of its own")
+	}
+}

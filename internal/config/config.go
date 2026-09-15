@@ -193,6 +193,12 @@ type App struct {
 	// kind; this is for a different build of the same software.
 	Images   map[string]string `yaml:"images"`
 	Settings map[string]any    `yaml:"settings"`
+
+	// Hostnames are the additional names this app answers on, keyed by a role
+	// the kind understands. The primary hostname stays in Hostname; a role here
+	// selects a different Caddy snippet, because a second hostname usually
+	// exists to serve something different rather than the same thing twice.
+	Hostnames map[string]string `yaml:"hostnames"`
 }
 
 // PlacementMode is where an app runs. There are exactly two, and pinned is the
@@ -404,6 +410,14 @@ func (c *Config) structural() error {
 		for _, service := range sortedKeys(app.Images) {
 			if strings.TrimSpace(app.Images[service]) == "" {
 				add("apps.%s.images.%s: empty. Give a full image reference, or remove the key to take the default this kind ships.", name, service)
+			}
+		}
+		for _, role := range sortedKeys(app.Hostnames) {
+			if role == "primary" {
+				add("apps.%s.hostnames.primary: use the `hostname` key for the primary name. A role here names an additional hostname, and two places to write the same name is one place to get it wrong.", name)
+			}
+			if strings.TrimSpace(app.Hostnames[role]) == "" {
+				add("apps.%s.hostnames.%s: empty. Give a hostname, or remove the role.", name, role)
 			}
 		}
 	}

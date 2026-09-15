@@ -23,7 +23,7 @@
     },
     {
       "path": "srv/infra/caddy/Caddyfile",
-      "sha256": "d8cf5d159cc18b29c24d34d0d51ec4ce532eb43d78f87c0b5823762edb2bf0a1",
+      "sha256": "cb5e9a094c6fa6992e5b388204cf3d1698c6f23e63ce035b883012afdb07421f",
       "mode": "0644"
     },
     {
@@ -39,6 +39,11 @@
     {
       "path": "srv/infra/caddy/snippets/blog.caddy",
       "sha256": "3b8d153a3792d9c4599d108e1c4702a8a356eaa3e0271cf556a6a96161050e1f",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/caddy/snippets/chat-wellknown.caddy",
+      "sha256": "46c832f77c7cd8ece608c0456936c87d41966b7eba56e50bda12d027489e8a6f",
       "mode": "0644"
     },
     {

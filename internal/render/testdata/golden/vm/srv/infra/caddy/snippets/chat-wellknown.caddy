@@ -1,0 +1,8 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Placeholder. This snippet exists so that a synapse app declaring the
+# wellknown role renders a complete gateway rather than an import of a file
+# that is not there: hostname roles land before the routing they name does.
+# A later task replaces this with the real /.well-known/matrix/server and
+# /.well-known/matrix/client responses for example.org.
+respond "not yet configured" 501

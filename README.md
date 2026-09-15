@@ -539,6 +539,27 @@ reloading it, and refuses to reload one that does not validate.** A rendered
 snippet that is wrong should cost the operator an error message on the
 workstation, not the public address of every application at once.
 
+#### An app may answer on more than one hostname
+
+```yaml
+apps:
+  chat:
+    kind: synapse
+    hostname: matrix.example.org
+    hostnames:
+      wellknown: example.org
+```
+
+Each hostname gets its own host block and its own snippet, because a second
+hostname almost always exists to serve something *different*. A homeserver is
+the worked example: the API lives on one name, and the `.well-known`
+delegation documents live on whatever name appears in user identifiers. Routing
+them identically would publish the entire API on the apex.
+
+The key is a **role**, not a label: it selects which snippet the kind ships. A
+role a kind does not understand is refused, because the alternative is a
+gateway that fails to load its whole configuration over one missing import.
+
 ### Decryption happens on a workstation, not on a host
 
 Rendering locally and pushing means no age key ever reaches a host. That

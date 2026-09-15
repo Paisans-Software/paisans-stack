@@ -44,6 +44,10 @@ docs.example.org {
 	import /etc/caddy/snippets/docs.caddy
 }
 
+example.org {
+	import /etc/caddy/snippets/chat-wellknown.caddy
+}
+
 id.example.org {
 	import /etc/caddy/snippets/auth.caddy
 }

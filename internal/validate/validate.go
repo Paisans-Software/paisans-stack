@@ -129,6 +129,7 @@ func Check(cfg *config.Config) Result {
 	c.acmeProviderHasAnImage()
 	c.acmeImageIsNotStockCaddy()
 	c.floatingACMEImage()
+	c.hostnameRoles()
 
 	c.evenVoters()
 	c.meshIsNotPrivate()
@@ -593,4 +594,24 @@ func (c *checker) floatingACMEImage() {
 	c.refuse("acme-image-is-floating", "acme.image",
 		"is %q and %s. The gateway's image carries the DNS provider module compiled in, so a tag that moves can drop the module the configuration names, and the gateway would then hold no certificate for any hostname. Name a version tag, or a digest, which is stronger.",
 		c.cfg.ACME.Image, why)
+}
+
+// hostnameRoles refuses a hostname role the kind ships no snippet for.
+//
+// A role selects a Caddy snippet. A role nobody ships renders a host block
+// importing a file that does not exist, so the gateway fails to load its whole
+// configuration, taking every other hostname down with it. That is incoherent
+// rather than risky.
+func (c *checker) hostnameRoles() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		for _, role := range sortedKeys(app.Hostnames) {
+			if kinds.HasHostnameRole(app.Kind, role) {
+				continue
+			}
+			c.refuse("unknown-hostname-role", fmt.Sprintf("apps.%s.hostnames.%s", name, role),
+				"names a hostname role %q, which the %s kind does not understand. A role selects the Caddy snippet that hostname gets, so an unknown one would import a file that does not exist and the gateway would fail to load at all. Roles for this kind: %s.",
+				role, app.Kind, strings.Join(kinds.HostnameRoles(app.Kind), ", "))
+		}
+	}
 }
