@@ -35,23 +35,16 @@
 # follow a redirect to a passkey prompt, so a gate here breaks every client
 # login rather than protecting anything. Access control belongs at the identity
 # provider, where the group restriction decides who may be provisioned at all.
+{{- /* One upstream each, never a list: this kind is pinned by design and
+internal/validate refuses any other placement, so both containers are at one
+named site and there is nothing to load balance across. */}}
 {{- define "mas" }}
 	reverse_proxy{{ range .MASUpstreams }} {{ . }}{{ end }} {
-{{- if gt (len .MASUpstreams) 1 }}
-		lb_policy first
-		fail_duration 10s
-{{- end }}
 		header_up X-Forwarded-Proto https
 	}
 {{- end }}
 {{- define "homeserver" }}
 	reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
-{{- if gt (len .Upstreams) 1 }}
-		# first, not round robin: the apps sites are not interchangeable during
-		# a failover, and a dead one must simply be skipped.
-		lb_policy first
-		fail_duration 10s
-{{- end }}
 		header_up X-Forwarded-Proto https
 		# Media and event uploads are larger than a default proxy read allows
 		# for.
