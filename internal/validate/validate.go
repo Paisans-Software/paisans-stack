@@ -599,12 +599,6 @@ func (c *checker) floatingACMEImage() {
 		c.cfg.ACME.Image, why)
 }
 
-// hostnameRoles refuses a hostname role the kind ships no snippet for.
-//
-// A role selects a Caddy snippet. A role nobody ships renders a host block
-// importing a file that does not exist, so the gateway fails to load its whole
-// configuration, taking every other hostname down with it. That is incoherent
-// rather than risky.
 // gateWithoutAGate refuses an app declaring a gate when the deployment runs
 // none.
 //
@@ -687,6 +681,12 @@ func (c *checker) homeserverMustBePinned() {
 	}
 }
 
+// hostnameRoles refuses a hostname role the kind ships no snippet for.
+//
+// A role selects a Caddy snippet. A role nobody ships renders a host block
+// importing a file that does not exist, so the gateway fails to load its whole
+// configuration, taking every other hostname down with it. That is incoherent
+// rather than risky.
 func (c *checker) hostnameRoles() {
 	for _, name := range c.cfg.AppNames() {
 		app := c.cfg.Apps[name]
