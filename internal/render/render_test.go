@@ -597,6 +597,47 @@ func TestTheGatewayRunsAnImageWithTheModule(t *testing.T) {
 	}
 }
 
+// The escape hatch has to actually work: a declared image is what keeps a
+// provider the toolkit publishes nothing for from being lock-in, and it is
+// worth nothing unless it reaches the gateway's compose file in place of the
+// published one.
+func TestADeclaredImageReachesTheGateway(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A provider the toolkit publishes no image for, with the adopter's own
+	// image carrying its module. This is the configuration README calls the
+	// anti lock-in path.
+	cfg.ACME.Provider = "route53"
+	cfg.ACME.Image = "ghcr.io/example-org/caddy-route53:2.11.4"
+
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatalf("a declared image and an unpublished provider failed to render: %v", err)
+	}
+	files := map[string]string{}
+	for _, f := range plan.Files {
+		files[f.Path] = f.Content
+	}
+
+	infra := files["vm/srv/infra/compose.yaml"]
+	if !strings.Contains(infra, "image: "+cfg.ACME.Image) {
+		t.Errorf("the gateway does not run the declared image:\n%s", infra)
+	}
+	published, _ := acme.Image("desec")
+	if strings.Contains(infra, published) {
+		t.Errorf("the published image survived a declared one:\n%s", infra)
+	}
+	if caddyfile := files["vm/srv/infra/caddy/Caddyfile"]; !strings.Contains(caddyfile, "acme_dns route53") {
+		t.Errorf("an unpublished provider does not reach the directive:\n%s", caddyfile)
+	}
+}
+
 // A deployment with no gateway site is legitimate: internal/config requires
 // acme.provider only when a site holds the gateway role. The renderer must not
 // demand a Caddy image for a site that will never run Caddy, or a config that

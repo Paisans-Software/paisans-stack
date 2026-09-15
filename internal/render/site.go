@@ -80,6 +80,13 @@ func (p *planner) caddyImage() (string, error) {
 	}
 	image, ok := acme.Image(p.cfg.ACME.Provider)
 	if !ok {
+		// Kept rather than deleted, and unreachable through the CLI: `paisans`
+		// runs validate first, and acme-provider-needs-an-image refuses this
+		// configuration there with a message written for an operator. This is
+		// the library level guard for a caller that reaches render.Build
+		// without validating, which is a supported way to use this package.
+		// Without it the template would write `image: ` and the operator would
+		// meet the problem as a compose file the host rejects.
 		return "", fmt.Errorf(
 			"acme.provider %q has no image in this toolkit and acme.image declares none. A DNS provider is a module compiled into Caddy, so an image carrying it is the only way it reaches a gateway. Published providers: %s",
 			p.cfg.ACME.Provider, strings.Join(acme.Providers(), ", "))
