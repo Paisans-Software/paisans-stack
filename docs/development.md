@@ -13,17 +13,41 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 
 ## Run
 
-Two commands exist so far, and neither touches a network or a host.
+Four commands exist so far. Three touch nothing outside the working directory.
+`apply` is the exception and is the only code path here that reaches a machine.
 
 ```
 paisans validate --config examples/paisans.example.yaml
+paisans init     --config examples/paisans.example.yaml
 paisans render   --config examples/paisans.example.yaml \
                  --secrets secrets.enc.yaml --out ./out
+paisans apply    --site home-a            # shows what would change
+paisans apply    --site home-a --execute  # does it
 ```
 
 `validate` loads a declaration and prints every problem it finds, rather than
 stopping at the first, because fixing a file one error per run is miserable. It
 exits non zero when anything was refused.
+
+`init` generates the secrets a declaration needs and writes them, encrypted to
+the age recipients named in a `.sops.yaml` beside the file. It prints names and
+never values, because a secret printed to a terminal is in a scrollback buffer
+and often in a multiplexer's log as well. Three things about it are load
+bearing:
+
+* **It never replaces a value that exists.** Regenerating a WireGuard key breaks
+  every peer that trusted the old one; regenerating a database password locks an
+  application out of a role that still holds the old one. Re-running `init` is
+  therefore the intended way to fill in a site or an app added to the
+  configuration later, and the second run of an unchanged deployment writes
+  nothing at all.
+* **It generates only what it can.** A DNS token is issued by a provider and an
+  OIDC client secret is minted by a running identity provider, where creating
+  one is a mutation a human approves. Both are reported as owed, with the reason,
+  rather than invented or left silent.
+* **Without an age recipient it writes plaintext and says so loudly.** Refusing
+  would leave an operator holding generated secrets that went nowhere, and a
+  first look at the tool must not require a key.
 
 `render` validates, then writes per site artifacts under `--out`. It writes
 files and stops: pushing them to a host is a later slice.
@@ -31,6 +55,60 @@ files and stops: pushing them to a host is a later slice.
 The example validates with exactly one warning, and that warning is
 deliberate. Its Synapse stack is pinned to the site that also holds the witness
 role, which the design warns about rather than refuses.
+
+## `apply`, and the gates in it
+
+`apply` is one site at a time, and a dry run unless `--execute` is given. Both
+are deliberate: a staged change that half succeeds across three machines is
+worse than one that failed on one, and the difference between "show me" and "do
+it" should be a flag an operator typed rather than a habit they formed.
+
+The order inside it is the design, not an implementation detail. Everything is
+compared first, so a conflict is found before a single byte is written; an apply
+that wrote files as it discovered them could leave a stack half updated and then
+refuse.
+
+**A file edited on the host is a conflict, and a conflict stops the whole
+apply.** Rendered files are build artifacts and nothing edits them in place, so
+a file that differs from what the last apply recorded is a change somebody made
+on the machine. The record is a manifest at `/srv/.paisans-manifest.json`,
+written after every successful apply; without it, every apply would be a blind
+overwrite. A file present on the host that no apply ever wrote is somebody
+else's too, and is a conflict rather than something to adopt, which is the case
+on any host that was set up by hand before the toolkit existed.
+
+**The narrower action wins.** A changed bind mounted configuration file needs a
+restart at most, and the container keeps its identity. Only a changed `.env` or
+`compose.yaml` needs `up -d`, because Compose passes environment at start and a
+running container cannot be told about a new value. A recreate is an outage,
+however brief, so it is not the default action for every change.
+
+**The assembled gateway configuration is validated before any reload, and a
+failure stops the reload.** It is built from per app snippets, so a wrong
+snippet is a wrong configuration for every hostname at once. The cost of that
+mistake should be an error message on the workstation, not the public address of
+every application.
+
+### Why ssh is shelled out to and sops is not
+
+The opposite choice in each case, for the same reason: what the operator already
+has.
+
+`sops` and `age` are embedded because their alternative is telling an operator to
+install two binaries before they can render anything, and because no code path
+here may put a decryption key on a host.
+
+`ssh` is shelled out to because every operator already has one, and theirs
+already knows things this toolkit should never learn: their agent, their keys,
+their `~/.ssh/config` with its jump hosts and per host users, their
+`known_hosts`. An embedded client would have to reimplement that or, far worse,
+invite a toolkit specific way to hand it a private key.
+
+File contents go to the host over stdin rather than in a command line, because a
+rendered file carries credentials and a command line is visible in `ps` to every
+user on the host. Each write lands in a temporary file that is then moved, so a
+failed transfer leaves the previous file intact rather than a truncated one an
+application would happily read.
 
 ## Refuse and warn
 
@@ -99,8 +177,10 @@ installed, on a workstation or anywhere else.
 | `cmd/paisans` | the command, flag parsing, and how findings are printed |
 | `internal/config` | loading `paisans.yaml`, and decrypting `secrets.enc.yaml` |
 | `internal/validate` | the rules, and nothing else |
+| `internal/secretsgen` | what a deployment's secrets are, and which of them the toolkit may invent |
 | `internal/kinds` | what an application kind is: its compose services, and the image each runs by default |
 | `internal/render` | placement, templates, and the writer |
+| `internal/apply` | the only package that reaches a host: what to push, what to restart, and the gates before either |
 | `internal/render/templates` | the infrastructure templates, plus one directory per kind |
 
 Templating is `text/template` from the standard library. No template engine is
@@ -223,8 +303,10 @@ use them are a job for `apply`.
 
 ## What is not here yet
 
-No SSH, no Docker, no etcd, and none of `init`, `site add`, `apply`,
-`failover` or `backup`. The gateway configuration is assembled from per app
+No etcd, no preflight, and none of `site add`, `failover` or `backup`. `apply`
+pushes files and takes the narrowest action that makes them live; it does not
+bootstrap a site that has nothing on it, and it has never been run against a
+real host. The gateway configuration is assembled from per app
 snippets, so `apply` will have to validate the assembled file and refuse to
 reload one that does not validate: a wrong snippet should cost an error message
 on the workstation rather than the public address of every application at once.
