@@ -4,12 +4,28 @@
 # {{ .Hostname }}. Two services answer on this one hostname: the homeserver and
 # Matrix Authentication Service in front of it.
 #
-# ORDER IS LOAD-BEARING, and it is the thing to get right here. `handle` blocks
-# are mutually exclusive and evaluated in the order written, so the three
-# compatibility login paths must come BEFORE the /_matrix/* catch all.
-# Reversing them sends every login to the homeserver, which no longer knows how
-# to answer one, and the failure reads as a broken client rather than a broken
-# proxy.
+# WHICH HANDLE WINS IS LOAD-BEARING, and it is the thing to get right here.
+# `handle` blocks are mutually exclusive, and Caddy decides between them by
+# PATH MATCHER LENGTH, not by the order they are written in: it sorts routes of
+# the same directive longest matcher first, trailing `*` trimmed, ties broken
+# lexically (caddyconfig/httpcaddyfile/directives.go, sortRoutes, read at
+# v2.11.4, the version this toolkit pins). A `handle` with no path matcher
+# sorts last, which is what makes the bare one at the end of this file MAS's
+# fallback.
+#
+# So the three compatibility login paths reach MAS because
+# `/_matrix/client/*/login` and its two siblings are longer than `/_matrix/*`,
+# and they would still reach MAS if somebody moved them below it. The file is
+# written in the order it sorts into so that reading it top to bottom matches
+# what happens, but the file's order is a courtesy to the reader and nothing
+# more. The proof is in this very file: the `/.well-known/matrix/*` handle
+# below is written after both catch alls and still wins, because it is longer.
+#
+# What would actually break the split is a matcher, not a move: a new handle
+# under /_matrix whose path is LONGER than one of the login paths and overlaps
+# it would take those requests to wherever it points. Every login then reaches
+# the homeserver, which no longer knows how to answer one, and the failure
+# reads as a broken client rather than a broken proxy.
 #
 # Everything outside /_matrix and /_synapse is MAS's own surface: /login,
 # /account, /authorize, /upstream/callback/<id> and
@@ -69,9 +85,9 @@ handle /_synapse/* {
 {{- template "homeserver" . }}
 }
 {{- if eq .ServerName .App.Hostname }}
-# Ahead of the bare handle below, which is MAS's, and narrower than
-# /.well-known/ as a whole: /.well-known/openid-configuration is MAS's own and
-# must keep reaching it.
+# Longer than the bare handle below, which is MAS's and has no matcher at all,
+# and narrower than /.well-known/ as a whole: /.well-known/openid-configuration
+# is MAS's own and must keep reaching it.
 handle /.well-known/matrix/* {
 {{- template "homeserver" . }}
 }

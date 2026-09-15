@@ -898,11 +898,24 @@ func TestSynapseAndMASShareOneSecret(t *testing.T) {
 	}
 }
 
-// Order is the whole point of this snippet. MAS answers the three compatibility
-// login paths, and a catch all for /_matrix/* written above them would take
-// every one of those requests to Synapse, which no longer knows how to answer
-// a login.
-func TestTheLoginSplitIsOrderedAheadOfTheCatchAll(t *testing.T) {
+// MAS answers the three compatibility login paths, and if the /_matrix/* catch
+// all captured them instead, every login would reach Synapse, which no longer
+// knows how to answer one.
+//
+// What decides between them is matcher length, not the order they are written
+// in: Caddy sorts routes of one directive longest matcher first, trailing
+// wildcard trimmed (caddyconfig/httpcaddyfile/directives.go, sortRoutes, read
+// at v2.11.4, the version this toolkit pins). An earlier version of this test
+// asserted byte offsets in the rendered file and was named for order, which
+// would not have caught the failure it named: the same snippet already writes
+// /.well-known/matrix/* after both catch alls, and it wins anyway.
+//
+// This test asserts the property that governs, and only that. It reads
+// rendered text, so it cannot observe what Caddy does with the sorted routes;
+// proving that needs a running Caddy, which this suite does not have. The name
+// says what is checked so that nobody reads a guarantee into it that is not
+// here.
+func TestTheLoginSplitOutranksTheCatchAllByMatcherLength(t *testing.T) {
 	files := map[string]render.File{}
 	for _, f := range build(t).Files {
 		files[f.Path] = f
@@ -911,22 +924,27 @@ func TestTheLoginSplitIsOrderedAheadOfTheCatchAll(t *testing.T) {
 	if !ok {
 		t.Fatal("the homeserver has no snippet")
 	}
-	catchAll := strings.Index(snippet.Content, "handle /_matrix/* {")
-	if catchAll < 0 {
-		t.Fatalf("the snippet has no /_matrix/* catch all:\n%s", snippet.Content)
+
+	// matcherLength is what Caddy compares. It sorts routes of one directive
+	// by path matcher length with a trailing wildcard trimmed, longest first.
+	matcherLength := func(path string) int { return len(strings.TrimSuffix(path, "*")) }
+
+	const catchAll = "/_matrix/*"
+	if !strings.Contains(snippet.Content, "handle "+catchAll+" {") {
+		t.Fatalf("the snippet has no %s catch all:\n%s", catchAll, snippet.Content)
 	}
 	for _, path := range []string{
-		"handle /_matrix/client/*/login {",
-		"handle /_matrix/client/*/logout {",
-		"handle /_matrix/client/*/refresh {",
+		"/_matrix/client/*/login",
+		"/_matrix/client/*/logout",
+		"/_matrix/client/*/refresh",
 	} {
-		at := strings.Index(snippet.Content, path)
-		if at < 0 {
+		if !strings.Contains(snippet.Content, "handle "+path+" {") {
 			t.Errorf("the snippet does not split %s off to MAS:\n%s", path, snippet.Content)
 			continue
 		}
-		if at > catchAll {
-			t.Errorf("%s is written after the /_matrix/* catch all, so Synapse answers it", path)
+		if matcherLength(path) <= matcherLength(catchAll) {
+			t.Errorf("%s does not outrank %s on matcher length, so Caddy may sort the catch all ahead of it and Synapse answers the login",
+				path, catchAll)
 		}
 	}
 }

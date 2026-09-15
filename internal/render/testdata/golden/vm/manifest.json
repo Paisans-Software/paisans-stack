@@ -58,7 +58,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/chat.caddy",
-      "sha256": "d6cc6f4dffa2ee7e8204fc3fc1e9d41402e27a3fb8c3f2bf125756df5a2b9882",
+      "sha256": "0dcee26a6564aae6b8175ceaa005b173f427fcc52caef38261ba7524b24387d3",
       "mode": "0644"
     },
     {
