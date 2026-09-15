@@ -236,8 +236,13 @@ func Execute(plan *Plan, t Transport) error {
 		// runs before validate on purpose: a binary without the module also
 		// fails to validate, but the missing module error says what to fix and
 		// a parse error does not.
+		// %q quotes the module identifier. It is trusted today, acme.Module
+		// only ever returns one of a few compile time literals or "", and this
+		// gate does not run when it is empty, but the quoting is what keeps
+		// that trust from being load bearing if a later change lets a
+		// declared override supply its own module string.
 		command := fmt.Sprintf(
-			"docker compose -f /srv/infra/compose.yaml run --rm --entrypoint caddy caddy list-modules | grep -qx %s",
+			"docker compose -f /srv/infra/compose.yaml run --rm --no-deps --entrypoint caddy caddy list-modules | grep -qx %q",
 			plan.ACMEModule)
 		if out, err := t.Run(command); err != nil {
 			return fmt.Errorf(
