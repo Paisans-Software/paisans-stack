@@ -1,5 +1,7 @@
 # The fixture deployment. It exercises both placements: three clustered apps
-# and one pinned, on three sites with one stable endpoint.
+# and four pinned, on three sites with one stable endpoint. It is validated
+# before it is rendered (see fixture() in render_test.go), so it is a
+# configuration an operator could actually have written.
 version: 1
 
 community:
@@ -83,10 +85,14 @@ apps:
   web:
     kind: element
     hostname: web.example.org
-    placement: cluster
+    # Pinned for the same reason as the blog, and refused otherwise: a static
+    # client keeps nothing in Postgres, so there is no cluster for it to join.
+    placement: { pinned: home-b }
     settings:
       homeserver: chat.example.org
   gate:
     kind: oauth2-proxy
     hostname: gate.example.org
-    placement: cluster
+    # Pinned for the same reason. oauth2-proxy holds its sessions in a cookie
+    # rather than in the database, so cluster placement is refused here too.
+    placement: { pinned: home-a }

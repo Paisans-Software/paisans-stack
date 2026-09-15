@@ -11,16 +11,39 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden tree from the current output")
 
-func build(t *testing.T) *render.Plan {
+// fixture loads the deployment every test in this file renders, and refuses to
+// hand it back if the toolkit would not accept it.
+//
+// This is not belt and braces. Build does not validate, so for six tasks the
+// fixture declared two apps under cluster placement that
+// cluster-placement-without-a-cluster refuses outright, and the golden tree
+// grew routing for a shape `paisans apply` would never have produced. A golden
+// file is only a specification of what an operator receives if the input is
+// something an operator could have written, so the check belongs here, ahead of
+// every test, rather than in one test somebody might not run.
+func fixture(t *testing.T) *config.Config {
 	t.Helper()
 	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
 	if err != nil {
 		t.Fatalf("loading the fixture configuration: %v", err)
 	}
+	if refusals := validate.Check(cfg).Refusals(); len(refusals) > 0 {
+		for _, f := range refusals {
+			t.Errorf("the fixture is a configuration the toolkit refuses:\n%s", f)
+		}
+		t.FailNow()
+	}
+	return cfg
+}
+
+func build(t *testing.T) *render.Plan {
+	t.Helper()
+	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
 	if err != nil {
 		t.Fatalf("loading the fixture secrets: %v", err)
@@ -675,7 +698,7 @@ func TestElementRendersAClientConfig(t *testing.T) {
 		files[f.Path] = f
 	}
 
-	compose, ok := files["home-a/srv/web/compose.yaml"]
+	compose, ok := files["home-b/srv/web/compose.yaml"]
 	if !ok {
 		t.Fatal("the element app was not rendered")
 	}
@@ -683,7 +706,7 @@ func TestElementRendersAClientConfig(t *testing.T) {
 		t.Error("element was given a database, and it has no state at all")
 	}
 
-	config, ok := files["home-a/srv/web/config.json"]
+	config, ok := files["home-b/srv/web/config.json"]
 	if !ok {
 		t.Fatal("element rendered no runtime configuration")
 	}

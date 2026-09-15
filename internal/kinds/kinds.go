@@ -148,10 +148,15 @@ func DefaultImage(kind config.Kind, service string) (string, bool) {
 
 // UsesPostgres reports whether a kind stores its data in Postgres at all.
 //
-// Only WriteFreely does not, and the difference is load bearing rather than
-// cosmetic: an app that uses no Postgres needs no database role, no password
-// and no place in the cluster, so requiring one would refuse a configuration
-// that is entirely correct.
+// Three kinds do not: WriteFreely, which has never supported it; Element,
+// which is a static client with no server side state at all; and oauth2-proxy,
+// which keeps a session in a cookie. The difference is load bearing rather than
+// cosmetic in two directions. An app that uses no Postgres needs no database
+// role, no password and no place in the cluster, so requiring one would refuse
+// a configuration that is entirely correct. It is also what
+// cluster-placement-without-a-cluster reads: a kind answering false here can
+// only be pinned, because cluster placement would render it onto every apps
+// site with storage of its own.
 func UsesPostgres(kind config.Kind) bool {
 	return Has(kind, PostgresService)
 }
