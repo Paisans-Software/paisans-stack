@@ -89,9 +89,10 @@ FROM caddy:${CADDY_VERSION}-alpine
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 ```
 
-The explicit `v${CADDY_VERSION}` argument matters: `xcaddy build` with no version
-builds Caddy from master, which would drift from the tags the image is published
-under.
+The explicit `v${CADDY_VERSION}` argument matters. With no version argument
+xcaddy builds the latest stable Caddy (its README: "defaults to CADDY_VERSION
+env variable or latest"), so the binary would be whatever was newest at build
+time rather than the version resolved for the tags.
 
 ### What triggers a build
 

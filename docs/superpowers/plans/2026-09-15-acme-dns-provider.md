@@ -96,8 +96,10 @@ ARG CADDY_VERSION
 
 FROM caddy:${CADDY_VERSION}-builder AS builder
 ARG CADDY_VERSION
-# The explicit version matters: `xcaddy build` with no argument builds Caddy
-# from master, which would not be the version this image is tagged as.
+# The explicit version matters. With no version argument xcaddy builds the
+# latest stable Caddy (xcaddy README: `xcaddy build [<caddy_version>]`,
+# "defaults to CADDY_VERSION env variable or latest"), which is whatever is
+# newest when the build runs rather than the version this image is tagged as.
 RUN xcaddy build "v${CADDY_VERSION}" \
       --with github.com/caddy-dns/cloudflare \
       --with github.com/caddy-dns/desec
@@ -183,7 +185,8 @@ provider is a configuration edit with no image change. The cost is a module an
 adopter does not use, a few megabytes.
 
 The version is passed explicitly to xcaddy, because with no argument it builds
-Caddy from master, which would not be the version the image is tagged as.
+the latest stable Caddy, which is whatever is newest at build time rather than
+the version the image is tagged as.
 
 smoke/Caddyfile exists because a build succeeding does not prove the binary can
 load a config that names a provider, and that is the failure worth catching.
