@@ -1,9 +1,7 @@
 package render
 
 import (
-	"crypto/sha256"
 	"fmt"
-	"math/big"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
@@ -227,7 +225,7 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		v.MASPort = masPort
 		v.MASUpstreams = p.upstreamsOnPort(planned.Name, masPort)
 		v.MASDBName = planned.DBName + "_mas"
-		v.MASUpstreamProviderID = upstreamProviderID(planned.Name)
+		v.MASUpstreamProviderID = kinds.MASUpstreamProviderID(planned.Name)
 	}
 	return v, nil
 }
@@ -253,11 +251,18 @@ func (p *planner) oidcFor(planned plannedApp) oidcValues {
 		return oidcValues{}
 	}
 	issuer := p.identityProviderURL()
+	// The homeserver's client belongs to the authentication service in front
+	// of it, which serves one callback path per upstream provider rather than
+	// the /oauth/callback every other kind uses.
+	redirect := "https://" + planned.Hostname + "/oauth/callback"
+	if planned.Kind == config.KindSynapse {
+		redirect = kinds.MASRedirectURI(planned.Hostname, planned.Name)
+	}
 	return oidcValues{
 		Present:      true,
 		ClientID:     client.ClientID,
 		ClientSecret: client.ClientSecret,
-		RedirectURL:  "https://" + planned.Hostname + "/oauth/callback",
+		RedirectURL:  redirect,
 
 		Issuer:                issuer,
 		AuthorizationEndpoint: issuer + authorizationPath,
@@ -287,35 +292,6 @@ func (p *planner) identityProviderURL() string {
 		}
 	}
 	return ""
-}
-
-// upstreamProviderID is the identifier MAS gives the identity provider it
-// authenticates against.
-//
-// MAS requires a ULID there, and the value is not private: it appears in the
-// callback URL registered at the identity provider,
-// https://<hostname>/upstream/callback/<id>, so the operator has to read it off
-// the rendered configuration and register it. Deriving it from the app's name
-// rather than generating one keeps rendering deterministic, which is what stops
-// a second `apply` from silently inventing a provider the registered callback
-// no longer matches.
-//
-// A ULID is 26 Crockford base32 characters over 128 bits, which leaves two
-// unused bits at the top, so the leading character of any value encoded this
-// way is in 0 to 7 and the result always parses. It is not a real ULID in the
-// sense of carrying a timestamp, and nothing here reads one back out of it.
-func upstreamProviderID(app string) string {
-	const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-	sum := sha256.Sum256([]byte("paisans-stack upstream oauth2 provider:" + app))
-	n := new(big.Int).SetBytes(sum[:16])
-	mask := big.NewInt(31)
-	digit := new(big.Int)
-	out := make([]byte, 26)
-	for i := 25; i >= 0; i-- {
-		out[i] = alphabet[digit.And(n, mask).Int64()]
-		n.Rsh(n, 5)
-	}
-	return string(out)
 }
 
 // quote renders a value into a double quoted YAML or INI string. Templates use

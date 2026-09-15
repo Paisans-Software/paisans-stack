@@ -15,7 +15,6 @@
 # creation path that the gate and the identity provider's group restriction
 # exist to control is MAS's, so a second one is not a fallback, it is a hole.
 
-
 # The name inside every user identifier: @someone:example.org. It cannot
 # be changed once an account or a room exists.
 server_name: "example.org"

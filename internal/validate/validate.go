@@ -131,6 +131,8 @@ func Check(cfg *config.Config) Result {
 	c.floatingACMEImage()
 	c.hostnameRoles()
 	c.gateWithoutAGate()
+	c.gatedMatrixHostname()
+	c.homeserverMustBePinned()
 
 	c.evenVoters()
 	c.meshIsNotPrivate()
@@ -626,6 +628,63 @@ func (c *checker) gateWithoutAGate() {
 	}
 	c.refuse("gate-without-a-gate-app", "apps",
 		"an app declares a gate, but no app of kind oauth2-proxy is declared, so nothing renders the snippet the gateway would import. Caddy fails to load its entire configuration over one missing import, so this would take every hostname down rather than one. Declare the gate app, or set gate: none.")
+}
+
+// gatedMatrixHostname refuses a gate on a homeserver.
+//
+// README: "A Matrix hostname must never be gated." The gate answers an
+// unauthenticated browser navigation with a redirect to a passkey prompt. A
+// Matrix client is not a browser and does not follow it, and neither does a
+// federating server fetching the delegation documents, so a gate here does not
+// restrict access: it ends client login and federation outright. The failure
+// reads as clients mysteriously unable to sign in, with nothing in the
+// configuration saying why, which is the case the declared gate exists to make
+// visible.
+//
+// Access control for a homeserver lives at the identity provider instead,
+// where the group restriction decides who may be provisioned an account at
+// all. That is why this is a refusal and not a warning: there is no reading of
+// a gated homeserver that works.
+func (c *checker) gatedMatrixHostname() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Kind != config.KindSynapse {
+			continue
+		}
+		if app.Gate == "" || app.Gate == "none" {
+			continue
+		}
+		c.refuse("gated-matrix-hostname", fmt.Sprintf("apps.%s.gate", name),
+			"is %q, and a Matrix hostname must never be gated. The gate redirects an unauthenticated browser to a passkey prompt; a Matrix client is not a browser and will not follow it, and neither will a federating server fetching the delegation documents, so this breaks every client login and federation rather than protecting anything. Access control for a homeserver belongs at the identity provider, where the group restriction decides who may be provisioned at all. Set gate: none.",
+			app.Gate)
+	}
+}
+
+// homeserverMustBePinned refuses cluster placement for a homeserver.
+//
+// Synapse's S3 storage provider supplements a local media directory rather
+// than replacing it, so the media store cannot follow a failover: a promoted
+// site would serve a homeserver whose media is on another machine. The kind
+// also renders its own Postgres and an initialisation hook that creates a
+// second database beside it, neither of which exists under cluster placement,
+// so the authentication service would start against a database nobody created
+// and the failure would arrive at the first login rather than at render.
+//
+// There is no half-pinned form worth having. A stack pinned for its database
+// and clustered for its app is less available than either, so this is a
+// refusal rather than a warning.
+func (c *checker) homeserverMustBePinned() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Kind != config.KindSynapse {
+			continue
+		}
+		if app.Placement.Mode != config.PlacementCluster {
+			continue
+		}
+		c.refuse("homeserver-must-be-pinned", fmt.Sprintf("apps.%s.placement", name),
+			"is cluster, and the synapse kind has no clustered form. Its media store cannot follow a failover, because the S3 storage provider supplements a local media directory rather than replacing it, and the kind renders its own Postgres plus the hook that creates the authentication service's database beside it. Pin it: placement: { pinned: <site> }.")
+	}
 }
 
 func (c *checker) hostnameRoles() {

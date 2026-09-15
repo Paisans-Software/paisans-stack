@@ -49,6 +49,8 @@ func TestRulesFire(t *testing.T) {
 		{"acme-image-is-floating", "acme-image-is-floating", validate.Refuse},
 		{"unknown-hostname-role", "unknown-hostname-role", validate.Refuse},
 		{"gate-without-a-gate-app", "gate-without-a-gate-app", validate.Refuse},
+		{"gated-matrix-hostname", "gated-matrix-hostname", validate.Refuse},
+		{"homeserver-must-be-pinned", "homeserver-must-be-pinned", validate.Refuse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {

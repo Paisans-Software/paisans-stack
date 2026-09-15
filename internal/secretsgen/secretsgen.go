@@ -273,10 +273,18 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 		if cfg.Apps[name].Kind == config.KindPocketID {
 			continue // the identity provider has no client at itself
 		}
-		out = append(out, Owed{
-			Name: "oidc_clients." + name,
-			Why:  "minted by the identity provider, and creating a client there is a mutation a human approves. The toolkit records the value afterwards rather than automating the approval away",
-		})
+		why := "minted by the identity provider, and creating a client there is a mutation a human approves. The toolkit records the value afterwards rather than automating the approval away"
+		if cfg.Apps[name].Kind == config.KindSynapse {
+			// Said here rather than only in the rendered configuration,
+			// because the rendered configuration is 0600 and does not exist
+			// until apply, which is after the operator needed this. A client
+			// registered with the wrong redirect URI fails at the end of the
+			// first sign in, once the member has already authenticated.
+			why += ". Register its redirect URI as " +
+				kinds.MASRedirectURI(cfg.Apps[name].Hostname, name) +
+				", which is the authentication service's callback for this upstream provider and not the /oauth/callback every other kind uses"
+		}
+		out = append(out, Owed{Name: "oidc_clients." + name, Why: why})
 	}
 	return out
 }

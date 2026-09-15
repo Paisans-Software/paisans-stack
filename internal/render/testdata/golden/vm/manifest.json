@@ -13,22 +13,22 @@
     },
     {
       "path": "srv/chat/compose.yaml",
-      "sha256": "5d6f0da8a3b9bde44c8847b0ac01b0b2d5838dc46a11e89c5a3bf3a4134006a3",
+      "sha256": "a251f7aa01931514efd6af5e8783b31d49005807a9aadd6fa7aa540f4308d914",
       "mode": "0644"
     },
     {
       "path": "srv/chat/homeserver.yaml",
-      "sha256": "76058fa3dddf149376758d1aee7171ff623526a4ca5ad7e33bc41fb3d5a70a78",
+      "sha256": "eaa38e354e5fb51de9eaea0181bfa84aa0fb14b78616c2ca56975c7d3b500e42",
       "mode": "0600"
     },
     {
       "path": "srv/chat/initdb.d/01-mas-database.sql",
-      "sha256": "f91ec4ab175b3a7ff33c2c7550197888d8d6f8dba4f0e1f5d586dc0476c13c97",
+      "sha256": "ab221a57a36d9a875fa084d72a79ff240a98b0345ab5537c2e46ab8789bd8fa4",
       "mode": "0644"
     },
     {
       "path": "srv/chat/mas.yaml",
-      "sha256": "c696892622d2b10f64f9ec110b48063026de6b003ea65f384512e1d9364bcfef",
+      "sha256": "2336ffd4bf72ac9c7d5c9c0e2e6b320b02e7600362a1f33b67969b67bd0014c9",
       "mode": "0600"
     },
     {

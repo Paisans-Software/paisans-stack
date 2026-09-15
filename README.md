@@ -111,6 +111,14 @@ support supplements the media store rather than replacing it, so a local media
 directory is always required — but this is a property every app has, not a
 Synapse special case.
 
+**For the `synapse` kind it is not a choice: `placement: cluster` is refused.**
+The media store cannot leave the node, and the kind renders its own Postgres
+plus the initialisation hook that creates the authentication service's database
+beside it, neither of which exists on a clustered site. A clustered homeserver
+would render and then meet the missing database at the first sign in. The same
+reasoning refuses `writefreely`, which has never supported Postgres, so the
+refusal is the existing shape rather than a special case for Matrix.
+
 So each stack in the inventory declares where it runs:
 
 | Placement | What it means | Availability |
@@ -560,6 +568,22 @@ The key is a **role**, not a label: it selects which snippet the kind ships. A
 role a kind does not understand is refused, because the alternative is a
 gateway that fails to load its whole configuration over one missing import.
 
+**For a homeserver, `hostnames.wellknown` is not only routing. It is
+`server_name`.** It becomes the part after the colon in every user identifier
+the homeserver ever mints, and it is written into every room that homeserver
+has joined. It cannot be changed once an account or a room exists: a homeserver
+restored under a different `server_name` is, to its own history, a different
+server. Editing this key on a deployment that is already running is a rebuild
+and a migration of member data, not a configuration change, and nothing in this
+toolkit can undo it for you or warn you at the moment you do it, because
+`apply` compares the configuration against templates rather than against what
+some earlier `apply` already put on a host.
+
+Choose it once, before the first `apply`, and choose the name you want members
+to have. Declaring no `wellknown` hostname is a legitimate choice with the same
+weight: `server_name` is then the app's own hostname, the homeserver serves its
+own delegation documents there, and that name is equally permanent.
+
 #### The gate is a per-app property
 
 ```yaml
@@ -579,8 +603,9 @@ rather than implied by which Caddy snippet somebody remembered to import. It is
 access policy, and access policy belongs in the configuration, not in a hand
 edited include.
 
-The case that makes this load bearing is a negative one. A Matrix hostname must
-never be gated: a Matrix client is not a browser and will not follow a redirect
+**A gate on an app of kind `synapse` is refused**, which is the rule below
+enforced rather than merely stated. The case that makes this load bearing is a
+negative one. A Matrix hostname must never be gated: a Matrix client is not a browser and will not follow a redirect
 to a passkey prompt, so gating a homeserver's API or its `.well-known` apex
 breaks federation and every client's login, not just one member's. Leaving
 gating to a hand edited include means that failure shows up as clients

@@ -928,6 +928,65 @@ func TestTheApexServesOnlyDelegation(t *testing.T) {
 	}
 }
 
+// A homeserver that declares no delegation hostname answers the delegation
+// documents itself, and the gateway has to send them to it.
+//
+// The fixture always declares one, so the golden tree never exercises this
+// branch: a snippet that quietly routed /.well-known/matrix/* to MAS instead
+// would render, review cleanly and leave a federating peer with a 404 that
+// sends it to <server_name>:8448, where nothing listens.
+func TestAHomeserverWithNoDelegationServesItsOwnWellKnown(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := cfg.Apps["chat"]
+	chat.Hostnames = nil
+	cfg.Apps["chat"] = chat
+
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatalf("a homeserver with no delegation hostname failed to render: %v", err)
+	}
+	files := map[string]render.File{}
+	for _, f := range plan.Files {
+		files[f.Path] = f
+	}
+
+	if _, ok := files["vm/srv/infra/caddy/snippets/chat-wellknown.caddy"]; ok {
+		t.Error("a snippet was rendered for a hostname role nobody declared")
+	}
+
+	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	if !strings.Contains(homeserver, "serve_server_wellknown: true") {
+		t.Errorf("the homeserver was not told to serve its own delegation:\n%s", homeserver)
+	}
+	if !strings.Contains(homeserver, `server_name: "chat.example.org"`) {
+		t.Errorf("server_name is not the only hostname this app has:\n%s", homeserver)
+	}
+
+	snippet := files["vm/srv/infra/caddy/snippets/chat.caddy"].Content
+	at := strings.Index(snippet, "handle /.well-known/matrix/* {")
+	if at < 0 {
+		t.Fatalf("the gateway does not route the delegation documents anywhere:\n%s", snippet)
+	}
+	// Anywhere is not good enough: MAS does not serve them, and the bare
+	// handle at the end of the snippet is MAS's.
+	homeserverUpstream := "10.44.0.3:8008"
+	rest := snippet[at:]
+	end := strings.Index(rest, "\n}")
+	if end < 0 {
+		t.Fatalf("unterminated handle:\n%s", rest)
+	}
+	if !strings.Contains(rest[:end], homeserverUpstream) {
+		t.Errorf("the delegation documents do not reach the homeserver:\n%s", rest[:end])
+	}
+}
+
 // hostBlock returns the text of one host block, so a test can assert about one
 // hostname rather than about the whole file.
 func hostBlock(t *testing.T, caddyfile, hostname string) string {

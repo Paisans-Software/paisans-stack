@@ -5,9 +5,12 @@
 # tokens it issues. The identity provider is upstream of `mas`, never of `app`.
 #
 # chat is pinned to vm: app, database and media
-# together. Synapse is the app this placement exists for, because its media
-# store cannot be moved into object storage: the S3 storage provider
-# supplements a local media directory rather than replacing it.
+# together, and this kind has no other placement. Synapse is the app that
+# pinning exists for, because its media store cannot be moved into object
+# storage: the S3 storage provider supplements a local media directory rather
+# than replacing it, so a promoted site would not have the media. Cluster
+# placement is refused by internal/validate rather than rendered, which is why
+# nothing below is conditional on it.
 name: paisans-chat
 
 services:
