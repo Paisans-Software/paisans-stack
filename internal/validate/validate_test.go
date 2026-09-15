@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
-	"github.com/josephquigley/paisans-stack/internal/validate"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
 func load(t *testing.T, name string) *config.Config {
@@ -44,6 +44,9 @@ func TestRulesFire(t *testing.T) {
 		{"gateway-on-data-site", "gateway-on-data-site", validate.Warn},
 		{"pocket-id-file-backend", "pocket-id-file-backend", validate.Warn},
 		{"image-for-absent-postgres", "image-for-absent-postgres", validate.Warn},
+		{"acme-provider-needs-an-image", "acme-provider-needs-an-image", validate.Refuse},
+		{"acme-image-is-stock-caddy", "acme-image-is-stock-caddy", validate.Refuse},
+		{"acme-image-is-floating", "acme-image-is-floating", validate.Refuse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {

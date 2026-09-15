@@ -9,6 +9,9 @@ community:
 mesh:
   subnet: 10.44.0.0/24
 
+acme:
+  provider: desec
+
 sites:
   home-a:
     roles: [data, apps]

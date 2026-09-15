@@ -10,7 +10,9 @@ mesh:
   subnet: 10.44.0.0/24
 
 acme:
-  provider: desec
+  provider: route53
+  # An adopter's own image, on a tag that moves: a rebuild can drop the module.
+  image: ghcr.io/example-org/caddy-route53:latest
 
 sites:
   home-a:
@@ -55,9 +57,5 @@ apps:
     kind: pocket-id
     hostname: id.example.org
     placement: cluster
-    images:
-      # pocket-id's template has no such service. A key that matches nothing
-      # renders nothing, so this must be refused rather than ignored.
-      web: ghcr.io/example-org/pocket-id:v2.14.0
     settings:
       file_backend: database

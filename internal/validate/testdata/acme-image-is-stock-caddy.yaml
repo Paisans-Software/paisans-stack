@@ -11,6 +11,8 @@ mesh:
 
 acme:
   provider: desec
+  # Upstream's own image, which carries no DNS provider module at all.
+  image: caddy:2-alpine
 
 sites:
   home-a:
@@ -55,9 +57,5 @@ apps:
     kind: pocket-id
     hostname: id.example.org
     placement: cluster
-    images:
-      # pocket-id's template has no such service. A key that matches nothing
-      # renders nothing, so this must be refused rather than ignored.
-      web: ghcr.io/example-org/pocket-id:v2.14.0
     settings:
       file_backend: database

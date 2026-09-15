@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
-	"github.com/josephquigley/paisans-stack/internal/render"
-	"github.com/josephquigley/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 )
 
 func load(t *testing.T) *config.Config {
@@ -160,7 +160,7 @@ func TestOwedSecretsAreReported(t *testing.T) {
 			t.Errorf("%s is owed with no reason given", o.Name)
 		}
 	}
-	if _, ok := owed["external.cloudflare_api_token"]; !ok {
+	if _, ok := owed["external.acme_dns_token"]; !ok {
 		t.Error("the DNS token was not reported as owed, and certificates need it")
 	}
 	if _, ok := owed["oidc_clients.talk"]; !ok {

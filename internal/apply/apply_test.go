@@ -9,9 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/josephquigley/paisans-stack/internal/apply"
-	"github.com/josephquigley/paisans-stack/internal/config"
-	"github.com/josephquigley/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/acme"
+	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // fakeHost is a machine in a map. Every gate this package has is about what is
@@ -23,6 +24,10 @@ type fakeHost struct {
 	// fail makes any command containing this substring return non zero, which
 	// is how the gates are exercised.
 	fail string
+	// running is whether this host already has a gateway container up. A fresh
+	// host has none, which is the ordinary case on a first apply and the one
+	// that used to make apply impossible to complete.
+	running bool
 }
 
 func newHost() *fakeHost { return &fakeHost{files: map[string]string{}} }
@@ -33,6 +38,14 @@ func (h *fakeHost) Run(command string) (string, error) {
 	h.commands = append(h.commands, command)
 	if h.fail != "" && strings.Contains(command, h.fail) {
 		return "refused by the fake host", fmt.Errorf("exit status 1")
+	}
+	if strings.Contains(command, "ps --status running") {
+		if h.running {
+			return "c0ffee\n", nil
+		}
+		// What `docker compose ps --quiet` prints when the service has no
+		// running container: nothing, and a zero exit.
+		return "\n", nil
 	}
 	return "", nil
 }
@@ -73,13 +86,45 @@ func plan(t *testing.T) *render.Plan {
 	return built
 }
 
+// planWith renders the fixture with one thing changed, for a test about what
+// an apply does when a single file moves.
+func planWith(t *testing.T, change func(*config.Config)) *render.Plan {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "render", "testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := config.LoadSecrets(filepath.Join("..", "render", "testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	change(cfg)
+	built, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return built
+}
+
+// acmeModule is the module this fixture's declared provider needs, computed
+// the same way cmd/paisans/main.go computes it for a real apply. The fixture
+// declares "desec" (internal/render/testdata/deployment.yaml).
+func acmeModule(t *testing.T) string {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "render", "testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return acme.Module(cfg.ACME.Provider)
+}
+
 // A first apply creates everything and records what it wrote. The record is
 // what every later gate depends on.
 func TestFirstApplyCreatesAndRecords(t *testing.T) {
 	host := newHost()
 	rendered := plan(t)
 
-	p, err := apply.Build("home-a", rendered, host)
+	p, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +153,7 @@ func TestFirstApplyCreatesAndRecords(t *testing.T) {
 	// Applying the same thing twice writes nothing and runs nothing. An apply
 	// that restarted containers on every run would make "apply" a thing
 	// operators avoid.
-	second, err := apply.Build("home-a", rendered, host)
+	second, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +170,7 @@ func TestFirstApplyCreatesAndRecords(t *testing.T) {
 func TestAnEditOnTheHostIsRefused(t *testing.T) {
 	host := newHost()
 	rendered := plan(t)
-	first, err := apply.Build("home-a", rendered, host)
+	first, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +181,7 @@ func TestAnEditOnTheHostIsRefused(t *testing.T) {
 	host.files["/srv/talk/.env"] += "\nSOMEONE_EDITED_THIS=1\n"
 	host.commands = nil
 
-	p, err := apply.Build("home-a", rendered, host)
+	p, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +212,7 @@ func TestAPreexistingFileIsNotAdopted(t *testing.T) {
 	host := newHost()
 	host.files["/srv/talk/.env"] = "HAND_WRITTEN=1\n"
 
-	p, err := apply.Build("home-a", plan(t), host)
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +228,7 @@ func TestAPreexistingFileIsNotAdopted(t *testing.T) {
 func TestTheNarrowerActionIsChosen(t *testing.T) {
 	host := newHost()
 	rendered := plan(t)
-	first, err := apply.Build("home-a", rendered, host)
+	first, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +244,7 @@ func TestTheNarrowerActionIsChosen(t *testing.T) {
 	// than about the conflict gate, which has its own test.
 	adopt(t, host, "/srv/blog/config.ini", "/srv/talk/.env")
 
-	p, err := apply.Build("home-a", rendered, host)
+	p, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +274,7 @@ func TestAnInvalidGatewayConfigurationIsNotReloaded(t *testing.T) {
 	host := newHost()
 	host.fail = "caddy validate"
 
-	p, err := apply.Build("vm", plan(t), host)
+	p, err := apply.Build("vm", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +290,196 @@ func TestAnInvalidGatewayConfigurationIsNotReloaded(t *testing.T) {
 	}
 	if host.ran("caddy reload") {
 		t.Error("the gateway was reloaded after validation failed")
+	}
+}
+
+// A gateway is only reloaded once its binary is known to carry the provider's
+// module. This is the only check in the whole change that is evidence rather
+// than inference: an image reference cannot tell you what was compiled into it.
+func TestAGatewayWithoutItsProviderModuleIsNotReloaded(t *testing.T) {
+	host := newHost()
+	host.fail = "list-modules"
+
+	p, err := apply.Build("vm", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ACMEModule == "" {
+		t.Fatal("a gateway plan carries no module to check for")
+	}
+
+	err = apply.Execute(p, host)
+	if err == nil {
+		t.Fatal("a gateway was reloaded without the module its configuration needs")
+	}
+	if !strings.Contains(err.Error(), p.ACMEModule) {
+		t.Errorf("the refusal does not name the missing module:\n%v", err)
+	}
+	if host.ran("caddy reload") {
+		t.Error("the gateway was reloaded after the module check failed")
+	}
+	if host.ran("caddy validate") {
+		t.Error("the configuration was validated before the binary was known to support it, which wastes the clearer error")
+	}
+}
+
+// A first apply to a fresh host has nothing running: every file is a create,
+// and the container that would serve them is started by the Actions loop at
+// the very end. Validating or reloading through `exec` there asks a container
+// that does not exist yet, which made `paisans apply` unable to complete a
+// first install of a gateway site, and made recovery impossible afterwards,
+// since a dead gateway makes every later apply refuse at the same step.
+func TestAFirstApplyToAFreshHostCompletes(t *testing.T) {
+	host := newHost()
+	host.running = false
+
+	p, err := apply.Build("vm", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatalf("a first apply to a host with nothing running was aborted: %v", err)
+	}
+
+	if !host.ran("caddy validate") {
+		t.Error("the gateway configuration was never validated")
+	}
+	if host.ran("exec -T caddy caddy validate") {
+		t.Error("validation ran through exec, which needs a container this host does not have")
+	}
+	if !host.ran("run --rm --no-deps --entrypoint caddy caddy validate") {
+		t.Error("validation did not use the form that works without a running container")
+	}
+	if host.ran("caddy reload") {
+		t.Error("a container that does not exist was told to reload")
+	}
+	if !host.ran("up -d") {
+		t.Error("the infrastructure stack was never started, so the validated configuration is not live")
+	}
+}
+
+// A gateway that is already up is reloaded rather than left, since the Actions
+// loop may only restart a stack whose environment did not change, and a bind
+// mounted Caddyfile change would otherwise not be picked up.
+func TestARunningGatewayIsReloaded(t *testing.T) {
+	host := newHost()
+	first, err := apply.Build("vm", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+
+	// A routing change and nothing else: a new hostname for an app.
+	moved := planWith(t, func(cfg *config.Config) {
+		app := cfg.Apps["blog"]
+		app.Hostname = "words.example.org"
+		cfg.Apps["blog"] = app
+	})
+	host.running = true
+	host.commands = nil
+
+	p, err := apply.Build("vm", moved, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.GatewayReload {
+		t.Fatal("a routing change planned no reload")
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if !host.ran("caddy reload") {
+		t.Error("a running gateway was not reloaded, so the new routing is not live")
+	}
+}
+
+// Bumping the gateway's image changes exactly one file, srv/infra/compose.yaml,
+// and that is an environment path rather than a routing one: no routing file
+// changes, so nothing is reloaded and the container is replaced by the Actions
+// loop instead. `up -d` returns as soon as the container starts, so a Caddy
+// without the module would die a moment later and the apply would report
+// success. The check has to run for this path, and has to run before the
+// recreate.
+func TestAnImageOnlyChangeIsStillChecked(t *testing.T) {
+	host := newHost()
+	first, err := apply.Build("vm", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+
+	// An image carrying the same provider, declared rather than published:
+	// the one line the sibling repository's digest bump would move.
+	moved := planWith(t, func(cfg *config.Config) {
+		cfg.ACME.Image = "ghcr.io/example-org/caddy-desec:2.11.4"
+	})
+	host.commands = nil
+	host.fail = "list-modules"
+
+	p, err := apply.Build("vm", moved, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes := p.Writes()
+	if len(writes) != 1 || writes[0].Path != "/srv/infra/compose.yaml" {
+		t.Fatalf("an image bump should move one file, got %v", writes)
+	}
+	if p.GatewayReload {
+		t.Error("an image change planned a reload, but a new image arrives by recreate")
+	}
+	if !p.GatewayChanging {
+		t.Fatal("the gateway's own compose file changed and the plan does not call that a gateway change")
+	}
+	if p.ACMEModule == "" {
+		t.Fatal("an image change carries no module to check for, so the image is taken on trust")
+	}
+
+	err = apply.Execute(p, host)
+	if err == nil {
+		t.Fatal("a gateway image with no DNS module was deployed anyway")
+	}
+	if !strings.Contains(err.Error(), p.ACMEModule) {
+		t.Errorf("the refusal does not name the missing module:\n%v", err)
+	}
+	if host.ran("up -d") {
+		t.Error("the gateway container was replaced although the new image failed the check")
+	}
+}
+
+// A provider the toolkit publishes no image for is the one the check exists
+// for: the adopter built or chose that image themselves and nobody here has
+// run it. The gate has to fire for it exactly as it does for a published
+// provider, which it only can because acme.Module names a module for it.
+func TestAnUnknownProvidersModuleIsCheckedToo(t *testing.T) {
+	module := acme.Module("route53")
+	if module == "" {
+		t.Fatal("an unknown provider has no module, so there is nothing for apply to check")
+	}
+
+	host := newHost()
+	host.fail = "list-modules"
+
+	p, err := apply.Build("vm", plan(t), module, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ACMEModule != module {
+		t.Fatalf("the plan carries module %q, want %q", p.ACMEModule, module)
+	}
+
+	err = apply.Execute(p, host)
+	if err == nil {
+		t.Fatal("a gateway running an adopter's own image was reloaded without checking it")
+	}
+	if !strings.Contains(err.Error(), module) {
+		t.Errorf("the refusal does not name the missing module:\n%v", err)
+	}
+	if host.ran("caddy reload") {
+		t.Error("the gateway was reloaded after the module check failed")
 	}
 }
 

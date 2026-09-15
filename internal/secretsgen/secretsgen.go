@@ -26,8 +26,8 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
-	"github.com/josephquigley/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
 // Result records what a generation pass did, by name and never by value. A
@@ -182,10 +182,12 @@ func appSecretKeys(app config.App) []string {
 // operator finishing an install knows exactly what is left and who issues it.
 func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 	var out []Owed
-	if secrets.External["cloudflare_api_token"] == "" && len(cfg.GatewaySites()) > 0 {
+	if secrets.External["acme_dns_token"] == "" && len(cfg.GatewaySites()) > 0 {
 		out = append(out, Owed{
-			Name: "external.cloudflare_api_token",
-			Why:  "issued by the DNS provider, scoped to this zone only. Certificates use DNS-01, so the gateway cannot obtain one without it",
+			Name: "external.acme_dns_token",
+			Why: fmt.Sprintf(
+				"issued by the DNS provider, %s in this deployment, scoped to this zone only. Certificates use DNS-01, so the gateway cannot obtain one without it",
+				cfg.ACME.Provider),
 		})
 	}
 	for _, name := range cfg.AppNames() {

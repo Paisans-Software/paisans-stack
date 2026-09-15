@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/josephquigley/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // Change is what one file needs, decided before anything is written.
@@ -76,9 +76,29 @@ type Plan struct {
 	Transport string
 	Changes   []Change
 	Actions   []Action
+	// GatewayChanging is set when this site runs the gateway and its Caddy is
+	// about to change or be reloaded. That is the question every gate on the
+	// gateway is really asking, and it has two answers rather than one:
+	//
+	//   - a routing file changed, so the running Caddy is told to reload
+	//   - srv/infra/compose.yaml changed, so the container is replaced, which
+	//     is how the image itself moves
+	//
+	// The second is the flagship workflow: a pull request bumps the Caddy
+	// digest and merging it changes exactly that one file on the host. It is
+	// an environment path rather than a routing one, so it yields an ordinary
+	// `up -d` in the Actions loop, and `up -d` exits 0 as soon as the
+	// container starts. A Caddy that cannot load its configuration dies a
+	// moment later and the apply has already reported success. Checking only
+	// before a reload would leave exactly that path unchecked.
+	GatewayChanging bool
 	// GatewayReload is set when this site serves the public entry point and a
-	// routing file changed.
+	// routing file changed. It is the narrower of the two: a new image is
+	// picked up by the recreate, not by a reload.
 	GatewayReload bool
+	// ACMEModule is the Caddy DNS module this deployment's gateway must have,
+	// as `caddy list-modules` prints it. Empty when this site runs no gateway.
+	ACMEModule string
 }
 
 // Conflicts returns the files somebody edited on the host.
@@ -112,13 +132,27 @@ const remoteRoot = "/"
 // this on the host", and without it every apply would be a blind overwrite.
 const manifestPath = "/srv/.paisans-manifest.json"
 
+// gatewayCaddyfile and gatewayCompose are the two rendered files that say a
+// site runs the gateway and that its Caddy is about to be replaced, as paths
+// relative to a site's root in the rendered tree.
+//
+// gatewayCompose is the whole infrastructure stack's compose file rather than
+// a Caddy specific one: the gateway shares it with etcd and Patroni, so a
+// change to it may or may not be the Caddy image. The check is cheap and
+// wrongly running it costs one container start, while wrongly skipping it
+// costs the public address of every application.
+const (
+	gatewayCaddyfile = "srv/infra/caddy/Caddyfile"
+	gatewayCompose   = "srv/infra/compose.yaml"
+)
+
 // Build decides what one site's apply would do, without doing any of it.
 //
 // The order matters and is the whole design. Every file is compared against
 // both the rendered content and the manifest the last apply left behind, so a
 // conflict is found before a single byte is written. An apply that wrote files
 // as it discovered them could leave a stack half updated and then refuse.
-func Build(site string, plan *render.Plan, t Transport) (*Plan, error) {
+func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Plan, error) {
 	out := &Plan{Site: site, Transport: t.Describe()}
 
 	recorded, err := readManifest(t)
@@ -129,6 +163,12 @@ func Build(site string, plan *render.Plan, t Transport) (*Plan, error) {
 	prefix := site + "/"
 	stacks := map[string]bool{}
 	envChanged := map[string]bool{}
+	// Whether this site runs the gateway at all, and which of the two ways its
+	// Caddy is about to change. render only emits a Caddyfile for a site
+	// holding the gateway role, so its presence in the rendered tree is the
+	// signal, regardless of whether it changed: an image only apply changes no
+	// routing file at all.
+	var isGateway, routingChanged, gatewayComposeChanged bool
 	for _, file := range plan.Files {
 		if !strings.HasPrefix(file.Path, prefix) {
 			continue
@@ -138,6 +178,10 @@ func Build(site string, plan *render.Plan, t Transport) (*Plan, error) {
 			continue
 		}
 		remote := remoteRoot + rel
+
+		if rel == gatewayCaddyfile {
+			isGateway = true
+		}
 
 		change := Change{
 			Path:    remote,
@@ -175,7 +219,10 @@ func Build(site string, plan *render.Plan, t Transport) (*Plan, error) {
 				}
 			}
 			if isRouting(rel) {
-				out.GatewayReload = true
+				routingChanged = true
+			}
+			if rel == gatewayCompose {
+				gatewayComposeChanged = true
 			}
 		}
 	}
@@ -192,6 +239,13 @@ func Build(site string, plan *render.Plan, t Transport) (*Plan, error) {
 	}
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
+
+	out.GatewayReload = isGateway && routingChanged
+	out.GatewayChanging = isGateway && (routingChanged || gatewayComposeChanged)
+	if out.GatewayChanging {
+		out.ACMEModule = acmeModule
+	}
+
 	return out, nil
 }
 
@@ -216,16 +270,69 @@ func Execute(plan *Plan, t Transport) error {
 	}
 
 	// The gateway's configuration is assembled from per app snippets, so a
-	// wrong snippet is a wrong file for every hostname at once. Validate before
-	// reloading, and refuse to reload what does not validate: the cost of a
-	// mistake should be an error message on the workstation, not the public
-	// address of every application.
-	if plan.GatewayReload {
-		if out, err := t.Run("docker compose -f /srv/infra/compose.yaml exec -T caddy caddy validate --config /etc/caddy/Caddyfile"); err != nil {
-			return fmt.Errorf("%s: the assembled gateway configuration does not validate, so it was not reloaded:\n%s", plan.Site, out)
+	// wrong snippet is a wrong file for every hostname at once. Check the
+	// binary and the configuration before the gateway changes at all, and
+	// refuse rather than proceed: the cost of a mistake should be an error
+	// message on the workstation, not the public address of every application.
+	//
+	// These gates run on GatewayChanging rather than on GatewayReload, and
+	// both run before the Actions loop below, because the loop is where an
+	// image change lands. `docker compose up -d` returns as soon as the
+	// container starts, so a Caddy that cannot load its configuration is
+	// reported as a successful apply and is discovered by whoever visits the
+	// site.
+	if plan.GatewayChanging && plan.ACMEModule != "" {
+		// Ask the binary rather than trusting the image's name. A DNS provider
+		// is compiled into Caddy, so a wrong image or a provider no module
+		// answers to both produce a gateway that cannot load its own
+		// configuration, and neither is visible in a reference string. This
+		// runs before validate on purpose: a binary without the module also
+		// fails to validate, but the missing module error says what to fix and
+		// a parse error does not.
+		// The identifier is shell quoted and matched as a fixed string. It is
+		// no longer a compile time literal: acme.Module derives one from
+		// acme.provider for any provider the toolkit publishes no image for,
+		// so the operator's configuration reaches this command line. Single
+		// quoting keeps it an argument rather than shell syntax, and -F keeps
+		// it a literal rather than a pattern whose dots match anything.
+		command := fmt.Sprintf(
+			"docker compose -f /srv/infra/compose.yaml run --rm --no-deps --entrypoint caddy caddy list-modules | grep -qxF %s",
+			shellQuote(plan.ACMEModule))
+		if out, err := t.Run(command); err != nil {
+			return fmt.Errorf(
+				"%s: the gateway's Caddy has no %s module, so it cannot serve this configuration and was not reloaded. The image it runs was built without that provider:\n%s",
+				plan.Site, plan.ACMEModule, out)
 		}
-		if _, err := t.Run("docker compose -f /srv/infra/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"); err != nil {
-			return fmt.Errorf("%s: reloading the gateway: %w", plan.Site, err)
+	}
+
+	if plan.GatewayChanging {
+		// `run --rm --no-deps`, the same shape as the module check, rather than
+		// `exec`. Nothing has started the infrastructure stack at this point:
+		// the Actions loop below is what does that, and on a first apply to a
+		// fresh host there is no container to exec into at all, so validating
+		// through exec made `apply` unable to complete a first install of a
+		// gateway site. It also made recovery impossible after a gateway died,
+		// since every later apply would refuse at this step. `run` starts a
+		// throwaway container with the service's own image and bind mounts,
+		// which is exactly what validation needs and needs nothing running.
+		if out, err := t.Run("docker compose -f /srv/infra/compose.yaml run --rm --no-deps --entrypoint caddy caddy validate --config /etc/caddy/Caddyfile"); err != nil {
+			return fmt.Errorf("%s: the assembled gateway configuration does not validate, so the gateway was not changed:\n%s", plan.Site, out)
+		}
+	}
+
+	if plan.GatewayReload {
+		// Reload only a Caddy that is running. A stopped or absent gateway is
+		// started by the Actions loop below instead, and it reads the same
+		// configuration this apply just validated, so nothing is skipped by
+		// not reloading it.
+		running, err := t.Run("docker compose -f /srv/infra/compose.yaml ps --status running --quiet caddy")
+		if err != nil {
+			return fmt.Errorf("%s: asking whether the gateway is running: %w", plan.Site, err)
+		}
+		if strings.TrimSpace(running) != "" {
+			if _, err := t.Run("docker compose -f /srv/infra/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"); err != nil {
+				return fmt.Errorf("%s: reloading the gateway: %w", plan.Site, err)
+			}
 		}
 	}
 

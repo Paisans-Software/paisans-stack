@@ -16,7 +16,7 @@ package kinds
 import (
 	"sort"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/config"
 )
 
 // Service is one container in a kind's compose template.

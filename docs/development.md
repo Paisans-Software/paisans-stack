@@ -89,6 +89,19 @@ snippet is a wrong configuration for every hostname at once. The cost of that
 mistake should be an error message on the workstation, not the public address of
 every application.
 
+**Before any of that, the gateway's Caddy is asked which DNS modules it has.**
+A provider is a module compiled into the binary, so a wrong image and a provider
+no module answers to both produce a gateway that cannot load its own
+configuration, and neither is visible in an image reference. This check runs
+before the configuration check because its error says what to fix.
+
+A DNS provider's Caddyfile syntax is provider specific rather than uniform: the
+cloudflare module takes the API token as a bare argument, while the deSEC module
+requires a block with a `token` subdirective and rejects a bare argument. That
+is why `internal/acme` holds the exact lines for each provider rather than
+building one shared form (github.com/caddy-dns/cloudflare, README "Caddyfile"
+section; github.com/caddy-dns/desec, README "Caddyfile" section).
+
 ### Why ssh is shelled out to and sops is not
 
 The opposite choice in each case, for the same reason: what the operator already

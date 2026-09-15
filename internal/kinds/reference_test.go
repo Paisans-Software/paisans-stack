@@ -3,8 +3,8 @@ package kinds_test
 import (
 	"testing"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
-	"github.com/josephquigley/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
 // A reference pins when two runs of apply would fetch the same bytes. The

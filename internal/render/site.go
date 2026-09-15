@@ -13,7 +13,8 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/acme"
+	"github.com/paisans-software/paisans-stack/internal/config"
 )
 
 // The `all:` prefix matters: without it embed skips files beginning with a
@@ -67,6 +68,32 @@ var spiloTag = map[string]string{
 	"18": "4.1-p2",
 }
 
+// caddyImage is the image the gateway runs.
+//
+// A DNS provider in Caddy is a module compiled into the binary, not a setting,
+// so the provider decides the image. A declared image wins, because it is the
+// only way a provider the toolkit publishes nothing for can reach a gateway now
+// that nothing is built on a host.
+func (p *planner) caddyImage() (string, error) {
+	if declared := p.cfg.ACME.Image; declared != "" {
+		return declared, nil
+	}
+	image, ok := acme.Image(p.cfg.ACME.Provider)
+	if !ok {
+		// Kept rather than deleted, and unreachable through the CLI: `paisans`
+		// runs validate first, and acme-provider-needs-an-image refuses this
+		// configuration there with a message written for an operator. This is
+		// the library level guard for a caller that reaches render.Build
+		// without validating, which is a supported way to use this package.
+		// Without it the template would write `image: ` and the operator would
+		// meet the problem as a compose file the host rejects.
+		return "", fmt.Errorf(
+			"acme.provider %q has no image in this toolkit and acme.image declares none. A DNS provider is a module compiled into Caddy, so an image carrying it is the only way it reaches a gateway. Published providers: %s",
+			p.cfg.ACME.Provider, strings.Join(acme.Providers(), ", "))
+	}
+	return image, nil
+}
+
 type clusterMember struct {
 	Name    string
 	Address string
@@ -104,6 +131,19 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"cluster.postgres_version: %q has no Spilo image known to this toolkit. Spilo publishes one repository per major version with its own tags, so there is nothing to fall back to. Use one of %s, or add the tag",
 			p.postgresVersion(), strings.Join(sortedKeys(spiloTag), ", "))
 	}
+	// Resolved only for a gateway site: a site holding no gateway role needs no
+	// Caddy image, and acme.provider is not even required in a deployment with
+	// no gateway anywhere, so demanding one here would refuse a legitimate
+	// configuration over an image nothing will use. The template gates the
+	// caddy service on Site.IsGateway, so an empty string here never reaches
+	// a compose file.
+	var caddy string
+	if site.IsGateway {
+		caddy, err = p.caddyImage()
+		if err != nil {
+			return nil, err
+		}
+	}
 	infra, err := p.renderTemplate("infra-compose.yaml.tmpl", map[string]any{
 		"Site":               site,
 		"Scope":              p.scope(),
@@ -112,6 +152,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		"ElectionTimeoutMS":  p.electionTimeoutMS(),
 		"PostgresVersion":    p.postgresVersion(),
 		"SpiloTag":           spilo,
+		"CaddyImage":         caddy,
 	})
 	if err != nil {
 		return nil, err
@@ -173,6 +214,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"Domain":         p.cfg.Community.Domain,
 			"Routes":         p.routes(),
 			"TrustedProxies": p.mesh,
+			"ACMEDirective":  acme.Directive(p.cfg.ACME.Provider),
 		})
 		if err != nil {
 			return nil, err
@@ -186,7 +228,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		files = append(files, snippets...)
 
 		env, err := p.renderTemplate("caddy.env.tmpl", map[string]any{
-			"CloudflareAPIToken": p.secrets.External["cloudflare_api_token"],
+			"ACMEDNSToken": p.secrets.External["acme_dns_token"],
 		})
 		if err != nil {
 			return nil, err

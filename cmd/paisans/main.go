@@ -15,11 +15,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/josephquigley/paisans-stack/internal/apply"
-	"github.com/josephquigley/paisans-stack/internal/config"
-	"github.com/josephquigley/paisans-stack/internal/render"
-	"github.com/josephquigley/paisans-stack/internal/secretsgen"
-	"github.com/josephquigley/paisans-stack/internal/validate"
+	"github.com/paisans-software/paisans-stack/internal/acme"
+	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
 const usage = `paisans renders and checks a community stack declaration.
@@ -279,7 +280,7 @@ func runApply(args []string) error {
 	}
 
 	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
-	plan, err := apply.Build(*site, rendered, transport)
+	plan, err := apply.Build(*site, rendered, acme.Module(cfg.ACME.Provider), transport)
 	if err != nil {
 		return err
 	}
@@ -319,8 +320,13 @@ func printPlan(plan *apply.Plan) {
 		}
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n      %s\n", verb, action.Stack, action.Reason)
 	}
+	if plan.GatewayChanging && plan.ACMEModule != "" {
+		fmt.Fprintf(os.Stdout, "  %-9s the gateway's Caddy carries %s, before anything moves\n", "check", plan.ACMEModule)
+	}
 	if plan.GatewayReload {
 		fmt.Fprintf(os.Stdout, "  %-9s the gateway, after its assembled configuration validates\n", "reload")
+	} else if plan.GatewayChanging {
+		fmt.Fprintf(os.Stdout, "  %-9s the assembled gateway configuration, before the gateway is replaced\n", "validate")
 	}
 	if conflicts := plan.Conflicts(); len(conflicts) > 0 {
 		fmt.Fprintf(os.Stdout, "\n%d file(s) were edited on the host. Nothing will be applied until that is resolved.\n", len(conflicts))

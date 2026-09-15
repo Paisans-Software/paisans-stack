@@ -20,7 +20,9 @@
 # than one host block.
 {
 	email admin@example.org
-	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	acme_dns desec {
+		token {env.ACME_DNS_TOKEN}
+	}
 
 	servers {
 		# The mesh, never a host address, so the gateway role can move without

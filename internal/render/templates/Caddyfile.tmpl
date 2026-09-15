@@ -20,7 +20,7 @@
 # than one host block.
 {
 	email admin@{{ .Domain }}
-	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+{{ .ACMEDirective }}
 
 	servers {
 		# The mesh, never a host address, so the gateway role can move without
