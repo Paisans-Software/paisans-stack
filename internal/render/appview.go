@@ -32,7 +32,12 @@ type appValues struct {
 	// hostname holding the wellknown role when the app declares one, and the
 	// primary hostname otherwise.
 	//
-	// Only a homeserver has a use for it, and the reason it is not simply the
+	// Two kinds use it, and they must agree: a homeserver writes it into
+	// homeserver.yaml, and an Element client offers it to members as the name
+	// they have an account on. Element's is therefore resolved from the
+	// homeserver its `homeserver` setting names, not from its own hostname.
+	//
+	// The reason it is not simply the
 	// primary hostname is that delegation exists: a deployment serves
 	// /.well-known/matrix/server on the apex so that identifiers read
 	// @someone:example.org while the API lives on a subdomain. If the two
@@ -207,6 +212,9 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	if delegated := app.Hostnames[kinds.WellknownRole]; delegated != "" {
 		v.ServerName = delegated
 	}
+	if planned.Kind == config.KindElement {
+		v.ServerName = p.homeserverServerName(v.Setting("homeserver", planned.Hostname))
+	}
 	v.S3 = s3Values{
 		Endpoint:       fmt.Sprintf("http://%s:3900", garageEndpointHost(p)),
 		AccessKeyID:    garage.AccessKeyID,
@@ -228,6 +236,35 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		v.MASUpstreamProviderID = kinds.MASUpstreamProviderID(planned.Name)
 	}
 	return v, nil
+}
+
+// homeserverServerName is the server_name of the homeserver reached at a given
+// hostname, or that hostname when no declared homeserver answers on it.
+//
+// A client has to be told two different names. base_url is where the API is,
+// which is the homeserver's primary hostname; server_name is the part after the
+// colon in a user identifier, which is the hostname holding the wellknown role
+// when the homeserver declares one. Defaulting the second to the first is wrong
+// the moment delegation is in use: the client would offer members accounts on a
+// name that is not in any identifier the homeserver mints, and it disagreed
+// with the homeserver in this repository's own fixture.
+//
+// It is resolved from the declared deployment rather than made a setting an
+// operator types twice, because the two values are not independent: a
+// server_name that disagrees with the homeserver's is not a preference, it is a
+// broken client.
+func (p *planner) homeserverServerName(hostname string) string {
+	for _, name := range p.cfg.AppNames() {
+		app := p.cfg.Apps[name]
+		if app.Kind != config.KindSynapse || app.Hostname != hostname {
+			continue
+		}
+		if delegated := app.Hostnames[kinds.WellknownRole]; delegated != "" {
+			return delegated
+		}
+		return app.Hostname
+	}
+	return hostname
 }
 
 // dsn is the app's connection URL, empty for a kind that uses no Postgres so

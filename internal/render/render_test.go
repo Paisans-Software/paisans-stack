@@ -710,8 +710,19 @@ func TestElementRendersAClientConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("element rendered no runtime configuration")
 	}
-	if !strings.Contains(config.Content, "chat.example.org") {
+	if !strings.Contains(config.Content, `"base_url": "https://chat.example.org"`) {
 		t.Errorf("element's config does not name its homeserver:\n%s", config.Content)
+	}
+	// base_url is where the API is; server_name is the part after the colon in
+	// a user identifier. They are different names whenever delegation is in
+	// use, and a client that offers the wrong one offers accounts that do not
+	// exist. It must be the same value the homeserver was given.
+	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	if !strings.Contains(homeserver, `server_name: "example.org"`) {
+		t.Fatalf("the fixture homeserver's server_name is not what this test assumes:\n%s", homeserver)
+	}
+	if !strings.Contains(config.Content, `"server_name": "example.org"`) {
+		t.Errorf("element and the homeserver disagree about server_name:\n%s", config.Content)
 	}
 	if config.Mode != 0o644 {
 		t.Errorf("element's config is %04o; it carries no secret and wants 0644", config.Mode)

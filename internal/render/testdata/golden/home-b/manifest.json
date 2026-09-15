@@ -68,7 +68,7 @@
     },
     {
       "path": "srv/web/config.json",
-      "sha256": "224b4bd1575151cb6fa2de34d457798763ce8fc2f2924cdb10e20cf62b27c204",
+      "sha256": "c3db6176934cac613f61ba6e62787c77f8650b59c37f4e6fed478ceef6e7d9ec",
       "mode": "0644"
     }
   ]

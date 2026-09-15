@@ -116,8 +116,12 @@ The media store cannot leave the node, and the kind renders its own Postgres
 plus the initialisation hook that creates the authentication service's database
 beside it, neither of which exists on a clustered site. A clustered homeserver
 would render and then meet the missing database at the first sign in. The same
-reasoning refuses `writefreely`, which has never supported Postgres, so the
-refusal is the existing shape rather than a special case for Matrix.
+reasoning refuses `writefreely`, which has never supported Postgres,
+`element`, which is a static client with no server side state, and
+`oauth2-proxy`, whose session is a cookie. So the refusal is the existing shape
+rather than a special case for Matrix: a kind with no Postgres service has
+nothing to join, and cluster placement would render it onto every apps site
+with storage of its own.
 
 **"The authentication service's database" is Matrix Authentication Service,
 and the `synapse` kind renders it as a second container beside the

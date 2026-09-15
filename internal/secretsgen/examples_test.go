@@ -61,6 +61,9 @@ func TestExampleOIDCClientsCoverEveryApp(t *testing.T) {
 		if cfg.Apps[name].Kind == config.KindPocketID {
 			continue // the identity provider has no client at itself
 		}
+		if cfg.Apps[name].Kind == config.KindElement {
+			continue // a Matrix client authenticates at the homeserver, not here
+		}
 		if _, ok := secrets.OIDCClients[name]; !ok {
 			t.Errorf("apps.%s (kind %s): no oidc_clients entry in examples/secrets.example.yaml",
 				name, cfg.Apps[name].Kind)

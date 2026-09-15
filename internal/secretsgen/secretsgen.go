@@ -273,6 +273,15 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 		if cfg.Apps[name].Kind == config.KindPocketID {
 			continue // the identity provider has no client at itself
 		}
+		if cfg.Apps[name].Kind == config.KindElement {
+			// A Matrix client does not authenticate at the identity provider.
+			// It authenticates at the homeserver, which delegates to its own
+			// authentication service, which is the relying party. Asking an
+			// operator to mint a client for it would send them to approve a
+			// Pocket ID mutation that nothing would ever use, and its template
+			// set reads no OIDC value at all.
+			continue
+		}
 		why := "minted by the identity provider, and creating a client there is a mutation a human approves. The toolkit records the value afterwards rather than automating the approval away"
 		if cfg.Apps[name].Kind == config.KindSynapse {
 			// Said here rather than only in the rendered configuration,
