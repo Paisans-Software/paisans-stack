@@ -48,6 +48,15 @@ var appPort = map[config.Kind]int{
 // name.
 const gateMembersPort = 4181
 
+// masPort is where Matrix Authentication Service listens, one port above the
+// homeserver's 8008. MAS's own documented example binds 8080, and that is not
+// used here: 8080 is already the port two other kinds in this toolkit publish,
+// and a stack whose two containers sit on adjacent ports is easier to read on
+// a host than one that borrows a number from somewhere else. The port is not
+// a default being relied on either way, because the listener in mas.yaml binds
+// it explicitly.
+const masPort = 8009
+
 // patroniAPIPort is where Patroni answers the health check HAProxy uses to
 // find the primary. It is fixed by Spilo.
 const patroniAPIPort = 8008

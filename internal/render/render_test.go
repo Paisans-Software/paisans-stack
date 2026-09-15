@@ -806,6 +806,128 @@ func TestTheGateIsDeclaredPerApp(t *testing.T) {
 	}
 }
 
+// Synapse is a resource server: MAS owns authentication, and Synapse must not
+// carry a second way in. The single check that proves the split is that no
+// oidc_providers block is rendered and the delegation to MAS is.
+//
+// The brief for this task asked for `msc3861` here, which is the experimental
+// form. Synapse v1.160.0, the version this kind pins, documents the stable
+// `matrix_authentication_service` block instead and its configuration manual
+// no longer mentions msc3861 at all: checked against
+// docs/usage/configuration/config_documentation.md at tag v1.160.0 on
+// 2026-09-15. Asserting the experimental key would pin the toolkit to a shape
+// the pinned image has moved past, so the stable one is asserted and the
+// deviation is recorded in docs/decisions.md.
+func TestSynapseDelegatesAuthenticationToMAS(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	if strings.Contains(homeserver, "oidc_providers") {
+		t.Error("homeserver.yaml still configures its own OIDC, which is a second way in")
+	}
+	if strings.Contains(homeserver, "registration_shared_secret") {
+		t.Error("registration_shared_secret is present, which bypasses MAS and the group restriction")
+	}
+	if !strings.Contains(homeserver, "matrix_authentication_service:") {
+		t.Errorf("homeserver.yaml does not delegate to MAS:\n%s", homeserver)
+	}
+
+	mas, ok := files["vm/srv/chat/mas.yaml"]
+	if !ok {
+		t.Fatal("no MAS configuration was rendered")
+	}
+	if mas.Mode != 0o600 {
+		t.Error("the MAS configuration carries secrets and must be 0600")
+	}
+
+	compose := files["vm/srv/chat/compose.yaml"].Content
+	if !strings.Contains(compose, "mas:") {
+		t.Error("the stack renders no MAS service")
+	}
+}
+
+// Both sides of the shared secret have to be the same string, or Synapse and
+// MAS each start cleanly and refuse every request between them.
+func TestSynapseAndMASShareOneSecret(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+	secret := "fixture-not-a-secret-chat-mas-matrix"
+	for _, path := range []string{"vm/srv/chat/homeserver.yaml", "vm/srv/chat/mas.yaml"} {
+		if !strings.Contains(files[path].Content, secret) {
+			t.Errorf("%s does not carry the shared secret both sides need:\n%s", path, files[path].Content)
+		}
+	}
+}
+
+// Order is the whole point of this snippet. MAS answers the three compatibility
+// login paths, and a catch all for /_matrix/* written above them would take
+// every one of those requests to Synapse, which no longer knows how to answer
+// a login.
+func TestTheLoginSplitIsOrderedAheadOfTheCatchAll(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+	snippet, ok := files["vm/srv/infra/caddy/snippets/chat.caddy"]
+	if !ok {
+		t.Fatal("the homeserver has no snippet")
+	}
+	catchAll := strings.Index(snippet.Content, "handle /_matrix/* {")
+	if catchAll < 0 {
+		t.Fatalf("the snippet has no /_matrix/* catch all:\n%s", snippet.Content)
+	}
+	for _, path := range []string{
+		"handle /_matrix/client/*/login {",
+		"handle /_matrix/client/*/logout {",
+		"handle /_matrix/client/*/refresh {",
+	} {
+		at := strings.Index(snippet.Content, path)
+		if at < 0 {
+			t.Errorf("the snippet does not split %s off to MAS:\n%s", path, snippet.Content)
+			continue
+		}
+		if at > catchAll {
+			t.Errorf("%s is written after the /_matrix/* catch all, so Synapse answers it", path)
+		}
+	}
+}
+
+// The apex serves the delegation documents and nothing else. Routing it like
+// the primary would publish the whole homeserver API there.
+func TestTheApexServesOnlyDelegation(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+	snippet, ok := files["vm/srv/infra/caddy/snippets/chat-wellknown.caddy"]
+	if !ok {
+		t.Fatal("the apex has no snippet")
+	}
+	if !strings.Contains(snippet.Content, "/.well-known/matrix/") {
+		t.Errorf("the apex snippet does not serve the delegation documents:\n%s", snippet.Content)
+	}
+	if strings.Contains(snippet.Content, "/_matrix/") {
+		t.Errorf("the apex snippet exposes the homeserver API:\n%s", snippet.Content)
+	}
+	// The name in every user identifier is the name the delegation is served
+	// on, so that is what server_name has to be. If they disagree, the two
+	// documents below point nowhere and federation resolves to the wrong host.
+	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	if !strings.Contains(homeserver, `server_name: "example.org"`) {
+		t.Errorf("server_name is not the name the delegation is served on:\n%s", homeserver)
+	}
+	for _, document := range []string{"/.well-known/matrix/server", "/.well-known/matrix/client"} {
+		if !strings.Contains(snippet.Content, "handle "+document+" {") {
+			t.Errorf("the apex does not answer %s:\n%s", document, snippet.Content)
+		}
+	}
+}
+
 // hostBlock returns the text of one host block, so a test can assert about one
 // hostname rather than about the whole file.
 func hostBlock(t *testing.T, caddyfile, hostname string) string {

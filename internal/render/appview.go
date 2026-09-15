@@ -1,7 +1,9 @@
 package render
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"math/big"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
@@ -27,6 +29,20 @@ type appValues struct {
 	// are here because roughly half the settings that want one want the other.
 	Hostname  string
 	PublicURL string
+
+	// ServerName is the name that appears in a user identifier. It is the
+	// hostname holding the wellknown role when the app declares one, and the
+	// primary hostname otherwise.
+	//
+	// Only a homeserver has a use for it, and the reason it is not simply the
+	// primary hostname is that delegation exists: a deployment serves
+	// /.well-known/matrix/server on the apex so that identifiers read
+	// @someone:example.org while the API lives on a subdomain. If the two
+	// disagree the delegation documents point at a server that does not answer
+	// to the name they claim. Changing it after an account or a room exists is
+	// a migration rather than a setting, which is why it is derived from the
+	// declared hostnames rather than from anything that can drift.
+	ServerName string
 
 	// Domain is the community's own domain, community.domain in the
 	// configuration, never an app's own hostname. The oauth2-proxy kind scopes
@@ -72,6 +88,20 @@ type appValues struct {
 	// one port, already covered by Upstreams and App.Port, and needs neither.
 	GateMembersPort      int
 	GateMembersUpstreams []string
+
+	// MASPort, MASUpstreams, MASDBName and MASUpstreamProviderID describe the
+	// synapse kind's second container, Matrix Authentication Service. They are
+	// populated only for that kind, for the same reason the two fields above
+	// are populated only for the gate.
+	//
+	// MAS is a second service on a second port with a database of its own, and
+	// the gateway has to reach it directly: the three compatibility login paths
+	// are split off to it in front of the homeserver, so a snippet that only
+	// knew the homeserver's address could not route them.
+	MASPort               int
+	MASUpstreams          []string
+	MASDBName             string
+	MASUpstreamProviderID string
 
 	secrets map[string]any
 	set     map[string]any
@@ -175,6 +205,10 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		secrets:        p.secrets.Apps[planned.Name],
 		set:            app.Settings,
 	}
+	v.ServerName = planned.Hostname
+	if delegated := app.Hostnames[kinds.WellknownRole]; delegated != "" {
+		v.ServerName = delegated
+	}
 	v.S3 = s3Values{
 		Endpoint:       fmt.Sprintf("http://%s:3900", garageEndpointHost(p)),
 		AccessKeyID:    garage.AccessKeyID,
@@ -188,6 +222,12 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	if planned.Kind == config.KindOAuth2Proxy {
 		v.GateMembersPort = gateMembersPort
 		v.GateMembersUpstreams = p.upstreamsOnPort(planned.Name, gateMembersPort)
+	}
+	if planned.Kind == config.KindSynapse {
+		v.MASPort = masPort
+		v.MASUpstreams = p.upstreamsOnPort(planned.Name, masPort)
+		v.MASDBName = planned.DBName + "_mas"
+		v.MASUpstreamProviderID = upstreamProviderID(planned.Name)
 	}
 	return v, nil
 }
@@ -247,6 +287,35 @@ func (p *planner) identityProviderURL() string {
 		}
 	}
 	return ""
+}
+
+// upstreamProviderID is the identifier MAS gives the identity provider it
+// authenticates against.
+//
+// MAS requires a ULID there, and the value is not private: it appears in the
+// callback URL registered at the identity provider,
+// https://<hostname>/upstream/callback/<id>, so the operator has to read it off
+// the rendered configuration and register it. Deriving it from the app's name
+// rather than generating one keeps rendering deterministic, which is what stops
+// a second `apply` from silently inventing a provider the registered callback
+// no longer matches.
+//
+// A ULID is 26 Crockford base32 characters over 128 bits, which leaves two
+// unused bits at the top, so the leading character of any value encoded this
+// way is in 0 to 7 and the result always parses. It is not a real ULID in the
+// sense of carrying a timestamp, and nothing here reads one back out of it.
+func upstreamProviderID(app string) string {
+	const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	sum := sha256.Sum256([]byte("paisans-stack upstream oauth2 provider:" + app))
+	n := new(big.Int).SetBytes(sum[:16])
+	mask := big.NewInt(31)
+	digit := new(big.Int)
+	out := make([]byte, 26)
+	for i := 25; i >= 0; i-- {
+		out[i] = alphabet[digit.And(n, mask).Int64()]
+		n.Rsh(n, 5)
+	}
+	return string(out)
 }
 
 // quote renders a value into a double quoted YAML or INI string. Templates use

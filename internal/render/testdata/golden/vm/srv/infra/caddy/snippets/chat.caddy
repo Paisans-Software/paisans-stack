@@ -1,20 +1,65 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
 # Routing for chat, imported by the gateway's block for
-# chat.example.org.
+# chat.example.org. Two services answer on this one hostname: the homeserver and
+# Matrix Authentication Service in front of it.
 #
-# Everything reaches the homeserver, including /.well-known/matrix/server and
-# /.well-known/matrix/client. Synapse serves both itself: serve_server_wellknown
-# is set in homeserver.yaml, and public_baseurl is what makes it answer the
-# client one. Writing that JSON here instead would be a second copy of the
-# server's own identity, in a file that nothing checks against it.
+# ORDER IS LOAD-BEARING, and it is the thing to get right here. `handle` blocks
+# are mutually exclusive and evaluated in the order written, so the three
+# compatibility login paths must come BEFORE the /_matrix/* catch all.
+# Reversing them sends every login to the homeserver, which no longer knows how
+# to answer one, and the failure reads as a broken client rather than a broken
+# proxy.
 #
-# Federation therefore arrives on 443 rather than 8448, which is the point of
-# delegating it: nothing else has to listen on a second port.
-reverse_proxy 10.44.0.3:8008 {
-	header_up X-Forwarded-Proto https
-	# Media and event uploads are larger than a default proxy read allows for.
-	transport http {
-		read_timeout 5m
+# Everything outside /_matrix and /_synapse is MAS's own surface: /login,
+# /account, /authorize, /upstream/callback/<id> and
+# /.well-known/openid-configuration. That is what the final handle is for.
+#
+# The delegation documents are not here. They belong to whichever hostname
+# appears in user identifiers, which is this kind's wellknown role and its own
+# snippet.
+#
+# NEVER GATE THIS HOSTNAME. A Matrix client is not a browser and will not
+# follow a redirect to a passkey prompt, so a gate here breaks every client
+# login rather than protecting anything. Access control belongs at the identity
+# provider, where the group restriction decides who may be provisioned at all.
+handle /_matrix/client/*/login {
+	reverse_proxy 10.44.0.3:8009 {
+		header_up X-Forwarded-Proto https
+	}
+}
+handle /_matrix/client/*/logout {
+	reverse_proxy 10.44.0.3:8009 {
+		header_up X-Forwarded-Proto https
+	}
+}
+handle /_matrix/client/*/refresh {
+	reverse_proxy 10.44.0.3:8009 {
+		header_up X-Forwarded-Proto https
+	}
+}
+handle /_matrix/* {
+	reverse_proxy 10.44.0.3:8008 {
+		header_up X-Forwarded-Proto https
+		# Media and event uploads are larger than a default proxy read allows
+		# for.
+		transport http {
+			read_timeout 5m
+		}
+	}
+}
+handle /_synapse/* {
+	reverse_proxy 10.44.0.3:8008 {
+		header_up X-Forwarded-Proto https
+		# Media and event uploads are larger than a default proxy read allows
+		# for.
+		transport http {
+			read_timeout 5m
+		}
+	}
+}
+handle {
+	reverse_proxy 10.44.0.3:8009 {
+		header_up X-Forwarded-Proto https
 	}
 }

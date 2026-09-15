@@ -1,0 +1,164 @@
+# Rendered by paisans. Do not edit.
+#
+# A build artifact: `paisans apply` renders it and refuses to overwrite one
+# that has been modified locally. Change paisans.yaml or secrets.enc.yaml.
+#
+# Matrix Authentication Service: the thing that actually logs a member in.
+# Clients speak OAuth 2.0 to this service, it redirects to the identity
+# provider, imports the claims, provisions the account and issues the Matrix
+# access token. The homeserver beside it never learns how to log anyone in.
+#
+# Every key below was read from MAS's own configuration reference at tag
+# v1.24.0 (docs/reference/configuration.md) on 2026-09-15, not recalled.
+#
+# TWO THINGS HERE ARE ONE-WAY DOORS.
+#
+#   secrets.encryption encrypts database fields and cookies. Changing it after
+#   members exist makes every encrypted field and cookie unrecoverable. Back it
+#   up with the database, not instead of it.
+#
+#   claims_imports.localpart becomes the permanent local part of a member's
+#   identifier. Renaming them at the identity provider afterwards does not
+#   rename the identifier.
+#
+# NOTHING HAS TO BE RUN BY HAND TO BRING THIS UP. `mas-cli server`, which is
+# what the compose file runs, applies pending database migrations and syncs
+# this file's clients and upstream providers into the database on start;
+# `--no-migrate` and `--no-sync` turn each off and neither is passed. Read from
+# the `server` command's own reference at tag v1.24.0 on 2026-09-15.
+#
+# THE COMMAND THAT HAS TEETH IS THE SEPARATE ONE. `mas-cli config sync --prune`
+# deletes anything absent from this file, so running it against a partial
+# config deletes the upstream provider below, which is every member's only way
+# in. A start never prunes; that flag only exists on the standalone command.
+
+http:
+  # Public URL base used when building absolute public URLs. MAS answers on
+  # the same hostname as the homeserver API: the gateway splits the three
+  # compatibility login paths off to this service and gives it everything that
+  # is not the homeserver's.
+  public_base: "https://chat.example.org/"
+  issuer: "https://chat.example.org/"
+  # The mesh, never a host address, so the gateway role can move without
+  # rewriting this file.
+  trusted_proxies:
+    - 10.44.0.0/24
+  listeners:
+    - name: web
+      resources:
+        # discovery and oauth are not optional here: the homeserver's
+        # matrix_authentication_service.endpoint points at this listener and
+        # Synapse's manual says that endpoint must have both mounted.
+        - name: discovery
+        - name: human
+        - name: oauth
+        # compat is what answers the three /_matrix/client/*/login, /logout and
+        # /refresh paths the gateway sends here.
+        - name: compat
+        - name: graphql
+        - name: assets
+          # Where the image puts them. The default is relative to the working
+          # directory, which is / in this image, so it is spelled out: read from
+          # the Dockerfile at tag v1.24.0, which copies the built assets to
+          # /usr/local/share/mas-cli/.
+          path: /usr/local/share/mas-cli/assets/
+      binds:
+        - address: "[::]:8009"
+      proxy_protocol: false
+
+database:
+  host: "postgres"
+  port: 5432
+  username: "chat"
+  password: "fixture-not-a-secret-chat-db"
+  # Its own database beside the homeserver's, not its own role: one app, one
+  # credential is this toolkit's rule everywhere else and MAS is not an
+  # exception to it. A shared database would be worse than a shared role,
+  # because both services define a `users` table.
+  database: "chat_mas"
+
+matrix:
+  # The homeserver's server_name, which is the name inside every identifier.
+  homeserver: "example.org"
+  # The homeserver's own address, inside this stack. `app` is the compose
+  # service, so this never leaves the host.
+  endpoint: "http://app:8008/"
+  # The same string as homeserver.yaml's matrix_authentication_service.secret.
+  # It authenticates this service to the homeserver, which means it can perform
+  # admin actions there, so it is high entropy and it is not shared with
+  # anything else.
+  secret: "fixture-not-a-secret-chat-mas-matrix"
+
+secrets:
+  # A 32-byte hex encoded key, which is the form MAS states. See the one-way
+  # door note at the top of this file.
+  encryption: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+  keys:
+    # At least one RSA key must be configured, per MAS's reference. This one
+    # signs the tokens the service issues.
+    - key: |
+        -----BEGIN PRIVATE KEY-----
+        MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDijQo/TjdK2LNg
+        QxbJdOiW/E04GDO+FKPGTSpBFRJjkSK3V+CFcDje2xFFGFAda7cArpZASNIFpM75
+        FzNq7EOZKTY2986HMF6E+wucG8G/7YaHZMfLPnpxxOusJ6bd8oHIizGQanHlXVan
+        nHZ5ZzepFpXTBrCM34jTwJH7OHwEs1Mn6p3nZhsLqI3ueGAbHhXj29LsVv9seI9M
+        sZ2VwTaoytbQGLp8hykkPI38frS9sto3ANp6B+0e9FT+JVf6RgsVKahzRy2/0z/r
+        Z5E7ULOhWrMcn7FfQ1rAFhJPmqhAi2CpUV/0U9ZVVQDXxD8WZN77pRSS+W/9Fw3R
+        8D7UpIYBAgMBAAECggEALpZ8ZfpKqoyXjpMdS35MGkh2BLQNZ+hMqYnSx6Fyr6D3
+        96YNmMM0HrgD/CZ8yyAMeQpuAXg4IEr8+QJJY5KEcCmmaXVaNji/Jy+M+qRGmpZY
+        1NznrScC/QRWxoc87GVjRP9CyQTquRURrdQiFOMh8haf5s54Xe/V7l2qZ3P9JOXs
+        c1apo8vmE/5+2R8j6QedTj+fNXbAEIld8I1QNXd02f+d/oAi/zQWexXtq933/YRV
+        /W83eAe/0CTdpMMNMjxj+t15bYSe5M5MtKleWVmCWJDWWlCz+d+C2ds75vl+/pKR
+        FSuYtulrzqqWNWgckVeeiwLxG5vT/BsiOiyhm1qH8QKBgQD6XN/KsMI66WKf0hr3
+        3c4mAYso2neiU8s9Wgwi7S4PFLkRw+6qfT2VzMTHgOnsTDfUN52urbGgGBhF5aOm
+        Zk/3t+S14McwAz+yQIolEJVo0JjmNYudmCGBY6ncPT0OlBC4aq+KmkFnvOoXV4o0
+        xS6SgqUsZ9jPUXPVB4Kmy2l6RQKBgQDnpuk5BQh6Jmc7Xz9k2ugQcdN+1bcQhVJ0
+        2AKZSHvcO/qr6hprfcG1PrpqYNe0yvr3YCVJQVgbwURPMWpPq6zdEiJZ+6NfIvUf
+        Znr4NLAXPeG2zuV1Cr8PQ0VyQ5MvyuFGyN4DRdu/82D1//uyuJ59gbC2j6vB0YzN
+        D/kBNqVWjQKBgDzUId+KULali7vO/ZRphLPBPkFfyx9ago/WeApoW/94BnslgrBT
+        m4nw5YKfdLZf0lSyapJNS1HdaNBaugcs5pMGUABMq7ijoW86tRXKULLVs8CDE/fn
+        RYS9ZUDIdDQ9j05vRVVEo02EHdAsCb1Gh0k7isweMxQz8xO4Lms+EtONAoGBAKX2
+        rja8xWMGKoWd6sQuFX7angTLxrkeW4H81HfPN3YEvsX2FfGXCnX4uAPI2CHeHsmm
+        Z3BBUYepAnCeXaUwwMst19CR+W0KlYVmnYk/7jzoh9K6Dii5h0K/Fn0TrtrZxmY5
+        ON4taY/vJTN5r3FO1bXjeaCB9DMLF44++E4HQZNtAoGAKe67PaRQ5BMEIAlso3lr
+        xMm1Bde6vz03zeOwpR+yDlogW/B6k9xa4Kb/h9Om22kEVtFUofofvw/1GLkao/mS
+        vokbG4Xyu3+jkmGvKGIFnwcBTaPlITHnzAKCVdouuwATjr4N8It4cTDj8BB0ZbX5
+        S2WCZ7n5rzlB7E4U1Fm8tg8=
+        -----END PRIVATE KEY-----
+
+# No local password database. The identity provider is the only way in, which
+# is what makes the group restriction there the whole of the access policy.
+passwords:
+  enabled: false
+
+account:
+  password_registration_enabled: false
+  password_change_allowed: false
+  password_recovery_enabled: false
+
+upstream_oauth2:
+  providers:
+    # THE REDIRECT URI TO REGISTER AT THE IDENTITY PROVIDER IS
+    # https://chat.example.org/upstream/callback/0F7E2P4F3W17YSR71ETCRS95ZY
+    # The id below is part of that URL, which is why it is derived from the
+    # app's name and stays the same every time this file is rendered rather
+    # than being generated fresh and silently invalidating the registration.
+    - id: 0F7E2P4F3W17YSR71ETCRS95ZY
+      issuer: "https://id.example.org"
+      client_id: "fixture-not-a-secret-chat-id"
+      client_secret: "fixture-not-a-secret-chat-secret"
+      token_endpoint_auth_method: client_secret_basic
+      scope: "openid profile email"
+      claims_imports:
+        localpart:
+          # require, not suggest: a member with no preferred_username should
+          # fail loudly at first login rather than quietly receive a generated
+          # identifier they are then stuck with. See the one-way door note.
+          action: require
+          template: "{{ user.preferred_username }}"
+        displayname:
+          action: suggest
+          template: "{{ user.name }}"
+        email:
+          action: suggest
+          template: "{{ user.email }}"

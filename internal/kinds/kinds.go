@@ -90,7 +90,19 @@ var catalogue = map[config.Kind][]Service{
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
 	config.KindSynapse: {
-		{Name: "app", Image: "ghcr.io/element-hq/synapse:v1.160.0", Purpose: "the application"},
+		// Three containers, because a homeserver does not authenticate anyone
+		// any more. Synapse is a resource server, Matrix Authentication
+		// Service owns the login, and the identity provider is upstream of
+		// MAS rather than of Synapse.
+		//
+		// NOTE THE MISSING `v`. Synapse tags as vX.Y.Z and MAS tags as X.Y.Z.
+		// Checked against ghcr.io on 2026-09-15 by requesting the manifest for
+		// each: `1.24.0` resolved (200), `v1.24.0` did not (404), and neither
+		// did `1.25.0`. The registry's tag list was paged through in full and
+		// 1.24.0 is the newest release; 1.25.0-rc.0 exists but is a release
+		// candidate.
+		{Name: "app", Image: "ghcr.io/element-hq/synapse:v1.160.0", Purpose: "the homeserver, which only serves the API"},
+		{Name: "mas", Image: "ghcr.io/element-hq/matrix-authentication-service:1.24.0", Purpose: "Matrix Authentication Service, which owns the login"},
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
 	config.KindWriteFreely: {

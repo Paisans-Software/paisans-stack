@@ -1,0 +1,20 @@
+-- Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+--
+-- Matrix Authentication Service keeps its own database beside the
+-- homeserver's. They cannot share one: both define a `users` table.
+{{- if .App.Pinned }}
+--
+-- RUNS EXACTLY ONCE, on an empty data directory, in the same pass that applies
+-- POSTGRES_INITDB_ARGS. A database that already has data will never see this
+-- file, so adding MAS to a stack that has been up before means creating this
+-- database by hand.
+CREATE DATABASE {{ .MASDBName }} OWNER {{ .DBUser }};
+{{- else }}
+--
+-- NOTHING RUNS THIS. {{ .App.Name }} has cluster placement, so it has no
+-- Postgres container of its own and no initialisation hook to hang this on.
+-- The statement is left here as the record of what the cluster owes this
+-- stack, and somebody with the cluster's admin role runs it:
+--
+--   CREATE DATABASE {{ .MASDBName }} OWNER {{ .DBUser }};
+{{- end }}

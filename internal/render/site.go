@@ -35,13 +35,33 @@ var templates = template.Must(template.New("infra").Funcs(templateFuncs).ParseFS
 // purpose: logic that needs more than this belongs in Go, where it can be
 // tested.
 var templateFuncs = template.FuncMap{
-	"quote": quote,
+	"quote":  quote,
+	"indent": indent,
 	"yesno": func(b bool) string {
 		if b {
 			return "true"
 		}
 		return "false"
 	},
+}
+
+// indent prefixes every line of a value with n spaces, so that a multi line
+// secret can be placed into a YAML block scalar. A PEM encoded key is the case
+// that needs it: unindented, its second line ends the block and the rest of the
+// file becomes a parse error.
+//
+// A trailing newline is dropped, because the template supplies the line break
+// after the value and two would render a blank line inside the block.
+func indent(n int, value string) string {
+	pad := strings.Repeat(" ", n)
+	lines := strings.Split(strings.TrimRight(value, "\n"), "\n")
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		lines[i] = pad + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 // secretSuffix marks a template whose rendered file is written 0600.
