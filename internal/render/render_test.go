@@ -596,3 +596,32 @@ func TestTheGatewayRunsAnImageWithTheModule(t *testing.T) {
 		t.Errorf("the gateway runs upstream's image, which carries no DNS module:\n%s", infra)
 	}
 }
+
+// A deployment with no gateway site is legitimate: internal/config requires
+// acme.provider only when a site holds the gateway role. The renderer must not
+// demand a Caddy image for a site that will never run Caddy, or a config that
+// validation accepts fails to render anyway, over an image nothing needs.
+func TestNoGatewayNeedsNoACMEProvider(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ACME = config.ACME{}
+	vm := cfg.Sites["vm"]
+	vm.Roles = []config.Role{config.RoleWitness}
+	cfg.Sites["vm"] = vm
+
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatalf("a deployment with no gateway site failed to render: %v", err)
+	}
+	for _, f := range plan.Files {
+		if strings.HasSuffix(f.Path, "caddy/Caddyfile") {
+			t.Errorf("%s was rendered although no site holds the gateway role", f.Path)
+		}
+	}
+}

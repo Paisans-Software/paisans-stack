@@ -124,9 +124,18 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"cluster.postgres_version: %q has no Spilo image known to this toolkit. Spilo publishes one repository per major version with its own tags, so there is nothing to fall back to. Use one of %s, or add the tag",
 			p.postgresVersion(), strings.Join(sortedKeys(spiloTag), ", "))
 	}
-	caddy, err := p.caddyImage()
-	if err != nil {
-		return nil, err
+	// Resolved only for a gateway site: a site holding no gateway role needs no
+	// Caddy image, and acme.provider is not even required in a deployment with
+	// no gateway anywhere, so demanding one here would refuse a legitimate
+	// configuration over an image nothing will use. The template gates the
+	// caddy service on Site.IsGateway, so an empty string here never reaches
+	// a compose file.
+	var caddy string
+	if site.IsGateway {
+		caddy, err = p.caddyImage()
+		if err != nil {
+			return nil, err
+		}
 	}
 	infra, err := p.renderTemplate("infra-compose.yaml.tmpl", map[string]any{
 		"Site":               site,
