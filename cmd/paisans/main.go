@@ -1,9 +1,10 @@
-// Command paisans renders and checks a paisans deployment declaration.
+// Command paisans renders, checks and applies a paisans deployment
+// declaration.
 //
-// This build does three things and touches nothing outside the working
-// directory: it validates a configuration, generates the secrets that
-// configuration needs, and renders artifacts to a local directory. There is no
-// SSH, no Docker and no network path in it at all.
+// Three of its four commands touch nothing outside the working directory.
+// `apply` is the exception and is the only code path here that reaches a
+// machine: it shows what it would do and changes nothing unless it is told to
+// with --execute.
 package main
 
 import (
@@ -12,7 +13,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/josephquigley/paisans-stack/internal/apply"
 	"github.com/josephquigley/paisans-stack/internal/config"
 	"github.com/josephquigley/paisans-stack/internal/render"
 	"github.com/josephquigley/paisans-stack/internal/secretsgen"
@@ -25,14 +28,19 @@ Usage:
   paisans validate [--config paisans.yaml]
   paisans init     [--config paisans.yaml] [--secrets secrets.enc.yaml]
   paisans render   [--config paisans.yaml] [--secrets secrets.enc.yaml] --out ./out
+  paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
+                   [--ssh <destination>] [--execute]
 
 Commands:
   validate   Load the configuration and report every problem found.
   init       Generate the secrets this configuration needs, filling in only
              what is missing, and say what is still owed from elsewhere.
   render     Validate, then write per site artifacts to a local directory.
+  apply      Compare one site's rendered artifacts with what is on that host
+             and show what would change. Writes nothing without --execute.
 
-Nothing here reaches a host. Rendering writes files and stops.
+Only apply reaches a host, and only with --execute. Everything else writes
+files locally and stops.
 `
 
 func main() {
@@ -48,6 +56,8 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "render":
 		err = runRender(os.Args[2:])
+	case "apply":
+		err = runApply(os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
@@ -208,6 +218,113 @@ func runRender(args []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "rendered %d files to %s\n", len(plan.Files), *out)
 	return nil
+}
+
+// runApply compares one site against what is rendered for it, and changes
+// nothing unless told to.
+//
+// A dry run by default is not politeness. This is the only command that
+// reaches a machine, the machine it reaches is running a community, and the
+// difference between "show me" and "do it" should be a flag an operator typed
+// rather than a habit they formed.
+func runApply(args []string) error {
+	fs := flag.NewFlagSet("apply", flag.ExitOnError)
+	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
+	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
+	site := fs.String("site", "", "the site to apply, by the name it has in the configuration")
+	destination := fs.String("ssh", "", "ssh destination (default: the site's declared ssh address)")
+	execute := fs.Bool("execute", false, "actually write files and restart services")
+	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *site == "" {
+		return fmt.Errorf("apply: --site is required. A site at a time is deliberate: a staged change that half succeeds across three machines is worse than one that failed on one")
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	result := validate.Check(cfg)
+	report(os.Stderr, *configPath, result)
+	if result.Refused() {
+		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+	}
+	declared, ok := cfg.Sites[*site]
+	if !ok {
+		return fmt.Errorf("apply: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
+	}
+	if *destination == "" {
+		*destination = declared.SSH
+	}
+	if *destination == "" {
+		return fmt.Errorf("apply: site %s has no ssh address and none was given with --ssh", *site)
+	}
+
+	if *secretsPath == "" {
+		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
+	}
+	secrets, err := config.LoadSecrets(*secretsPath)
+	if err != nil {
+		return err
+	}
+	if !secrets.Encrypted {
+		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+	}
+
+	rendered, err := render.Build(cfg, secrets)
+	if err != nil {
+		return err
+	}
+
+	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
+	plan, err := apply.Build(*site, rendered, transport)
+	if err != nil {
+		return err
+	}
+	printPlan(plan)
+
+	if !*execute {
+		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 {
+			return nil
+		}
+		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		return nil
+	}
+	if err := apply.Execute(plan, transport); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", len(plan.Writes()), plan.Transport)
+	return nil
+}
+
+func printPlan(plan *apply.Plan) {
+	fmt.Fprintf(os.Stdout, "%s (%s)\n", plan.Site, plan.Transport)
+	var unchanged int
+	for _, change := range plan.Changes {
+		if change.Kind == apply.Unchanged {
+			unchanged++
+			continue
+		}
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", change.Kind, change.Path)
+	}
+	if unchanged > 0 {
+		fmt.Fprintf(os.Stdout, "  %-9s %d file(s)\n", "unchanged", unchanged)
+	}
+	for _, action := range plan.Actions {
+		verb := "restart"
+		if action.Recreate {
+			verb = "recreate"
+		}
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n      %s\n", verb, action.Stack, action.Reason)
+	}
+	if plan.GatewayReload {
+		fmt.Fprintf(os.Stdout, "  %-9s the gateway, after its assembled configuration validates\n", "reload")
+	}
+	if conflicts := plan.Conflicts(); len(conflicts) > 0 {
+		fmt.Fprintf(os.Stdout, "\n%d file(s) were edited on the host. Nothing will be applied until that is resolved.\n", len(conflicts))
+	}
 }
 
 func report(w *os.File, path string, result validate.Result) {
