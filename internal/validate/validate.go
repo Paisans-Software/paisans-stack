@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
@@ -125,6 +126,8 @@ func Check(cfg *config.Config) Result {
 	c.imageServices()
 	c.floatingImages()
 	c.clusterPlacementWithoutACluster()
+	c.acmeProviderHasAnImage()
+	c.acmeImageIsNotStockCaddy()
 
 	c.evenVoters()
 	c.meshIsNotPrivate()
@@ -381,6 +384,45 @@ func (c *checker) clusterPlacementWithoutACluster() {
 			"is `cluster`, but %s keeps its data outside the Postgres cluster, so there is nothing for it to join. It would be rendered onto every apps site with its own separate storage, which is two deployments behind one hostname. Pin it to a site instead.",
 			app.Kind)
 	}
+}
+
+// acmeProviderHasAnImage refuses a provider whose module cannot reach the
+// gateway.
+//
+// A DNS provider in Caddy is a Go module compiled into the binary, and nothing
+// is built on a host, so a provider the toolkit publishes no image for needs an
+// image declared that carries it. Without one the gateway would run a binary
+// that cannot load its own configuration, and would hold no certificate for
+// any hostname. That is incoherent rather than risky, so it is a refusal.
+func (c *checker) acmeProviderHasAnImage() {
+	if len(c.cfg.GatewaySites()) == 0 || c.cfg.ACME.Provider == "" {
+		return // no gateway needs certificates; a missing provider is structural
+	}
+	if _, ok := acme.Image(c.cfg.ACME.Provider); ok {
+		return
+	}
+	if c.cfg.ACME.Image != "" {
+		return
+	}
+	c.refuse("acme-provider-needs-an-image", "acme.provider",
+		"is %q, which this toolkit publishes no image for, and acme.image declares none. A DNS provider is a module compiled into Caddy rather than a setting, and nothing is built on a host, so the gateway would run a binary that cannot load its own configuration. Published providers are %s; for any other, declare acme.image with the module compiled in.",
+		c.cfg.ACME.Provider, strings.Join(acme.Providers(), ", "))
+}
+
+// acmeImageIsNotStockCaddy refuses upstream's own image as an override.
+//
+// This is the one thing about an image that can be judged from its reference.
+// Upstream's Caddy carries no DNS provider module, so it certainly cannot serve
+// a configuration that names one. Every other reference is accepted here and
+// verified at apply time by asking the binary, because what is compiled into a
+// binary is not a property of its name.
+func (c *checker) acmeImageIsNotStockCaddy() {
+	if c.cfg.ACME.Image == "" || !acme.IsStockCaddy(c.cfg.ACME.Image) {
+		return
+	}
+	c.refuse("acme-image-is-stock-caddy", "acme.image",
+		"is %q, which is upstream's own Caddy image and carries no DNS provider module. Caddy would fail to load a configuration using `acme_dns %s`. Remove this key to take the image this toolkit publishes, or declare one with the module compiled in.",
+		c.cfg.ACME.Image, c.cfg.ACME.Provider)
 }
 
 // imageServices refuses an image declared for a service the kind does not

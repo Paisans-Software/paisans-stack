@@ -782,6 +782,47 @@ certificates before serving a single request.
 
 Consequence: no certificate state is migrated. The new gateway issues its own.
 
+#### The provider is declared, and its module has to be in the binary
+
+A DNS provider in Caddy is a Go module compiled into the binary with xcaddy, not
+a setting. Upstream's image carries none, so a configuration naming a provider
+cannot load on upstream's image.
+
+```yaml
+acme:
+  provider: desec
+```
+
+That one field decides two things: the `acme_dns` directive in the gateway's
+Caddyfile, and which image the gateway runs.
+
+**Nothing is built on a host.** The gateway is also the etcd witness in the
+suggested topology, and etcd's stability is a function of fsync latency, so a
+compile there competes for exactly the resource that placement was chosen
+around. Images with the modules compiled in are published at
+`ghcr.io/paisans-software/caddy`, pinned here by digest because every tag that
+repository publishes moves, exactly as upstream's do.
+
+The cost is stated rather than hidden: a deployment's gateway depends on that
+registry and on those images being rebuilt. The escape hatch is what keeps it
+from being lock-in.
+
+**A provider we publish no image for is supported, with an image of your own:**
+
+```yaml
+acme:
+  provider: route53
+  image: ghcr.io/example-org/caddy-route53:2.11.4
+```
+
+Declaring a provider with no published image and no `acme.image` is **refused**:
+the module would never reach the gateway, so it would hold no certificate for
+any hostname. Declaring upstream's own image is **refused** for the same reason,
+and it is the only image a reference alone can be judged by.
+
+Everything else is checked at `apply`, by asking the binary which modules it has
+rather than inferring it from a name.
+
 ### Trusted proxies must be the mesh subnet — set this at `init`
 
 This is the one item that is expensive to retrofit, and it fails quietly.
