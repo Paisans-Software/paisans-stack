@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -139,10 +140,24 @@ type Garage struct {
 }
 
 type App struct {
-	Kind      Kind           `yaml:"kind"`
-	Hostname  string         `yaml:"hostname"`
-	Placement Placement      `yaml:"placement"`
-	Settings  map[string]any `yaml:"settings"`
+	Kind      Kind      `yaml:"kind"`
+	Hostname  string    `yaml:"hostname"`
+	Placement Placement `yaml:"placement"`
+	// Images overrides the container image a service runs, keyed by service
+	// name in the kind's compose template. Every key is optional and an unset
+	// one takes the default that kind ships.
+	//
+	// It is a map rather than a single reference because a stack is several
+	// containers, and it is one full reference per key rather than a repository
+	// and a tag because switching to a fork changes registry, repository and
+	// tag together: split into two fields, a half finished switch parses
+	// cleanly and pulls something nobody intended.
+	//
+	// Changing this is not changing Kind. A fork that renames a variable or
+	// moves a config path needs a different template set, which is a different
+	// kind; this is for a different build of the same software.
+	Images   map[string]string `yaml:"images"`
+	Settings map[string]any    `yaml:"settings"`
 }
 
 // PlacementMode is where an app runs. There are exactly two, and pinned is the
@@ -351,11 +366,27 @@ func (c *Config) structural() error {
 		if app.Hostname == "" {
 			add("apps.%s.hostname: required. It is the public name the gateway routes to.", name)
 		}
+		for _, service := range sortedKeys(app.Images) {
+			if strings.TrimSpace(app.Images[service]) == "" {
+				add("apps.%s.images.%s: empty. Give a full image reference, or remove the key to take the default this kind ships.", name, service)
+			}
+		}
 	}
 	if len(problems) == 0 {
 		return nil
 	}
 	return &LoadError{Path: c.Path, Problems: problems}
+}
+
+// sortedKeys returns a map's keys in sorted order, so that a file with several
+// problems reports them in the same order every run.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // LoadError carries every structural problem found in one file, because

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/josephquigley/paisans-stack/internal/config"
+	"github.com/josephquigley/paisans-stack/internal/kinds"
 )
 
 // File is one rendered artifact. Content is complete: rendering never appends
@@ -53,16 +54,15 @@ type plannedApp struct {
 	Pinned    bool
 	Site      string
 	Port      int
-	Env       []envVar
 	OwnsDB    bool
 	DBName    string
 	DBUser    string
 	MediaDirs []string
-}
-
-type envVar struct {
-	Key   string
-	Value string
+	// Images is the reference each of the kind's services runs, resolved from
+	// the configuration where it declared one and from the kind's default
+	// otherwise. The template reads it rather than deciding, so what runs is
+	// decided in one place.
+	Images map[string]string
 }
 
 type siteView struct {
@@ -184,12 +184,30 @@ func (p *planner) planApp(name string, app config.App, site *siteView, pinned bo
 		DBName:   dbIdentifier(name),
 		DBUser:   dbIdentifier(name),
 	}
-	env, err := p.appEnv(planned, app)
-	if err != nil {
-		return plannedApp{}, err
-	}
-	planned.Env = env
+	planned.Images = p.appImages(app)
 	return planned, nil
+}
+
+// appImages resolves what each of the kind's services runs.
+//
+// A declared reference wins, and an absent one takes the default the kind
+// ships, so an adopter who never opens the stanza runs a tested set. The
+// database is the one service with no fixed default: every database in the
+// deployment is the same major version, declared once in cluster, so it is
+// derived rather than repeated per app.
+func (p *planner) appImages(app config.App) map[string]string {
+	out := map[string]string{}
+	for _, service := range kinds.Services(app.Kind) {
+		switch {
+		case app.Images[service.Name] != "":
+			out[service.Name] = app.Images[service.Name]
+		case service.Image != "":
+			out[service.Name] = service.Image
+		case service.Name == kinds.PostgresService:
+			out[service.Name] = fmt.Sprintf("postgres:%s-alpine", p.postgresVersion())
+		}
+	}
+	return out
 }
 
 // dbIdentifier keeps app names usable as Postgres identifiers without

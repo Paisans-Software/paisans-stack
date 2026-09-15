@@ -8,27 +8,27 @@
     },
     {
       "path": "srv/auth/.env",
-      "sha256": "27ab38ce13150b78f2dee363ae26d6089265686f9874eb98010ae9c52df5c1d9",
+      "sha256": "5c1c78c22870bfff6d3b92d2f8b71a510d70a214134b9e570e97f129ef2130eb",
       "mode": "0600"
     },
     {
       "path": "srv/auth/compose.yaml",
-      "sha256": "0d1604b89d875740093ebe97bf6d4b23231361f631a3ca1877cc1608dca15a7d",
+      "sha256": "0b01f094b0c5ef48e257d8af7a28ab9e4a12a8bd445e567978c5627202d01b52",
       "mode": "0644"
     },
     {
       "path": "srv/docs/.env",
-      "sha256": "903035e09d6339197ccaffd5f02a0e776e2ad59355351adc2a0a59d2c190d722",
+      "sha256": "5a63b27493a9f5ed28b5b99473e5c3c2b0661a17133780d72921ea9533d3a683",
       "mode": "0600"
     },
     {
       "path": "srv/docs/compose.yaml",
-      "sha256": "9481f19288220526253e786a49efd50a21ba1f9826a4ab4493f35c18d5758346",
+      "sha256": "a16de4fcff31962c6c2a4c2bf5d77d1adcee2b600c20945d0200869d33396137",
       "mode": "0644"
     },
     {
       "path": "srv/infra/compose.yaml",
-      "sha256": "7d6b94f730c9f250c270553c54da9acfd168b0d6b9f84b4ff5fc421a1721c245",
+      "sha256": "dfe9d8e55f7c41e9503135a66a8c4edf6f9b5fd8e0a2d477456f843e9d81dbf3",
       "mode": "0644"
     },
     {
@@ -47,23 +47,18 @@
       "mode": "0600"
     },
     {
-      "path": "srv/notes/.env",
-      "sha256": "0436a91c84aedca0b6fa5f7f71c241bb8f46519118441ad4b6284d5bd94c217b",
-      "mode": "0600"
-    },
-    {
-      "path": "srv/notes/compose.yaml",
-      "sha256": "b9019627d956ddd627055a224196c3746a85794d53b6bc6b6f599bb547afca2b",
-      "mode": "0644"
-    },
-    {
       "path": "srv/talk/.env",
-      "sha256": "987b05c6ea9d4197d18c2809066cd8a1dcd0b41fe31b1543729ac45d96e9d3c5",
+      "sha256": "401614ed8152ee632d07c67180b2d6298d05539884e1892260f0fdac4733dad6",
       "mode": "0600"
     },
     {
       "path": "srv/talk/compose.yaml",
-      "sha256": "eadc53b022ccfffe630b04e1f210bc909c240b868ac7f6c5e2b5c1bc53ff7d89",
+      "sha256": "0df0cc43b70de788fc3b0207125bff37508a3cf31c7b925de0c5c510bb627393",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/talk/config/packages/oneup_flysystem.yaml",
+      "sha256": "9e676d3569b2fe39d5ce151f4dbfbbf065fbe020b1b194f547320a0a309d4efd",
       "mode": "0644"
     }
   ]

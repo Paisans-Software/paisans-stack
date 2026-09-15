@@ -1,0 +1,19 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Routing for talk, imported by the gateway's block for
+# talk.example.org.
+#
+# Not here yet: the media reverse proxy. Upstream strongly advises one, on its
+# own hostname, so media URLs survive a change of storage provider and the S3
+# endpoint is not exposed to readers. Remote instances cache those URLs and
+# there is no recall, so adding it later is a migration rather than an
+# addition. It needs a hostname of its own in the configuration and a site
+# block of its own here, which is a change to make deliberately rather than to
+# infer from this comment.
+reverse_proxy 10.44.0.1:8080 10.44.0.2:8080 {
+	# first, not round robin: the apps sites are not interchangeable during a
+	# failover, and a dead one must simply be skipped.
+	lb_policy first
+	fail_duration 10s
+	header_up X-Forwarded-Proto https
+}

@@ -35,11 +35,15 @@ func TestRulesFire(t *testing.T) {
 		{"cluster-app-without-apps-site", "cluster-app-without-apps-site", validate.Refuse},
 		{"garage-replication-exceeds-sites", "garage-replication-exceeds-sites", validate.Refuse},
 		{"site-address-outside-mesh", "site-address-outside-mesh", validate.Refuse},
+		{"unknown-image-service", "unknown-image-service", validate.Refuse},
+		{"floating-image-tag", "floating-image-tag", validate.Refuse},
+		{"cluster-placement-without-a-cluster", "cluster-placement-without-a-cluster", validate.Refuse},
 		{"even-etcd-voters", "even-etcd-voters", validate.Warn},
 		{"mesh-subnet-is-not-private", "mesh-subnet-is-not-private", validate.Warn},
 		{"pinned-app-on-witness", "pinned-app-on-witness", validate.Warn},
 		{"gateway-on-data-site", "gateway-on-data-site", validate.Warn},
 		{"pocket-id-file-backend", "pocket-id-file-backend", validate.Warn},
+		{"image-for-absent-postgres", "image-for-absent-postgres", validate.Warn},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {

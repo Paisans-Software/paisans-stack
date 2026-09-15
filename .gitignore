@@ -8,6 +8,12 @@
 # the fixture secrets, where every value is a fixed placeholder. Nothing real
 # goes in this directory.
 !internal/render/testdata/golden/**/.env
+
+# A kind's template set is source, and the templates that render an .env are
+# named for what they produce. The rule above matches them by accident, and the
+# failure is silent in the worst way: the files stay on the machine that wrote
+# them, tests pass there, and a fresh checkout renders no .env at all.
+!internal/render/templates/**/.env*.tmpl
 *.key
 *.pem
 secrets/

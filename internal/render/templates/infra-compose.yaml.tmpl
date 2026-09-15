@@ -31,7 +31,7 @@ services:
 {{- end }}
 {{- if .Site.IsData }}
   patroni:
-    image: ghcr.io/zalando/spilo-{{ .PostgresVersion }}:latest
+    image: ghcr.io/zalando/spilo-{{ .PostgresVersion }}:{{ .SpiloTag }}
     restart: unless-stopped
     network_mode: host
     env_file:
@@ -70,6 +70,8 @@ services:
       - caddy.env
     volumes:
       - /srv/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # One file per application, imported by that application's host block.
+      - /srv/infra/caddy/snippets:/etc/caddy/snippets:ro
       - /srv/infra/caddy/data:/data
       - /srv/infra/caddy/config:/config
 {{- end }}

@@ -1,0 +1,26 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# WriteFreely supports MySQL and SQLite and has never supported Postgres, so it
+# takes no part in the Postgres cluster whatever its placement says about the
+# rest of the stack. It runs on SQLite, in a file under {{ .DataPath }}, which
+# is what makes it a self contained stack rather than a second database engine
+# to operate: no Galera, no arbitrator, no second set of failover semantics for
+# one blog.
+#
+# Its availability is its site's, and its backups are the file. Nothing here
+# replicates.
+name: paisans-{{ .App.Name }}
+
+services:
+  app:
+    image: {{ .Image "app" }}
+    restart: unless-stopped
+    ports:
+      - "{{ .App.Port }}:{{ .App.Port }}"
+    volumes:
+      - {{ .DataPath }}/data:/data
+      # WriteFreely reads a file, not an environment. Its SSO client secret is
+      # in here, which is why it is bind mounted at 0600 rather than passed as
+      # environment: `docker inspect` and /proc/<pid>/environ would show the
+      # latter.
+      - {{ .DataPath }}/config.ini:/data/config.ini:ro

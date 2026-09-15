@@ -46,6 +46,8 @@ apps:
     kind: mbin
     hostname: talk.example.org
     placement: cluster
+    images:
+      app: ghcr.io/example-org/mbin:v1.10.1-fork
   docs:
     kind: outline
     hostname: docs.example.org
@@ -63,7 +65,11 @@ apps:
     kind: synapse
     hostname: chat.example.org
     placement: { pinned: vm }
-  notes:
+    images:
+      postgres: postgres:17-alpine
+  blog:
     kind: writefreely
-    hostname: notes.example.org
-    placement: cluster
+    hostname: blog.example.org
+    # Pinned because it cannot be anything else: no Postgres, so a SQLite file
+    # per apps site would be two divergent blogs behind one hostname.
+    placement: { pinned: home-a }

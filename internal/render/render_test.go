@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/josephquigley/paisans-stack/internal/config"
+	"github.com/josephquigley/paisans-stack/internal/kinds"
 	"github.com/josephquigley/paisans-stack/internal/render"
 )
 
@@ -103,13 +104,190 @@ func TestPlacementShapesTheStack(t *testing.T) {
 	}
 }
 
+// A declared image reaches the compose file, and a service nobody declared
+// takes the default its kind ships. Both halves matter: the first is what makes
+// running a fork a config edit, and the second is what an adopter who never
+// opens the stanza receives.
+func TestDeclaredImagesWinAndDefaultsFillIn(t *testing.T) {
+	files := map[string]string{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+	}
+
+	talk := files["home-a/srv/talk/compose.yaml"]
+	if !strings.Contains(talk, "image: ghcr.io/example-org/mbin:v1.10.1-fork") {
+		t.Errorf("the declared image did not reach the compose file:\n%s", talk)
+	}
+
+	docs := files["home-a/srv/docs/compose.yaml"]
+	fallback, ok := kinds.DefaultImage(config.KindOutline, "app")
+	if !ok {
+		t.Fatal("outline ships no default image")
+	}
+	if !strings.Contains(docs, "image: "+fallback) {
+		t.Errorf("an app that declared no image did not take its kind default %q:\n%s", fallback, docs)
+	}
+
+	// A pinned app may choose its own database image; a clustered one has no
+	// database service to choose for.
+	chat := files["vm/srv/chat/compose.yaml"]
+	if !strings.Contains(chat, "image: postgres:17-alpine") {
+		t.Errorf("a pinned app's declared database image was not used:\n%s", chat)
+	}
+}
+
+// Nothing the toolkit renders may carry a floating tag. A default that failed
+// its own validation rule would be the toolkit refusing configuration it wrote
+// itself.
+func TestRenderedImagesArePinned(t *testing.T) {
+	for _, f := range build(t).Files {
+		if !strings.HasSuffix(f.Path, "compose.yaml") {
+			continue
+		}
+		for _, line := range strings.Split(f.Content, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "image: ") {
+				continue
+			}
+			ref := strings.TrimPrefix(line, "image: ")
+			if strings.Contains(ref, "{{") || strings.Contains(ref, "$") {
+				continue
+			}
+			if !kinds.ParseReference(ref).Pinned() {
+				t.Errorf("%s renders %q, which does not name one build", f.Path, ref)
+			}
+		}
+	}
+}
+
+// Not every application is configured by environment variables, and a design
+// that can only render an .env cannot configure two of the five kinds here.
+// WriteFreely reads an INI file and Synapse reads homeserver.yaml, and both
+// carry credentials, so both must be rendered and both must be 0600.
+func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	cases := []struct {
+		path    string
+		mode    uint32
+		carries string
+	}{
+		{"home-a/srv/blog/config.ini", 0o600, "type = sqlite3"},
+		{"vm/srv/chat/homeserver.yaml", 0o600, "name: psycopg2"},
+		{"home-a/srv/talk/.env", 0o600, "DATABASE_URL="},
+		{"home-a/srv/talk/compose.yaml", 0o644, "name: paisans-talk"},
+		// A template's path is its destination, nested directories included.
+		{"home-a/srv/talk/config/packages/oneup_flysystem.yaml", 0o644, "kbin.s3_adapter"},
+	}
+	for _, tc := range cases {
+		f, ok := files[tc.path]
+		if !ok {
+			t.Errorf("%s was not rendered", tc.path)
+			continue
+		}
+		if f.Mode != tc.mode {
+			t.Errorf("%s rendered %04o, want %04o", tc.path, f.Mode, tc.mode)
+		}
+		if !strings.Contains(f.Content, tc.carries) {
+			t.Errorf("%s does not contain %q:\n%s", tc.path, tc.carries, f.Content)
+		}
+	}
+
+	// The blog has no Postgres anywhere: no service, no role, no connection
+	// string. A configuration pointing it at the cluster would be a lie.
+	for path, f := range files {
+		if !strings.HasPrefix(path, "home-a/srv/blog/") {
+			continue
+		}
+		if strings.Contains(f.Content, "postgresql://") {
+			t.Errorf("%s hands WriteFreely a Postgres connection, which it has never supported:\n%s", path, f.Content)
+		}
+	}
+}
+
+// A secret in a bind mounted file is not visible through `docker inspect` or
+// /proc/<pid>/environ, which is the reason a file configured application is the
+// better case rather than the awkward one. That only holds if the file is 0600.
+func TestEverySecretBearingFileIs0600(t *testing.T) {
+	needles := []string{"fixture-not-a-secret", "client-secret"}
+	for _, f := range build(t).Files {
+		carries := false
+		for _, needle := range needles {
+			if strings.Contains(f.Content, needle) {
+				carries = true
+			}
+		}
+		if carries && f.Mode != 0o600 {
+			t.Errorf("%s carries a credential and is %04o, not 0600", f.Path, f.Mode)
+		}
+	}
+}
+
+// Routing is assembled from per kind snippets rather than written into one
+// file that knows every kind. The gateway keeps what is cross cutting; each app
+// brings its own block, wherever it runs.
+func TestTheGatewayImportsEachAppsOwnSnippet(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	caddyfile, ok := files["vm/srv/infra/caddy/Caddyfile"]
+	if !ok {
+		t.Fatal("the gateway rendered no Caddyfile")
+	}
+	for _, app := range []string{"talk", "docs", "auth", "blog", "chat"} {
+		snippet := "vm/srv/infra/caddy/snippets/" + app + ".caddy"
+		if _, ok := files[snippet]; !ok {
+			t.Errorf("%s was not rendered onto the gateway", snippet)
+		}
+		if !strings.Contains(caddyfile.Content, "import /etc/caddy/snippets/"+app+".caddy") {
+			t.Errorf("the Caddyfile does not import %s's snippet:\n%s", app, caddyfile.Content)
+		}
+	}
+
+	// The gateway holds no application specific routing of its own. A proxy
+	// directive here would be the conditional file this design rejects,
+	// growing with every application added.
+	if strings.Contains(caddyfile.Content, "reverse_proxy") {
+		t.Errorf("the gateway file routes an application itself:\n%s", caddyfile.Content)
+	}
+
+	// A snippet is rendered onto the gateway, never into the app's own
+	// directory, because that is not where it is read.
+	for path := range files {
+		if strings.HasSuffix(path, "caddy.snippet") || strings.Contains(path, "/srv/talk/caddy") {
+			t.Errorf("%s put an app's routing beside the app", path)
+		}
+	}
+
+	// A snippet never hardcodes where its app runs: a pinned app gets one
+	// upstream and a clustered one gets every apps site, both from inventory.
+	pinned := files["vm/srv/infra/caddy/snippets/chat.caddy"].Content
+	if !strings.Contains(pinned, "10.44.0.3:8008") {
+		t.Errorf("a pinned app's snippet does not point at its site:\n%s", pinned)
+	}
+	clustered := files["vm/srv/infra/caddy/snippets/talk.caddy"].Content
+	if !strings.Contains(clustered, "10.44.0.1:8080 10.44.0.2:8080") {
+		t.Errorf("a clustered app's snippet does not point at both apps sites:\n%s", clustered)
+	}
+}
+
 // Trusted proxies are the mesh subnet and never a host address, which is what
 // lets the gateway role move later without breaking client address handling.
 func TestTrustedProxiesAreTheMeshSubnet(t *testing.T) {
+	// Not every kind takes a trusted proxy setting, and one of those that does
+	// is not configured by environment at all, so the assertion is about every
+	// rendered file that mentions one rather than about `.env` files.
+	var saw int
 	for _, f := range build(t).Files {
-		if !strings.HasSuffix(f.Path, "/.env") {
+		if !strings.Contains(f.Content, "TRUSTED_PROXIES") {
 			continue
 		}
+		saw++
 		if !strings.Contains(f.Content, "TRUSTED_PROXIES=10.44.0.0/24") {
 			t.Errorf("%s does not trust the mesh subnet:\n%s", f.Path, f.Content)
 		}
@@ -118,6 +296,9 @@ func TestTrustedProxiesAreTheMeshSubnet(t *testing.T) {
 				t.Errorf("%s trusts a specific host", f.Path)
 			}
 		}
+	}
+	if saw == 0 {
+		t.Fatal("no rendered file set a trusted proxy, so this proved nothing")
 	}
 }
 
@@ -143,7 +324,7 @@ func TestMeshSubnetComesFromTheConfiguration(t *testing.T) {
 	}
 	var sawEnv, sawInterface bool
 	for _, f := range plan.Files {
-		if strings.HasSuffix(f.Path, "/.env") {
+		if strings.Contains(f.Content, "TRUSTED_PROXIES") {
 			sawEnv = true
 			if !strings.Contains(f.Content, "TRUSTED_PROXIES=10.77.0.0/16") {
 				t.Errorf("%s did not follow the declared mesh:\n%s", f.Path, f.Content)
@@ -326,4 +507,43 @@ func walk(t *testing.T, root string) map[string]string {
 		t.Fatalf("walking %s: %v", root, err)
 	}
 	return out
+}
+
+// Every template a kind ships has to be committed, and the templates that
+// render an .env are the ones at risk: the repository ignores `.env.*` so that
+// no real credential is ever committed, and the four files named
+// `.env.secret.tmpl` match that rule by accident.
+//
+// The failure mode is why this test exists rather than a comment. The files
+// stay on the machine that wrote them, where every test passes, and a fresh
+// checkout renders a stack with no environment at all. Reading the embedded
+// filesystem catches it, because embed sees exactly what git checked out.
+func TestEveryKindShipsACommittedTemplateSet(t *testing.T) {
+	for _, kind := range []config.Kind{
+		config.KindMbin, config.KindOutline, config.KindPocketID,
+		config.KindSynapse, config.KindWriteFreely,
+	} {
+		files, err := render.TemplateSet(kind)
+		if err != nil {
+			t.Errorf("%s: %v", kind, err)
+			continue
+		}
+		var compose, config bool
+		for _, name := range files {
+			switch {
+			case strings.HasSuffix(name, "compose.yaml.tmpl"):
+				compose = true
+			case strings.HasSuffix(name, ".env.secret.tmpl"),
+				strings.HasSuffix(name, "config.ini.secret.tmpl"),
+				strings.HasSuffix(name, "homeserver.yaml.secret.tmpl"):
+				config = true
+			}
+		}
+		if !compose {
+			t.Errorf("%s ships no compose template", kind)
+		}
+		if !config {
+			t.Errorf("%s ships no configuration template, so the stack would start unconfigured. Check that it is committed: the repository ignores .env.*", kind)
+		}
+	}
 }

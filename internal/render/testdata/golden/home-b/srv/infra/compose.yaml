@@ -28,7 +28,7 @@ services:
     volumes:
       - /srv/infra/etcd:/var/lib/etcd
   patroni:
-    image: ghcr.io/zalando/spilo-18:latest
+    image: ghcr.io/zalando/spilo-18:4.1-p2
     restart: unless-stopped
     network_mode: host
     env_file:

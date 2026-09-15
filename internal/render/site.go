@@ -5,6 +5,8 @@ import (
 	"embed"
 	"encoding/base64"
 	"fmt"
+	"io/fs"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/template"
@@ -14,20 +16,55 @@ import (
 	"github.com/josephquigley/paisans-stack/internal/config"
 )
 
-//go:embed templates/*.tmpl
+// The `all:` prefix matters: without it embed skips files beginning with a
+// dot, and every kind configured by environment ships a `.env` template.
+//
+//go:embed all:templates
 var templateFS embed.FS
 
-var templates = template.Must(template.ParseFS(templateFS, "templates/*.tmpl"))
+// templates holds the infrastructure templates, which are shared by every
+// deployment. An application's templates are not here: each kind owns a
+// directory under templates/, rendered as a set, so that adding an application
+// adds a directory rather than a branch in a file every other application
+// shares.
+var templates = template.Must(template.New("infra").Funcs(templateFuncs).ParseFS(templateFS, "templates/*.tmpl"))
 
-// image is the container image for an application kind. Versions are pinned
-// here rather than floating, because a deployment that changes underneath an
-// operator is a deployment nobody can reason about.
-var image = map[string]string{
-	"mbin":        "ghcr.io/mbinorg/mbin:latest",
-	"outline":     "docker.getoutline.com/outlinewiki/outline:latest",
-	"pocket-id":   "ghcr.io/pocket-id/pocket-id:latest",
-	"synapse":     "ghcr.io/element-hq/synapse:latest",
-	"writefreely": "ghcr.io/writefreely/writefreely:latest",
+// templateFuncs is the whole function surface a template gets. It is small on
+// purpose: logic that needs more than this belongs in Go, where it can be
+// tested.
+var templateFuncs = template.FuncMap{
+	"quote": quote,
+	"yesno": func(b bool) string {
+		if b {
+			return "true"
+		}
+		return "false"
+	},
+}
+
+// secretSuffix marks a template whose rendered file is written 0600.
+//
+// The mode travels with the template rather than in a table somewhere else,
+// for the same reason the destination path does: a file and the facts about it
+// should not be able to drift apart. Everything else is 0644, because a
+// rendered file a container's own user cannot read is a stack that does not
+// start.
+const secretSuffix = ".secret"
+
+// spiloTag is the Spilo image tag for a Postgres major version.
+//
+// Spilo publishes one repository per major version and the tags do not run in
+// step across them, so a single tag cannot serve every version and `latest`
+// cannot serve any: the toolkit refuses a floating tag in an operator's
+// configuration and must not render one itself. Each was checked against ghcr
+// on 2026-09-08.
+//
+// A major version with no entry is an error rather than a guess, because
+// guessing produces a compose file that pulls nothing and fails on the host.
+var spiloTag = map[string]string{
+	"16": "3.3-p3",
+	"17": "4.0-p3",
+	"18": "4.1-p2",
 }
 
 type clusterMember struct {
@@ -43,8 +80,12 @@ type peerView struct {
 }
 
 type route struct {
+	App       string
 	Hostname  string
 	Upstreams []string
+	// Snippet is where the app's own routing lives on the gateway, as the
+	// container sees it. The host block imports it rather than containing it.
+	Snippet string
 }
 
 func (p *planner) renderSite(site *siteView) ([]File, error) {
@@ -57,6 +98,12 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	}
 	files = append(files, File{Path: base + "etc/wireguard/wg0.conf", Content: wg, Mode: 0o600})
 
+	spilo, ok := spiloTag[p.postgresVersion()]
+	if !ok {
+		return nil, fmt.Errorf(
+			"cluster.postgres_version: %q has no Spilo image known to this toolkit. Spilo publishes one repository per major version with its own tags, so there is nothing to fall back to. Use one of %s, or add the tag",
+			p.postgresVersion(), strings.Join(sortedKeys(spiloTag), ", "))
+	}
 	infra, err := p.renderTemplate("infra-compose.yaml.tmpl", map[string]any{
 		"Site":               site,
 		"Scope":              p.scope(),
@@ -64,6 +111,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		"HeartbeatMS":        p.heartbeatMS(),
 		"ElectionTimeoutMS":  p.electionTimeoutMS(),
 		"PostgresVersion":    p.postgresVersion(),
+		"SpiloTag":           spilo,
 	})
 	if err != nil {
 		return nil, err
@@ -122,13 +170,20 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 
 	if site.IsGateway {
 		caddyfile, err := p.renderTemplate("Caddyfile.tmpl", map[string]any{
-			"Domain": p.cfg.Community.Domain,
-			"Routes": p.routes(),
+			"Domain":         p.cfg.Community.Domain,
+			"Routes":         p.routes(),
+			"TrustedProxies": p.mesh,
 		})
 		if err != nil {
 			return nil, err
 		}
 		files = append(files, File{Path: base + "srv/infra/caddy/Caddyfile", Content: caddyfile, Mode: 0o644})
+
+		snippets, err := p.renderSnippets(base)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, snippets...)
 
 		env, err := p.renderTemplate("caddy.env.tmpl", map[string]any{
 			"CloudflareAPIToken": p.secrets.External["cloudflare_api_token"],
@@ -140,25 +195,157 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	}
 
 	for _, app := range site.Apps {
-		compose, err := p.renderTemplate("app-compose.yaml.tmpl", map[string]any{
-			"App":             app,
-			"Image":           image[string(app.Kind)],
-			"ClusterPort":     p.clusterPort(),
-			"PostgresVersion": p.postgresVersion(),
-		})
+		appFiles, err := p.renderTemplateSet(base, app)
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/" + app.Name + "/compose.yaml", Content: compose, Mode: 0o644})
-
-		env, err := p.renderTemplate("app.env.tmpl", map[string]any{"Env": app.Env})
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, File{Path: base + "srv/" + app.Name + "/.env", Content: env, Mode: 0o600})
+		files = append(files, appFiles...)
 	}
 
 	return files, nil
+}
+
+// snippetTemplate is the file in a kind's set that describes how the gateway
+// routes to it. It is rendered onto the gateway rather than beside the app,
+// because that is where it is read.
+const snippetTemplate = "caddy.snippet.tmpl"
+
+// snippetDir is where snippets land on the gateway, and snippetMount is the
+// same directory as the Caddy container sees it. The Caddyfile imports by the
+// second, because Caddy reads it from inside the container.
+const (
+	snippetDir   = "srv/infra/caddy/snippets/"
+	snippetMount = "/etc/caddy/snippets/"
+)
+
+// renderSnippets renders every app's routing onto a gateway.
+//
+// It walks the whole configuration rather than the gateway's own apps: a
+// gateway routes to applications that run elsewhere, which is the usual case.
+func (p *planner) renderSnippets(base string) ([]File, error) {
+	var files []File
+	for _, name := range p.cfg.AppNames() {
+		app := p.cfg.Apps[name]
+		planned, err := p.plannedFor(name, app)
+		if err != nil {
+			return nil, err
+		}
+		values, err := p.values(planned, app)
+		if err != nil {
+			return nil, err
+		}
+		path := "templates/" + string(app.Kind) + "/" + snippetTemplate
+		content, err := p.renderFile(path, values)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, File{Path: base + snippetDir + name + ".caddy", Content: content, Mode: 0o644})
+	}
+	return files, nil
+}
+
+// plannedFor rebuilds an app's planned form for the gateway, which needs its
+// hostname and port without caring where it runs.
+func (p *planner) plannedFor(name string, app config.App) (plannedApp, error) {
+	return plannedApp{
+		Name:     name,
+		Kind:     app.Kind,
+		Hostname: app.Hostname,
+		Pinned:   app.Placement.Mode == config.PlacementPinned,
+		Site:     app.Placement.Site,
+		Port:     appPort[app.Kind],
+		DBName:   dbIdentifier(name),
+		DBUser:   dbIdentifier(name),
+		Images:   p.appImages(app),
+	}, nil
+}
+
+// TemplateSet lists the templates a kind ships, as paths inside the embedded
+// filesystem. It exists so a test can assert that a set is complete: embed sees
+// what git checked out, so a template left uncommitted is absent here even
+// though it is present on the machine that wrote it.
+func TemplateSet(kind config.Kind) ([]string, error) {
+	dir := "templates/" + string(kind)
+	var out []string
+	err := fs.WalkDir(templateFS, dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		out = append(out, path)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("kind %s ships no template set: %w", kind, err)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// renderTemplateSet renders every file in a kind's template directory.
+//
+// A template's path is its destination: templates/<kind>/config/packages/x.yaml
+// lands at /srv/<stack>/config/packages/x.yaml, so nothing holds a separate
+// mapping of template to location and a new file in a set needs no code.
+func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error) {
+	dir := "templates/" + string(app.Kind)
+	entries, err := fs.ReadDir(templateFS, dir)
+	if err != nil {
+		return nil, fmt.Errorf("kind %s ships no template set: %w", app.Kind, err)
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("kind %s ships an empty template set, so the stack would be rendered with no configuration at all", app.Kind)
+	}
+
+	values, err := p.values(app, p.cfg.Apps[app.Name])
+	if err != nil {
+		return nil, err
+	}
+
+	var files []File
+	err = fs.WalkDir(templateFS, dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(path, ".tmpl") {
+			return fmt.Errorf("%s is in a template set but is not a template. Every file in a set is rendered, so there is nowhere for a plain file to go", path)
+		}
+		if strings.TrimPrefix(path, dir+"/") == snippetTemplate {
+			// Routing belongs to the gateway, not to the app's own directory.
+			return nil
+		}
+		rel := strings.TrimSuffix(strings.TrimPrefix(path, dir+"/"), ".tmpl")
+		mode := uint32(0o644)
+		if strings.HasSuffix(rel, secretSuffix) {
+			rel = strings.TrimSuffix(rel, secretSuffix)
+			mode = 0o600
+		}
+
+		content, err := p.renderFile(path, values)
+		if err != nil {
+			return err
+		}
+		files = append(files, File{Path: base + "srv/" + app.Name + "/" + rel, Content: content, Mode: mode})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// renderFile renders one template from a kind's set. Each is parsed on its own
+// rather than into the shared set, so that two kinds may name a file the same
+// thing, which they routinely do.
+func (p *planner) renderFile(path string, values appValues) (string, error) {
+	tmpl, err := template.New(filepath.Base(path)).Funcs(templateFuncs).ParseFS(templateFS, path)
+	if err != nil {
+		return "", fmt.Errorf("parsing %s: %w", path, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, values); err != nil {
+		return "", fmt.Errorf("rendering %s: %w", path, err)
+	}
+	return buf.String(), nil
 }
 
 func (p *planner) renderTemplate(name string, data any) (string, error) {
@@ -251,6 +438,17 @@ func publicKey(private string) (string, error) {
 	return base64.StdEncoding.EncodeToString(pub), nil
 }
 
+// sortedKeys returns a map's keys in sorted order, for a message that lists
+// them.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (p *planner) relays() []string {
 	var out []string
 	for _, name := range p.order {
@@ -261,28 +459,41 @@ func (p *planner) relays() []string {
 	return out
 }
 
-// routes is the gateway's inventory: a pinned app points at its location, and
-// a clustered app points at every site holding the apps role.
+// routes is the gateway's inventory: one host block per app, each importing
+// that app's own snippet.
 func (p *planner) routes() []route {
 	var out []route
 	for _, name := range p.cfg.AppNames() {
-		app := p.cfg.Apps[name]
-		var upstreams []string
-		port := appPort[app.Kind]
-		if app.Placement.Mode == config.PlacementPinned {
-			site, ok := p.sites[app.Placement.Site]
-			if !ok {
-				continue
-			}
-			upstreams = []string{fmt.Sprintf("%s:%d", site.Address, port)}
-		} else {
-			for _, hostName := range p.cfg.AppsSites() {
-				upstreams = append(upstreams, fmt.Sprintf("%s:%d", p.sites[hostName].Address, port))
-			}
-		}
-		out = append(out, route{Hostname: app.Hostname, Upstreams: upstreams})
+		out = append(out, route{
+			App:       name,
+			Hostname:  p.cfg.Apps[name].Hostname,
+			Upstreams: p.upstreams(name),
+			Snippet:   snippetMount + name + ".caddy",
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })
+	return out
+}
+
+// upstreams is where an app's traffic goes: its own location when pinned, and
+// every site holding the apps role when clustered.
+func (p *planner) upstreams(name string) []string {
+	app, ok := p.cfg.Apps[name]
+	if !ok {
+		return nil
+	}
+	port := appPort[app.Kind]
+	if app.Placement.Mode == config.PlacementPinned {
+		site, ok := p.sites[app.Placement.Site]
+		if !ok {
+			return nil
+		}
+		return []string{fmt.Sprintf("%s:%d", site.Address, port)}
+	}
+	var out []string
+	for _, hostName := range p.cfg.AppsSites() {
+		out = append(out, fmt.Sprintf("%s:%d", p.sites[hostName].Address, port))
+	}
 	return out
 }
 

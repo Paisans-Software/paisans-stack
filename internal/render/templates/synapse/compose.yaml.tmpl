@@ -1,0 +1,50 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+{{- if .App.Pinned }}
+# {{ .App.Name }} is pinned to {{ .App.Site }}: app, database and media
+# together. Synapse is the app this placement exists for, because its media
+# store cannot be moved into object storage: the S3 storage provider
+# supplements a local media directory rather than replacing it.
+{{- else }}
+# {{ .App.Name }} has cluster placement: no Postgres service of its own, and a
+# connection to the local HAProxy on {{ .DBHost }}:{{ .DBPort }}.
+#
+# Its media directory is still node local, so a promoted site does not have it
+# unless something else replicates it. That is a decision to make rather than
+# to discover during a failover.
+{{- end }}
+name: paisans-{{ .App.Name }}
+
+services:
+  app:
+    image: {{ .Image "app" }}
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "{{ .App.Port }}:{{ .App.Port }}"
+    volumes:
+      - {{ .DataPath }}/data:/data
+      # Synapse reads a file. The database password and the SSO client secret
+      # are in it, which is why it is bind mounted at 0600 rather than passed
+      # as environment: `docker inspect` and /proc/<pid>/environ would show the
+      # latter.
+      - {{ .DataPath }}/homeserver.yaml:/data/homeserver.yaml:ro
+{{- if .App.Pinned }}
+    depends_on:
+      - postgres
+
+  postgres:
+    image: {{ .Image "postgres" }}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: {{ .DBName }}
+      POSTGRES_USER: {{ .DBUser }}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      # Synapse refuses to start against a database with any other collation,
+      # unless allow_unsafe_locale is set. Getting this wrong costs a dump and
+      # reload later, so it is set at creation.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - {{ .DataPath }}/postgres:/var/lib/postgresql/data
+{{- end }}

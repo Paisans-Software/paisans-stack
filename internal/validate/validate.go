@@ -14,8 +14,10 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 
 	"github.com/josephquigley/paisans-stack/internal/config"
+	"github.com/josephquigley/paisans-stack/internal/kinds"
 )
 
 // Level says how much a finding costs.
@@ -120,12 +122,16 @@ func Check(cfg *config.Config) Result {
 	c.clusterAppWithoutAppsSite()
 	c.garageReplicationExceedsSites()
 	c.siteOutsideMesh()
+	c.imageServices()
+	c.floatingImages()
+	c.clusterPlacementWithoutACluster()
 
 	c.evenVoters()
 	c.meshIsNotPrivate()
 	c.pinnedOntoWitness()
 	c.gatewayOnDataSite()
 	c.pocketIDFileBackend()
+	c.imageForAbsentPostgres()
 
 	sort.SliceStable(c.findings, func(i, j int) bool {
 		if c.findings[i].Level != c.findings[j].Level {
@@ -349,6 +355,112 @@ func (c *checker) outlineBucketName() {
 				"is \"outline\". Upstream Outline cannot use a bucket of that name. Choose another, for example %s-uploads.", name)
 		}
 	}
+}
+
+// clusterPlacementWithoutACluster refuses cluster placement for an application
+// that cannot join the cluster.
+//
+// Cluster placement means the app runs on every site holding the apps role and
+// shares one database through the local proxy. An application that stores its
+// data anywhere else gets neither half of that: it would be rendered onto each
+// apps site with its own file, so one hostname would serve two deployments
+// that diverge from the moment anybody writes to them, and a failover would
+// move readers between them.
+//
+// WriteFreely is the case that exists, having never supported Postgres. It is
+// refused rather than warned about because there is no reading of it that
+// works, and pinning is not a downgrade: it is the plain case, and the app's
+// availability becomes its site's, which is what it was always going to be.
+func (c *checker) clusterPlacementWithoutACluster() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Placement.Mode != config.PlacementCluster || kinds.UsesPostgres(app.Kind) {
+			continue
+		}
+		c.refuse("cluster-placement-without-a-cluster", fmt.Sprintf("apps.%s.placement", name),
+			"is `cluster`, but %s keeps its data outside the Postgres cluster, so there is nothing for it to join. It would be rendered onto every apps site with its own separate storage, which is two deployments behind one hostname. Pin it to a site instead.",
+			app.Kind)
+	}
+}
+
+// imageServices refuses an image declared for a service the kind does not
+// have.
+//
+// The map is keyed on compose service names precisely so this check can exist.
+// An unknown key is a typo, and a typo that renders nothing is the worst
+// outcome available: the operator believes they moved to their fork, the
+// deployment keeps running the default, and nothing anywhere says so.
+func (c *checker) imageServices() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		for _, service := range sortedKeys(app.Images) {
+			if kinds.Has(app.Kind, service) {
+				continue
+			}
+			c.refuse("unknown-image-service", fmt.Sprintf("apps.%s.images.%s", name, service),
+				"names a service %q, which the %s template does not define. Its services are %s. A key that matches nothing renders nothing, so the deployment would keep running the default image while the file says otherwise.",
+				service, app.Kind, strings.Join(kinds.ServiceNames(app.Kind), ", "))
+		}
+	}
+}
+
+// floatingImages refuses a reference that does not name one build.
+//
+// `latest` makes two runs of `apply` produce different deployments from
+// identical inputs, which contradicts the premise that the configuration plus
+// the secrets reconstruct the stack. That is incoherent rather than risky, so
+// it is a refusal. A digest is accepted and is the stronger form.
+//
+// What this does not do is judge whether a version is safe to move to. Many of
+// these applications run schema migrations at boot against live member data,
+// and the toolkit cannot know which release does. It must not imply it
+// checked.
+func (c *checker) floatingImages() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		for _, service := range sortedKeys(app.Images) {
+			ref := kinds.ParseReference(app.Images[service])
+			why := ref.Floating()
+			if why == "" {
+				continue
+			}
+			c.refuse("floating-image-tag", fmt.Sprintf("apps.%s.images.%s", name, service),
+				"is %q and %s. Two runs of `apply` would then deploy different builds from the same inputs, so the configuration and the secrets no longer reconstruct the stack. Name a version tag, or a digest, which is stronger.",
+				app.Images[service], why)
+		}
+	}
+}
+
+// imageForAbsentPostgres warns about an image for a database that is not
+// rendered.
+//
+// A clustered app has no Postgres service: it connects to the local HAProxy,
+// and the cluster's version is set once for every database rather than per
+// app. The declaration is harmless, and placement can change, so this warns
+// rather than refusing.
+func (c *checker) imageForAbsentPostgres() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Placement.Mode != config.PlacementCluster {
+			continue
+		}
+		if _, ok := app.Images[kinds.PostgresService]; !ok {
+			continue
+		}
+		c.warn("image-for-absent-postgres", fmt.Sprintf("apps.%s.images.%s", name, kinds.PostgresService),
+			"declares a database image, but the app has cluster placement and runs no database of its own: it connects to the local HAProxy, and the cluster's version comes from cluster.postgres_version. Nothing renders this. Remove it, or pin the app if it was meant to have its own database.")
+	}
+}
+
+// sortedKeys returns a map's keys in sorted order, so that one file reports its
+// problems in the same order every run.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // pinnedOntoWitness warns about disk contention with etcd.

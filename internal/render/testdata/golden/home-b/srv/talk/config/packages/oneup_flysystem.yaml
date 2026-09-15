@@ -1,0 +1,28 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# SHIM. It overrides config/packages/oneup_flysystem.yaml inside the image, and
+# it changes exactly one thing: `public_uploads_filesystem` is bound to the S3
+# adapter instead of the local one. Upstream ships both adapters and binds
+# uploads to local, which is why the S3_* variables in .env appear to work
+# while every upload still lands on the container's disk.
+#
+# Upstream owns this file and can change it. If uploads start behaving as
+# though this override is not here, compare it against the file in whatever
+# image reference is declared for this app.
+oneup_flysystem:
+  adapters:
+    default_adapter:
+      local:
+        location: "%kernel.project_dir%/public/%uploads_dir_name%"
+
+    kbin.s3_adapter:
+     awss3v3:
+       client: kbin.s3_client
+       bucket: "%amazon.s3.bucket%"
+       options:
+         ACL: public-read
+
+  filesystems:
+    public_uploads_filesystem:
+      adapter: kbin.s3_adapter
+      alias: League\Flysystem\Filesystem

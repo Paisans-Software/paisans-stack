@@ -1,13 +1,14 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
 # chat is pinned to vm: app, database and media
-# together. A half pinned app needs both its own location and the cluster site
-# to be reachable, which makes it less available than either alone.
+# together. Synapse is the app this placement exists for, because its media
+# store cannot be moved into object storage: the S3 storage provider
+# supplements a local media directory rather than replacing it.
 name: paisans-chat
 
 services:
   app:
-    image: ghcr.io/element-hq/synapse:latest
+    image: ghcr.io/element-hq/synapse:v1.160.0
     restart: unless-stopped
     env_file:
       - .env
@@ -15,15 +16,24 @@ services:
       - "8008:8008"
     volumes:
       - /srv/chat/data:/data
+      # Synapse reads a file. The database password and the SSO client secret
+      # are in it, which is why it is bind mounted at 0600 rather than passed
+      # as environment: `docker inspect` and /proc/<pid>/environ would show the
+      # latter.
+      - /srv/chat/homeserver.yaml:/data/homeserver.yaml:ro
     depends_on:
       - postgres
 
   postgres:
-    image: postgres:18-alpine
+    image: postgres:17-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: chat
       POSTGRES_USER: chat
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      # Synapse refuses to start against a database with any other collation,
+      # unless allow_unsafe_locale is set. Getting this wrong costs a dump and
+      # reload later, so it is set at creation.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
     volumes:
       - /srv/chat/postgres:/var/lib/postgresql/data

@@ -9,14 +9,18 @@ is the source and the other is a pointer to it.
 ## What this repository is
 
 A toolkit for installing and operating a paisans community stack, plus the
-design that toolkit follows. **Nothing is implemented yet.** Today the
-repository holds `README.md`, `docs/`, and `examples/`, with no code, no tests,
-no build and no release.
+design that toolkit follows. **The design leads and the code follows it.**
+`README.md` is the design; `cmd/` and `internal/` implement the parts of it that
+have been built, which so far are `paisans validate` and `paisans render`.
+Nothing here reaches a host: no SSH, no Docker, no release. See
+`docs/development.md` for what exists and what does not.
 
-That matters for scope. Most work here is *documentation of a design*, and the
-design is argued rather than asserted: every rule in `README.md` states the
-alternative it rejects and why. Match that. A change that adds a rule without
-the reasoning behind it is incomplete, no matter how correct the rule is.
+That matters for scope. Much of the work here is still *documentation of a
+design*, and the design is argued rather than asserted: every rule in
+`README.md` states the alternative it rejects and why. Match that, in code as
+well as in prose. A change that adds a rule without the reasoning behind it is
+incomplete, no matter how correct the rule is, and so is a refusal in the code
+that no rule in `README.md` justifies.
 
 This is also **not** the `paisans.community` deployment. Generic material is
 canonical here; a specific community's hosts, decision log and governance stay
@@ -114,13 +118,13 @@ wrong; generalise it.
 * **Deleting documentation requires explicit human approval.** Rewriting a
   section in place is an edit; removing it is a deletion.
 
-### Code changes, when code exists
+### Code changes
 
 You are *authoring* the tool that other agents and operators will run against
 live deployments. You are not running it. The care goes into what the code
 permits, because the blast radius lands on someone else's stack.
 
-None of this is exercised yet. When the first scripts land, these hold:
+Nothing below is exercised against a real deployment yet, and all of it holds:
 
 * **A pinned stack lays out under `/srv/<stack>/` with bind mounts**, not named
   volumes. `README.md` explains why (`app move` becomes one `tar`).
@@ -175,7 +179,8 @@ chose.>
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 ```
 
-Types in use: `docs`. Add `feat`, `fix`, `refactor`, `chore` when code arrives.
+Types in use: `docs`, `feat`, `chore`. Add `fix` and `refactor` when there is
+something to fix or refactor.
 
 The bodies here are long on purpose. This log is a decision record; a subject
 line alone throws away the part that will be needed in a year.
