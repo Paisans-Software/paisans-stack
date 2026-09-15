@@ -260,6 +260,27 @@ func (p *planner) plannedFor(name string, app config.App) (plannedApp, error) {
 	}, nil
 }
 
+// TemplateSet lists the templates a kind ships, as paths inside the embedded
+// filesystem. It exists so a test can assert that a set is complete: embed sees
+// what git checked out, so a template left uncommitted is absent here even
+// though it is present on the machine that wrote it.
+func TemplateSet(kind config.Kind) ([]string, error) {
+	dir := "templates/" + string(kind)
+	var out []string
+	err := fs.WalkDir(templateFS, dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		out = append(out, path)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("kind %s ships no template set: %w", kind, err)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // renderTemplateSet renders every file in a kind's template directory.
 //
 // A template's path is its destination: templates/<kind>/config/packages/x.yaml

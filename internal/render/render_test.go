@@ -508,3 +508,42 @@ func walk(t *testing.T, root string) map[string]string {
 	}
 	return out
 }
+
+// Every template a kind ships has to be committed, and the templates that
+// render an .env are the ones at risk: the repository ignores `.env.*` so that
+// no real credential is ever committed, and the four files named
+// `.env.secret.tmpl` match that rule by accident.
+//
+// The failure mode is why this test exists rather than a comment. The files
+// stay on the machine that wrote them, where every test passes, and a fresh
+// checkout renders a stack with no environment at all. Reading the embedded
+// filesystem catches it, because embed sees exactly what git checked out.
+func TestEveryKindShipsACommittedTemplateSet(t *testing.T) {
+	for _, kind := range []config.Kind{
+		config.KindMbin, config.KindOutline, config.KindPocketID,
+		config.KindSynapse, config.KindWriteFreely,
+	} {
+		files, err := render.TemplateSet(kind)
+		if err != nil {
+			t.Errorf("%s: %v", kind, err)
+			continue
+		}
+		var compose, config bool
+		for _, name := range files {
+			switch {
+			case strings.HasSuffix(name, "compose.yaml.tmpl"):
+				compose = true
+			case strings.HasSuffix(name, ".env.secret.tmpl"),
+				strings.HasSuffix(name, "config.ini.secret.tmpl"),
+				strings.HasSuffix(name, "homeserver.yaml.secret.tmpl"):
+				config = true
+			}
+		}
+		if !compose {
+			t.Errorf("%s ships no compose template", kind)
+		}
+		if !config {
+			t.Errorf("%s ships no configuration template, so the stack would start unconfigured. Check that it is committed: the repository ignores .env.*", kind)
+		}
+	}
+}
