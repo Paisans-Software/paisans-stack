@@ -26,8 +26,8 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
-	"github.com/josephquigley/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
 // Result records what a generation pass did, by name and never by value. A

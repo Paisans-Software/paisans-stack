@@ -15,11 +15,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/josephquigley/paisans-stack/internal/apply"
-	"github.com/josephquigley/paisans-stack/internal/config"
-	"github.com/josephquigley/paisans-stack/internal/render"
-	"github.com/josephquigley/paisans-stack/internal/secretsgen"
-	"github.com/josephquigley/paisans-stack/internal/validate"
+	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
 const usage = `paisans renders and checks a community stack declaration.

@@ -929,6 +929,16 @@ plus the deployment's config, its secrets, and its data. See the backup contract
 above. Documentation tells you what to rebuild; it contains nothing to rebuild
 it *from*.
 
+## Where this repository lives
+
+`Paisans-Software/paisans-stack`, private, since 2026-09-15. It was
+`josephquigley/paisans-stack` until then. GitHub redirects the old path, and a
+redirect is a courtesy rather than a contract, so a clone that predates the move
+should have its remote updated rather than relying on one.
+
+The Go module path moved with it, to
+`github.com/paisans-software/paisans-stack`.
+
 ## Relationship to `paisans.community`
 
 `paisans.community` is one deployment: its compose files, its Caddy config, its

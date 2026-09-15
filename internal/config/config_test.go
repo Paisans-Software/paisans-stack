@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/config"
 )
 
 func write(t *testing.T, body string) string {

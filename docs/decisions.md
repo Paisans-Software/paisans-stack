@@ -85,3 +85,40 @@ relying on this.*
 * Templating uses the standard library, so no template engine is inherited.
 * Anything shelled out to — `docker`, `wg`, `etcdctl`, `patronictl` — is a
   dependency on the *host*, and belongs in preflight.
+
+---
+
+## 2026-09-15 — This repository lives in the Paisans-Software organisation
+
+**Decided.** `josephquigley/paisans-stack` became
+`Paisans-Software/paisans-stack`, private, and the Go module path became
+`github.com/paisans-software/paisans-stack`.
+
+### Why
+
+This toolkit is meant to be handed to organizers nobody here has met. A
+repository under one person's account says the opposite of what the project
+intends: that it is somebody's side project, that its continuity depends on one
+account, and that an adopter is trusting an individual rather than a project.
+An organisation can gain maintainers, survive a person losing interest, and own
+the packages the toolkit tells adopters to pull.
+
+The forks, `mbin-paisans` and `writefreely-wisp`, deliberately did not move.
+Their audience is upstream maintainers who already recognise the account that
+opens pull requests against them, and moving a fork under an organisation buys
+nothing there while costing that recognition.
+
+### Consequences
+
+* GitHub redirects the old path, so open pull requests and existing clones
+  survive. A redirect is a courtesy rather than a contract: a clone that
+  predates the move has its remote updated rather than relying on one.
+* The module path changed, which touched every import. It is renamed rather
+  than left as a path that names a repository that no longer exists, because a
+  module path that lies is worse than one that is inconvenient to change.
+* `paisans.community`'s own `CLAUDE.md` names this repository as the one
+  sanctioned fallback when its wiki is unreachable. That reference is part of a
+  recovery path, so it is updated in the same change rather than left pointing
+  at a redirect that a future outage would have to survive.
+* Packages this project publishes now belong to the organisation, which is what
+  makes `ghcr.io/paisans-software/...` a name an adopter can be asked to trust.

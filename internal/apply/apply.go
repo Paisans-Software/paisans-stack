@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/josephquigley/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // Change is what one file needs, decided before anything is written.

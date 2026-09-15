@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
-	"github.com/josephquigley/paisans-stack/internal/kinds"
-	"github.com/josephquigley/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden tree from the current output")

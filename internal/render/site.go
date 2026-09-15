@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 
-	"github.com/josephquigley/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/config"
 )
 
 // The `all:` prefix matters: without it embed skips files beginning with a

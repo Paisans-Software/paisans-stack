@@ -227,9 +227,10 @@ staying private. The two forks, `mbin-paisans` and `writefreely-wisp`, stay on
 the founder's account: their audience is upstream maintainers who already know
 that name.
 
-**The transfer is the founder's action.** GitHub keeps redirects, so open pull
-requests and existing clones survive, but a redirect is a courtesy rather than a
-contract, and everything naming the repository is updated in the same change:
+The transfer was carried out on 2026-09-15 with the founder's explicit
+permission, given in session. GitHub keeps redirects, so open pull requests and
+existing clones survive, but a redirect is a courtesy rather than a contract, and
+everything naming the repository is updated in the same change:
 
 * both local remotes, including worktrees
 * the community repository's `CLAUDE.md`, which names this repository as **the
@@ -237,6 +238,8 @@ contract, and everything naming the repository is updated in the same change:
   so it cannot be left pointing at a name that no longer describes reality.
 * `src/CLAUDE.md`, for the same reason
 * this repository's own `README.md` where it names itself
+* the Go module path, which was `github.com/josephquigley/paisans-stack` and no
+  longer describes where this code lives
 
 ## Order of operations
 
@@ -246,7 +249,8 @@ The toolkit cannot reference a digest that does not exist, so:
 2. Let the first build run. Its smoke test passing produces the first digest.
 3. Change the toolkit: the `acme` block, the secrets rename, the two refusals,
    the apply gate, and the default digest from step 2.
-4. Transfer `paisans-stack` to the organisation. Founder's action.
+4. Transfer `paisans-stack` to the organisation. **Done on 2026-09-15**, by the
+   agent with the founder's explicit permission in session.
 5. Update every reference to the old path, in the same change as step 4.
 
 Steps 3 and 4 are independent, so a delay on the transfer does not block the
