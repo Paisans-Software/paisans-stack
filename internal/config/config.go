@@ -44,6 +44,20 @@ var knownKinds = map[Kind]bool{
 	KindElement: true, KindMbin: true, KindOutline: true, KindPocketID: true, KindSynapse: true, KindWriteFreely: true,
 }
 
+// Kinds returns every kind this toolkit knows, sorted. It exists so that a
+// test asserting something about every kind, such as that each ships a
+// pinned default image, walks this list rather than carrying a second, hand
+// maintained one that can fall out of step with knownKinds the moment a kind
+// is added.
+func Kinds() []Kind {
+	out := make([]Kind, 0, len(knownKinds))
+	for k := range knownKinds {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
 // Config is a whole deployment, declared. It records intent and never status:
 // which node is primary lives in etcd, not here.
 type Config struct {

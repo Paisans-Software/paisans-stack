@@ -46,11 +46,17 @@ const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 // who never opens the images stanza has to get a tested set. None of those
 // defaults may float, or the toolkit would refuse configuration it produces
 // itself.
+//
+// It walks config.Kinds() rather than a list written out here, so a kind
+// added to the catalogue and never given to this test still gets checked: the
+// list here cannot fall out of step with what config considers valid, because
+// there is no longer a second list to fall out of step.
 func TestDefaultsArePinned(t *testing.T) {
-	for _, kind := range []config.Kind{
-		config.KindMbin, config.KindOutline, config.KindPocketID,
-		config.KindSynapse, config.KindWriteFreely,
-	} {
+	for _, kind := range config.Kinds() {
+		// "app" is every kind's service name for the thing this test checks,
+		// Element included: its "app" service is a static web client rather
+		// than an application server, but it is still the service named "app"
+		// and it still ships a pinned default.
 		ref, ok := kinds.DefaultImage(kind, "app")
 		if !ok {
 			t.Errorf("%s ships no default image for its app service", kind)
