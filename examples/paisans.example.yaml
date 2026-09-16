@@ -160,6 +160,24 @@ apps:
     # half-pinned app is less available than either site.
     placement: { pinned: vm }
 
+  web:
+    kind: element
+    hostname: web.example.org
+    # Pinned, for the same reason the gate is: a static web client keeps
+    # nothing in Postgres, so there is no cluster for it to join and `cluster`
+    # placement is refused.
+    placement: { pinned: home-b }
+    settings:
+      # The homeserver's API hostname, which becomes base_url. It is NOT
+      # server_name: that is the name inside a member's identifier, and the
+      # toolkit reads it off the homeserver declared above rather than asking
+      # for it twice, because a client whose server_name disagrees with its
+      # homeserver offers accounts that do not exist. With the wellknown role
+      # set above, members here are @name:example.org while the client talks to
+      # chat.example.org.
+      homeserver: chat.example.org
+      brand: Example Chat
+
   blog:
     kind: writefreely
     hostname: blog.example.org

@@ -116,8 +116,12 @@ The media store cannot leave the node, and the kind renders its own Postgres
 plus the initialisation hook that creates the authentication service's database
 beside it, neither of which exists on a clustered site. A clustered homeserver
 would render and then meet the missing database at the first sign in. The same
-reasoning refuses `writefreely`, which has never supported Postgres, so the
-refusal is the existing shape rather than a special case for Matrix.
+reasoning refuses `writefreely`, which has never supported Postgres,
+`element`, which is a static client with no server side state, and
+`oauth2-proxy`, whose session is a cookie. So the refusal is the existing shape
+rather than a special case for Matrix: a kind with no Postgres service has
+nothing to join, and cluster placement would render it onto every apps site
+with storage of its own.
 
 **"The authentication service's database" is Matrix Authentication Service,
 and the `synapse` kind renders it as a second container beside the
@@ -582,6 +586,14 @@ The key is a **role**, not a label: it selects which snippet the kind ships. A
 role a kind does not understand is refused, because the alternative is a
 gateway that fails to load its whole configuration over one missing import.
 
+**A hostname may be claimed once, by one app and one role.** Two claims on one
+name are refused. Caddy will not choose between two site blocks that hold the
+same address, and it refuses the whole file rather than the block, so a name
+typed twice takes every hostname in the deployment down rather than the one
+that was duplicated. This is easiest to hit now that an app can declare
+several: setting one app's `hostname` to the value another app already uses for
+a role reads as two unrelated lines.
+
 **For a homeserver, `hostnames.wellknown` is not only routing. It is
 `server_name`.** It becomes the part after the colon in every user identifier
 the homeserver ever mints, and it is written into every room that homeserver
@@ -616,6 +628,22 @@ apps:
 rather than implied by which Caddy snippet somebody remembered to import. It is
 access policy, and access policy belongs in the configuration, not in a hand
 edited include.
+
+**The gate is enforced at the gateway, and only there. An app's published host
+port is not behind it.** The gate renders as `forward_auth` inside the
+gateway's Caddy site block, so it covers requests that arrive through the
+gateway's hostname. It does not cover the port the app's own compose file
+publishes: `talk` above is `gate: members`, and its stack publishes
+`8080:8080`, so anyone who can open that port on the apps host reaches Mbin
+with no gate in front of it at all. The same is true of every gated app.
+
+That is a real limit, not a subtlety, and the toolkit does not close it for
+you. What keeps it from being an open door today is that the apps hosts are
+expected to be on a private network rather than addressable from the internet,
+which is a property of the deployment and not of anything in this file. **An
+operator who needs the port itself protected has to do it at the host or the
+network** with a firewall rule, a bind address, or a network the host does not
+route, and should not read `gate: members` as having done it.
 
 **Leaving `gate` out of an app's stanza means the same thing as `gate: none`:
 ungated, reachable by anyone who can resolve the hostname.** That default has

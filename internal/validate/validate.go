@@ -130,6 +130,7 @@ func Check(cfg *config.Config) Result {
 	c.acmeImageIsNotStockCaddy()
 	c.floatingACMEImage()
 	c.hostnameRoles()
+	c.duplicateHostname()
 	c.gateWithoutAGate()
 	c.gatedMatrixHostname()
 	c.homeserverMustBePinned()
@@ -375,10 +376,12 @@ func (c *checker) outlineBucketName() {
 // that diverge from the moment anybody writes to them, and a failover would
 // move readers between them.
 //
-// WriteFreely is the case that exists, having never supported Postgres. It is
-// refused rather than warned about because there is no reading of it that
-// works, and pinning is not a downgrade: it is the plain case, and the app's
-// availability becomes its site's, which is what it was always going to be.
+// Three kinds are in this position: WriteFreely, which has never supported
+// Postgres, Element, which is a static client, and oauth2-proxy, which keeps a
+// session in a cookie. It is refused rather than warned about because there is
+// no reading of it that works, and pinning is not a downgrade: it is the plain
+// case, and the app's availability becomes its site's, which is what it was
+// always going to be.
 func (c *checker) clusterPlacementWithoutACluster() {
 	for _, name := range c.cfg.AppNames() {
 		app := c.cfg.Apps[name]
@@ -599,12 +602,6 @@ func (c *checker) floatingACMEImage() {
 		c.cfg.ACME.Image, why)
 }
 
-// hostnameRoles refuses a hostname role the kind ships no snippet for.
-//
-// A role selects a Caddy snippet. A role nobody ships renders a host block
-// importing a file that does not exist, so the gateway fails to load its whole
-// configuration, taking every other hostname down with it. That is incoherent
-// rather than risky.
 // gateWithoutAGate refuses an app declaring a gate when the deployment runs
 // none.
 //
@@ -687,6 +684,54 @@ func (c *checker) homeserverMustBePinned() {
 	}
 }
 
+// duplicateHostname refuses the same public name claimed twice.
+//
+// Every hostname an app declares, primary or role, becomes a site address in
+// the gateway's Caddyfile. Caddy refuses a configuration in which two site
+// blocks claim the same address, because it cannot decide which one a request
+// belongs to, and it refuses the whole file rather than the one block. So a
+// name typed twice takes every hostname in the deployment down, not the one
+// that was duplicated.
+//
+// It became reachable when an app gained the ability to answer on several
+// hostnames: before that an app had exactly one name and a clash needed two
+// apps to be given the same one, which is hard to do by accident. Setting one
+// app's `hostname` to the value another app already uses for a role is not.
+// This is the same failure unknown-hostname-role and gate-without-a-gate-app
+// exist to prevent, arrived at from a different direction.
+func (c *checker) duplicateHostname() {
+	first := map[string]string{} // hostname -> the key that claimed it first
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		claims := []struct{ key, hostname string }{
+			{fmt.Sprintf("apps.%s.hostname", name), app.Hostname},
+		}
+		for _, role := range sortedKeys(app.Hostnames) {
+			claims = append(claims, struct{ key, hostname string }{
+				fmt.Sprintf("apps.%s.hostnames.%s", name, role), app.Hostnames[role],
+			})
+		}
+		for _, claim := range claims {
+			if claim.hostname == "" {
+				continue
+			}
+			if earlier, taken := first[claim.hostname]; taken {
+				c.refuse("duplicate-hostname", claim.key,
+					"is %q, which %s already claims. Every hostname becomes a site address in the gateway's Caddyfile, and Caddy refuses a configuration where two site blocks claim one address rather than choosing between them, so this takes every hostname in the deployment down rather than these two. Give each name to one app and one role.",
+					claim.hostname, earlier)
+				continue
+			}
+			first[claim.hostname] = claim.key
+		}
+	}
+}
+
+// hostnameRoles refuses a hostname role the kind ships no snippet for.
+//
+// A role selects a Caddy snippet. A role nobody ships renders a host block
+// importing a file that does not exist, so the gateway fails to load its whole
+// configuration, taking every other hostname down with it. That is incoherent
+// rather than risky.
 func (c *checker) hostnameRoles() {
 	for _, name := range c.cfg.AppNames() {
 		app := c.cfg.Apps[name]

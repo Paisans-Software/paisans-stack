@@ -215,14 +215,29 @@ its configuration manual at that tag no longer mentions msc3861 anywhere. The
 stable block is rendered and the test asserts it. Pinning the toolkit to the
 experimental key would pin it to a shape the image it pins has moved past.
 
-### The order in the gateway snippet is the load bearing part
+### The matcher lengths in the gateway snippet are the load bearing part
 
 `/_matrix/client/*/login`, `/logout` and `/refresh` are split off to MAS ahead
-of the `/_matrix/*` catch all. Caddy evaluates `handle` blocks in the order
-written, so reversing them sends every login to the homeserver, which no longer
-knows how to answer one. The failure reads as a broken client rather than a
-broken proxy, which is why the ordering has a test of its own rather than only
-a comment.
+of the `/_matrix/*` catch all. What puts them ahead is their length, not their
+position: Caddy sorts routes of the same directive by path matcher length,
+longest first with a trailing `*` trimmed, before it ever evaluates one
+(`caddyconfig/httpcaddyfile/directives.go`, `sortRoutes`, read at v2.11.4, the
+version this toolkit pins). A `handle` with no path matcher sorts last, which
+is what makes the bare one MAS's fallback.
+
+An earlier version of this record said Caddy evaluates `handle` blocks in the
+order written and that reversing them would send every login to the homeserver.
+That is wrong, and the counterexample was already in the rendered file: the
+`/.well-known/matrix/*` handle is written after both catch alls and still wins.
+The snippet is written in the order it sorts into so that reading it top to
+bottom matches what happens, and nothing more rests on that.
+
+The real hazard is a matcher rather than a move: a new handle under `/_matrix`
+longer than one of the login paths and overlapping it would capture those
+requests. So the test asserts the property that governs, which is that each
+split path outranks the catch all on length. It cannot assert what Caddy then
+does with the sorted routes, because the rendered text is all it has, and its
+name says so.
 
 ### The apex gets a snippet of its own
 

@@ -2,7 +2,7 @@
   "default_server_config": {
     "m.homeserver": {
       "base_url": "https://{{ .Setting "homeserver" .Hostname }}",
-      "server_name": "{{ .Setting "server_name" (.Setting "homeserver" .Hostname) }}"
+      "server_name": "{{ .Setting "server_name" .ServerName }}"
     }
   },
   "brand": "{{ .Setting "brand" "Element" }}",

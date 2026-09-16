@@ -2,7 +2,7 @@
   "default_server_config": {
     "m.homeserver": {
       "base_url": "https://chat.example.org",
-      "server_name": "chat.example.org"
+      "server_name": "example.org"
     }
   },
   "brand": "Element",

@@ -32,7 +32,7 @@
 (gate_provisional) {
 	route {
 		request_header -X-Auth-Request-*
-		forward_auth 10.44.0.1:4180 10.44.0.2:4180 {
+		forward_auth 10.44.0.1:4180 {
 			uri /oauth2/auth
 			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Preferred-Username
 		}
@@ -42,7 +42,7 @@
 (gate_members) {
 	route {
 		request_header -X-Auth-Request-*
-		forward_auth 10.44.0.1:4181 10.44.0.2:4181 {
+		forward_auth 10.44.0.1:4181 {
 			uri /oauth2/auth
 			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Preferred-Username
 		}

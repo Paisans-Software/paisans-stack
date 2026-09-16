@@ -11,16 +11,39 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden tree from the current output")
 
-func build(t *testing.T) *render.Plan {
+// fixture loads the deployment every test in this file renders, and refuses to
+// hand it back if the toolkit would not accept it.
+//
+// This is not belt and braces. Build does not validate, so for six tasks the
+// fixture declared two apps under cluster placement that
+// cluster-placement-without-a-cluster refuses outright, and the golden tree
+// grew routing for a shape `paisans apply` would never have produced. A golden
+// file is only a specification of what an operator receives if the input is
+// something an operator could have written, so the check belongs here, ahead of
+// every test, rather than in one test somebody might not run.
+func fixture(t *testing.T) *config.Config {
 	t.Helper()
 	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
 	if err != nil {
 		t.Fatalf("loading the fixture configuration: %v", err)
 	}
+	if refusals := validate.Check(cfg).Refusals(); len(refusals) > 0 {
+		for _, f := range refusals {
+			t.Errorf("the fixture is a configuration the toolkit refuses:\n%s", f)
+		}
+		t.FailNow()
+	}
+	return cfg
+}
+
+func build(t *testing.T) *render.Plan {
+	t.Helper()
+	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
 	if err != nil {
 		t.Fatalf("loading the fixture secrets: %v", err)
@@ -306,10 +329,7 @@ func TestTrustedProxiesAreTheMeshSubnet(t *testing.T) {
 // The mesh subnet is whatever the file declares, not a constant in the code.
 // It reaches both the trusted proxy list and the WireGuard interface address.
 func TestMeshSubnetComesFromTheConfiguration(t *testing.T) {
-	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -602,10 +622,7 @@ func TestTheGatewayRunsAnImageWithTheModule(t *testing.T) {
 // worth nothing unless it reaches the gateway's compose file in place of the
 // published one.
 func TestADeclaredImageReachesTheGateway(t *testing.T) {
-	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -643,10 +660,7 @@ func TestADeclaredImageReachesTheGateway(t *testing.T) {
 // demand a Caddy image for a site that will never run Caddy, or a config that
 // validation accepts fails to render anyway, over an image nothing needs.
 func TestNoGatewayNeedsNoACMEProvider(t *testing.T) {
-	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -675,7 +689,7 @@ func TestElementRendersAClientConfig(t *testing.T) {
 		files[f.Path] = f
 	}
 
-	compose, ok := files["home-a/srv/web/compose.yaml"]
+	compose, ok := files["home-b/srv/web/compose.yaml"]
 	if !ok {
 		t.Fatal("the element app was not rendered")
 	}
@@ -683,12 +697,23 @@ func TestElementRendersAClientConfig(t *testing.T) {
 		t.Error("element was given a database, and it has no state at all")
 	}
 
-	config, ok := files["home-a/srv/web/config.json"]
+	config, ok := files["home-b/srv/web/config.json"]
 	if !ok {
 		t.Fatal("element rendered no runtime configuration")
 	}
-	if !strings.Contains(config.Content, "chat.example.org") {
+	if !strings.Contains(config.Content, `"base_url": "https://chat.example.org"`) {
 		t.Errorf("element's config does not name its homeserver:\n%s", config.Content)
+	}
+	// base_url is where the API is; server_name is the part after the colon in
+	// a user identifier. They are different names whenever delegation is in
+	// use, and a client that offers the wrong one offers accounts that do not
+	// exist. It must be the same value the homeserver was given.
+	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	if !strings.Contains(homeserver, `server_name: "example.org"`) {
+		t.Fatalf("the fixture homeserver's server_name is not what this test assumes:\n%s", homeserver)
+	}
+	if !strings.Contains(config.Content, `"server_name": "example.org"`) {
+		t.Errorf("element and the homeserver disagree about server_name:\n%s", config.Content)
 	}
 	if config.Mode != 0o644 {
 		t.Errorf("element's config is %04o; it carries no secret and wants 0644", config.Mode)
@@ -864,11 +889,24 @@ func TestSynapseAndMASShareOneSecret(t *testing.T) {
 	}
 }
 
-// Order is the whole point of this snippet. MAS answers the three compatibility
-// login paths, and a catch all for /_matrix/* written above them would take
-// every one of those requests to Synapse, which no longer knows how to answer
-// a login.
-func TestTheLoginSplitIsOrderedAheadOfTheCatchAll(t *testing.T) {
+// MAS answers the three compatibility login paths, and if the /_matrix/* catch
+// all captured them instead, every login would reach Synapse, which no longer
+// knows how to answer one.
+//
+// What decides between them is matcher length, not the order they are written
+// in: Caddy sorts routes of one directive longest matcher first, trailing
+// wildcard trimmed (caddyconfig/httpcaddyfile/directives.go, sortRoutes, read
+// at v2.11.4, the version this toolkit pins). An earlier version of this test
+// asserted byte offsets in the rendered file and was named for order, which
+// would not have caught the failure it named: the same snippet already writes
+// /.well-known/matrix/* after both catch alls, and it wins anyway.
+//
+// This test asserts the property that governs, and only that. It reads
+// rendered text, so it cannot observe what Caddy does with the sorted routes;
+// proving that needs a running Caddy, which this suite does not have. The name
+// says what is checked so that nobody reads a guarantee into it that is not
+// here.
+func TestTheLoginSplitOutranksTheCatchAllByMatcherLength(t *testing.T) {
 	files := map[string]render.File{}
 	for _, f := range build(t).Files {
 		files[f.Path] = f
@@ -877,22 +915,27 @@ func TestTheLoginSplitIsOrderedAheadOfTheCatchAll(t *testing.T) {
 	if !ok {
 		t.Fatal("the homeserver has no snippet")
 	}
-	catchAll := strings.Index(snippet.Content, "handle /_matrix/* {")
-	if catchAll < 0 {
-		t.Fatalf("the snippet has no /_matrix/* catch all:\n%s", snippet.Content)
+
+	// matcherLength is what Caddy compares. It sorts routes of one directive
+	// by path matcher length with a trailing wildcard trimmed, longest first.
+	matcherLength := func(path string) int { return len(strings.TrimSuffix(path, "*")) }
+
+	const catchAll = "/_matrix/*"
+	if !strings.Contains(snippet.Content, "handle "+catchAll+" {") {
+		t.Fatalf("the snippet has no %s catch all:\n%s", catchAll, snippet.Content)
 	}
 	for _, path := range []string{
-		"handle /_matrix/client/*/login {",
-		"handle /_matrix/client/*/logout {",
-		"handle /_matrix/client/*/refresh {",
+		"/_matrix/client/*/login",
+		"/_matrix/client/*/logout",
+		"/_matrix/client/*/refresh",
 	} {
-		at := strings.Index(snippet.Content, path)
-		if at < 0 {
+		if !strings.Contains(snippet.Content, "handle "+path+" {") {
 			t.Errorf("the snippet does not split %s off to MAS:\n%s", path, snippet.Content)
 			continue
 		}
-		if at > catchAll {
-			t.Errorf("%s is written after the /_matrix/* catch all, so Synapse answers it", path)
+		if matcherLength(path) <= matcherLength(catchAll) {
+			t.Errorf("%s does not outrank %s on matcher length, so Caddy may sort the catch all ahead of it and Synapse answers the login",
+				path, catchAll)
 		}
 	}
 }
@@ -936,10 +979,7 @@ func TestTheApexServesOnlyDelegation(t *testing.T) {
 // would render, review cleanly and leave a federating peer with a 404 that
 // sends it to <server_name>:8448, where nothing listens.
 func TestAHomeserverWithNoDelegationServesItsOwnWellKnown(t *testing.T) {
-	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
 	if err != nil {
 		t.Fatal(err)

@@ -27,16 +27,6 @@
       "mode": "0644"
     },
     {
-      "path": "srv/gate/.env",
-      "sha256": "9e61bbaddcef82197058c6010c1613544243950620bd6cc6de03f292cde65c84",
-      "mode": "0600"
-    },
-    {
-      "path": "srv/gate/compose.yaml",
-      "sha256": "013afea26c075f416fbe8881c47305e61726875be884460bc0a3c1dcb9fe66bf",
-      "mode": "0644"
-    },
-    {
       "path": "srv/infra/compose.yaml",
       "sha256": "dfe9d8e55f7c41e9503135a66a8c4edf6f9b5fd8e0a2d477456f843e9d81dbf3",
       "mode": "0644"
@@ -78,7 +68,7 @@
     },
     {
       "path": "srv/web/config.json",
-      "sha256": "224b4bd1575151cb6fa2de34d457798763ce8fc2f2924cdb10e20cf62b27c204",
+      "sha256": "c3db6176934cac613f61ba6e62787c77f8650b59c37f4e6fed478ceef6e7d9ec",
       "mode": "0644"
     }
   ]
