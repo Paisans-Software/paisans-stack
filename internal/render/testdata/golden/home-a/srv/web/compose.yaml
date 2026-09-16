@@ -1,0 +1,15 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Element holds no state. Its runtime configuration is a file the container
+# serves to the browser, which is why it is bind mounted rather than passed as
+# environment: the browser fetches it, so it was never secret.
+name: paisans-web
+
+services:
+  app:
+    image: ghcr.io/element-hq/element-web:v1.12.27
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - /srv/web/config.json:/app/config.json:ro

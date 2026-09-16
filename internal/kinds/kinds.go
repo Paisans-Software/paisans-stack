@@ -48,9 +48,38 @@ const PostgresService = "postgres"
 // map on service names: a key that does not exist here is a typo, and the
 // toolkit says so rather than ignoring it.
 var catalogue = map[config.Kind][]Service{
+	config.KindElement: {
+		// No database: Element is a static client that talks to a homeserver
+		// the browser reaches directly.
+		//
+		// v1.12.27 checked against ghcr.io on 2026-09-15 by requesting the
+		// manifest for that exact tag, which resolved (200, an OCI image
+		// index). The registry's tag list was paged through in full and
+		// v1.12.27 is the newest non release candidate tag; v1.12.28-rc.1
+		// exists but is a release candidate, not a release.
+		{Name: "app", Image: "ghcr.io/element-hq/element-web:v1.12.27", Purpose: "the web client"},
+	},
 	config.KindMbin: {
 		{Name: "app", Image: "ghcr.io/mbinorg/mbin:v1.10.1", Purpose: "the application"},
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
+	},
+	config.KindOAuth2Proxy: {
+		// Two instances, deliberately: one gates visitors who have
+		// authenticated, one gates members. Which applications sit behind
+		// which is the community's access policy, declared per app.
+		//
+		// Ports are fixed here rather than derived: provisional runs on 4180,
+		// this kind's primary port in internal/render/plan.go's appPort, and
+		// members runs on the next port up, 4181. Both are spelled out in the
+		// compose and Caddy snippet templates too, because a Service here
+		// carries no port field and a port nobody declared is a port nobody
+		// can route to.
+		//
+		// v7.15.4 checked against quay.io on 2026-09-15 by requesting the tag
+		// through quay.io's API, which resolved (an OCI image index with ten
+		// child manifests).
+		{Name: "provisional", Image: "quay.io/oauth2-proxy/oauth2-proxy:v7.15.4", Purpose: "the gate for anyone signed in, listening on 4180"},
+		{Name: "members", Image: "quay.io/oauth2-proxy/oauth2-proxy:v7.15.4", Purpose: "the gate for members, listening on 4181"},
 	},
 	config.KindOutline: {
 		{Name: "app", Image: "outlinewiki/outline:1.10.0", Purpose: "the application"},
@@ -61,7 +90,19 @@ var catalogue = map[config.Kind][]Service{
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
 	config.KindSynapse: {
-		{Name: "app", Image: "ghcr.io/element-hq/synapse:v1.160.0", Purpose: "the application"},
+		// Three containers, because a homeserver does not authenticate anyone
+		// any more. Synapse is a resource server, Matrix Authentication
+		// Service owns the login, and the identity provider is upstream of
+		// MAS rather than of Synapse.
+		//
+		// NOTE THE MISSING `v`. Synapse tags as vX.Y.Z and MAS tags as X.Y.Z.
+		// Checked against ghcr.io on 2026-09-15 by requesting the manifest for
+		// each: `1.24.0` resolved (200), `v1.24.0` did not (404), and neither
+		// did `1.25.0`. The registry's tag list was paged through in full and
+		// 1.24.0 is the newest release; 1.25.0-rc.0 exists but is a release
+		// candidate.
+		{Name: "app", Image: "ghcr.io/element-hq/synapse:v1.160.0", Purpose: "the homeserver, which only serves the API"},
+		{Name: "mas", Image: "ghcr.io/element-hq/matrix-authentication-service:1.24.0", Purpose: "Matrix Authentication Service, which owns the login"},
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
 	config.KindWriteFreely: {

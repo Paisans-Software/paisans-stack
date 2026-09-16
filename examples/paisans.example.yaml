@@ -97,6 +97,12 @@ apps:
     kind: mbin
     hostname: talk.example.org
     placement: cluster
+    # gate is access policy, and access policy belongs in configuration, not
+    # in a hand edited Caddy include somebody has to remember exists. members
+    # is the enforcing instance: it answers 403 for anyone signed in who is
+    # not yet a member of the community, which is what makes this app member
+    # only. The gate app itself is declared below.
+    gate: members
     # Optional. Keys are service names in the kind's compose template; any key
     # left out takes the default that kind ships. Declaring the reference is
     # what makes running a fork, or holding a version back, a config edit.
@@ -125,9 +131,29 @@ apps:
       # every other one gains no dependency on object storage being up.
       file_backend: database
 
+  gate:
+    kind: oauth2-proxy
+    hostname: gate.example.org
+    # Pinned, like every kind that keeps its data outside the cluster: this
+    # one keeps none at all, being a session cookie and nothing durable, but
+    # it is still refused `cluster` placement because there is no database
+    # for it to join. A home rather than the witness, so this example
+    # demonstrates only the one deliberate warning below, on chat.
+    placement: { pinned: home-a }
+    # The gate itself: one kind, two containers. provisional owns the login
+    # flow and admits anyone signed in; members carries the group restriction
+    # and enforces it. Which applications sit behind which instance is each
+    # app's own gate: setting, declared where that app is declared, not here.
+
   chat:
     kind: synapse
     hostname: chat.example.org
+    hostnames:
+      # A second name because it serves something different: the apex carries
+      # the .well-known delegation documents so a member's identifier reads
+      # @name:example.org while the API itself stays on chat.example.org.
+      # This is also server_name, permanent from the first account or room.
+      wellknown: example.org
     # Pinned: its S3 module supplements the media store rather than replacing
     # it, so a local media directory is always required and it cannot follow a
     # failover cleanly. Pinned means app, database and media together — a

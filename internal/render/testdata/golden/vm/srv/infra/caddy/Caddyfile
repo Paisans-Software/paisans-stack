@@ -32,6 +32,11 @@
 	}
 }
 
+# Named Caddy snippets, not a hostname's routing: imported here, at the top
+# level, so that a site block below can import a name this file defines. See
+# templates/oauth2-proxy/caddy.snippet.gates.tmpl for what it declares.
+import /etc/caddy/snippets/gate-gates.caddy
+
 blog.example.org {
 	import /etc/caddy/snippets/blog.caddy
 }
@@ -44,10 +49,23 @@ docs.example.org {
 	import /etc/caddy/snippets/docs.caddy
 }
 
+example.org {
+	import /etc/caddy/snippets/chat-wellknown.caddy
+}
+
+gate.example.org {
+	import /etc/caddy/snippets/gate.caddy
+}
+
 id.example.org {
 	import /etc/caddy/snippets/auth.caddy
 }
 
 talk.example.org {
+	import gate_members
 	import /etc/caddy/snippets/talk.caddy
+}
+
+web.example.org {
+	import /etc/caddy/snippets/web.caddy
 }

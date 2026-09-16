@@ -49,6 +49,7 @@ apps:
     kind: mbin
     hostname: talk.example.org
     placement: cluster
+    gate: members
     images:
       app: ghcr.io/example-org/mbin:v1.10.1-fork
   docs:
@@ -67,7 +68,10 @@ apps:
   chat:
     kind: synapse
     hostname: chat.example.org
+    hostnames:
+      wellknown: example.org
     placement: { pinned: vm }
+    gate: none
     images:
       postgres: postgres:17-alpine
   blog:
@@ -76,3 +80,13 @@ apps:
     # Pinned because it cannot be anything else: no Postgres, so a SQLite file
     # per apps site would be two divergent blogs behind one hostname.
     placement: { pinned: home-a }
+  web:
+    kind: element
+    hostname: web.example.org
+    placement: cluster
+    settings:
+      homeserver: chat.example.org
+  gate:
+    kind: oauth2-proxy
+    hostname: gate.example.org
+    placement: cluster

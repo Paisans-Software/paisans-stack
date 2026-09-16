@@ -37,6 +37,16 @@
       "mode": "0644"
     },
     {
+      "path": "srv/gate/.env",
+      "sha256": "5f0957e93d398ac4f6b7a149db4ba74d3eb0499f8c614779759e187ef74d63b8",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/gate/compose.yaml",
+      "sha256": "013afea26c075f416fbe8881c47305e61726875be884460bc0a3c1dcb9fe66bf",
+      "mode": "0644"
+    },
+    {
       "path": "srv/infra/compose.yaml",
       "sha256": "b8dcc7b2784cf30122cdefcd248d93e880165cc245dbd4cd13148a83ded56d75",
       "mode": "0644"
@@ -69,6 +79,16 @@
     {
       "path": "srv/talk/config/packages/oneup_flysystem.yaml",
       "sha256": "9e676d3569b2fe39d5ce151f4dbfbbf065fbe020b1b194f547320a0a309d4efd",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/web/compose.yaml",
+      "sha256": "b0b89fe31df61e0357230da1c0572f3b4e306c2c7433b63e12912692123589cb",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/web/config.json",
+      "sha256": "224b4bd1575151cb6fa2de34d457798763ce8fc2f2924cdb10e20cf62b27c204",
       "mode": "0644"
     }
   ]

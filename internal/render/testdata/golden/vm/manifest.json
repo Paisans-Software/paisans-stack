@@ -8,22 +8,32 @@
     },
     {
       "path": "srv/chat/.env",
-      "sha256": "01cbe5b00a1796596d12f5836008dbef258f049f3cc7803636350ca6906f258b",
+      "sha256": "8f364f18a7295851c66f2a99abe7dc9d22aa437f075aef581e7797c9b2d7eaff",
       "mode": "0600"
     },
     {
       "path": "srv/chat/compose.yaml",
-      "sha256": "c3ba1401c0fc5fc9abb2f8c76cf053d0247810bab099df5fad7e5d81464a9cc4",
+      "sha256": "a251f7aa01931514efd6af5e8783b31d49005807a9aadd6fa7aa540f4308d914",
       "mode": "0644"
     },
     {
       "path": "srv/chat/homeserver.yaml",
-      "sha256": "0e4b87a9462154eb3343bb342c693a847edc49c70551b783802b70da449cb69c",
+      "sha256": "eaa38e354e5fb51de9eaea0181bfa84aa0fb14b78616c2ca56975c7d3b500e42",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/chat/initdb.d/01-mas-database.sql",
+      "sha256": "ab221a57a36d9a875fa084d72a79ff240a98b0345ab5537c2e46ab8789bd8fa4",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/chat/mas.yaml",
+      "sha256": "2336ffd4bf72ac9c7d5c9c0e2e6b320b02e7600362a1f33b67969b67bd0014c9",
       "mode": "0600"
     },
     {
       "path": "srv/infra/caddy/Caddyfile",
-      "sha256": "47b4c43bcb070892b2bc4b482e03fd82512a10dba97a6f4ca39c9f9de3d0b505",
+      "sha256": "03764b55ffb12727720196e978a0c3d8814ef753fcba43318247399f517f1e6d",
       "mode": "0644"
     },
     {
@@ -42,8 +52,13 @@
       "mode": "0644"
     },
     {
+      "path": "srv/infra/caddy/snippets/chat-wellknown.caddy",
+      "sha256": "3c99f5f2d8ca959da822af723e1c7d2957e2463acbb0e6604fc7946de342aa47",
+      "mode": "0644"
+    },
+    {
       "path": "srv/infra/caddy/snippets/chat.caddy",
-      "sha256": "0c48f0d6f7167002746a838bc6aceda57bc34d582a51d00b9e56387f7a4a7211",
+      "sha256": "d6cc6f4dffa2ee7e8204fc3fc1e9d41402e27a3fb8c3f2bf125756df5a2b9882",
       "mode": "0644"
     },
     {
@@ -52,8 +67,23 @@
       "mode": "0644"
     },
     {
+      "path": "srv/infra/caddy/snippets/gate-gates.caddy",
+      "sha256": "f608c2e3455d3e2f483ca292cabdacee1d307cbc42b74720bb6d3c000e808d2c",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/caddy/snippets/gate.caddy",
+      "sha256": "d402a5ee4c402b3180bb7180ce5c128be7f386b57da872f0e71daaf8d9a2960d",
+      "mode": "0644"
+    },
+    {
       "path": "srv/infra/caddy/snippets/talk.caddy",
       "sha256": "b7894b3b2bd77bfea32a8011b02e81ef50eb91a9e2da7474f9f2c2552350121a",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/caddy/snippets/web.caddy",
+      "sha256": "08bac3514abaa475771b304d033c23c3146970ca7998491c000b5975ec16c1e2",
       "mode": "0644"
     },
     {

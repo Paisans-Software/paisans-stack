@@ -111,6 +111,28 @@ support supplements the media store rather than replacing it, so a local media
 directory is always required — but this is a property every app has, not a
 Synapse special case.
 
+**For the `synapse` kind it is not a choice: `placement: cluster` is refused.**
+The media store cannot leave the node, and the kind renders its own Postgres
+plus the initialisation hook that creates the authentication service's database
+beside it, neither of which exists on a clustered site. A clustered homeserver
+would render and then meet the missing database at the first sign in. The same
+reasoning refuses `writefreely`, which has never supported Postgres, so the
+refusal is the existing shape rather than a special case for Matrix.
+
+**"The authentication service's database" is Matrix Authentication Service,
+and the `synapse` kind renders it as a second container beside the
+homeserver, not as a setting inside it.** Synapse stopped being where a
+member logs in: it is a resource server now, and MAS is what owns the login,
+holds sessions, and talks to the identity provider on the homeserver's
+behalf. The identity provider itself sits upstream of MAS, one hop further
+out than every other application's OIDC client, which is why registering it
+takes a different redirect URI. `paisans init` prints that URI, in the form
+`https://<hostname>/upstream/callback/<ulid>`, alongside every other owed
+secret, because a client registered against the wrong path fails at the end
+of the first sign in rather than at registration. MAS keeps its own Postgres
+database beside the homeserver's, which is part of why `placement: cluster`
+is refused above: a clustered site has nowhere to put either.
+
 So each stack in the inventory declares where it runs:
 
 | Placement | What it means | Availability |
@@ -538,6 +560,84 @@ it takes a gate: **`apply` validates the assembled gateway configuration before
 reloading it, and refuses to reload one that does not validate.** A rendered
 snippet that is wrong should cost the operator an error message on the
 workstation, not the public address of every application at once.
+
+#### An app may answer on more than one hostname
+
+```yaml
+apps:
+  chat:
+    kind: synapse
+    hostname: matrix.example.org
+    hostnames:
+      wellknown: example.org
+```
+
+Each hostname gets its own host block and its own snippet, because a second
+hostname almost always exists to serve something *different*. A homeserver is
+the worked example: the API lives on one name, and the `.well-known`
+delegation documents live on whatever name appears in user identifiers. Routing
+them identically would publish the entire API on the apex.
+
+The key is a **role**, not a label: it selects which snippet the kind ships. A
+role a kind does not understand is refused, because the alternative is a
+gateway that fails to load its whole configuration over one missing import.
+
+**For a homeserver, `hostnames.wellknown` is not only routing. It is
+`server_name`.** It becomes the part after the colon in every user identifier
+the homeserver ever mints, and it is written into every room that homeserver
+has joined. It cannot be changed once an account or a room exists: a homeserver
+restored under a different `server_name` is, to its own history, a different
+server. Editing this key on a deployment that is already running is a rebuild
+and a migration of member data, not a configuration change, and nothing in this
+toolkit can undo it for you or warn you at the moment you do it, because
+`apply` compares the configuration against templates rather than against what
+some earlier `apply` already put on a host.
+
+Choose it once, before the first `apply`, and choose the name you want members
+to have. Declaring no `wellknown` hostname is a legitimate choice with the same
+weight: `server_name` is then the app's own hostname, the homeserver serves its
+own delegation documents there, and that name is equally permanent.
+
+#### The gate is a per-app property
+
+```yaml
+apps:
+  talk:
+    kind: mbin
+    hostname: talk.example.org
+    gate: members
+  chat:
+    kind: synapse
+    hostname: matrix.example.org
+    gate: none
+```
+
+`gate` is `none`, `provisional` or `members`, and it is declared on the app
+rather than implied by which Caddy snippet somebody remembered to import. It is
+access policy, and access policy belongs in the configuration, not in a hand
+edited include.
+
+**Leaving `gate` out of an app's stanza means the same thing as `gate: none`:
+ungated, reachable by anyone who can resolve the hostname.** That default has
+to be stated here, not only in a doc comment, because it is the one setting
+where forgetting it is indistinguishable from choosing it: an app with no
+`gate` key renders exactly like an app that explicitly opted out, and nothing
+at render time flags the absence as a decision skipped rather than made.
+
+**A gate on an app of kind `synapse` is refused**, which is the rule below
+enforced rather than merely stated. The case that makes this load bearing is a
+negative one. A Matrix hostname must never be gated: a Matrix client is not a browser and will not follow a redirect
+to a passkey prompt, so gating a homeserver's API or its `.well-known` apex
+breaks federation and every client's login, not just one member's. Leaving
+gating to a hand edited include means that failure shows up as clients
+mysteriously unable to log in, with nothing in the configuration saying why. A
+declared `gate: none` makes the absence of a gate a fact about the app that a
+reviewer can see, rather than an inference from what nobody wrote.
+
+Declaring a gate when no `oauth2-proxy` app exists is refused, for the same
+reason an unknown hostname role is: the import would name a snippet nothing
+renders, and Caddy fails to load its entire configuration over one missing
+import, taking every hostname down rather than one.
 
 ### Decryption happens on a workstation, not on a host
 

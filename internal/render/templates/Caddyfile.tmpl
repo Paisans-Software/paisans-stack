@@ -29,8 +29,17 @@
 		trusted_proxies static {{ .TrustedProxies }}
 	}
 }
+{{ range .GateSnippets }}
+# Named Caddy snippets, not a hostname's routing: imported here, at the top
+# level, so that a site block below can import a name this file defines. See
+# templates/oauth2-proxy/caddy.snippet.gates.tmpl for what it declares.
+import {{ . }}
+{{ end -}}
 {{ range .Routes }}
 {{ .Hostname }} {
+{{- if .Gate }}
+	import gate_{{ .Gate }}
+{{- end }}
 	import {{ .Snippet }}
 }
 {{ end -}}

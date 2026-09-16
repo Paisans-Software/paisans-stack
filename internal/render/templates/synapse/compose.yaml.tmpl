@@ -1,18 +1,16 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
-{{- if .App.Pinned }}
-# {{ .App.Name }} is pinned to {{ .App.Site }}: app, database and media
-# together. Synapse is the app this placement exists for, because its media
-# store cannot be moved into object storage: the S3 storage provider
-# supplements a local media directory rather than replacing it.
-{{- else }}
-# {{ .App.Name }} has cluster placement: no Postgres service of its own, and a
-# connection to the local HAProxy on {{ .DBHost }}:{{ .DBPort }}.
+# Three containers, and the split between the first two is the whole design:
+# `mas` owns authentication and `app` is a resource server that introspects the
+# tokens it issues. The identity provider is upstream of `mas`, never of `app`.
 #
-# Its media directory is still node local, so a promoted site does not have it
-# unless something else replicates it. That is a decision to make rather than
-# to discover during a failover.
-{{- end }}
+# {{ .App.Name }} is pinned to {{ .App.Site }}: app, database and media
+# together, and this kind has no other placement. Synapse is the app that
+# pinning exists for, because its media store cannot be moved into object
+# storage: the S3 storage provider supplements a local media directory rather
+# than replacing it, so a promoted site would not have the media. Cluster
+# placement is refused by internal/validate rather than rendered, which is why
+# nothing below is conditional on it.
 name: paisans-{{ .App.Name }}
 
 services:
@@ -25,12 +23,29 @@ services:
       - "{{ .App.Port }}:{{ .App.Port }}"
     volumes:
       - {{ .DataPath }}/data:/data
-      # Synapse reads a file. The database password and the SSO client secret
-      # are in it, which is why it is bind mounted at 0600 rather than passed
-      # as environment: `docker inspect` and /proc/<pid>/environ would show the
-      # latter.
+      # Synapse reads a file. The database password and the secret it shares
+      # with MAS are in it, which is why it is bind mounted at 0600 rather than
+      # passed as environment: `docker inspect` and /proc/<pid>/environ would
+      # show the latter.
       - {{ .DataPath }}/homeserver.yaml:/data/homeserver.yaml:ro
-{{- if .App.Pinned }}
+    depends_on:
+      - postgres
+
+  mas:
+    image: {{ .Image "mas" }}
+    restart: unless-stopped
+    # The image's entrypoint is mas-cli, so the subcommand is the command.
+    # `server` migrates its database and syncs the upstream provider out of
+    # mas.yaml on start unless told not to, and it is not told not to, so
+    # bringing this stack up needs no second command.
+    command: ["server", "--config", "/data/mas.yaml"]
+    ports:
+      - "{{ .MASPort }}:{{ .MASPort }}"
+    volumes:
+      # 0600, and for a stronger reason than the homeserver's file: this one
+      # carries the signing key, the encryption secret and the identity
+      # provider's client secret.
+      - {{ .DataPath }}/mas.yaml:/data/mas.yaml:ro
     depends_on:
       - postgres
 
@@ -47,4 +62,6 @@ services:
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
     volumes:
       - {{ .DataPath }}/postgres:/var/lib/postgresql/data
-{{- end }}
+      # Creates MAS's database beside the homeserver's. Read only when the data
+      # directory is empty, so it applies exactly once, at the first `up`.
+      - {{ .DataPath }}/initdb.d:/docker-entrypoint-initdb.d:ro

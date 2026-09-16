@@ -168,3 +168,76 @@ would leave an adopter on another DNS provider waiting for us or forking.
 Instead the provider is declared with an image that carries its module, and the
 module is verified at apply time by asking the binary, since what is compiled
 into a binary is not a property of its name.
+
+---
+
+## 2026-09-15: Synapse is a resource server and MAS owns authentication
+
+**Decided.** The `synapse` kind renders three containers, not two: the
+homeserver, Matrix Authentication Service in front of it, and a database. The
+identity provider is upstream of MAS rather than of the homeserver.
+
+### What was deleted
+
+The kind used to render an `oidc_providers` block into `homeserver.yaml`, with
+the `password_config` block that accompanied it. Both are gone, and so is
+`registration_shared_secret`, which the kind never rendered but which any
+`synapse generate` run produces and which an operator would otherwise be left
+holding.
+
+The old form is deleted rather than kept behind a setting. Two ways to
+authenticate a homeserver is two ways to get it wrong, and the second one is
+not a fallback: a deployment that kept both would have a second account
+creation path that bypasses the group restriction at the identity provider,
+which is the whole of the access policy for a Matrix stack. A homeserver
+hostname cannot be gated, because a Matrix client is not a browser and will not
+follow a redirect to a passkey prompt, so there is nothing else standing in
+front of it.
+
+### Where the shape came from
+
+From a deployment that runs it, read on 2026-09-15: its compose file, its
+gateway's host blocks and the design record written when it was built. That
+deployment was verified on the wire at the time it was brought up, which is
+more than the toolkit's previous shape could claim, since nobody had ever run
+what the kind rendered.
+
+Nothing of that community crossed into this repository. What was taken is which
+services exist, which configuration keys they carry and what order the route
+matchers go in. Every value here is the fixture's example domain or a template
+variable.
+
+### The stable block, not the experimental one
+
+The task brief asked for `experimental_features.msc3861`. Synapse v1.160.0, the
+version this kind pins, documents `matrix_authentication_service` instead, and
+its configuration manual at that tag no longer mentions msc3861 anywhere. The
+stable block is rendered and the test asserts it. Pinning the toolkit to the
+experimental key would pin it to a shape the image it pins has moved past.
+
+### The order in the gateway snippet is the load bearing part
+
+`/_matrix/client/*/login`, `/logout` and `/refresh` are split off to MAS ahead
+of the `/_matrix/*` catch all. Caddy evaluates `handle` blocks in the order
+written, so reversing them sends every login to the homeserver, which no longer
+knows how to answer one. The failure reads as a broken client rather than a
+broken proxy, which is why the ordering has a test of its own rather than only
+a comment.
+
+### The apex gets a snippet of its own
+
+The hostname holding the `wellknown` role serves `/.well-known/matrix/server`
+and `/.well-known/matrix/client` and nothing else. Routing it like the primary
+would publish the entire homeserver API on the name inside every user
+identifier. That name is also what `server_name` is set to when the role is
+declared, because delegation documents served on a name the homeserver does not
+answer to point nowhere.
+
+### One role, two databases
+
+MAS keeps its own database beside the homeserver's, owned by the same role.
+They cannot share one, because both services define a `users` table. The
+deployment this was taken from gives MAS a role of its own; the toolkit does
+not, because one app holding one credential is its rule everywhere else and a
+second role per app would be a change to the secrets model rather than to this
+kind.

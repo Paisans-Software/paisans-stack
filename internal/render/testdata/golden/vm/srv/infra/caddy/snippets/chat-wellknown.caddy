@@ -1,0 +1,35 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# example.org is the name inside every user identifier on this homeserver,
+# so it is the name every client and every federating server asks for
+# delegation. It serves those two documents and nothing else: routing it like
+# the primary hostname would publish the whole homeserver API here as well.
+#
+# Federation therefore arrives on 443 rather than 8448, which is the point of
+# delegating it: nothing has to listen on a second port.
+#
+# The bodies are written here rather than proxied to the homeserver because
+# the homeserver does not answer on this name. Its own serve_server_wellknown
+# is off for the same reason: two competing answers is worse than either.
+#
+# NEVER GATE THIS HOSTNAME. A federating server fetching delegation is a
+# machine, and it will not follow a redirect to a passkey prompt.
+handle /.well-known/matrix/server {
+	header Content-Type application/json
+	header Access-Control-Allow-Origin *
+	respond `{"m.server": "chat.example.org:443"}` 200
+}
+handle /.well-known/matrix/client {
+	# CORS matters here and only here: a browser client loaded from another
+	# origin fetches this document BEFORE it knows where the homeserver is, and
+	# without the header the fetch fails with nothing useful in the console.
+	header Content-Type application/json
+	header Access-Control-Allow-Origin *
+	respond `{"m.homeserver": {"base_url": "https://chat.example.org"}}` 200
+}
+handle {
+	# Everything else on this name is not this app's. A deployment that serves
+	# a site on the apex claims those paths in its own block, ahead of this
+	# import; with nothing else here, a bare 404 is the honest answer.
+	respond 404
+}

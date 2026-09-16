@@ -20,7 +20,11 @@ package secretsgen
 
 import (
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"sort"
 
@@ -147,7 +151,7 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 				note(false, "apps."+name+"."+key)
 				continue
 			}
-			value, err := password()
+			value, err := appSecret(key)
 			if err != nil {
 				return result, err
 			}
@@ -174,8 +178,80 @@ func appSecretKeys(app config.App) []string {
 	if app.Kind == config.KindMbin {
 		keys = append(keys, "mercure_jwt_secret", "rabbitmq_password", "valkey_password")
 	}
+	if app.Kind == config.KindOAuth2Proxy {
+		keys = append(keys, "cookie_secret")
+	}
+	if app.Kind == config.KindSynapse {
+		// Three, because the homeserver no longer authenticates anyone and
+		// Matrix Authentication Service in front of it needs its own.
+		keys = append(keys, masEncryptionSecret, masMatrixSecret, masSigningKey)
+	}
 	sort.Strings(keys)
 	return keys
+}
+
+// The three secrets Matrix Authentication Service needs, named here because
+// two of them are not a generated password and the difference has to be
+// visible in one place.
+const (
+	// masEncryptionSecret encrypts database fields and cookies. MAS states the
+	// form: "This must be a 32-byte long hex-encoded key", from its
+	// configuration reference at tag v1.24.0, checked 2026-09-15. Losing or
+	// changing it after members exist makes every encrypted field and cookie
+	// unrecoverable, which is why nothing here ever replaces one that is set.
+	masEncryptionSecret = "mas_encryption_secret"
+	// masMatrixSecret is shared with the homeserver, which carries the same
+	// value in matrix_authentication_service.secret. It authenticates the
+	// service to the homeserver, so leaking it is an admin compromise.
+	masMatrixSecret = "mas_matrix_secret"
+	// masSigningKey signs the tokens MAS issues. Its configuration reference
+	// says "At least one RSA key must be configured", so this is an RSA key
+	// and not one of the elliptic curve types it also accepts.
+	masSigningKey = "mas_signing_key"
+)
+
+// appSecret produces the value for one app secret key.
+//
+// Most are a generated password and the two exceptions are not a matter of
+// taste: MAS parses its encryption secret as hex and its signing key as PEM,
+// so a base64 password in either position is a service that will not start.
+func appSecret(key string) (string, error) {
+	switch key {
+	case masEncryptionSecret:
+		return hexSecret(32)
+	case masSigningKey:
+		return rsaPrivateKeyPEM()
+	default:
+		return password()
+	}
+}
+
+// hexSecret is n bytes from the system source, hex encoded, for a consumer
+// that parses its secret as hex rather than taking it as an opaque string.
+func hexSecret(n int) (string, error) {
+	raw := make([]byte, n)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("reading random bytes: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+// rsaPrivateKeyPEM is a 2048 bit RSA key in PKCS#8 PEM, which is one of the
+// formats MAS documents accepting.
+//
+// 2048 rather than 4096 because it is what an OpenID Connect signing key is
+// expected to be, and the key signs short lived tokens rather than protecting
+// anything at rest.
+func rsaPrivateKeyPEM() (string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", fmt.Errorf("generating an RSA signing key: %w", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", fmt.Errorf("encoding the RSA signing key: %w", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})), nil
 }
 
 // owed lists what this package will not invent, with the reason, so that an
@@ -197,10 +273,18 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 		if cfg.Apps[name].Kind == config.KindPocketID {
 			continue // the identity provider has no client at itself
 		}
-		out = append(out, Owed{
-			Name: "oidc_clients." + name,
-			Why:  "minted by the identity provider, and creating a client there is a mutation a human approves. The toolkit records the value afterwards rather than automating the approval away",
-		})
+		why := "minted by the identity provider, and creating a client there is a mutation a human approves. The toolkit records the value afterwards rather than automating the approval away"
+		if cfg.Apps[name].Kind == config.KindSynapse {
+			// Said here rather than only in the rendered configuration,
+			// because the rendered configuration is 0600 and does not exist
+			// until apply, which is after the operator needed this. A client
+			// registered with the wrong redirect URI fails at the end of the
+			// first sign in, once the member has already authenticated.
+			why += ". Register its redirect URI as " +
+				kinds.MASRedirectURI(cfg.Apps[name].Hostname, name) +
+				", which is the authentication service's callback for this upstream provider and not the /oauth/callback every other kind uses"
+		}
+		out = append(out, Owed{Name: "oidc_clients." + name, Why: why})
 	}
 	return out
 }

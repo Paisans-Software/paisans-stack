@@ -15,6 +15,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
 // The `all:` prefix matters: without it embed skips files beginning with a
@@ -34,13 +35,33 @@ var templates = template.Must(template.New("infra").Funcs(templateFuncs).ParseFS
 // purpose: logic that needs more than this belongs in Go, where it can be
 // tested.
 var templateFuncs = template.FuncMap{
-	"quote": quote,
+	"quote":  quote,
+	"indent": indent,
 	"yesno": func(b bool) string {
 		if b {
 			return "true"
 		}
 		return "false"
 	},
+}
+
+// indent prefixes every line of a value with n spaces, so that a multi line
+// secret can be placed into a YAML block scalar. A PEM encoded key is the case
+// that needs it: unindented, its second line ends the block and the rest of the
+// file becomes a parse error.
+//
+// A trailing newline is dropped, because the template supplies the line break
+// after the value and two would render a blank line inside the block.
+func indent(n int, value string) string {
+	pad := strings.Repeat(" ", n)
+	lines := strings.Split(strings.TrimRight(value, "\n"), "\n")
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		lines[i] = pad + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 // secretSuffix marks a template whose rendered file is written 0600.
@@ -107,12 +128,21 @@ type peerView struct {
 }
 
 type route struct {
-	App       string
+	App string
+	// Role is here so a later task can gate the host block on it: whether an
+	// import belongs in this block is a fact about which hostname it is, not
+	// about the app in general.
+	Role      string
 	Hostname  string
 	Upstreams []string
-	// Snippet is where the app's own routing lives on the gateway, as the
-	// container sees it. The host block imports it rather than containing it.
+	// Snippet is where this hostname's own routing lives on the gateway, as
+	// the container sees it. The host block imports it rather than
+	// containing it.
 	Snippet string
+	// Gate is the app's declared gate, carried onto every one of its
+	// hostnames. A gate is access policy for the app, not for one hostname of
+	// it, so every route an app has gets the same value.
+	Gate string
 }
 
 func (p *planner) renderSite(site *siteView) ([]File, error) {
@@ -213,6 +243,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		caddyfile, err := p.renderTemplate("Caddyfile.tmpl", map[string]any{
 			"Domain":         p.cfg.Community.Domain,
 			"Routes":         p.routes(),
+			"GateSnippets":   p.gateSnippetMounts(),
 			"TrustedProxies": p.mesh,
 			"ACMEDirective":  acme.Directive(p.cfg.ACME.Provider),
 		})
@@ -226,6 +257,12 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			return nil, err
 		}
 		files = append(files, snippets...)
+
+		gateSnippets, err := p.renderGateSnippets(base)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, gateSnippets...)
 
 		env, err := p.renderTemplate("caddy.env.tmpl", map[string]any{
 			"ACMEDNSToken": p.secrets.External["acme_dns_token"],
@@ -248,9 +285,16 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 }
 
 // snippetTemplate is the file in a kind's set that describes how the gateway
-// routes to it. It is rendered onto the gateway rather than beside the app,
-// because that is where it is read.
-const snippetTemplate = "caddy.snippet.tmpl"
+// routes to it on its primary hostname. It is rendered onto the gateway
+// rather than beside the app, because that is where it is read.
+//
+// snippetPrefix matches it and every extra hostname's own snippet, such as
+// caddy.snippet.wellknown.tmpl, all of which belong to the gateway for the
+// same reason.
+const (
+	snippetTemplate = "caddy.snippet.tmpl"
+	snippetPrefix   = "caddy.snippet."
+)
 
 // snippetDir is where snippets land on the gateway, and snippetMount is the
 // same directory as the Caddy container sees it. The Caddyfile imports by the
@@ -260,14 +304,62 @@ const (
 	snippetMount = "/etc/caddy/snippets/"
 )
 
-// renderSnippets renders every app's routing onto a gateway.
+// renderSnippets renders every hostname's routing onto a gateway.
 //
 // It walks the whole configuration rather than the gateway's own apps: a
 // gateway routes to applications that run elsewhere, which is the usual case.
+// One route renders one snippet, from the template its role selects, because
+// two hostnames on the same app can serve entirely different things.
 func (p *planner) renderSnippets(base string) ([]File, error) {
+	var files []File
+	for _, r := range p.routes() {
+		app := p.cfg.Apps[r.App]
+		planned, err := p.plannedFor(r.App, app)
+		if err != nil {
+			return nil, err
+		}
+		values, err := p.values(planned, app)
+		if err != nil {
+			return nil, err
+		}
+		// The snippet names the hostname it serves, not the app's primary: the
+		// apex snippet for a homeserver has to say the apex, never the API
+		// name, or its own comments would lie about which name reaches it.
+		values.Hostname = r.Hostname
+		values.PublicURL = "https://" + r.Hostname
+
+		path := "templates/" + string(app.Kind) + "/" + kinds.SnippetFor(r.Role)
+		content, err := p.renderFile(path, values)
+		if err != nil {
+			return nil, err
+		}
+		name := r.App
+		if r.Role != kinds.PrimaryRole {
+			name = r.App + "-" + r.Role
+		}
+		files = append(files, File{Path: base + snippetDir + name + ".caddy", Content: content, Mode: 0o644})
+	}
+	return files, nil
+}
+
+// gateSnippetTemplate defines the oauth2-proxy kind's named Caddy snippets,
+// gate_provisional and gate_members. It is not a hostname's routing: nothing
+// imports it by path, and no host block is rendered for it. A later kind's
+// own snippet imports the names it defines, the same way the deployment this
+// toolkit generalises imports its single `(pocketid_gate)` snippet by name.
+const gateSnippetTemplate = "caddy.snippet.gates.tmpl"
+
+// renderGateSnippets renders every oauth2-proxy app's named gate snippets onto
+// the gateway. It walks every app in the configuration, not just this site's
+// own, for the same reason renderSnippets does: the gateway routes to
+// applications wherever they run.
+func (p *planner) renderGateSnippets(base string) ([]File, error) {
 	var files []File
 	for _, name := range p.cfg.AppNames() {
 		app := p.cfg.Apps[name]
+		if app.Kind != config.KindOAuth2Proxy {
+			continue
+		}
 		planned, err := p.plannedFor(name, app)
 		if err != nil {
 			return nil, err
@@ -276,14 +368,28 @@ func (p *planner) renderSnippets(base string) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		path := "templates/" + string(app.Kind) + "/" + snippetTemplate
+		path := "templates/" + string(app.Kind) + "/" + gateSnippetTemplate
 		content, err := p.renderFile(path, values)
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + snippetDir + name + ".caddy", Content: content, Mode: 0o644})
+		files = append(files, File{Path: base + snippetDir + name + "-gates.caddy", Content: content, Mode: 0o644})
 	}
 	return files, nil
+}
+
+// gateSnippetMounts is where each oauth2-proxy app's gate snippet file lands,
+// as the Caddy container sees it. The Caddyfile imports each at the top
+// level, before any site block, because a named Caddy snippet has to be
+// defined before something else can import it by name.
+func (p *planner) gateSnippetMounts() []string {
+	var out []string
+	for _, name := range p.cfg.AppNames() {
+		if p.cfg.Apps[name].Kind == config.KindOAuth2Proxy {
+			out = append(out, snippetMount+name+"-gates.caddy")
+		}
+	}
+	return out
 }
 
 // plannedFor rebuilds an app's planned form for the gateway, which needs its
@@ -351,8 +457,9 @@ func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error)
 		if !strings.HasSuffix(path, ".tmpl") {
 			return fmt.Errorf("%s is in a template set but is not a template. Every file in a set is rendered, so there is nowhere for a plain file to go", path)
 		}
-		if strings.TrimPrefix(path, dir+"/") == snippetTemplate {
-			// Routing belongs to the gateway, not to the app's own directory.
+		if strings.HasPrefix(strings.TrimPrefix(path, dir+"/"), snippetPrefix) {
+			// Routing belongs to the gateway, not to the app's own directory,
+			// whichever hostname it is for.
 			return nil
 		}
 		rel := strings.TrimSuffix(strings.TrimPrefix(path, dir+"/"), ".tmpl")
@@ -501,17 +608,38 @@ func (p *planner) relays() []string {
 	return out
 }
 
-// routes is the gateway's inventory: one host block per app, each importing
-// that app's own snippet.
+// routes is the gateway's inventory: one host block per hostname, each
+// importing the snippet for that hostname's role.
 func (p *planner) routes() []route {
 	var out []route
 	for _, name := range p.cfg.AppNames() {
+		app := p.cfg.Apps[name]
+		gate := app.Gate
+		if gate == "none" {
+			// Carried to the template as empty rather than as the literal
+			// "none", because the template's gate import is guarded on
+			// truthiness: `none` is a value an operator writes, but it means
+			// the same as never having written the key at all.
+			gate = ""
+		}
 		out = append(out, route{
 			App:       name,
-			Hostname:  p.cfg.Apps[name].Hostname,
+			Role:      kinds.PrimaryRole,
+			Hostname:  app.Hostname,
 			Upstreams: p.upstreams(name),
 			Snippet:   snippetMount + name + ".caddy",
+			Gate:      gate,
 		})
+		for _, role := range sortedKeys(app.Hostnames) {
+			out = append(out, route{
+				App:       name,
+				Role:      role,
+				Hostname:  app.Hostnames[role],
+				Upstreams: p.upstreams(name),
+				Snippet:   snippetMount + name + "-" + role + ".caddy",
+				Gate:      gate,
+			})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })
 	return out
@@ -524,7 +652,19 @@ func (p *planner) upstreams(name string) []string {
 	if !ok {
 		return nil
 	}
-	port := appPort[app.Kind]
+	return p.upstreamsOnPort(name, appPort[app.Kind])
+}
+
+// upstreamsOnPort is upstreams with the port supplied rather than looked up,
+// for the one case where an app answers on a second, explicitly declared
+// port: the oauth2-proxy kind's members instance. It exists so that finding a
+// members upstream never computes a port from another kind's port, only from
+// the literal gateMembersPort.
+func (p *planner) upstreamsOnPort(name string, port int) []string {
+	app, ok := p.cfg.Apps[name]
+	if !ok {
+		return nil
+	}
 	if app.Placement.Mode == config.PlacementPinned {
 		site, ok := p.sites[app.Placement.Site]
 		if !ok {

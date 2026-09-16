@@ -231,6 +231,24 @@ imports its snippet. A snippet never hardcodes where its application runs: it
 receives the upstreams from the inventory, which is what keeps a pinned app and
 a clustered app the same shape.
 
+An app can answer on more than one hostname, and a gate can sit in front of
+it, and both are properties of the app declared in `paisans.yaml` rather than
+anything encoded in a template's filename alone. `internal/kinds/hostnames.go`
+is the closed set of extra hostname roles a kind understands beyond the
+primary; `SnippetFor` maps a role to `caddy.snippet.<role>.tmpl`, so a role a
+kind's template directory ships no file for cannot be declared, and a role
+outside that set is refused at validate rather than discovered at render, the
+same way an unknown `images` key is. `synapse` is the one kind with a second
+role today, `wellknown`, for a homeserver's delegation documents. `gate` works
+the other way: it names which of the `oauth2-proxy` kind's two named snippets,
+`gate_provisional` or `gate_members`, an app's own snippet imports.
+`internal/render/site.go`'s `renderGateSnippets` renders those named snippets
+onto the gateway once per `oauth2-proxy` app declared, however many other
+apps' snippets go on to import them by name. Both are read in
+`internal/render/appview.go`'s `values`, the same function that assembles
+everything else a template set is given, so a snippet template sees them as
+ordinary fields rather than as a special case.
+
 Embedding uses `//go:embed all:templates`. Without `all:` embed skips files
 beginning with a dot, and every environment configured kind ships a `.env`
 template.
@@ -319,16 +337,19 @@ use them are a job for `apply`.
 No etcd, no preflight, and none of `site add`, `failover` or `backup`. `apply`
 pushes files and takes the narrowest action that makes them live; it does not
 bootstrap a site that has nothing on it, and it has never been run against a
-real host. The gateway configuration is assembled from per app
-snippets, so `apply` will have to validate the assembled file and refuse to
-reload one that does not validate: a wrong snippet should cost an error message
-on the workstation rather than the public address of every application at once.
-There is nothing to reload yet, so that gate lands with `apply`.
+real host.
 
 Mbin's media reverse proxy is not rendered either. Upstream advises one on a
 hostname of its own so media URLs survive a change of storage provider, and
 remote instances cache those URLs, so adding it later is a migration rather than
 an addition. It needs a hostname in the configuration and a site block of its
-own, which is a decision to take deliberately. Secret generation does not exist either. If you find
-yourself writing a transport layer, that is the next slice and it wants its own
-review.
+own, which is a decision to take deliberately. If you find yourself writing a
+transport layer, that is the next slice and it wants its own review.
+
+Two claims used to live in this section and are corrected here rather than
+left to go on being read. **Secret generation exists**: `internal/secretsgen`
+and `paisans init` are implemented, described above under `init`. **The
+gateway validation gate did not land with `apply`, because it did not need
+to.** It is enforced today, described above under "`apply`, and the gates in
+it": the assembled gateway configuration is validated before any reload, and
+a failure stops the reload rather than taking every hostname down with it.

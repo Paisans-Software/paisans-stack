@@ -32,7 +32,9 @@ var knownRoles = map[Role]bool{RoleData: true, RoleApps: true, RoleGateway: true
 type Kind string
 
 const (
+	KindElement     Kind = "element"
 	KindMbin        Kind = "mbin"
+	KindOAuth2Proxy Kind = "oauth2-proxy"
 	KindOutline     Kind = "outline"
 	KindPocketID    Kind = "pocket-id"
 	KindSynapse     Kind = "synapse"
@@ -40,7 +42,21 @@ const (
 )
 
 var knownKinds = map[Kind]bool{
-	KindMbin: true, KindOutline: true, KindPocketID: true, KindSynapse: true, KindWriteFreely: true,
+	KindElement: true, KindMbin: true, KindOAuth2Proxy: true, KindOutline: true, KindPocketID: true, KindSynapse: true, KindWriteFreely: true,
+}
+
+// Kinds returns every kind this toolkit knows, sorted. It exists so that a
+// test asserting something about every kind, such as that each ships a
+// pinned default image, walks this list rather than carrying a second, hand
+// maintained one that can fall out of step with knownKinds the moment a kind
+// is added.
+func Kinds() []Kind {
+	out := make([]Kind, 0, len(knownKinds))
+	for k := range knownKinds {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // Config is a whole deployment, declared. It records intent and never status:
@@ -178,6 +194,21 @@ type App struct {
 	// kind; this is for a different build of the same software.
 	Images   map[string]string `yaml:"images"`
 	Settings map[string]any    `yaml:"settings"`
+
+	// Hostnames are the additional names this app answers on, keyed by a role
+	// the kind understands. The primary hostname stays in Hostname; a role here
+	// selects a different Caddy snippet, because a second hostname usually
+	// exists to serve something different rather than the same thing twice.
+	Hostnames map[string]string `yaml:"hostnames"`
+
+	// Gate is which auth gate sits in front of this app: none, provisional or
+	// members. Empty means none.
+	//
+	// It is declared rather than inferred because it is access policy. It is
+	// also the setting most likely to be wrong in a way nothing notices: a
+	// gated Matrix hostname authenticates a browser and breaks every client,
+	// because a client will not follow a redirect to a passkey prompt.
+	Gate string `yaml:"gate"`
 }
 
 // PlacementMode is where an app runs. There are exactly two, and pinned is the
@@ -381,7 +412,7 @@ func (c *Config) structural() error {
 		if app.Kind == "" {
 			add("apps.%s.kind: required. Say which application this is, for example mbin or outline.", name)
 		} else if !knownKinds[app.Kind] {
-			add("apps.%s.kind: unknown kind %q. This toolkit renders mbin, outline, pocket-id, synapse and writefreely.", name, app.Kind)
+			add("apps.%s.kind: unknown kind %q. This toolkit renders element, mbin, oauth2-proxy, outline, pocket-id, synapse and writefreely.", name, app.Kind)
 		}
 		if app.Hostname == "" {
 			add("apps.%s.hostname: required. It is the public name the gateway routes to.", name)
@@ -390,6 +421,17 @@ func (c *Config) structural() error {
 			if strings.TrimSpace(app.Images[service]) == "" {
 				add("apps.%s.images.%s: empty. Give a full image reference, or remove the key to take the default this kind ships.", name, service)
 			}
+		}
+		for _, role := range sortedKeys(app.Hostnames) {
+			if role == "primary" {
+				add("apps.%s.hostnames.primary: use the `hostname` key for the primary name. A role here names an additional hostname, and two places to write the same name is one place to get it wrong.", name)
+			}
+			if strings.TrimSpace(app.Hostnames[role]) == "" {
+				add("apps.%s.hostnames.%s: empty. Give a hostname, or remove the role.", name, role)
+			}
+		}
+		if app.Gate != "" && app.Gate != "none" && app.Gate != "provisional" && app.Gate != "members" {
+			add("apps.%s.gate: unknown gate %q. Valid values are none, provisional and members.", name, app.Gate)
 		}
 	}
 	if len(c.GatewaySites()) > 0 && c.ACME.Provider == "" {

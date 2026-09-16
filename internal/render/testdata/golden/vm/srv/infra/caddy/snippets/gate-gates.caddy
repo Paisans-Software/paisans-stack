@@ -1,0 +1,50 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Named Caddy snippets for gate, imported by NAME
+# (`import gate_provisional`, `import gate_members`), never by path: nothing
+# renders a host block for this file, and it carries no routing of its own
+# until some other site's snippet imports one of these names inside its own
+# final `handle` block.
+#
+# gate_provisional never refuses a request: it only checks whether someone is
+# signed in at all, which is what this kind's own onboarding surface needs.
+# gate_members is the enforcing one, and it is the only one that should ever
+# gate a member-facing application - it answers 403 for anyone signed in who
+# is not yet a member, which caddy.snippet.tmpl's compose file arranges by
+# giving only `members` the OAUTH2_PROXY_ALLOWED_GROUPS restriction. Using
+# gate_provisional to protect an application would admit every signed-in
+# visitor, provisional or not, which is the exact mistake this two-instance
+# shape exists to make impossible.
+#
+# Modelled on (pocketid_gate) in rsync/caddy/Caddyfile, paisans.community: the
+# deployment this kind generalises defines one snippet gating on a single
+# enforcing instance. Here that becomes two named snippets, because this
+# toolkit's onboarding surface (a code-of-conduct style page, gated on
+# "signed in" rather than "member") is exactly the case that instance split
+# exists for.
+#
+# STRIP BEFORE FORWARDING. Whatever consumes X-Auth-Request-User must trust
+# nothing upstream of Caddy: a client reaching this gate directly, bypassing
+# Caddy, could forge the header on its way in. `request_header` (not `header`,
+# which edits the response) removes it from the inbound request before
+# forward_auth's subrequest can see it; copy_headers below only ever adds the
+# verified header back, so it does nothing to remove one already forged.
+(gate_provisional) {
+	route {
+		request_header -X-Auth-Request-*
+		forward_auth 10.44.0.1:4180 10.44.0.2:4180 {
+			uri /oauth2/auth
+			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Preferred-Username
+		}
+	}
+}
+
+(gate_members) {
+	route {
+		request_header -X-Auth-Request-*
+		forward_auth 10.44.0.1:4181 10.44.0.2:4181 {
+			uri /oauth2/auth
+			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Preferred-Username
+		}
+	}
+}

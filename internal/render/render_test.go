@@ -666,3 +666,338 @@ func TestNoGatewayNeedsNoACMEProvider(t *testing.T) {
 		}
 	}
 }
+
+// Element is a static web client: no database, no secrets of its own, and a
+// runtime configuration naming the homeserver it talks to.
+func TestElementRendersAClientConfig(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	compose, ok := files["home-a/srv/web/compose.yaml"]
+	if !ok {
+		t.Fatal("the element app was not rendered")
+	}
+	if strings.Contains(compose.Content, "postgres") {
+		t.Error("element was given a database, and it has no state at all")
+	}
+
+	config, ok := files["home-a/srv/web/config.json"]
+	if !ok {
+		t.Fatal("element rendered no runtime configuration")
+	}
+	if !strings.Contains(config.Content, "chat.example.org") {
+		t.Errorf("element's config does not name its homeserver:\n%s", config.Content)
+	}
+	if config.Mode != 0o644 {
+		t.Errorf("element's config is %04o; it carries no secret and wants 0644", config.Mode)
+	}
+}
+
+// One app can answer on several hostnames, and each gets its own routing. The
+// case that forces it: a Matrix homeserver serves its API on one name and its
+// .well-known delegation on the apex, and those are not the same routing.
+func TestAnAppCanHoldSeveralHostnames(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	caddyfile, ok := files["vm/srv/infra/caddy/Caddyfile"]
+	if !ok {
+		t.Fatal("no gateway configuration was rendered")
+	}
+	for _, hostname := range []string{"chat.example.org", "example.org"} {
+		if !strings.Contains(caddyfile.Content, "\n"+hostname+" {") {
+			t.Errorf("the gateway has no host block for %s:\n%s", hostname, caddyfile.Content)
+		}
+	}
+
+	// Each hostname imports its own snippet, because the apex serves only the
+	// delegation documents while the primary serves the whole API.
+	if _, ok := files["vm/srv/infra/caddy/snippets/chat.caddy"]; !ok {
+		t.Error("the primary hostname has no snippet")
+	}
+	if _, ok := files["vm/srv/infra/caddy/snippets/chat-wellknown.caddy"]; !ok {
+		t.Error("the extra hostname has no snippet of its own")
+	}
+}
+
+// The gate is two instances, not one: a visitor who has authenticated is not
+// yet a member, and the two are allowed to reach different applications.
+func TestTheAuthGateRendersBothInstances(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	compose, ok := files["home-a/srv/gate/compose.yaml"]
+	if !ok {
+		t.Fatal("the gate was not rendered")
+	}
+	for _, service := range []string{"provisional:", "members:"} {
+		if !strings.Contains(compose.Content, service) {
+			t.Errorf("the gate is missing its %s instance:\n%s", service, compose.Content)
+		}
+	}
+
+	env, ok := files["home-a/srv/gate/.env"]
+	if !ok {
+		t.Fatal("the gate rendered no environment")
+	}
+	if env.Mode != 0o600 {
+		t.Errorf("the gate's environment is %04o and it carries a client secret", env.Mode)
+	}
+	if !strings.Contains(env.Content, "OIDC_ISSUER_URL=https://id.example.org") {
+		t.Errorf("the gate does not point at the identity provider:\n%s", env.Content)
+	}
+}
+
+// gate_provisional and gate_members are named snippets, not a hostname's
+// routing: nothing imports this file by path, and they must be defined before
+// anything can import them by name.
+func TestTheAuthGateShipsNamedSnippets(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	gates, ok := files["vm/srv/infra/caddy/snippets/gate-gates.caddy"]
+	if !ok {
+		t.Fatal("the gate's named snippets were not rendered onto the gateway")
+	}
+	for _, name := range []string{"(gate_provisional)", "(gate_members)"} {
+		if !strings.Contains(gates.Content, name) {
+			t.Errorf("the gate's snippet file does not define %s:\n%s", name, gates.Content)
+		}
+	}
+
+	caddyfile, ok := files["vm/srv/infra/caddy/Caddyfile"]
+	if !ok {
+		t.Fatal("no gateway configuration was rendered")
+	}
+	if !strings.Contains(caddyfile.Content, "import /etc/caddy/snippets/gate-gates.caddy") {
+		t.Errorf("the Caddyfile does not import the gate's named snippets:\n%s", caddyfile.Content)
+	}
+}
+
+// Which gate an app sits behind is policy, and it is declared rather than
+// implied by which snippet somebody remembered to import.
+func TestTheGateIsDeclaredPerApp(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+	caddyfile := files["vm/srv/infra/caddy/Caddyfile"].Content
+
+	// talk sits behind the members gate in the fixture.
+	if !strings.Contains(caddyfile, "import gate_members") {
+		t.Errorf("a gated app's host block does not import its gate:\n%s", caddyfile)
+	}
+
+	// A Matrix client is not a browser and will not follow a redirect to a
+	// passkey prompt, so chat and its apex must never be gated.
+	for _, hostname := range []string{"chat.example.org", "example.org"} {
+		block := hostBlock(t, caddyfile, hostname)
+		if strings.Contains(block, "import gate_") {
+			t.Errorf("%s is gated, which breaks every Matrix client:\n%s", hostname, block)
+		}
+	}
+}
+
+// Synapse is a resource server: MAS owns authentication, and Synapse must not
+// carry a second way in. The single check that proves the split is that no
+// oidc_providers block is rendered and the delegation to MAS is.
+//
+// The brief for this task asked for `msc3861` here, which is the experimental
+// form. Synapse v1.160.0, the version this kind pins, documents the stable
+// `matrix_authentication_service` block instead and its configuration manual
+// no longer mentions msc3861 at all: checked against
+// docs/usage/configuration/config_documentation.md at tag v1.160.0 on
+// 2026-09-15. Asserting the experimental key would pin the toolkit to a shape
+// the pinned image has moved past, so the stable one is asserted and the
+// deviation is recorded in docs/decisions.md.
+func TestSynapseDelegatesAuthenticationToMAS(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+
+	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	if strings.Contains(homeserver, "oidc_providers") {
+		t.Error("homeserver.yaml still configures its own OIDC, which is a second way in")
+	}
+	if strings.Contains(homeserver, "registration_shared_secret") {
+		t.Error("registration_shared_secret is present, which bypasses MAS and the group restriction")
+	}
+	if !strings.Contains(homeserver, "matrix_authentication_service:") {
+		t.Errorf("homeserver.yaml does not delegate to MAS:\n%s", homeserver)
+	}
+
+	mas, ok := files["vm/srv/chat/mas.yaml"]
+	if !ok {
+		t.Fatal("no MAS configuration was rendered")
+	}
+	if mas.Mode != 0o600 {
+		t.Error("the MAS configuration carries secrets and must be 0600")
+	}
+
+	compose := files["vm/srv/chat/compose.yaml"].Content
+	if !strings.Contains(compose, "mas:") {
+		t.Error("the stack renders no MAS service")
+	}
+}
+
+// Both sides of the shared secret have to be the same string, or Synapse and
+// MAS each start cleanly and refuse every request between them.
+func TestSynapseAndMASShareOneSecret(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+	secret := "fixture-not-a-secret-chat-mas-matrix"
+	for _, path := range []string{"vm/srv/chat/homeserver.yaml", "vm/srv/chat/mas.yaml"} {
+		if !strings.Contains(files[path].Content, secret) {
+			t.Errorf("%s does not carry the shared secret both sides need:\n%s", path, files[path].Content)
+		}
+	}
+}
+
+// Order is the whole point of this snippet. MAS answers the three compatibility
+// login paths, and a catch all for /_matrix/* written above them would take
+// every one of those requests to Synapse, which no longer knows how to answer
+// a login.
+func TestTheLoginSplitIsOrderedAheadOfTheCatchAll(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+	snippet, ok := files["vm/srv/infra/caddy/snippets/chat.caddy"]
+	if !ok {
+		t.Fatal("the homeserver has no snippet")
+	}
+	catchAll := strings.Index(snippet.Content, "handle /_matrix/* {")
+	if catchAll < 0 {
+		t.Fatalf("the snippet has no /_matrix/* catch all:\n%s", snippet.Content)
+	}
+	for _, path := range []string{
+		"handle /_matrix/client/*/login {",
+		"handle /_matrix/client/*/logout {",
+		"handle /_matrix/client/*/refresh {",
+	} {
+		at := strings.Index(snippet.Content, path)
+		if at < 0 {
+			t.Errorf("the snippet does not split %s off to MAS:\n%s", path, snippet.Content)
+			continue
+		}
+		if at > catchAll {
+			t.Errorf("%s is written after the /_matrix/* catch all, so Synapse answers it", path)
+		}
+	}
+}
+
+// The apex serves the delegation documents and nothing else. Routing it like
+// the primary would publish the whole homeserver API there.
+func TestTheApexServesOnlyDelegation(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+	snippet, ok := files["vm/srv/infra/caddy/snippets/chat-wellknown.caddy"]
+	if !ok {
+		t.Fatal("the apex has no snippet")
+	}
+	if !strings.Contains(snippet.Content, "/.well-known/matrix/") {
+		t.Errorf("the apex snippet does not serve the delegation documents:\n%s", snippet.Content)
+	}
+	if strings.Contains(snippet.Content, "/_matrix/") {
+		t.Errorf("the apex snippet exposes the homeserver API:\n%s", snippet.Content)
+	}
+	// The name in every user identifier is the name the delegation is served
+	// on, so that is what server_name has to be. If they disagree, the two
+	// documents below point nowhere and federation resolves to the wrong host.
+	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	if !strings.Contains(homeserver, `server_name: "example.org"`) {
+		t.Errorf("server_name is not the name the delegation is served on:\n%s", homeserver)
+	}
+	for _, document := range []string{"/.well-known/matrix/server", "/.well-known/matrix/client"} {
+		if !strings.Contains(snippet.Content, "handle "+document+" {") {
+			t.Errorf("the apex does not answer %s:\n%s", document, snippet.Content)
+		}
+	}
+}
+
+// A homeserver that declares no delegation hostname answers the delegation
+// documents itself, and the gateway has to send them to it.
+//
+// The fixture always declares one, so the golden tree never exercises this
+// branch: a snippet that quietly routed /.well-known/matrix/* to MAS instead
+// would render, review cleanly and leave a federating peer with a 404 that
+// sends it to <server_name>:8448, where nothing listens.
+func TestAHomeserverWithNoDelegationServesItsOwnWellKnown(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := cfg.Apps["chat"]
+	chat.Hostnames = nil
+	cfg.Apps["chat"] = chat
+
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatalf("a homeserver with no delegation hostname failed to render: %v", err)
+	}
+	files := map[string]render.File{}
+	for _, f := range plan.Files {
+		files[f.Path] = f
+	}
+
+	if _, ok := files["vm/srv/infra/caddy/snippets/chat-wellknown.caddy"]; ok {
+		t.Error("a snippet was rendered for a hostname role nobody declared")
+	}
+
+	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	if !strings.Contains(homeserver, "serve_server_wellknown: true") {
+		t.Errorf("the homeserver was not told to serve its own delegation:\n%s", homeserver)
+	}
+	if !strings.Contains(homeserver, `server_name: "chat.example.org"`) {
+		t.Errorf("server_name is not the only hostname this app has:\n%s", homeserver)
+	}
+
+	snippet := files["vm/srv/infra/caddy/snippets/chat.caddy"].Content
+	at := strings.Index(snippet, "handle /.well-known/matrix/* {")
+	if at < 0 {
+		t.Fatalf("the gateway does not route the delegation documents anywhere:\n%s", snippet)
+	}
+	// Anywhere is not good enough: MAS does not serve them, and the bare
+	// handle at the end of the snippet is MAS's.
+	homeserverUpstream := "10.44.0.3:8008"
+	rest := snippet[at:]
+	end := strings.Index(rest, "\n}")
+	if end < 0 {
+		t.Fatalf("unterminated handle:\n%s", rest)
+	}
+	if !strings.Contains(rest[:end], homeserverUpstream) {
+		t.Errorf("the delegation documents do not reach the homeserver:\n%s", rest[:end])
+	}
+}
+
+// hostBlock returns the text of one host block, so a test can assert about one
+// hostname rather than about the whole file.
+func hostBlock(t *testing.T, caddyfile, hostname string) string {
+	t.Helper()
+	start := strings.Index(caddyfile, "\n"+hostname+" {")
+	if start < 0 {
+		t.Fatalf("no host block for %s", hostname)
+	}
+	end := strings.Index(caddyfile[start+1:], "\n}")
+	if end < 0 {
+		t.Fatalf("unterminated host block for %s", hostname)
+	}
+	return caddyfile[start : start+end]
+}

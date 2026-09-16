@@ -1,26 +1,81 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
 # Routing for {{ .App.Name }}, imported by the gateway's block for
-# {{ .Hostname }}.
+# {{ .Hostname }}. Two services answer on this one hostname: the homeserver and
+# Matrix Authentication Service in front of it.
 #
-# Everything reaches the homeserver, including /.well-known/matrix/server and
-# /.well-known/matrix/client. Synapse serves both itself: serve_server_wellknown
-# is set in homeserver.yaml, and public_baseurl is what makes it answer the
-# client one. Writing that JSON here instead would be a second copy of the
-# server's own identity, in a file that nothing checks against it.
+# ORDER IS LOAD-BEARING, and it is the thing to get right here. `handle` blocks
+# are mutually exclusive and evaluated in the order written, so the three
+# compatibility login paths must come BEFORE the /_matrix/* catch all.
+# Reversing them sends every login to the homeserver, which no longer knows how
+# to answer one, and the failure reads as a broken client rather than a broken
+# proxy.
 #
-# Federation therefore arrives on 443 rather than 8448, which is the point of
-# delegating it: nothing else has to listen on a second port.
-reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
-{{- if gt (len .Upstreams) 1 }}
-	# first, not round robin: the apps sites are not interchangeable during a
-	# failover, and a dead one must simply be skipped.
-	lb_policy first
-	fail_duration 10s
+# Everything outside /_matrix and /_synapse is MAS's own surface: /login,
+# /account, /authorize, /upstream/callback/<id> and
+# /.well-known/openid-configuration. That is what the final handle is for.
+#
+{{- if eq .ServerName .App.Hostname }}
+# The delegation documents are served here, because this app declares no
+# separate hostname for them: this name is the one inside every user
+# identifier, so it is the name a federating peer asks. The homeserver answers
+# them itself, which is what serve_server_wellknown in homeserver.yaml is for,
+# and the handle below is what lets the request reach it. Without it those
+# paths fall through to the bare handle at the end of this file and reach MAS,
+# which does not serve them; the peer gets a 404, falls back to
+# {{ .ServerName }}:8448, and nothing listens there.
+#
+{{- else }}
+# The delegation documents are not here. They belong to whichever hostname
+# appears in user identifiers, which is this kind's wellknown role and its own
+# snippet.
+#
 {{- end }}
-	header_up X-Forwarded-Proto https
-	# Media and event uploads are larger than a default proxy read allows for.
-	transport http {
-		read_timeout 5m
+# NEVER GATE THIS HOSTNAME. A Matrix client is not a browser and will not
+# follow a redirect to a passkey prompt, so a gate here breaks every client
+# login rather than protecting anything. Access control belongs at the identity
+# provider, where the group restriction decides who may be provisioned at all.
+{{- /* One upstream each, never a list: this kind is pinned by design and
+internal/validate refuses any other placement, so both containers are at one
+named site and there is nothing to load balance across. */}}
+{{- define "mas" }}
+	reverse_proxy{{ range .MASUpstreams }} {{ . }}{{ end }} {
+		header_up X-Forwarded-Proto https
 	}
+{{- end }}
+{{- define "homeserver" }}
+	reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
+		header_up X-Forwarded-Proto https
+		# Media and event uploads are larger than a default proxy read allows
+		# for.
+		transport http {
+			read_timeout 5m
+		}
+	}
+{{- end }}
+handle /_matrix/client/*/login {
+{{- template "mas" . }}
+}
+handle /_matrix/client/*/logout {
+{{- template "mas" . }}
+}
+handle /_matrix/client/*/refresh {
+{{- template "mas" . }}
+}
+handle /_matrix/* {
+{{- template "homeserver" . }}
+}
+handle /_synapse/* {
+{{- template "homeserver" . }}
+}
+{{- if eq .ServerName .App.Hostname }}
+# Ahead of the bare handle below, which is MAS's, and narrower than
+# /.well-known/ as a whole: /.well-known/openid-configuration is MAS's own and
+# must keep reaching it.
+handle /.well-known/matrix/* {
+{{- template "homeserver" . }}
+}
+{{- end }}
+handle {
+{{- template "mas" . }}
 }

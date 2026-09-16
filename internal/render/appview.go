@@ -28,6 +28,27 @@ type appValues struct {
 	Hostname  string
 	PublicURL string
 
+	// ServerName is the name that appears in a user identifier. It is the
+	// hostname holding the wellknown role when the app declares one, and the
+	// primary hostname otherwise.
+	//
+	// Only a homeserver has a use for it, and the reason it is not simply the
+	// primary hostname is that delegation exists: a deployment serves
+	// /.well-known/matrix/server on the apex so that identifiers read
+	// @someone:example.org while the API lives on a subdomain. If the two
+	// disagree the delegation documents point at a server that does not answer
+	// to the name they claim. Changing it after an account or a room exists is
+	// a migration rather than a setting, which is why it is derived from the
+	// declared hostnames rather than from anything that can drift.
+	ServerName string
+
+	// Domain is the community's own domain, community.domain in the
+	// configuration, never an app's own hostname. The oauth2-proxy kind scopes
+	// its cookie to it with a leading dot so one login covers every current
+	// and future subdomain, the same shape as the live authgate stack's
+	// COOKIE_DOMAINS.
+	Domain string
+
 	// TrustedProxies is the mesh subnet, never a host address, so the gateway
 	// role can move without rewriting every application's configuration.
 	TrustedProxies string
@@ -58,6 +79,27 @@ type appValues struct {
 	// hardcodes a location, which is what keeps a pinned app and a clustered
 	// app the same shape.
 	Upstreams []string
+
+	// GateMembersPort and GateMembersUpstreams describe the oauth2-proxy
+	// kind's second instance, the one enforcing "members". They are populated
+	// only for that kind: every other kind's template set has one service on
+	// one port, already covered by Upstreams and App.Port, and needs neither.
+	GateMembersPort      int
+	GateMembersUpstreams []string
+
+	// MASPort, MASUpstreams, MASDBName and MASUpstreamProviderID describe the
+	// synapse kind's second container, Matrix Authentication Service. They are
+	// populated only for that kind, for the same reason the two fields above
+	// are populated only for the gate.
+	//
+	// MAS is a second service on a second port with a database of its own, and
+	// the gateway has to reach it directly: the three compatibility login paths
+	// are split off to it in front of the homeserver, so a snippet that only
+	// knew the homeserver's address could not route them.
+	MASPort               int
+	MASUpstreams          []string
+	MASDBName             string
+	MASUpstreamProviderID string
 
 	secrets map[string]any
 	set     map[string]any
@@ -149,6 +191,7 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		App:            planned,
 		Hostname:       planned.Hostname,
 		PublicURL:      "https://" + planned.Hostname,
+		Domain:         p.cfg.Community.Domain,
 		TrustedProxies: p.mesh,
 		DBHost:         dbHost,
 		DBPort:         dbPort,
@@ -160,6 +203,10 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		secrets:        p.secrets.Apps[planned.Name],
 		set:            app.Settings,
 	}
+	v.ServerName = planned.Hostname
+	if delegated := app.Hostnames[kinds.WellknownRole]; delegated != "" {
+		v.ServerName = delegated
+	}
 	v.S3 = s3Values{
 		Endpoint:       fmt.Sprintf("http://%s:3900", garageEndpointHost(p)),
 		AccessKeyID:    garage.AccessKeyID,
@@ -170,6 +217,16 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	}
 	v.OIDC = p.oidcFor(planned)
 	v.Upstreams = p.upstreams(planned.Name)
+	if planned.Kind == config.KindOAuth2Proxy {
+		v.GateMembersPort = gateMembersPort
+		v.GateMembersUpstreams = p.upstreamsOnPort(planned.Name, gateMembersPort)
+	}
+	if planned.Kind == config.KindSynapse {
+		v.MASPort = masPort
+		v.MASUpstreams = p.upstreamsOnPort(planned.Name, masPort)
+		v.MASDBName = planned.DBName + "_mas"
+		v.MASUpstreamProviderID = kinds.MASUpstreamProviderID(planned.Name)
+	}
 	return v, nil
 }
 
@@ -194,11 +251,18 @@ func (p *planner) oidcFor(planned plannedApp) oidcValues {
 		return oidcValues{}
 	}
 	issuer := p.identityProviderURL()
+	// The homeserver's client belongs to the authentication service in front
+	// of it, which serves one callback path per upstream provider rather than
+	// the /oauth/callback every other kind uses.
+	redirect := "https://" + planned.Hostname + "/oauth/callback"
+	if planned.Kind == config.KindSynapse {
+		redirect = kinds.MASRedirectURI(planned.Hostname, planned.Name)
+	}
 	return oidcValues{
 		Present:      true,
 		ClientID:     client.ClientID,
 		ClientSecret: client.ClientSecret,
-		RedirectURL:  "https://" + planned.Hostname + "/oauth/callback",
+		RedirectURL:  redirect,
 
 		Issuer:                issuer,
 		AuthorizationEndpoint: issuer + authorizationPath,
