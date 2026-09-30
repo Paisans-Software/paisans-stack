@@ -16,11 +16,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 const garageImage = "dxflrs/garage:v1.0.1"
@@ -299,4 +301,103 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 	if len(secondPlan.Present) == 0 {
 		t.Error("a fully provisioned node should report what it found, not look like it found nothing")
 	}
+}
+
+// TestRenderedGarageTOMLStartsGarage boots dxflrs/garage:v1.0.1 against the
+// garage.toml this toolkit actually renders, byte for byte, rather than
+// against one a test wrote for itself.
+//
+// That distinction is the whole point of this test and the reason it exists.
+// startGarage above writes its own garage.toml with a correct rpc_secret, so
+// it proved the provisioning sequence and could never prove the rendered file
+// was startable. It was not: `rpc_secret` was filled by `password()`, which is
+// base64, and Garage parses that field as a hex encoded 32 byte key. Every
+// rendered file died at startup with "Invalid RPC secret key: expected 32 bits
+// of entropy", and six task reviews did not see it because nothing had ever
+// started the file that reaches a host.
+//
+// The rendered addresses are mesh addresses and do not exist inside a
+// container, so the node is started with net.ipv4.ip_nonlocal_bind. That
+// changes what the kernel permits, not one byte of the configuration under
+// test.
+func TestRenderedGarageTOMLStartsGarage(t *testing.T) {
+	requireDocker(t)
+
+	const goldenPath = "srv/infra/garage/garage.toml"
+	toml := renderedGarageTOML(t)
+
+	dir := t.TempDir()
+	tomlPath := dir + "/garage.toml"
+	if err := os.WriteFile(tomlPath, []byte(toml), 0o644); err != nil {
+		t.Fatalf("writing the rendered %s: %v", goldenPath, err)
+	}
+
+	container := fmt.Sprintf("paisans-garage-rendered-%d", time.Now().UnixNano())
+	run := exec.Command("docker", "run", "-d", "--name", container,
+		"--sysctl", "net.ipv4.ip_nonlocal_bind=1",
+		"-v", tomlPath+":/etc/garage.toml",
+		garageImage)
+	if out, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("starting %s: %v\n%s", garageImage, err, out)
+	}
+	t.Cleanup(func() {
+		exec.Command("docker", "rm", "-f", container).Run()
+	})
+
+	// "listening" is the proof: Garage reads the whole configuration, opens
+	// its database and initializes RPC before it binds anything, so a node
+	// that is listening is a node that accepted every value in this file.
+	const listening = "S3 API server listening"
+	var logs string
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		out, _ := exec.Command("docker", "logs", container).CombinedOutput()
+		logs = string(out)
+		if strings.Contains(logs, listening) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rendered %s did not bring Garage up within 60s. Its output was:\n%s", goldenPath, logs)
+		}
+		if state, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", container).CombinedOutput(); err == nil && strings.TrimSpace(string(state)) == "false" {
+			t.Fatalf("Garage exited rather than starting against the rendered %s. Its output was:\n%s", goldenPath, logs)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Named explicitly rather than left to the "listening" check, so that a
+	// regression to a base64 rpc_secret fails with the message that says what
+	// happened rather than with a timeout.
+	if strings.Contains(logs, "Invalid RPC secret key") {
+		t.Errorf("the rendered %s carries an rpc_secret Garage refuses:\n%s", goldenPath, logs)
+	}
+}
+
+// renderedGarageTOML renders the repository's own fixture deployment and
+// returns the garage.toml it produced, unmodified. It goes through
+// render.Build rather than reading the checked in golden tree so that the file
+// under test is the output of the code, not a copy of it that could have gone
+// stale.
+func renderedGarageTOML(t *testing.T) string {
+	t.Helper()
+	base := filepath.Join("..", "render", "testdata")
+	cfg, err := config.Load(filepath.Join(base, "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("loading the fixture configuration: %v", err)
+	}
+	secrets, err := config.LoadSecrets(filepath.Join(base, "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatalf("loading the fixture secrets: %v", err)
+	}
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatalf("rendering the fixture: %v", err)
+	}
+	for _, f := range plan.Files {
+		if strings.HasSuffix(f.Path, "srv/infra/garage/garage.toml") {
+			return f.Content
+		}
+	}
+	t.Fatal("the fixture rendered no garage.toml, so there is nothing to boot")
+	return ""
 }

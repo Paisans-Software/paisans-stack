@@ -106,19 +106,26 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 	}
 	note(created, "cluster.standby_password")
 
-	for _, field := range []struct {
-		name string
-		into *string
-	}{
-		{"storage.garage.admin_token", &secrets.Storage.Garage.AdminToken},
-		{"storage.garage.rpc_secret", &secrets.Storage.Garage.RPCSecret},
-	} {
-		created, err := fillString(field.into)
-		if err != nil {
-			return result, err
-		}
-		note(created, field.name)
+	// Garage's own two credentials, and only one of them is an opaque string.
+	// admin_token is unconstrained: Garage takes it as given, and a base64
+	// password starts fine. rpc_secret is not. Garage parses it as a hex
+	// encoded 32 byte key and refuses anything else at startup with "Invalid
+	// RPC secret key: expected 32 bits of entropy", which is a node that never
+	// comes up rather than a node that comes up wrong. Established by booting
+	// dxflrs/garage:v1.0.1 against this toolkit's own rendered garage.toml;
+	// internal/garage's integration suite boots the rendered file so that a
+	// future change here cannot quietly go back to base64.
+	created, err = fillString(&secrets.Storage.Garage.AdminToken)
+	if err != nil {
+		return result, err
 	}
+	note(created, "storage.garage.admin_token")
+
+	created, err = fillHex(&secrets.Storage.Garage.RPCSecret)
+	if err != nil {
+		return result, err
+	}
+	note(created, "storage.garage.rpc_secret")
 
 	// One WireGuard identity per site, kept in the file rather than on the
 	// host, so rebuilding a dead machine restores the same identity and no
@@ -323,10 +330,23 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 // fillString generates into a pointer when it is empty, reporting whether it
 // did.
 func fillString(into *string) (bool, error) {
+	return fillWith(into, password)
+}
+
+// fillHex is fillString for a consumer that parses its secret as hex rather
+// than taking it as an opaque string. It reuses garageSecretKey rather than
+// growing a third generator of the same shape.
+func fillHex(into *string) (bool, error) {
+	return fillWith(into, garageSecretKey)
+}
+
+// fillWith is the rule that matters in this package, in one place: nothing
+// already set is ever replaced.
+func fillWith(into *string, gen func() (string, error)) (bool, error) {
 	if *into != "" {
 		return false, nil
 	}
-	value, err := password()
+	value, err := gen()
 	if err != nil {
 		return false, err
 	}
@@ -346,14 +366,13 @@ func garageKeyID() (string, error) {
 	return "GK" + hex.EncodeToString(raw), nil
 }
 
-// garageSecretKey returns an S3 secret key as 32 hex encoded bytes, which is
-// the only shape Garage accepts.
+// garageSecretKey returns 32 hex encoded bytes, which is the only shape Garage
+// accepts for an S3 secret key and also the only shape it accepts for
+// rpc_secret in garage.toml. One generator serves both because it is one
+// requirement, stated by the same piece of software, and a second copy is a
+// second thing to get wrong.
 func garageSecretKey() (string, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("reading random bytes: %w", err)
-	}
-	return hex.EncodeToString(raw), nil
+	return hexSecret(32)
 }
 
 // garageKeyIsMalformed refuses an S3 credential Garage will not accept.

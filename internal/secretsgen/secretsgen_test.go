@@ -237,6 +237,47 @@ func TestGeneratedS3CredentialsMatchGaragesFormat(t *testing.T) {
 	}
 }
 
+// storage.garage.rpc_secret is not an opaque string, whatever the spec used to
+// say. Garage parses it as a hex encoded 32 byte key and stops at startup with
+// "Invalid RPC secret key: expected 32 bits of entropy" against anything else,
+// so a base64 password there is a node that never comes up. admin_token is
+// genuinely unconstrained and is asserted to be the base64 password it has
+// always been, so that this test says which of the two is which rather than
+// tightening both by accident.
+func TestGarageRPCSecretIsHexAndAdminTokenIsNot(t *testing.T) {
+	cfg := load(t)
+	secrets := &config.Secrets{}
+	if _, err := secretsgen.Fill(cfg, secrets); err != nil {
+		t.Fatalf("filling secrets: %v", err)
+	}
+	hex64 := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	if !hex64.MatchString(secrets.Storage.Garage.RPCSecret) {
+		t.Errorf("storage.garage.rpc_secret must be 64 hex characters, which Garage refuses to start without. It is %d characters and does not match", len(secrets.Storage.Garage.RPCSecret))
+	}
+	if secrets.Storage.Garage.AdminToken == "" {
+		t.Error("storage.garage.admin_token was not generated")
+	}
+	if _, err := base64.RawURLEncoding.DecodeString(secrets.Storage.Garage.AdminToken); err != nil {
+		t.Errorf("storage.garage.admin_token should still be the base64 password it has always been: %v", err)
+	}
+}
+
+// Nothing already set is ever replaced, and that rule has to hold for the hex
+// generated secret too: a re-run of `init` that rotated rpc_secret would split
+// a cluster whose other nodes still carry the old one.
+func TestFillKeepsAnExistingRPCSecret(t *testing.T) {
+	cfg := load(t)
+	const existing = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	secrets := &config.Secrets{}
+	secrets.Storage.Garage.RPCSecret = existing
+	if _, err := secretsgen.Fill(cfg, secrets); err != nil {
+		t.Fatalf("filling secrets: %v", err)
+	}
+	if secrets.Storage.Garage.RPCSecret != existing {
+		t.Error("storage.garage.rpc_secret was replaced, which would split a cluster whose other nodes still hold the old one")
+	}
+}
+
 // garageKeyIsMalformed: generated credentials cannot trip this, because
 // garageKeyID and garageSecretKey only ever produce the accepted shape. A
 // hand edited secrets file can, and the failure it prevents is a provisioning

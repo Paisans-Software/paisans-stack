@@ -222,9 +222,15 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	}
 
 	if site.IsGarage {
+		// No fallback onto admin_token, which is what this used to do.
+		// admin_token is a base64 password and rpc_secret is parsed as a hex
+		// encoded 32 byte key, so the fallback could only ever render a file
+		// Garage refuses to start against: "Invalid RPC secret key: expected
+		// 32 bits of entropy". Failing by name here sends an operator to
+		// `paisans init`, which generates one in the right shape.
 		rpcSecret := p.secrets.Storage.Garage.RPCSecret
 		if rpcSecret == "" {
-			rpcSecret = p.secrets.Storage.Garage.AdminToken
+			return nil, fmt.Errorf("secrets storage.garage.rpc_secret: required for a site with a Garage role, and there is no fallback. Garage parses it as 64 hex characters and will not start without one. Run `paisans init` to generate it")
 		}
 		toml, err := p.renderTemplate("garage.toml.tmpl", map[string]any{
 			"Site":        site,
