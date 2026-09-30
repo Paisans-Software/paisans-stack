@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/paisans-software/paisans-stack/internal/garage"
 )
 
 // garage-key-is-malformed has to stop `render`, not only `init`: `render` and
@@ -62,4 +66,62 @@ func TestRunStorageInitRefusesAMalformedGarageKeyBeforeReachingAHost(t *testing.
 	if strings.Contains(err.Error(), "nonexistent.invalid") {
 		t.Fatalf("the check should stop before ssh is ever tried, got: %v", err)
 	}
+}
+
+// printGaragePlan is the one thing that puts a provisioning plan on the
+// operator's terminal, and a key import step's command carries that app's S3
+// secret as a positional argument because `garage key import` takes no other
+// form. Printing Step.Command would put the secret in a scrollback buffer and
+// a log every time an operator ran a dry run, which is the ordinary case
+// rather than a failure. It prints Describe, and this test is what keeps it
+// that way: a future field added to the plan's output has to be checked here
+// before it reaches a screen.
+func TestPrintGaragePlanPrintsNoSecret(t *testing.T) {
+	const secret = "e1d9a0a2e1d9a0a2e1d9a0a2e1d9a0a2e1d9a0a2e1d9a0a2e1d9a0a2e1d9a0a2"
+	plan := &garage.Plan{
+		Site: "home-a",
+		Steps: []garage.Step{{
+			Describe: "import the S3 key for talk",
+			Command:  "docker compose -f /srv/infra/compose.yaml exec -T garage /garage key import GKfacadefacadefacadefacade " + secret + " --yes -n talk",
+			Secret:   secret,
+		}},
+		Present: []string{"bucket: talk-uploads already exists"},
+	}
+
+	printed := captureStdout(t, func() { printGaragePlan(plan) })
+
+	if strings.Contains(printed, secret) {
+		t.Errorf("printGaragePlan put an S3 secret on the terminal:\n%s", printed)
+	}
+	if !strings.Contains(printed, "import the S3 key for talk") {
+		t.Errorf("printGaragePlan must still say what the step does:\n%s", printed)
+	}
+	if !strings.Contains(printed, "bucket: talk-uploads already exists") {
+		t.Errorf("printGaragePlan must still report what was already there:\n%s", printed)
+	}
+}
+
+// captureStdout runs fn with os.Stdout redirected to a pipe and returns what
+// was written, restoring os.Stdout afterwards. printGaragePlan writes to
+// os.Stdout directly, so this is the only way to see what an operator sees.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = saved }()
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	fn()
+	w.Close()
+	return <-done
 }

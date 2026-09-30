@@ -12,6 +12,7 @@
 package garage
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -45,9 +46,37 @@ const garageCmd = "docker compose -f /srv/infra/compose.yaml exec -T garage /gar
 // Step is one command this plan still needs to run, in order.
 type Step struct {
 	// Describe is one line, shown to the operator before the command runs.
+	// It never carries a credential, so it is the only field of this struct
+	// that is safe to print unconditionally.
 	Describe string
-	// Command is the garage command, exactly as it will run.
+	// Command is the garage command, exactly as it will run. It may carry a
+	// credential, so nothing prints it, logs it, or puts it in an error.
 	Command string
+	// Secret, when set, is a value inside Command that must never reach a
+	// terminal, a scrollback buffer or a log. Execute strips it from anything
+	// a failure produces.
+	//
+	// It is a value rather than a pre redacted copy of Command because the
+	// leak is not confined to the command text. apply.SSHTransport.Run embeds
+	// the command in its error, Garage quotes an offending argument back in
+	// some of its own messages, and a caller may wrap either. Redacting the
+	// value covers all three; redacting a copy of the command covers only the
+	// first.
+	Secret string
+}
+
+// redactionMarker is what a stripped secret is replaced by. It names itself so
+// that an operator reading a failure knows a value was removed rather than
+// wondering whether the command was malformed.
+const redactionMarker = "[redacted]"
+
+// redact removes every occurrence of secret from text. An empty secret redacts
+// nothing, which is what makes it safe to call on every step.
+func redact(text, secret string) string {
+	if secret == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, secret, redactionMarker)
 }
 
 // Plan is what Build found missing on one site's node, in the order it must
@@ -214,16 +243,34 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 			return nil, fmt.Errorf("checking key %s on %s: %w", keyID, t.Describe(), err)
 		}
 		if keyAbsent {
-			// The secret appears on this command line, which means it is
-			// visible in `ps` on the host for the moment the command runs.
-			// The alternative, writing it to a temporary file first and
-			// having Garage read it from there, trades a moment in the
-			// process table for a secret at rest on disk, and apply already
-			// writes this same rendered secret to the host in its .env file,
-			// so that is not a new exposure this package introduces.
+			// `garage key import` takes the secret as a positional argument
+			// and offers no other form, so it is visible in `ps` on the host
+			// for the moment the command runs. That much is unavoidable here,
+			// and it is bounded: apply already writes this same secret to the
+			// host in the app's .env, so a reader of the process table learns
+			// nothing they could not read off the disk.
+			//
+			// The exposure that is NOT bounded, and that this comment used to
+			// miss entirely by reasoning only about `ps`, is the operator's
+			// own machine. A failing import produced an error carrying the
+			// command, and that error goes to a terminal: into a scrollback
+			// buffer, into a terminal multiplexer's log, into a CI job's
+			// recorded output, and into whatever a screen recording caught.
+			// None of those are on the host and none are bounded by who can
+			// already read the .env. Secret below is what keeps a failure from
+			// putting the value in any of them.
+			//
+			// Feeding it over stdin the way apply.WriteFile does would not
+			// help. WriteFile works because `cat > $tmp` never has the content
+			// in argv at all; here the value has to end up as an argument to
+			// the garage process whatever route it takes to get there, so
+			// stdin would move the same string through a shell and leave the
+			// `ps` exposure exactly where it was, while fixing only the error
+			// text that Secret already fixes.
 			plan.Steps = append(plan.Steps, Step{
 				Describe: fmt.Sprintf("import the S3 key for %s", name),
 				Command:  fmt.Sprintf("%s key import %s %s --yes -n %s", garageCmd, keyID, secretKey, name),
+				Secret:   secretKey,
 			})
 		} else {
 			plan.Present = append(plan.Present, fmt.Sprintf("key: %s already has an S3 key", name))
@@ -270,11 +317,25 @@ func secretString(secrets *config.Secrets, app, key string) (string, bool) {
 // Execute runs each step's command in order and stops at the first failure,
 // naming the step that failed so an operator knows exactly where a half
 // finished run left the node.
+//
+// A failure's error is rebuilt rather than wrapped, and the wrap chain is
+// given up deliberately. The transport's own error embeds the command it ran,
+// which for a key import is the S3 secret itself, so wrapping it with %w would
+// keep the secret reachable through errors.Unwrap and, more to the point,
+// print it the moment anything formats the chain. Nothing in this package or
+// its callers inspects a transport error with errors.Is or errors.As, so the
+// chain buys nothing here and costs a credential in a log.
 func Execute(plan *Plan, t Transport) error {
 	for _, step := range plan.Steps {
-		if _, err := t.Run(step.Command); err != nil {
-			return fmt.Errorf("%s: %w", step.Describe, err)
+		out, err := t.Run(step.Command)
+		if err == nil {
+			continue
 		}
+		detail := redact(err.Error(), step.Secret)
+		if trimmed := strings.TrimSpace(redact(out, step.Secret)); trimmed != "" && !strings.Contains(detail, trimmed) {
+			detail += ": " + trimmed
+		}
+		return errors.New(step.Describe + ": " + detail)
 	}
 	return nil
 }

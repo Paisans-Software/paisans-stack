@@ -251,3 +251,113 @@ func TestASiteWithNoGarageRoleIsRefused(t *testing.T) {
 		t.Errorf("the refusal must happen before any transport call, but ran: %v", transport.ran)
 	}
 }
+
+// Execute stops at the first failing step and names it, rather than carrying
+// on and leaving a node in a state nobody can describe.
+//
+// This was deferred once as coverage for its own sake. Writing it is what
+// surfaced the finding below: the step that fails first in a real run is the
+// key import, and its error carried the S3 secret.
+func TestExecuteStopsAtTheFirstFailingStepAndNamesIt(t *testing.T) {
+	plan := &garage.Plan{
+		Site: "home-a",
+		Steps: []garage.Step{
+			{Describe: "first step", Command: "docker compose -f /srv/infra/compose.yaml exec -T garage /garage layout assign"},
+			{Describe: "second step", Command: "docker compose -f /srv/infra/compose.yaml exec -T garage /garage layout apply"},
+			{Describe: "third step", Command: "docker compose -f /srv/infra/compose.yaml exec -T garage /garage bucket create"},
+		},
+	}
+	transport := &fakeTransport{responses: map[string]response{
+		"layout apply": {out: "Error: could not apply the layout", err: errors.New("exit status 1")},
+	}}
+
+	err := garage.Execute(plan, transport)
+	if err == nil {
+		t.Fatal("a failing step must be an error, not a silent partial run")
+	}
+	if !strings.Contains(err.Error(), "second step") {
+		t.Errorf("the error must name the step that failed, so an operator knows where the run stopped. Got: %v", err)
+	}
+	if len(transport.ran) != 2 {
+		t.Errorf("Execute must stop at the first failure and run 2 commands, not %d: %v", len(transport.ran), transport.ran)
+	}
+	if indexOfContaining(transport.ran, "bucket create") >= 0 {
+		t.Error("the step after the failing one must not run")
+	}
+}
+
+// A failing `key import` must not put the S3 secret in the error.
+//
+// The transport's own error embeds the command it ran, which is how
+// apply.SSHTransport reports a failure, and that command carries the secret as
+// a positional argument because `garage key import` takes no other form. The
+// error goes straight to the operator's terminal, so without this it lands in
+// a scrollback buffer, a multiplexer's log and a CI job's recorded output.
+// Garage also quotes an offending argument back in some of its messages, so
+// the command output is checked too rather than only the command text.
+func TestAFailingKeyImportDoesNotPutTheSecretInItsError(t *testing.T) {
+	cfg := fixtureConfig(t)
+	secrets := fixtureSecrets(t)
+	transport := &fakeTransport{responses: map[string]response{
+		"layout show": {out: "==== CURRENT CLUSTER LAYOUT ====\nno nodes\nCurrent cluster layout version: 0\n"},
+		"node id -q":  {out: "0123456789abcdef0123456789abcdef@10.44.0.1:3901\n"},
+		"key info":    {out: "Key not found: 0 matching keys", err: errors.New("exit status 1")},
+		"bucket info": {out: "Bucket not found", err: errors.New("exit status 1")},
+	}}
+
+	plan, err := garage.Build("home-a", cfg, secrets, transport)
+	if err != nil {
+		t.Fatalf("building the plan: %v", err)
+	}
+
+	i := indexOfContaining(commandsOf(plan), "key import")
+	if i < 0 {
+		t.Fatal("a fresh node should plan a key import; without one this test proves nothing")
+	}
+	step := plan.Steps[i]
+	if step.Secret == "" {
+		t.Fatal("the key import step must carry its secret so Execute can strip it from a failure")
+	}
+	if !strings.Contains(step.Command, step.Secret) {
+		t.Fatal("the secret this step declares must be the one in its command, or redaction removes the wrong string")
+	}
+
+	// A transport that fails the way apply.SSHTransport does: the error text
+	// carries the whole command, and Garage echoes the argument it rejected.
+	failing := &failingImportTransport{inner: transport}
+	execErr := garage.Execute(plan, failing)
+	if execErr == nil {
+		t.Fatal("a failing key import must be an error")
+	}
+	if strings.Contains(execErr.Error(), step.Secret) {
+		t.Errorf("a failing key import put the S3 secret in its error, where it lands in a scrollback buffer and a log. Got: %v", execErr)
+	}
+	if !strings.Contains(execErr.Error(), "import the S3 key") {
+		t.Errorf("redacting must not cost the operator the name of the step that failed. Got: %v", execErr)
+	}
+}
+
+// failingImportTransport answers every command from an inner transport except
+// `key import`, which fails the way apply.SSHTransport does: with an error
+// that embeds the command, and with output that quotes the rejected argument.
+type failingImportTransport struct {
+	inner *fakeTransport
+}
+
+func (f *failingImportTransport) Describe() string { return "failing" }
+
+func (f *failingImportTransport) Run(command string) (string, error) {
+	if !strings.Contains(command, "key import") {
+		return f.inner.Run(command)
+	}
+	out := "Error: could not import key " + command + "\n"
+	return out, errors.New("host: " + command + ": exit status 1\n" + out)
+}
+
+func commandsOf(plan *garage.Plan) []string {
+	var out []string
+	for _, s := range plan.Steps {
+		out = append(out, s.Command)
+	}
+	return out
+}
