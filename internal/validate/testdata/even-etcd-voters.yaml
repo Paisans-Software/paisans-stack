@@ -44,6 +44,7 @@ etcd:
   election_timeout_ms: 2000
 
 storage:
+  media_hostname: media.example.org
   garage:
     sites: [home-a, home-b]
     replication: 2

@@ -80,6 +80,11 @@ etcd:
   election_timeout_ms: 2000
 
 storage:
+  # Where objects are served from: one hostname for the deployment, since a
+  # bucket is a path under it rather than a hostname of its own. Required once
+  # any app stores objects, because the endpoint an app writes through is a
+  # mesh address and a browser cannot reach one.
+  media_hostname: media.example.org
   garage:
     sites: [home-a, home-b]
     # A factor of 2 across 2 sites means a write needs both of them: losing a

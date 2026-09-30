@@ -94,6 +94,20 @@ because its S3 support supplements the media store rather than replacing it. Its
 local media directory has to be replicated out of band, or accepted as lost on
 promotion. Either is defensible; leaving it undecided is not.
 
+**`storage.media_hostname` says where objects are served from, and it is
+required once any app stores objects, refused as
+`object-storage-without-a-media-hostname` otherwise.** It is one hostname for
+the whole deployment rather than one per app, because a bucket is a path under
+it. The endpoint an app writes through is a mesh address, and a browser cannot
+reach one: without this hostname the toolkit would render an app that uploads
+successfully and publishes a URL nothing outside the mesh can fetch, and a
+federating instance that has cached such a URL keeps it.
+
+This check lives in `internal/validate` rather than as a structural error in
+`internal/config`. `internal/kinds`, which knows which kinds use object
+storage, already imports `internal/config`; `config` asking `kinds` back would
+be an import cycle.
+
 ### Rule 4: the domain is a one-way door
 
 Federation identity is the hostname. Mbin's actor keys are bound to it, and
@@ -423,6 +437,18 @@ app needs the identical value; recording it here makes it reproducible instead
 of existing on exactly one host. But minting one is a privileged mutation that
 belongs to a human — the toolkit records the value after the fact and must not
 automate the approval away.
+
+**A hand edited Garage key is refused as `garage-key-is-malformed`.** A
+generated S3 access key ID is the literal `GK` followed by exactly 24
+lowercase hex characters, and a generated secret key is exactly 64 lowercase
+hex characters; a generator only ever produces that shape, so this cannot fire
+on a generated value. It exists for a hand edited `secrets.enc.yaml`, where
+Garage would otherwise refuse the credential at provisioning time on a host,
+after it has already imported some keys, with a message about hex encoding
+that names no field and no file. This check lives in `internal/secretsgen`,
+where `Fill` reads an existing app secret before deciding to keep it, rather
+than in `internal/validate`: `validate.Check` takes only a `*config.Config`
+and never sees the secrets file, so it has nothing to check this against.
 
 ### Rendered configuration is a build artifact
 

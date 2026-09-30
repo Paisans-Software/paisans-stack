@@ -26,12 +26,21 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"regexp"
 	"sort"
 
 	"golang.org/x/crypto/curve25519"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
+)
+
+// garageKeyIDPattern and garageSecretPattern are the only shapes Garage
+// accepts for an S3 access key ID and secret key, established by running
+// dxflrs/garage:v1.0.1.
+var (
+	garageKeyIDPattern  = regexp.MustCompile(`^GK[0-9a-f]{24}$`)
+	garageSecretPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // Result records what a generation pass did, by name and never by value. A
@@ -146,6 +155,9 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 		}
 		for _, key := range appSecretKeys(app) {
 			if existing, ok := entries[key].(string); ok && existing != "" {
+				if err := garageKeyIsMalformed(name, key, existing); err != nil {
+					return result, err
+				}
 				note(false, "apps."+name+"."+key)
 				continue
 			}
@@ -342,6 +354,32 @@ func garageSecretKey() (string, error) {
 		return "", fmt.Errorf("reading random bytes: %w", err)
 	}
 	return hex.EncodeToString(raw), nil
+}
+
+// garageKeyIsMalformed refuses an S3 credential Garage will not accept.
+//
+// Generated credentials cannot trip this: garageKeyID and garageSecretKey
+// only ever produce the accepted shape. A hand edited secrets file can, and
+// the failure it prevents is a provisioning run that dies halfway through
+// with a message about hex encoding, after it has already imported some
+// keys.
+//
+// This lives here rather than as a validate.go rule because validate.Check
+// takes only a *config.Config and never sees secrets. Fill is the one place
+// that reads a hand written key rather than generating one, so it is the one
+// place that can see it to check it.
+func garageKeyIsMalformed(appName, key, value string) error {
+	switch key {
+	case "s3_access_key_id":
+		if !garageKeyIDPattern.MatchString(value) {
+			return fmt.Errorf("garage-key-is-malformed: apps.%s.%s is %q, which Garage will not accept. A Garage access key ID is the literal \"GK\" followed by exactly 24 lowercase hex characters.", appName, key, value)
+		}
+	case "s3_secret_access_key":
+		if !garageSecretPattern.MatchString(value) {
+			return fmt.Errorf("garage-key-is-malformed: apps.%s.%s is not in the shape Garage accepts. A Garage secret key is exactly 64 lowercase hex characters.", appName, key)
+		}
+	}
+	return nil
 }
 
 // password is 32 bytes from the system source, base64 encoded without padding.

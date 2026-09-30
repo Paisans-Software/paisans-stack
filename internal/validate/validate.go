@@ -134,6 +134,7 @@ func Check(cfg *config.Config) Result {
 	c.gateWithoutAGate()
 	c.gatedMatrixHostname()
 	c.homeserverMustBePinned()
+	c.objectStorageWithoutAMediaHostname()
 
 	c.evenVoters()
 	c.meshIsNotPrivate()
@@ -681,6 +682,34 @@ func (c *checker) homeserverMustBePinned() {
 		}
 		c.refuse("homeserver-must-be-pinned", fmt.Sprintf("apps.%s.placement", name),
 			"is cluster, and the synapse kind has no clustered form. Its media store cannot follow a failover, because the S3 storage provider supplements a local media directory rather than replacing it, and the kind renders its own Postgres plus the hook that creates the authentication service's database beside it. Pin it: placement: { pinned: <site> }.")
+	}
+}
+
+// objectStorageWithoutAMediaHostname refuses an app that stores objects when
+// nothing names where they are served from.
+//
+// This check lives here rather than as a structural error in internal/config
+// because internal/kinds, which is what knows a kind uses object storage,
+// already imports internal/config: config importing kinds back to ask would
+// be a cycle.
+//
+// storage.media_hostname is one hostname for the whole deployment, not one per
+// app, and without it the endpoint an app writes through is a mesh address. A
+// browser cannot reach that, and a federating instance that has cached such a
+// URL keeps it, which makes the failure permanent rather than merely broken
+// until fixed.
+func (c *checker) objectStorageWithoutAMediaHostname() {
+	if c.cfg.Storage.MediaHostname != "" {
+		return
+	}
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if !kinds.UsesObjectStorage(app.Kind) {
+			continue
+		}
+		c.refuse("object-storage-without-a-media-hostname", "storage.media_hostname",
+			"is required: %s stores objects and the URL an app publishes must be one a browser can reach. The endpoint an app writes through is a mesh address, which a browser cannot reach and which a federating instance caches permanently once it has seen one. Declare one hostname for the deployment, for example media.%s.",
+			name, c.cfg.Community.Domain)
 	}
 }
 

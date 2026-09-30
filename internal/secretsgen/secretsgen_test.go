@@ -236,3 +236,64 @@ func TestGeneratedS3CredentialsMatchGaragesFormat(t *testing.T) {
 		}
 	}
 }
+
+// garageKeyIsMalformed: generated credentials cannot trip this, because
+// garageKeyID and garageSecretKey only ever produce the accepted shape. A
+// hand edited secrets file can, and the failure it prevents is a provisioning
+// run that dies halfway through with a message about hex encoding, after it
+// has already imported some keys. validate.Check takes only a *config.Config
+// and never sees secrets, so this cannot live there: it lives here, where a
+// kept (not generated) app secret is the only place the toolkit ever looks at
+// a hand written key.
+func TestGarageKeyIsMalformed(t *testing.T) {
+	cfg := load(t)
+	validSecret := strings.Repeat("ab", 32)
+
+	cases := []struct {
+		name  string
+		entry map[string]any
+		want  string
+	}{
+		{
+			name: "base64 key ID",
+			entry: map[string]any{
+				"s3_access_key_id":     "not-a-valid-garage-key-id",
+				"s3_secret_access_key": validSecret,
+			},
+			want: "docs.s3_access_key_id",
+		},
+		{
+			name: "uppercase hex in the key ID",
+			entry: map[string]any{
+				"s3_access_key_id":     "GK" + strings.Repeat("AB", 12),
+				"s3_secret_access_key": validSecret,
+			},
+			want: "docs.s3_access_key_id",
+		},
+		{
+			name: "short secret key",
+			entry: map[string]any{
+				"s3_access_key_id":     "GK" + strings.Repeat("ab", 12),
+				"s3_secret_access_key": "tooshort",
+			},
+			want: "docs.s3_secret_access_key",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			secrets := &config.Secrets{Apps: map[string]map[string]any{
+				"docs": tc.entry,
+			}}
+			_, err := secretsgen.Fill(cfg, secrets)
+			if err == nil {
+				t.Fatalf("expected a malformed Garage key to be refused")
+			}
+			if !strings.Contains(err.Error(), "garage-key-is-malformed") {
+				t.Errorf("the error should name the rule garage-key-is-malformed, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the error should name the field %s, got: %v", tc.want, err)
+			}
+		})
+	}
+}
