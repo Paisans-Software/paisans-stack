@@ -445,10 +445,15 @@ hex characters; a generator only ever produces that shape, so this cannot fire
 on a generated value. It exists for a hand edited `secrets.enc.yaml`, where
 Garage would otherwise refuse the credential at provisioning time on a host,
 after it has already imported some keys, with a message about hex encoding
-that names no field and no file. This check lives in `internal/secretsgen`,
-where `Fill` reads an existing app secret before deciding to keep it, rather
-than in `internal/validate`: `validate.Check` takes only a `*config.Config`
-and never sees the secrets file, so it has nothing to check this against.
+that names no field and no file. This check lives in `internal/secretsgen`
+as the exported `CheckGarageKeys(cfg, secrets)`, rather than in
+`internal/validate`: `validate.Check` takes only a `*config.Config` and never
+sees the secrets file, so it has nothing to check this against. `Fill` calls
+it for `init`, and `render` and `apply` both call it themselves right after
+`config.LoadSecrets`, because both load secrets directly and never call
+`Fill`: a key hand edited into the file after the last `init` has to be
+caught on every path that can reach a host, not only on the one that
+happens to regenerate secrets.
 
 ### Rendered configuration is a build artifact
 

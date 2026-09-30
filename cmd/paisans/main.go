@@ -209,6 +209,11 @@ func runRender(args []string) error {
 	if !secrets.Encrypted {
 		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
 	}
+	// render does not call secretsgen.Fill, so a key hand edited into the file
+	// after the last `init` is never looked at unless this is checked here too.
+	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
+		return err
+	}
 
 	plan, err := render.Build(cfg, secrets)
 	if err != nil {
@@ -272,6 +277,12 @@ func runApply(args []string) error {
 	}
 	if !secrets.Encrypted {
 		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+	}
+	// apply does not call secretsgen.Fill either, and this is the path that
+	// actually reaches a host: a malformed key has to stop here, not just
+	// print a confusing failure partway through provisioning on the machine.
+	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
+		return err
 	}
 
 	rendered, err := render.Build(cfg, secrets)

@@ -147,6 +147,9 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 	if secrets.Apps == nil {
 		secrets.Apps = map[string]map[string]any{}
 	}
+	if err := CheckGarageKeys(cfg, secrets); err != nil {
+		return result, err
+	}
 	for _, name := range cfg.AppNames() {
 		app := cfg.Apps[name]
 		entries := secrets.Apps[name]
@@ -155,9 +158,6 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 		}
 		for _, key := range appSecretKeys(app) {
 			if existing, ok := entries[key].(string); ok && existing != "" {
-				if err := garageKeyIsMalformed(name, key, existing); err != nil {
-					return result, err
-				}
 				note(false, "apps."+name+"."+key)
 				continue
 			}
@@ -377,6 +377,36 @@ func garageKeyIsMalformed(appName, key, value string) error {
 	case "s3_secret_access_key":
 		if !garageSecretPattern.MatchString(value) {
 			return fmt.Errorf("garage-key-is-malformed: apps.%s.%s is not in the shape Garage accepts. A Garage secret key is exactly 64 lowercase hex characters.", appName, key)
+		}
+	}
+	return nil
+}
+
+// CheckGarageKeys refuses a hand edited S3 credential Garage would reject, for
+// every app that stores objects and already has one set.
+//
+// Fill calls this itself, so `init` is covered. It is exported because `init`
+// is not the only path that reads a secrets file: `render` and `apply` both
+// call config.LoadSecrets directly and never call Fill, so a key hand edited
+// into the file after the last `init` would otherwise reach a rendered
+// artifact, and from there a host, with nothing ever having looked at it.
+// Call this once after loading secrets and before using them for anything
+// that reaches a host.
+func CheckGarageKeys(cfg *config.Config, secrets *config.Secrets) error {
+	for _, name := range cfg.AppNames() {
+		app := cfg.Apps[name]
+		if !kinds.UsesObjectStorage(app.Kind) {
+			continue
+		}
+		entries := secrets.Apps[name]
+		for _, key := range []string{"s3_access_key_id", "s3_secret_access_key"} {
+			value, _ := entries[key].(string)
+			if value == "" {
+				continue
+			}
+			if err := garageKeyIsMalformed(name, key, value); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
