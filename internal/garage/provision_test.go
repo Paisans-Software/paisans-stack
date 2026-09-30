@@ -65,9 +65,20 @@ func indexOfContaining(commands []string, substr string) int {
 // every key and bucket command with "Could not reach quorum of 1", so a plan
 // that ordered them the other way would fail on a real host and pass here
 // unless the order is asserted.
+//
+// The layout show output carries the RPC client's own connection preamble,
+// "Connection established to <node ID>", ahead of the table, exactly as
+// dxflrs/garage:v1.0.1 actually prints it. That line names this node's own
+// short ID whether or not it has a role yet, because on a single node
+// cluster the client always connects to itself to run the command. A check
+// that matched the node ID against the whole combined output, preamble
+// included, would read that line as proof the node already has a role and
+// plan no layout at all, on a cluster that in fact has none. This fixture is
+// what catches that: the table itself still says "No nodes currently have a
+// role", and the plan must still contain a layout assign and apply.
 func TestAFreshNodeIsLaidOutBeforeAnyKeyIsImported(t *testing.T) {
 	transport := &fakeTransport{responses: map[string]response{
-		"layout show": {out: "==== CURRENT CLUSTER LAYOUT ====\nNo nodes currently have a role in the cluster.\n\nCurrent cluster layout version: 0\n"},
+		"layout show": {out: "Connection established to 51494feb5444d466\n==== CURRENT CLUSTER LAYOUT ====\nNo nodes currently have a role in the cluster.\n\nCurrent cluster layout version: 0\n"},
 		"node id -q":  {out: "51494feb5444d466aaaabbbbccccddddeeeeffff00001111222233334444abcd@127.0.0.1:3901\n"},
 		"key info":    {out: "Error: 0 matching keys", err: errors.New("exit status 1")},
 		"bucket info": {out: "Error: Bucket not found / several matching buckets: talk-uploads", err: errors.New("exit status 1")},
@@ -102,13 +113,24 @@ func TestAFreshNodeIsLaidOutBeforeAnyKeyIsImported(t *testing.T) {
 
 // key import and bucket create both fail when the object exists, so a second
 // run must not plan them. bucket allow is idempotent and is always planned.
+//
+// `node id -q` returns the full 64 character node ID, but `layout show`'s
+// table prints only its first 16 characters, exactly as dxflrs/garage:v1.0.1
+// actually does. A check that compared the full ID against the table would
+// never find this row, no matter how long the cluster had been provisioned,
+// and would replan the layout on every single run. This fixture is what
+// catches that: node id -q returns the full ID below, the table row carries
+// only its first 16 characters, and the two have to be recognised as the
+// same node for this test to see nothing planned. The layout show output
+// also carries the connection preamble real Garage prints ahead of the
+// table, so this fixture exercises both the truncation and the preamble at
+// once, the way a real run would.
 func TestAProvisionedNodePlansNothingButTheGrant(t *testing.T) {
+	const fullNodeID = "bce014be16f81a9033b33dbb8ba6cc4c528353dd045d73aed6ef0c807389129a"
+	const shortNodeID = "bce014be16f81a90" // fullNodeID's first 16 characters
 	transport := &fakeTransport{responses: map[string]response{
-		"layout show": {out: "==== CURRENT CLUSTER LAYOUT ====\nID  Tags  Zone  Capacity\nabc  []  home-a  100.0 GB\n\nCurrent cluster layout version: 1\n"},
-		// This node's own ID is a row in the layout already (it is the "abc"
-		// above), which is what makes this node fully provisioned rather than
-		// merely a cluster that has some layout.
-		"node id -q":  {out: "abc@127.0.0.1:3901\n"},
+		"layout show": {out: "Connection established to " + shortNodeID + "\n==== CURRENT CLUSTER LAYOUT ====\nID                Tags  Zone    Capacity\n" + shortNodeID + "        []    home-a  100.0 GB\n\nCurrent cluster layout version: 1\n"},
+		"node id -q":  {out: fullNodeID + "@127.0.0.1:3901\n"},
 		"key info":    {out: "Key name: talk\nKey ID: GK00112233445566778899aabb\n"},
 		"bucket info": {out: "Bucket: cfc236316d4a81858f84f84c287f5a0d\nSize: 0 B\nObjects: 0\n"},
 	}}
