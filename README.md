@@ -698,6 +698,25 @@ reason an unknown hostname role is: the import would name a snippet nothing
 renders, and Caddy fails to load its entire configuration over one missing
 import, taking every hostname down rather than one.
 
+### `storage init` provisions object storage
+
+`apply` renders files and reconciles them against a manifest it wrote; that is
+what makes its refusal to clobber a locally edited file trustworthy. Garage's
+cluster layout, each app's S3 key, and each app's bucket are not files. They
+are state inside a running service that no manifest describes, so they are a
+separate command: `paisans storage init --site <name>`.
+
+It checks what a site's Garage node already has and creates only what is
+missing, so running it again is safe. Like `apply`, it prints a plan and
+writes nothing without `--execute`.
+
+It has to run after the infrastructure stack is up, because Garage has to be
+reachable to be asked what it already has. **`paisans apply` alone leaves
+object storage unusable**: the containers come up, but no bucket exists and no
+application key can reach one, so the failure an adopter meets is an
+application error with no obvious cause, not a message naming a missing step.
+`storage init` is that missing step.
+
 ### Decryption happens on a workstation, not on a host
 
 Rendering locally and pushing means no age key ever reaches a host. That

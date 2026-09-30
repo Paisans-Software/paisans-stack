@@ -39,3 +39,27 @@ func TestRunRenderRefusesAMalformedGarageKey(t *testing.T) {
 		t.Errorf("render wrote %d file(s) to --out before refusing the key", len(entries))
 	}
 }
+
+// storage init is the path CheckGarageKeys exists for: a malformed key that
+// reaches `garage key import` fails partway through provisioning, after
+// earlier keys in the same run are already imported and cannot be imported
+// again. This proves the check runs before anything reaches a transport, by
+// using an ssh destination that cannot be dialled and confirming the error
+// still names the malformed key rather than a connection failure.
+func TestRunStorageInitRefusesAMalformedGarageKeyBeforeReachingAHost(t *testing.T) {
+	err := runStorageInit([]string{
+		"--config", filepath.Join("..", "..", "internal", "render", "testdata", "deployment.yaml"),
+		"--secrets", filepath.Join("testdata", "garage-key-is-malformed-secrets.yaml"),
+		"--site", "home-a",
+		"--ssh", "nonexistent.invalid",
+	})
+	if err == nil {
+		t.Fatal("expected storage init to refuse a configuration with a malformed Garage key")
+	}
+	if !strings.Contains(err.Error(), "garage-key-is-malformed") {
+		t.Fatalf("the error should name the rule garage-key-is-malformed, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "nonexistent.invalid") {
+		t.Fatalf("the check should stop before ssh is ever tried, got: %v", err)
+	}
+}
