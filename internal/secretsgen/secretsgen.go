@@ -103,8 +103,6 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 	}{
 		{"storage.garage.admin_token", &secrets.Storage.Garage.AdminToken},
 		{"storage.garage.rpc_secret", &secrets.Storage.Garage.RPCSecret},
-		{"storage.garage.access_key_id", &secrets.Storage.Garage.AccessKeyID},
-		{"storage.garage.secret_access_key", &secrets.Storage.Garage.SecretAccessKey},
 	} {
 		created, err := fillString(field.into)
 		if err != nil {
@@ -186,6 +184,12 @@ func appSecretKeys(app config.App) []string {
 		// Matrix Authentication Service in front of it needs its own.
 		keys = append(keys, masEncryptionSecret, masMatrixSecret, masSigningKey)
 	}
+	if kinds.UsesObjectStorage(app.Kind) {
+		// Per app rather than shared: one key for every app would mean each
+		// bucket granted to it with --owner, so any one app's .env would be
+		// enough to read, rewrite and delete every other app's objects.
+		keys = append(keys, "s3_access_key_id", "s3_secret_access_key")
+	}
 	sort.Strings(keys)
 	return keys
 }
@@ -212,15 +216,21 @@ const (
 
 // appSecret produces the value for one app secret key.
 //
-// Most are a generated password and the two exceptions are not a matter of
-// taste: MAS parses its encryption secret as hex and its signing key as PEM,
-// so a base64 password in either position is a service that will not start.
+// Most are a generated password. MAS parses its encryption secret as hex and
+// its signing key as PEM, so a base64 password in either position is a
+// service that will not start. Garage is stricter still: it refuses a base64
+// key ID or secret outright rather than merely failing to start with one, so
+// the two S3 credential keys get their own generators too.
 func appSecret(key string) (string, error) {
 	switch key {
 	case masEncryptionSecret:
 		return hexSecret(32)
 	case masSigningKey:
 		return rsaPrivateKeyPEM()
+	case "s3_access_key_id":
+		return garageKeyID()
+	case "s3_secret_access_key":
+		return garageSecretKey()
 	default:
 		return password()
 	}
@@ -310,6 +320,28 @@ func fillString(into *string) (bool, error) {
 	}
 	*into = value
 	return true, nil
+}
+
+// garageKeyID returns an S3 access key ID in the only shape Garage accepts:
+// the literal "GK" followed by 12 hex encoded bytes. `password()` is not
+// reused here, and base64 is exactly why: Garage rejects it outright with
+// "The specified key ID is not a valid Garage key ID".
+func garageKeyID() (string, error) {
+	raw := make([]byte, 12)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("reading random bytes: %w", err)
+	}
+	return "GK" + hex.EncodeToString(raw), nil
+}
+
+// garageSecretKey returns an S3 secret key as 32 hex encoded bytes, which is
+// the only shape Garage accepts.
+func garageSecretKey() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("reading random bytes: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
 }
 
 // password is 32 bytes from the system source, base64 encoded without padding.

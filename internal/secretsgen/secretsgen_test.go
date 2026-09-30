@@ -3,6 +3,7 @@ package secretsgen_test
 import (
 	"encoding/base64"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -70,7 +71,7 @@ func TestFillNeverReplacesAnExistingValue(t *testing.T) {
 
 	before := map[string]string{
 		"superuser": secrets.Cluster.SuperuserPassword,
-		"garage":    secrets.Storage.Garage.SecretAccessKey,
+		"garage":    secrets.Storage.Garage.RPCSecret,
 		"home-a-wg": secrets.Sites["home-a"].WireGuardPrivateKey,
 	}
 	talkBefore, _ := secrets.Apps["talk"]["database_password"].(string)
@@ -85,7 +86,7 @@ func TestFillNeverReplacesAnExistingValue(t *testing.T) {
 	if secrets.Cluster.SuperuserPassword != before["superuser"] {
 		t.Error("the superuser password was replaced")
 	}
-	if secrets.Storage.Garage.SecretAccessKey != before["garage"] {
+	if secrets.Storage.Garage.RPCSecret != before["garage"] {
 		t.Error("the object storage key was replaced")
 	}
 	if secrets.Sites["home-a"].WireGuardPrivateKey != before["home-a-wg"] {
@@ -202,5 +203,36 @@ func TestAHomeserversOwedClientNamesItsRedirectURI(t *testing.T) {
 	// the URI to register is not.
 	if strings.Contains(why, "https://"+cfg.Apps["chat"].Hostname+"/oauth/callback") {
 		t.Errorf("the owed client offers the callback every other kind uses:\n%s", why)
+	}
+}
+
+// Garage refuses anything else, and it refuses it at provisioning time on a
+// host rather than here, which is the worst place to discover a format.
+// Established by running dxflrs/garage:v1.0.1: "The specified key ID is not a
+// valid Garage key ID (starts with `GK`, followed by 12 hex-encoded bytes)".
+func TestGeneratedS3CredentialsMatchGaragesFormat(t *testing.T) {
+	cfg := load(t)
+	secrets := &config.Secrets{}
+	if _, err := secretsgen.Fill(cfg, secrets); err != nil {
+		t.Fatalf("filling secrets: %v", err)
+	}
+	keyID := regexp.MustCompile(`^GK[0-9a-f]{24}$`)
+	secret := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	for _, name := range cfg.AppNames() {
+		app := cfg.Apps[name]
+		if !kinds.UsesObjectStorage(app.Kind) {
+			if _, ok := secrets.Apps[name]["s3_access_key_id"]; ok {
+				t.Errorf("%s is a %s and stores no objects, but was given an S3 key", name, app.Kind)
+			}
+			continue
+		}
+		id, _ := secrets.Apps[name]["s3_access_key_id"].(string)
+		if !keyID.MatchString(id) {
+			t.Errorf("%s's s3_access_key_id is %q, which Garage will refuse", name, id)
+		}
+		sec, _ := secrets.Apps[name]["s3_secret_access_key"].(string)
+		if !secret.MatchString(sec) {
+			t.Errorf("%s's s3_secret_access_key is not 32 hex encoded bytes", name)
+		}
 	}
 }

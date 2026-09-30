@@ -191,7 +191,6 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		dbHost, dbPort = "postgres", postgresPort
 	}
 
-	garage := p.secrets.Storage.Garage
 	v := appValues{
 		App:            planned,
 		Hostname:       planned.Hostname,
@@ -217,8 +216,8 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	}
 	v.S3 = s3Values{
 		Endpoint:       fmt.Sprintf("http://%s:3900", garageEndpointHost(p)),
-		AccessKeyID:    garage.AccessKeyID,
-		SecretKey:      garage.SecretAccessKey,
+		AccessKeyID:    v.Secret("s3_access_key_id"),
+		SecretKey:      v.Secret("s3_secret_access_key"),
 		Bucket:         v.Setting("s3_bucket", planned.Name+"-uploads"),
 		Region:         v.Setting("s3_region", "garage"),
 		ForcePathStyle: v.SettingBool("s3_force_path_style", true),
