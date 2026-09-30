@@ -1041,3 +1041,60 @@ func hostBlock(t *testing.T, caddyfile, hostname string) string {
 	}
 	return caddyfile[start : start+end]
 }
+
+// The endpoint an app writes through is internal. The URL it publishes is not,
+// and the two are different strings for a reason: uploads must not cross the
+// gateway, and a media URL must resolve for a browser and for a federating
+// server that will never join this mesh.
+func TestObjectStorageIsPublishedOnTheMediaHostname(t *testing.T) {
+	files := map[string]string{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+	}
+
+	// The endpoint is a fact of the fixture (garageEndpointHost picks the
+	// first Garage site by sorted name), not of this change, so it is read
+	// from the committed golden tree rather than guessed. This proves the
+	// endpoint an app writes through is unchanged, without this test owning
+	// that address.
+	golden, err := os.ReadFile(filepath.Join("testdata", "golden", "home-a", "srv", "talk", ".env"))
+	if err != nil {
+		t.Fatalf("reading the golden talk .env: %v", err)
+	}
+	endpointLine := ""
+	for _, line := range strings.Split(string(golden), "\n") {
+		if strings.HasPrefix(line, "S3_ENDPOINT=") {
+			endpointLine = line
+		}
+	}
+	if endpointLine == "" {
+		t.Fatal("the golden tree has no S3_ENDPOINT to compare against")
+	}
+
+	env := files["home-a/srv/talk/.env"]
+	if !strings.Contains(env, "KBIN_STORAGE_URL=https://media.example.org/talk-uploads") {
+		t.Errorf("Mbin builds every media URL and every thumbnail root from KBIN_STORAGE_URL, got:\n%s", env)
+	}
+	if !strings.Contains(env, endpointLine) {
+		t.Errorf("uploads should still go direct to Garage rather than through the gateway, want %q in:\n%s", endpointLine, env)
+	}
+
+	outline := files["home-a/srv/docs/.env"]
+	if !strings.Contains(outline, "AWS_S3_UPLOAD_BUCKET_URL=https://media.example.org") {
+		t.Errorf("Outline publishes attachment URLs from its bucket URL, got:\n%s", outline)
+	}
+
+	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	block := hostBlock(t, caddyfile, "media.example.org")
+	if strings.Contains(block, "import gate_") {
+		t.Error("the media hostname must never be gated: a federating server fetching an image is a machine")
+	}
+
+	snippet := files["vm/srv/infra/caddy/snippets/media.caddy"]
+	if !strings.Contains(snippet, "3900") {
+		t.Errorf("the media snippet should reach Garage on 3900, got:\n%s", snippet)
+	}
+	if strings.Contains(snippet, "header_up Host") {
+		t.Error("Host must be forwarded unchanged or Outline's presigned URLs stop verifying")
+	}
+}
