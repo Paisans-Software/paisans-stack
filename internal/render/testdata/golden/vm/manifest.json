@@ -78,7 +78,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/media.caddy",
-      "sha256": "04c87c49c682b964838fcd553c27741dc653f54161f22bf5663809ece7b9e3c4",
+      "sha256": "5ec353ada6ff1770e5a814a958fe10d5c29320c843e7c302808e393dabf51de1",
       "mode": "0644"
     },
     {
