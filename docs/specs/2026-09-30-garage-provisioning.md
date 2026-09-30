@@ -167,8 +167,13 @@ other four store no objects at all.
 * Each app's `S3_KEY`/`S3_SECRET` and `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`
   come from that app's own pair rather than the shared one.
 
-The endpoint the apps *write* through stays internal. Only the URL they publish
-is public, which is what keeps uploads off the gateway.
+The endpoint an app *writes* through stays internal only for Mbin, not for
+both apps. Mbin writes to that endpoint itself, server side, over the mesh,
+and only the URL it publishes is public, which keeps its uploads off the
+gateway. Outline's server never writes bytes to S3 at all: it issues a
+presigned POST that the browser submits directly against the media hostname,
+so for Outline every upload, not just every read, already crosses the
+gateway.
 
 ## `paisans storage init`
 

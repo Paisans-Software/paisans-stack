@@ -366,10 +366,12 @@ MSG
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// The endpoint an app writes through is internal. The URL it publishes is not,
-// and the two are different strings for a reason: uploads must not cross the
-// gateway, and a media URL must resolve for a browser and for a federating
-// server that will never join this mesh.
+// Mbin writes to its endpoint itself, server side, over the mesh, so its
+// uploads never cross the gateway; only the URL it publishes does. Outline's
+// server never writes bytes to S3 at all: it issues a presigned POST the
+// browser submits directly against the media hostname, so Outline's uploads
+// cross the gateway too. Either way the published URL must resolve for a
+// browser and for a federating server that will never join this mesh.
 func TestObjectStorageIsPublishedOnTheMediaHostname(t *testing.T) {
 	tree := build(t)
 
@@ -378,7 +380,7 @@ func TestObjectStorageIsPublishedOnTheMediaHostname(t *testing.T) {
 		t.Errorf("Mbin builds every media URL and every thumbnail root from KBIN_STORAGE_URL, got:\n%s", env)
 	}
 	if !strings.Contains(env, "S3_ENDPOINT=http://10.44.0.1:3900") {
-		t.Error("uploads should still go direct to Garage rather than through the gateway")
+		t.Error("Mbin's uploads should still go direct to Garage rather than through the gateway")
 	}
 
 	outline := tree.file(t, "home-a/srv/docs/.env")
@@ -419,9 +421,10 @@ In `internal/render/appview.go`, replace the shared credential reads with the ap
 
 ```go
 v.S3 = s3Values{
-	// Uploads go direct to Garage over the mesh. Routing them through the
-	// gateway would put every byte of every upload through the one machine
-	// that also terminates TLS for everything else.
+	// Mbin writes to this address itself, server side, over the mesh.
+	// Outline never uses it: its uploads are a presigned POST the browser
+	// submits directly, so for Outline every upload and every read goes
+	// through PublicBase, not here.
 	Endpoint:       fmt.Sprintf("http://%s:3900", garageEndpointHost(p)),
 	// PublicBase is what an app writes into a page, a feed or a federated
 	// post. It has to resolve for a browser and for a server that will never
@@ -494,8 +497,10 @@ Liip Imagine thumbnail root from it. Outline was handed the mesh endpoint as
 its bucket URL, so it would have redirected browsers to an address they cannot
 reach and federating instances would have cached it.
 
-Uploads still go direct to Garage over the mesh. Only the published URL is
-public, which keeps every uploaded byte off the gateway.
+Mbin still writes direct to Garage over the mesh; only the published URL is
+public, which keeps its uploads off the gateway. Outline's server never
+writes to S3 at all: it issues a presigned POST the browser submits directly
+against the media hostname, so Outline's uploads cross the gateway.
 
 Host is forwarded unchanged because Outline presigns URLs and the signature
 covers the host that signed them.

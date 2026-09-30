@@ -256,3 +256,94 @@ deployment this was taken from gives MAS a role of its own; the toolkit does
 not, because one app holding one credential is its rule everywhere else and a
 second role per app would be a change to the secrets model rather than to this
 kind.
+
+## 2026-09-30: Garage provisioning is a separate verb, keyed one per app, and the facts behind it came from running Garage rather than reading about it
+
+### Provisioning is not apply
+
+`apply` renders files and reconciles them against a manifest it wrote itself,
+so every check it makes is "does this file match what was rendered". Garage's
+cluster layout, its S3 keys and its buckets are not files. They are state
+inside a running service that nothing on the workstation describes, reached
+only by asking Garage itself. That needed a different kind of planner, so it
+is a separate command, `paisans storage init --site <name>`, rather than a
+step folded into `apply`: check what a live command reports, and plan only
+what is missing, in the order Garage requires.
+
+### One S3 key per app, not one shared key
+
+Each object storing app gets its own Garage key, generated at `init` and
+never reused, and that key is granted read/write/owner on that app's bucket
+and nothing else. A shared key was the alternative and it was rejected
+outright: one key handed to every app would mean any single app's `.env`,
+leaked or simply read by an operator debugging it, was enough to read,
+rewrite and delete every other app's objects, not just its own. Per app keys
+make that blast radius one app wide instead of the whole deployment, and the
+integration test added here asserts the isolation directly: a key is allowed
+on its own bucket and refused on another app's.
+
+### The media hostname is one per deployment, not one per app
+
+`storage.media_hostname` is a single hostname, and a bucket is a path under
+it, rather than a hostname per app. An app's uploads still write through a
+mesh address that only this deployment's nodes can reach; the media hostname
+is the one address a browser, and a federating server that will never join
+the mesh, is ever told about. One hostname is also the only shape that survives
+a second Garage site being added later without renaming anything a remote
+server has already cached.
+
+### `Host` is forwarded unchanged, because Outline presigns
+
+The gateway's media snippet passes the `Host` header through unrewritten.
+Outline's uploads are a presigned POST that the browser submits directly
+against the media hostname, and the signature Outline computed covers the
+host it signed for. Rewriting `Host` to the upstream address would make every
+presigned URL Outline issues fail to verify. Mbin never presigns anything
+(it writes to Garage itself, server side, over the mesh, and only the URL it
+publishes is the media hostname), so this rule exists for Outline's sake, not
+both apps' equally. `docs/specs/2026-09-30-garage-provisioning.md` and its
+plan previously said uploads "stay off the gateway" as a blanket claim; that
+was true only for Mbin; Outline's uploads cross the gateway by design, and
+both documents were corrected to say so.
+
+### The formats, the ordering, and which commands are idempotent all came from running the image
+
+None of the following came from Garage's documentation. All of it came from
+running `dxflrs/garage:v1.0.1` by hand, once, while this was built, and again,
+automated, in `internal/garage/integration_test.go`:
+
+* an S3 access key ID is the literal `GK` followed by 24 lowercase hex
+  characters, and a secret key is 64 lowercase hex characters; anything else
+  is refused at `key import` time with a message naming the shape;
+* a fresh node's layout must be assigned and applied before any key import or
+  bucket command will succeed; before that, Garage answers with "could not
+  reach quorum";
+* `key import` and `bucket create` both fail loudly when the target already
+  exists, which is what makes "was it missing" the right question for a
+  planner to ask before running either; `bucket allow` is idempotent and is
+  always planned rather than checked first;
+* `garage layout show` prints only the first 16 hex characters of a node's ID
+  in its table rows, while `node id -q` prints the full one. The integration
+  test caught a real bug this produced: matching the full ID against the
+  whole combined command output never found a row that was already there,
+  so every run replanned the layout step. Fixing the match to use the short
+  prefix surfaced a second bug underneath it: `layout show`'s own RPC client
+  logs "Connection established to \<node ID\>" for the local node it talks to,
+  before it prints the table, and on a single node cluster that is always
+  this node's own ID, present or not. Matching against the whole output made
+  every fresh node look already provisioned. The fix narrows the match to the
+  table between the `==== CURRENT CLUSTER LAYOUT ====` banner and the version
+  line, which is the only part of the output that is actually about the
+  layout.
+
+The property that matters most and that no unit test can reach is that the
+key ID the toolkit generates is the key ID Garage actually holds: if those
+ever drift, every upload from that app fails with an opaque signature error
+and nothing earlier in the sequence would say a word. The integration test
+asserts it by reading the key back out of Garage with `garage key info` and
+comparing it against the secrets file, not by comparing the toolkit against
+itself. It also proves idempotency against the real thing: a second `Build`
+after provisioning plans no `key import`, no `bucket create` and no layout
+step. It is behind the `garage_integration` build tag, so the ordinary test
+suite needs no Docker, and it is where this knowledge is kept honest against
+whatever Garage ships next.

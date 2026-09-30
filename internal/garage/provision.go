@@ -83,6 +83,27 @@ func layoutVersion(out string) (int, error) {
 	return version, nil
 }
 
+// layoutTable narrows `layout show`'s combined output down to the actual
+// layout table, between the "==== CURRENT CLUSTER LAYOUT ====" banner and the
+// version line. Established by running dxflrs/garage:v1.0.1 against a single,
+// truly fresh node: the RPC client that `layout show` runs logs "Connection
+// established to <node ID>" for the peer it talks to before it prints the
+// table, and on a single-node cluster that peer is this node itself. That log
+// line carries this node's own ID whether or not the node has a role yet, so
+// matching a node ID against the whole combined output makes every fresh node
+// look already provisioned. Falling back to the whole output when the banner
+// is missing keeps this from masking a genuinely malformed response.
+func layoutTable(out string) string {
+	const start = "==== CURRENT CLUSTER LAYOUT ===="
+	const end = "Current cluster layout version:"
+	startIdx := strings.Index(out, start)
+	endIdx := strings.Index(out, end)
+	if startIdx < 0 || endIdx < 0 || endIdx < startIdx {
+		return out
+	}
+	return out[startIdx:endIdx]
+}
+
 // absent reports whether a check command means "this object does not exist
 // yet", as opposed to "the node could not be reached". Garage names both cases
 // on stderr and the marker is the only thing that tells them apart: a bare non
@@ -150,7 +171,21 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		nodeID = nodeID[:at]
 	}
 
-	if nodeID != "" && strings.Contains(out, nodeID) {
+	// `garage layout show` prints only the first 16 hex characters of a node
+	// ID in its table rows, not the full one `node id -q` returns.
+	// Established by running dxflrs/garage:v1.0.1: a full ID is never a
+	// substring of that output, so matching on it would never find a row
+	// this node already has, and Build would replan a layout assign and
+	// apply on every single run rather than only on a fresh node. The short
+	// prefix is what the table actually prints, so it is what has to be
+	// matched; the full ID is still what is given to `layout assign` below,
+	// since that command was run with the full ID and accepted it.
+	shortNodeID := nodeID
+	if len(shortNodeID) > 16 {
+		shortNodeID = shortNodeID[:16]
+	}
+
+	if shortNodeID != "" && strings.Contains(layoutTable(out), shortNodeID) {
 		plan.Present = append(plan.Present, fmt.Sprintf("layout: %s already has a role (version %d)", site, version))
 	} else {
 		capacity := cfg.Storage.Garage.Capacity

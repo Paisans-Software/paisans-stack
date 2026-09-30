@@ -1042,10 +1042,14 @@ func hostBlock(t *testing.T, caddyfile, hostname string) string {
 	return caddyfile[start : start+end]
 }
 
-// The endpoint an app writes through is internal. The URL it publishes is not,
-// and the two are different strings for a reason: uploads must not cross the
-// gateway, and a media URL must resolve for a browser and for a federating
-// server that will never join this mesh.
+// The endpoint an app writes through and the URL it publishes are different
+// strings for a reason, though what crosses the gateway differs by app. Mbin
+// writes to its endpoint itself, server side, over the mesh, so its uploads
+// never cross the gateway; only the URL it publishes does. Outline's server
+// never writes bytes to S3 at all: it issues a presigned POST the browser
+// submits directly against the media hostname, so Outline's uploads cross the
+// gateway too. Either way the published URL must resolve for a browser and
+// for a federating server that will never join this mesh.
 func TestObjectStorageIsPublishedOnTheMediaHostname(t *testing.T) {
 	files := map[string]string{}
 	for _, f := range build(t).Files {
@@ -1076,7 +1080,7 @@ func TestObjectStorageIsPublishedOnTheMediaHostname(t *testing.T) {
 		t.Errorf("Mbin builds every media URL and every thumbnail root from KBIN_STORAGE_URL, got:\n%s", env)
 	}
 	if !strings.Contains(env, endpointLine) {
-		t.Errorf("uploads should still go direct to Garage rather than through the gateway, want %q in:\n%s", endpointLine, env)
+		t.Errorf("Mbin writes to Garage itself, server side, over the mesh, so its endpoint must still be the internal one, want %q in:\n%s", endpointLine, env)
 	}
 
 	outline := files["home-a/srv/docs/.env"]
