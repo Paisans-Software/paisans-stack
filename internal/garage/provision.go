@@ -13,6 +13,7 @@ package garage
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -120,6 +121,10 @@ func bucketName(app config.App, name string) string {
 // whether this node's own ID appears in `layout show`'s rows, not whether the
 // version is zero.
 func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport) (*Plan, error) {
+	if !slices.Contains(cfg.Storage.Garage.Sites, site) {
+		return nil, fmt.Errorf("garage: %s holds no Garage role. Sites with one are %s", site, strings.Join(cfg.Storage.Garage.Sites, ", "))
+	}
+
 	plan := &Plan{Site: site}
 
 	out, err := t.Run(garageCmd + " layout show")

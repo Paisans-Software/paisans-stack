@@ -204,3 +204,28 @@ func TestASecondSiteIsAssignedEvenWhenTheLayoutIsAlreadyAtVersionOne(t *testing.
 		t.Errorf("a layout already at version 1 is applied as version 2, got:\n%s", joined)
 	}
 }
+
+// vm, in the fixture, is a declared site holding roles gateway and witness
+// and is not in storage.garage.sites. Building a plan for it must be refused
+// before any transport call, not answered with a plan that assigns it a
+// cluster layout role: vm is the etcd witness, and a layout assign against it
+// would hand the wrong machine a role the deployment never gave it.
+func TestASiteWithNoGarageRoleIsRefused(t *testing.T) {
+	transport := &fakeTransport{responses: map[string]response{
+		"": {out: "should never be reached", err: errors.New("a transport call was made for a non Garage site")},
+	}}
+
+	_, err := garage.Build("vm", fixtureConfig(t), fixtureSecrets(t), transport)
+	if err == nil {
+		t.Fatal("expected a site absent from storage.garage.sites to be refused")
+	}
+	if !strings.Contains(err.Error(), "vm") {
+		t.Errorf("the refusal should name the site, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "home-a") || !strings.Contains(err.Error(), "home-b") {
+		t.Errorf("the refusal should list the sites that do hold a Garage role, got: %v", err)
+	}
+	if len(transport.ran) != 0 {
+		t.Errorf("the refusal must happen before any transport call, but ran: %v", transport.ran)
+	}
+}
