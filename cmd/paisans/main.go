@@ -18,6 +18,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/validate"
@@ -31,6 +32,8 @@ Usage:
   paisans render   [--config paisans.yaml] [--secrets secrets.enc.yaml] --out ./out
   paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                    [--ssh <destination>] [--execute]
+  paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
+               [--ssh <destination>] [--execute]
 
 Commands:
   validate   Load the configuration and report every problem found.
@@ -39,9 +42,12 @@ Commands:
   render     Validate, then write per site artifacts to a local directory.
   apply      Compare one site's rendered artifacts with what is on that host
              and show what would change. Writes nothing without --execute.
+  storage    Provision object storage on a site: the cluster layout, each
+             app's key, and its bucket. Creates only what is missing.
+             Writes nothing without --execute.
 
-Only apply reaches a host, and only with --execute. Everything else writes
-files locally and stops.
+apply and storage init are the only commands that reach a host, and each does
+so only with --execute. Everything else writes files locally and stops.
 `
 
 func main() {
@@ -59,6 +65,12 @@ func main() {
 		err = runRender(os.Args[2:])
 	case "apply":
 		err = runApply(os.Args[2:])
+	case "storage":
+		if len(os.Args) < 3 || os.Args[2] != "init" {
+			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init\n\n%s", usage)
+			os.Exit(2)
+		}
+		err = runStorageInit(os.Args[3:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
@@ -209,6 +221,11 @@ func runRender(args []string) error {
 	if !secrets.Encrypted {
 		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
 	}
+	// render does not call secretsgen.Fill, so a key hand edited into the file
+	// after the last `init` is never looked at unless this is checked here too.
+	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
+		return err
+	}
 
 	plan, err := render.Build(cfg, secrets)
 	if err != nil {
@@ -273,6 +290,12 @@ func runApply(args []string) error {
 	if !secrets.Encrypted {
 		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
 	}
+	// apply does not call secretsgen.Fill either, and this is the path that
+	// actually reaches a host: a malformed key has to stop here, not just
+	// print a confusing failure partway through provisioning on the machine.
+	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
+		return err
+	}
 
 	rendered, err := render.Build(cfg, secrets)
 	if err != nil {
@@ -298,6 +321,96 @@ func runApply(args []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", len(plan.Writes()), plan.Transport)
 	return nil
+}
+
+// runStorageInit provisions Garage object storage on one site: the cluster
+// layout, each app's S3 key, and its bucket. It is modelled on runApply,
+// right down to the dry run by default, because it is the other command that
+// reaches a host.
+//
+// It must run after the infrastructure stack is up, since Garage has to be
+// reachable to be asked what it already has.
+func runStorageInit(args []string) error {
+	fs := flag.NewFlagSet("storage init", flag.ExitOnError)
+	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
+	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
+	site := fs.String("site", "", "the site to provision, by the name it has in the configuration")
+	destination := fs.String("ssh", "", "ssh destination (default: the site's declared ssh address)")
+	execute := fs.Bool("execute", false, "actually create what is missing")
+	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *site == "" {
+		return fmt.Errorf("storage init: --site is required. A site at a time is deliberate, the same reason apply takes one")
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	result := validate.Check(cfg)
+	report(os.Stderr, *configPath, result)
+	if result.Refused() {
+		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+	}
+	declared, ok := cfg.Sites[*site]
+	if !ok {
+		return fmt.Errorf("storage init: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
+	}
+	if *destination == "" {
+		*destination = declared.SSH
+	}
+	if *destination == "" {
+		return fmt.Errorf("storage init: site %s has no ssh address and none was given with --ssh", *site)
+	}
+
+	if *secretsPath == "" {
+		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
+	}
+	secrets, err := config.LoadSecrets(*secretsPath)
+	if err != nil {
+		return err
+	}
+	if !secrets.Encrypted {
+		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+	}
+	// A malformed key has to stop here, before it reaches `garage key import`
+	// partway through provisioning: earlier keys in the same run would
+	// already be imported and cannot be imported again.
+	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
+		return err
+	}
+
+	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
+	plan, err := garage.Build(*site, cfg, secrets, transport)
+	if err != nil {
+		return err
+	}
+	printGaragePlan(plan)
+
+	if !*execute {
+		if len(plan.Steps) == 0 {
+			return nil
+		}
+		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		return nil
+	}
+	if err := garage.Execute(plan, transport); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "\nprovisioned %d step(s) on %s\n", len(plan.Steps), *site)
+	return nil
+}
+
+func printGaragePlan(plan *garage.Plan) {
+	fmt.Fprintf(os.Stdout, "%s\n", plan.Site)
+	for _, step := range plan.Steps {
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "create", step.Describe)
+	}
+	for _, present := range plan.Present {
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "present", present)
+	}
 }
 
 func printPlan(plan *apply.Plan) {

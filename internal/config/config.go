@@ -168,11 +168,26 @@ type Etcd struct {
 
 type Storage struct {
 	Garage Garage `yaml:"garage"`
+	// MediaHostname is where objects are served from. It is one hostname for
+	// the deployment rather than one per app: a bucket is a path under it.
+	//
+	// It is required once any app stores objects, because the endpoint an app
+	// writes through is a mesh address and a browser cannot reach one. A
+	// federating instance that caches such a URL keeps it. That requirement is
+	// checked in internal/validate rather than here: internal/kinds, which
+	// knows which kinds store objects, already imports internal/config, so
+	// this package asking it back would be an import cycle.
+	MediaHostname string `yaml:"media_hostname"`
 }
 
 type Garage struct {
 	Sites       []string `yaml:"sites"`
 	Replication int      `yaml:"replication"`
+	// Capacity is what this node advertises to Garage's layout. Garage
+	// requires a unit suffix, as in 100G. It is not derived from the disk
+	// because the toolkit cannot know how much of that disk is meant for
+	// objects. Defaulted in Load when left unset.
+	Capacity string `yaml:"capacity"`
 }
 
 type App struct {
@@ -295,6 +310,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	cfg.Path = path
+	if cfg.Storage.Garage.Capacity == "" {
+		cfg.Storage.Garage.Capacity = "100G"
+	}
 	if err := cfg.structural(); err != nil {
 		return nil, err
 	}

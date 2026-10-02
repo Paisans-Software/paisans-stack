@@ -94,6 +94,30 @@ because its S3 support supplements the media store rather than replacing it. Its
 local media directory has to be replicated out of band, or accepted as lost on
 promotion. Either is defensible; leaving it undecided is not.
 
+**`storage.media_hostname` says where objects are served from, and it is
+required once any app stores objects, refused as
+`object-storage-without-a-media-hostname` otherwise.** It is one hostname for
+the whole deployment rather than one per app, because a bucket is a path under
+it. The endpoint an app writes through is a mesh address, and a browser cannot
+reach one: without this hostname the toolkit would render an app that uploads
+successfully and publishes a URL nothing outside the mesh can fetch, and a
+federating instance that has cached such a URL keeps it.
+
+This check lives in `internal/validate` rather than as a structural error in
+`internal/config`. `internal/kinds`, which knows which kinds use object
+storage, already imports `internal/config`; `config` asking `kinds` back would
+be an import cycle.
+
+**Current limitation: Garage's S3 API does not support anonymous reads.** Outline
+works because its server presigns every object URL, so the browser's request is
+authenticated. Mbin does not work: `KBIN_STORAGE_URL` publishes an unsigned URL,
+the browser fetches it anonymously, and Garage returns `403 Forbidden: Garage
+does not support anonymous access yet`. Garage has a separate `s3_web` endpoint
+that serves anonymous reads via vhost-style requests, but the toolkit does not
+render it yet. The fix is known and scoped separately: render the `[s3_web]`
+section, run `garage bucket website --allow` for public buckets, and configure
+the gateway to map the media hostname onto the vhost form Garage expects.
+
 ### Rule 4: the domain is a one-way door
 
 Federation identity is the hostname. Mbin's actor keys are bound to it, and
@@ -424,6 +448,23 @@ of existing on exactly one host. But minting one is a privileged mutation that
 belongs to a human — the toolkit records the value after the fact and must not
 automate the approval away.
 
+**A hand edited Garage key is refused as `garage-key-is-malformed`.** A
+generated S3 access key ID is the literal `GK` followed by exactly 24
+lowercase hex characters, and a generated secret key is exactly 64 lowercase
+hex characters; a generator only ever produces that shape, so this cannot fire
+on a generated value. It exists for a hand edited `secrets.enc.yaml`, where
+Garage would otherwise refuse the credential at provisioning time on a host,
+after it has already imported some keys, with a message about hex encoding
+that names no field and no file. This check lives in `internal/secretsgen`
+as the exported `CheckGarageKeys(cfg, secrets)`, rather than in
+`internal/validate`: `validate.Check` takes only a `*config.Config` and never
+sees the secrets file, so it has nothing to check this against. `Fill` calls
+it for `init`, and `render` and `apply` both call it themselves right after
+`config.LoadSecrets`, because both load secrets directly and never call
+`Fill`: a key hand edited into the file after the last `init` has to be
+caught on every path that can reach a host, not only on the one that
+happens to regenerate secrets.
+
 ### Rendered configuration is a build artifact
 
 `paisans apply` renders it. Nobody edits it, and `apply` refuses to clobber a
@@ -666,6 +707,25 @@ Declaring a gate when no `oauth2-proxy` app exists is refused, for the same
 reason an unknown hostname role is: the import would name a snippet nothing
 renders, and Caddy fails to load its entire configuration over one missing
 import, taking every hostname down rather than one.
+
+### `storage init` provisions object storage
+
+`apply` renders files and reconciles them against a manifest it wrote; that is
+what makes its refusal to clobber a locally edited file trustworthy. Garage's
+cluster layout, each app's S3 key, and each app's bucket are not files. They
+are state inside a running service that no manifest describes, so they are a
+separate command: `paisans storage init --site <name>`.
+
+It checks what a site's Garage node already has and creates only what is
+missing, so running it again is safe. Like `apply`, it prints a plan and
+writes nothing without `--execute`.
+
+It has to run after the infrastructure stack is up, because Garage has to be
+reachable to be asked what it already has. **`paisans apply` alone leaves
+object storage unusable**: the containers come up, but no bucket exists and no
+application key can reach one, so the failure an adopter meets is an
+application error with no obvious cause, not a message naming a missing step.
+`storage init` is that missing step.
 
 ### Decryption happens on a workstation, not on a host
 

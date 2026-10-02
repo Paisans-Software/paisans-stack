@@ -1,5 +1,7 @@
-# A coherent three site deployment. Every fixture in this directory is a
-# variation on this one, so that a test names exactly the thing it breaks.
+# valid.yaml with one thing broken: an app stores objects and
+# storage.media_hostname is never declared. Without it, an app renders a
+# working uploader and publishes a URL pointing at a mesh address, which no
+# browser can reach and which a federating instance caches permanently.
 version: 1
 
 community:
@@ -14,7 +16,7 @@ acme:
 
 sites:
   home-a:
-    roles: [data, apps, gateway]
+    roles: [data, apps]
     address: 10.44.0.1
     ssh: home-a.local
   home-b:
@@ -40,7 +42,6 @@ etcd:
   election_timeout_ms: 2000
 
 storage:
-  media_hostname: media.example.org
   garage:
     sites: [home-a, home-b]
     replication: 2

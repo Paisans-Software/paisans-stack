@@ -102,6 +102,33 @@ func TestInvalidPlacementSurvivesTheDecode(t *testing.T) {
 	}
 }
 
+// Garage requires a unit suffix on the capacity it advertises to its layout,
+// so an unset value has to become a usable one rather than an empty string
+// that would break the first `layout assign`.
+func TestGarageCapacityDefaultsTo100G(t *testing.T) {
+	cfg, err := config.Load(write(t, minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Storage.Garage.Capacity != "100G" {
+		t.Fatalf("capacity defaulted to %q, want 100G", cfg.Storage.Garage.Capacity)
+	}
+}
+
+// An explicit capacity is the operator's call, made because the toolkit
+// cannot know how much of a node's disk is meant for objects, and the default
+// must never override it.
+func TestGarageCapacitySurvivesWhenDeclared(t *testing.T) {
+	body := minimal + "storage:\n  garage:\n    capacity: 750G\n"
+	cfg, err := config.Load(write(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Storage.Garage.Capacity != "750G" {
+		t.Fatalf("capacity was %q, want the declared 750G", cfg.Storage.Garage.Capacity)
+	}
+}
+
 // Every structural problem in a file is reported at once. Fixing a
 // configuration one error per run is miserable.
 func TestStructuralProblemsAreReportedTogether(t *testing.T) {

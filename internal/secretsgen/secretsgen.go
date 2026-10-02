@@ -26,12 +26,21 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"regexp"
 	"sort"
 
 	"golang.org/x/crypto/curve25519"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
+)
+
+// garageKeyIDPattern and garageSecretPattern are the only shapes Garage
+// accepts for an S3 access key ID and secret key, established by running
+// dxflrs/garage:v1.0.1.
+var (
+	garageKeyIDPattern  = regexp.MustCompile(`^GK[0-9a-f]{24}$`)
+	garageSecretPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // Result records what a generation pass did, by name and never by value. A
@@ -97,21 +106,26 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 	}
 	note(created, "cluster.standby_password")
 
-	for _, field := range []struct {
-		name string
-		into *string
-	}{
-		{"storage.garage.admin_token", &secrets.Storage.Garage.AdminToken},
-		{"storage.garage.rpc_secret", &secrets.Storage.Garage.RPCSecret},
-		{"storage.garage.access_key_id", &secrets.Storage.Garage.AccessKeyID},
-		{"storage.garage.secret_access_key", &secrets.Storage.Garage.SecretAccessKey},
-	} {
-		created, err := fillString(field.into)
-		if err != nil {
-			return result, err
-		}
-		note(created, field.name)
+	// Garage's own two credentials, and only one of them is an opaque string.
+	// admin_token is unconstrained: Garage takes it as given, and a base64
+	// password starts fine. rpc_secret is not. Garage parses it as a hex
+	// encoded 32 byte key and refuses anything else at startup with "Invalid
+	// RPC secret key: expected 32 bits of entropy", which is a node that never
+	// comes up rather than a node that comes up wrong. Established by booting
+	// dxflrs/garage:v1.0.1 against this toolkit's own rendered garage.toml;
+	// internal/garage's integration suite boots the rendered file so that a
+	// future change here cannot quietly go back to base64.
+	created, err = fillString(&secrets.Storage.Garage.AdminToken)
+	if err != nil {
+		return result, err
 	}
+	note(created, "storage.garage.admin_token")
+
+	created, err = fillHex(&secrets.Storage.Garage.RPCSecret)
+	if err != nil {
+		return result, err
+	}
+	note(created, "storage.garage.rpc_secret")
 
 	// One WireGuard identity per site, kept in the file rather than on the
 	// host, so rebuilding a dead machine restores the same identity and no
@@ -139,6 +153,9 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 	// than a quiet reuse of somebody else's credential.
 	if secrets.Apps == nil {
 		secrets.Apps = map[string]map[string]any{}
+	}
+	if err := CheckGarageKeys(cfg, secrets); err != nil {
+		return result, err
 	}
 	for _, name := range cfg.AppNames() {
 		app := cfg.Apps[name]
@@ -186,6 +203,12 @@ func appSecretKeys(app config.App) []string {
 		// Matrix Authentication Service in front of it needs its own.
 		keys = append(keys, masEncryptionSecret, masMatrixSecret, masSigningKey)
 	}
+	if kinds.UsesObjectStorage(app.Kind) {
+		// Per app rather than shared: one key for every app would mean each
+		// bucket granted to it with --owner, so any one app's .env would be
+		// enough to read, rewrite and delete every other app's objects.
+		keys = append(keys, "s3_access_key_id", "s3_secret_access_key")
+	}
 	sort.Strings(keys)
 	return keys
 }
@@ -212,15 +235,21 @@ const (
 
 // appSecret produces the value for one app secret key.
 //
-// Most are a generated password and the two exceptions are not a matter of
-// taste: MAS parses its encryption secret as hex and its signing key as PEM,
-// so a base64 password in either position is a service that will not start.
+// Most are a generated password. MAS parses its encryption secret as hex and
+// its signing key as PEM, so a base64 password in either position is a
+// service that will not start. Garage is stricter still: it refuses a base64
+// key ID or secret outright rather than merely failing to start with one, so
+// the two S3 credential keys get their own generators too.
 func appSecret(key string) (string, error) {
 	switch key {
 	case masEncryptionSecret:
 		return hexSecret(32)
 	case masSigningKey:
 		return rsaPrivateKeyPEM()
+	case "s3_access_key_id":
+		return garageKeyID()
+	case "s3_secret_access_key":
+		return garageSecretKey()
 	default:
 		return password()
 	}
@@ -301,15 +330,105 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 // fillString generates into a pointer when it is empty, reporting whether it
 // did.
 func fillString(into *string) (bool, error) {
+	return fillWith(into, password)
+}
+
+// fillHex is fillString for a consumer that parses its secret as hex rather
+// than taking it as an opaque string. It reuses garageSecretKey rather than
+// growing a third generator of the same shape.
+func fillHex(into *string) (bool, error) {
+	return fillWith(into, garageSecretKey)
+}
+
+// fillWith is the rule that matters in this package, in one place: nothing
+// already set is ever replaced.
+func fillWith(into *string, gen func() (string, error)) (bool, error) {
 	if *into != "" {
 		return false, nil
 	}
-	value, err := password()
+	value, err := gen()
 	if err != nil {
 		return false, err
 	}
 	*into = value
 	return true, nil
+}
+
+// garageKeyID returns an S3 access key ID in the only shape Garage accepts:
+// the literal "GK" followed by 12 hex encoded bytes. `password()` is not
+// reused here, and base64 is exactly why: Garage rejects it outright with
+// "The specified key ID is not a valid Garage key ID".
+func garageKeyID() (string, error) {
+	raw := make([]byte, 12)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("reading random bytes: %w", err)
+	}
+	return "GK" + hex.EncodeToString(raw), nil
+}
+
+// garageSecretKey returns 32 hex encoded bytes, which is the only shape Garage
+// accepts for an S3 secret key and also the only shape it accepts for
+// rpc_secret in garage.toml. One generator serves both because it is one
+// requirement, stated by the same piece of software, and a second copy is a
+// second thing to get wrong.
+func garageSecretKey() (string, error) {
+	return hexSecret(32)
+}
+
+// garageKeyIsMalformed refuses an S3 credential Garage will not accept.
+//
+// Generated credentials cannot trip this: garageKeyID and garageSecretKey
+// only ever produce the accepted shape. A hand edited secrets file can, and
+// the failure it prevents is a provisioning run that dies halfway through
+// with a message about hex encoding, after it has already imported some
+// keys.
+//
+// This lives here rather than as a validate.go rule because validate.Check
+// takes only a *config.Config and never sees secrets. Fill is the one place
+// that reads a hand written key rather than generating one, so it is the one
+// place that can see it to check it.
+func garageKeyIsMalformed(appName, key, value string) error {
+	switch key {
+	case "s3_access_key_id":
+		if !garageKeyIDPattern.MatchString(value) {
+			return fmt.Errorf("garage-key-is-malformed: apps.%s.%s is %q, which Garage will not accept. A Garage access key ID is the literal \"GK\" followed by exactly 24 lowercase hex characters.", appName, key, value)
+		}
+	case "s3_secret_access_key":
+		if !garageSecretPattern.MatchString(value) {
+			return fmt.Errorf("garage-key-is-malformed: apps.%s.%s is not in the shape Garage accepts. A Garage secret key is exactly 64 lowercase hex characters.", appName, key)
+		}
+	}
+	return nil
+}
+
+// CheckGarageKeys refuses a hand edited S3 credential Garage would reject, for
+// every app that stores objects and already has one set.
+//
+// Fill calls this itself, so `init` is covered. It is exported because `init`
+// is not the only path that reads a secrets file: `render` and `apply` both
+// call config.LoadSecrets directly and never call Fill, so a key hand edited
+// into the file after the last `init` would otherwise reach a rendered
+// artifact, and from there a host, with nothing ever having looked at it.
+// Call this once after loading secrets and before using them for anything
+// that reaches a host.
+func CheckGarageKeys(cfg *config.Config, secrets *config.Secrets) error {
+	for _, name := range cfg.AppNames() {
+		app := cfg.Apps[name]
+		if !kinds.UsesObjectStorage(app.Kind) {
+			continue
+		}
+		entries := secrets.Apps[name]
+		for _, key := range []string{"s3_access_key_id", "s3_secret_access_key"} {
+			value, _ := entries[key].(string)
+			if value == "" {
+				continue
+			}
+			if err := garageKeyIsMalformed(name, key, value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // password is 32 bytes from the system source, base64 encoded without padding.

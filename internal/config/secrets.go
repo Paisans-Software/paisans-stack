@@ -45,11 +45,13 @@ type StorageSecrets struct {
 	Garage GarageSecrets `yaml:"garage"`
 }
 
+// GarageSecrets is Garage's own credentials: the admin API token and the RPC
+// secret nodes use to talk to each other. S3 credentials are not here. They
+// are per app, under Secrets.Apps, because one shared key would let any one
+// app read, rewrite and delete every other app's objects.
 type GarageSecrets struct {
-	AdminToken      string `yaml:"admin_token"`
-	RPCSecret       string `yaml:"rpc_secret"`
-	AccessKeyID     string `yaml:"access_key_id"`
-	SecretAccessKey string `yaml:"secret_access_key"`
+	AdminToken string `yaml:"admin_token"`
+	RPCSecret  string `yaml:"rpc_secret"`
 }
 
 type SiteSecrets struct {

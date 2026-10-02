@@ -80,6 +80,11 @@ etcd:
   election_timeout_ms: 2000
 
 storage:
+  # Where objects are served from: one hostname for the deployment, since a
+  # bucket is a path under it rather than a hostname of its own. Required once
+  # any app stores objects, because the endpoint an app writes through is a
+  # mesh address and a browser cannot reach one.
+  media_hostname: media.example.org
   garage:
     sites: [home-a, home-b]
     # A factor of 2 across 2 sites means a write needs both of them: losing a
@@ -87,6 +92,11 @@ storage:
     # That is a trade, not a free win, and it is the reason a third Garage
     # location is worth considering.
     replication: 2
+    # What each node advertises to Garage's own layout, not a measurement of
+    # the disk: the toolkit has no way to know how much of it is meant for
+    # objects, so it takes your word and requires the unit suffix Garage
+    # does. Defaults to 100G when left unset.
+    capacity: 100G
 
 # Every app is rendered with trusted proxies set to the mesh subnet, never to a
 # specific host. That is what lets the gateway role move between machines later

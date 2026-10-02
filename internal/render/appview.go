@@ -111,7 +111,15 @@ type appValues struct {
 }
 
 type s3Values struct {
-	Endpoint       string
+	Endpoint string
+
+	// PublicBase is what an app writes into a page, a feed or a federated
+	// post: the media hostname, over https, never the mesh endpoint. It has
+	// to resolve for a browser and for a server that will never join this
+	// mesh, which the endpoint above does not. Empty when no media hostname is
+	// declared, so a kind that stores nothing does not carry a half-built URL.
+	PublicBase string
+
 	AccessKeyID    string
 	SecretKey      string
 	Bucket         string
@@ -191,7 +199,6 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		dbHost, dbPort = "postgres", postgresPort
 	}
 
-	garage := p.secrets.Storage.Garage
 	v := appValues{
 		App:            planned,
 		Hostname:       planned.Hostname,
@@ -216,12 +223,23 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		v.ServerName = p.homeserverServerName(v.Setting("homeserver", planned.Hostname))
 	}
 	v.S3 = s3Values{
+		// Mbin writes to this address itself, server side, over the mesh.
+		// Outline never uses it: its uploads are a presigned POST the browser
+		// submits directly, so for Outline every upload and every read goes
+		// through PublicBase, not here.
 		Endpoint:       fmt.Sprintf("http://%s:3900", garageEndpointHost(p)),
-		AccessKeyID:    garage.AccessKeyID,
-		SecretKey:      garage.SecretAccessKey,
+		AccessKeyID:    v.Secret("s3_access_key_id"),
+		SecretKey:      v.Secret("s3_secret_access_key"),
 		Bucket:         v.Setting("s3_bucket", planned.Name+"-uploads"),
 		Region:         v.Setting("s3_region", "garage"),
 		ForcePathStyle: v.SettingBool("s3_force_path_style", true),
+	}
+	// PublicBase is what an app writes into a page, a feed or a federated
+	// post: the media hostname, over https. Set only when a media hostname is
+	// declared, so a kind that stores nothing does not carry the literal
+	// string "https://" into a template that has never been written to check.
+	if p.cfg.Storage.MediaHostname != "" {
+		v.S3.PublicBase = "https://" + p.cfg.Storage.MediaHostname
 	}
 	v.OIDC = p.oidcFor(planned)
 	v.Upstreams = p.upstreams(planned.Name)

@@ -161,6 +161,20 @@ func UsesPostgres(kind config.Kind) bool {
 	return Has(kind, PostgresService)
 }
 
+// UsesObjectStorage reports whether a kind keeps uploads in S3 rather than on
+// local disk.
+//
+// Synapse is deliberately absent. Its media store is a directory the
+// homeserver owns, which is also why the synapse kind is pinned to one node.
+func UsesObjectStorage(kind config.Kind) bool {
+	switch kind {
+	case config.KindMbin, config.KindOutline:
+		return true
+	default:
+		return false
+	}
+}
+
 // ServiceNames returns a kind's service names, sorted, for an error message
 // that has to list them.
 func ServiceNames(kind config.Kind) []string {

@@ -18,7 +18,7 @@
     },
     {
       "path": "srv/docs/.env",
-      "sha256": "5a63b27493a9f5ed28b5b99473e5c3c2b0661a17133780d72921ea9533d3a683",
+      "sha256": "ee7b631d156680254d1d9d09f991276ab98f2e600d7c4d3a3e2814e173c633fe",
       "mode": "0600"
     },
     {
@@ -33,7 +33,7 @@
     },
     {
       "path": "srv/infra/garage/garage.toml",
-      "sha256": "c6cfcdb8f399c1a1e00473261ab48d5a8bbc24596d198e47d291be18d0291ac0",
+      "sha256": "9c4a10da026a5348ed01f2aaa771ab1cba9e78a74fc16d3dfb648a23ac693bf7",
       "mode": "0600"
     },
     {
@@ -48,7 +48,7 @@
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "401614ed8152ee632d07c67180b2d6298d05539884e1892260f0fdac4733dad6",
+      "sha256": "dbf033eec2e6ad3f2c1898838b7415c90952359713750e2c2a5486fdfe14f098",
       "mode": "0600"
     },
     {

@@ -12,7 +12,7 @@ replication_factor = 2
 
 rpc_bind_addr = "10.44.0.2:3901"
 rpc_public_addr = "10.44.0.2:3901"
-rpc_secret = "fixture-not-a-secret-rpc"
+rpc_secret = "dead0fadedfacadedecadeb0ad1deacc0ffeebadfeed0dd5deadbeef5eedcab5"
 
 [s3_api]
 s3_region = "garage"

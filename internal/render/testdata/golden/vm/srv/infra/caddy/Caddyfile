@@ -69,3 +69,9 @@ talk.example.org {
 web.example.org {
 	import /etc/caddy/snippets/web.caddy
 }
+
+media.example.org {
+	# Never gated. A federating server fetching an image is a machine, and it
+	# will not follow a redirect to a passkey prompt.
+	import /etc/caddy/snippets/media.caddy
+}

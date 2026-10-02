@@ -1,0 +1,23 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Object storage, served to browsers and to federating servers. What crosses
+# this hostname differs by app, and the blanket claim this comment used to make
+# was false for one of them.
+#
+# Mbin writes to Garage itself, server side, over the mesh, so its uploads do
+# not come this way and only the URL it publishes is served here.
+#
+# Outline's server never writes bytes to S3 at all. It issues a presigned POST
+# that the browser submits directly against this hostname, so for Outline every
+# upload crosses this gateway as well as every read. That is why the `Host`
+# header below is forwarded unchanged rather than merely left alone.
+#
+# NEVER GATE THIS HOSTNAME. A federating server fetching an image is a machine,
+# and it will not follow a redirect to a passkey prompt.
+#
+# Host is forwarded unchanged, and that is load bearing rather than tidy.
+# Outline presigns URLs, the signature covers the host it was signed with, and
+# rewriting this header to the upstream address invalidates every signature it
+# issues. Garage treats a host it does not recognise as a vhost as a path style
+# request, which is why path style addressing stays on for every app.
+reverse_proxy {{ .GarageAddress }}:3900

@@ -3,6 +3,7 @@ package secretsgen_test
 import (
 	"encoding/base64"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -70,7 +71,7 @@ func TestFillNeverReplacesAnExistingValue(t *testing.T) {
 
 	before := map[string]string{
 		"superuser": secrets.Cluster.SuperuserPassword,
-		"garage":    secrets.Storage.Garage.SecretAccessKey,
+		"garage":    secrets.Storage.Garage.RPCSecret,
 		"home-a-wg": secrets.Sites["home-a"].WireGuardPrivateKey,
 	}
 	talkBefore, _ := secrets.Apps["talk"]["database_password"].(string)
@@ -85,7 +86,7 @@ func TestFillNeverReplacesAnExistingValue(t *testing.T) {
 	if secrets.Cluster.SuperuserPassword != before["superuser"] {
 		t.Error("the superuser password was replaced")
 	}
-	if secrets.Storage.Garage.SecretAccessKey != before["garage"] {
+	if secrets.Storage.Garage.RPCSecret != before["garage"] {
 		t.Error("the object storage key was replaced")
 	}
 	if secrets.Sites["home-a"].WireGuardPrivateKey != before["home-a-wg"] {
@@ -202,5 +203,138 @@ func TestAHomeserversOwedClientNamesItsRedirectURI(t *testing.T) {
 	// the URI to register is not.
 	if strings.Contains(why, "https://"+cfg.Apps["chat"].Hostname+"/oauth/callback") {
 		t.Errorf("the owed client offers the callback every other kind uses:\n%s", why)
+	}
+}
+
+// Garage refuses anything else, and it refuses it at provisioning time on a
+// host rather than here, which is the worst place to discover a format.
+// Established by running dxflrs/garage:v1.0.1: "The specified key ID is not a
+// valid Garage key ID (starts with `GK`, followed by 12 hex-encoded bytes)".
+func TestGeneratedS3CredentialsMatchGaragesFormat(t *testing.T) {
+	cfg := load(t)
+	secrets := &config.Secrets{}
+	if _, err := secretsgen.Fill(cfg, secrets); err != nil {
+		t.Fatalf("filling secrets: %v", err)
+	}
+	keyID := regexp.MustCompile(`^GK[0-9a-f]{24}$`)
+	secret := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	for _, name := range cfg.AppNames() {
+		app := cfg.Apps[name]
+		if !kinds.UsesObjectStorage(app.Kind) {
+			if _, ok := secrets.Apps[name]["s3_access_key_id"]; ok {
+				t.Errorf("%s is a %s and stores no objects, but was given an S3 key", name, app.Kind)
+			}
+			continue
+		}
+		id, _ := secrets.Apps[name]["s3_access_key_id"].(string)
+		if !keyID.MatchString(id) {
+			t.Errorf("%s's s3_access_key_id is %q, which Garage will refuse", name, id)
+		}
+		sec, _ := secrets.Apps[name]["s3_secret_access_key"].(string)
+		if !secret.MatchString(sec) {
+			t.Errorf("%s's s3_secret_access_key is not 32 hex encoded bytes", name)
+		}
+	}
+}
+
+// storage.garage.rpc_secret is not an opaque string, whatever the spec used to
+// say. Garage parses it as a hex encoded 32 byte key and stops at startup with
+// "Invalid RPC secret key: expected 32 bits of entropy" against anything else,
+// so a base64 password there is a node that never comes up. admin_token is
+// genuinely unconstrained and is asserted to be the base64 password it has
+// always been, so that this test says which of the two is which rather than
+// tightening both by accident.
+func TestGarageRPCSecretIsHexAndAdminTokenIsNot(t *testing.T) {
+	cfg := load(t)
+	secrets := &config.Secrets{}
+	if _, err := secretsgen.Fill(cfg, secrets); err != nil {
+		t.Fatalf("filling secrets: %v", err)
+	}
+	hex64 := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	if !hex64.MatchString(secrets.Storage.Garage.RPCSecret) {
+		t.Errorf("storage.garage.rpc_secret must be 64 hex characters, which Garage refuses to start without. It is %d characters and does not match", len(secrets.Storage.Garage.RPCSecret))
+	}
+	if secrets.Storage.Garage.AdminToken == "" {
+		t.Error("storage.garage.admin_token was not generated")
+	}
+	if _, err := base64.RawURLEncoding.DecodeString(secrets.Storage.Garage.AdminToken); err != nil {
+		t.Errorf("storage.garage.admin_token should still be the base64 password it has always been: %v", err)
+	}
+}
+
+// Nothing already set is ever replaced, and that rule has to hold for the hex
+// generated secret too: a re-run of `init` that rotated rpc_secret would split
+// a cluster whose other nodes still carry the old one.
+func TestFillKeepsAnExistingRPCSecret(t *testing.T) {
+	cfg := load(t)
+	const existing = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	secrets := &config.Secrets{}
+	secrets.Storage.Garage.RPCSecret = existing
+	if _, err := secretsgen.Fill(cfg, secrets); err != nil {
+		t.Fatalf("filling secrets: %v", err)
+	}
+	if secrets.Storage.Garage.RPCSecret != existing {
+		t.Error("storage.garage.rpc_secret was replaced, which would split a cluster whose other nodes still hold the old one")
+	}
+}
+
+// garageKeyIsMalformed: generated credentials cannot trip this, because
+// garageKeyID and garageSecretKey only ever produce the accepted shape. A
+// hand edited secrets file can, and the failure it prevents is a provisioning
+// run that dies halfway through with a message about hex encoding, after it
+// has already imported some keys. validate.Check takes only a *config.Config
+// and never sees secrets, so this cannot live there: it lives here, where a
+// kept (not generated) app secret is the only place the toolkit ever looks at
+// a hand written key.
+func TestGarageKeyIsMalformed(t *testing.T) {
+	cfg := load(t)
+	validSecret := strings.Repeat("ab", 32)
+
+	cases := []struct {
+		name  string
+		entry map[string]any
+		want  string
+	}{
+		{
+			name: "base64 key ID",
+			entry: map[string]any{
+				"s3_access_key_id":     "not-a-valid-garage-key-id",
+				"s3_secret_access_key": validSecret,
+			},
+			want: "docs.s3_access_key_id",
+		},
+		{
+			name: "uppercase hex in the key ID",
+			entry: map[string]any{
+				"s3_access_key_id":     "GK" + strings.Repeat("AB", 12),
+				"s3_secret_access_key": validSecret,
+			},
+			want: "docs.s3_access_key_id",
+		},
+		{
+			name: "short secret key",
+			entry: map[string]any{
+				"s3_access_key_id":     "GK" + strings.Repeat("ab", 12),
+				"s3_secret_access_key": "tooshort",
+			},
+			want: "docs.s3_secret_access_key",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			secrets := &config.Secrets{Apps: map[string]map[string]any{
+				"docs": tc.entry,
+			}}
+			_, err := secretsgen.Fill(cfg, secrets)
+			if err == nil {
+				t.Fatalf("expected a malformed Garage key to be refused")
+			}
+			if !strings.Contains(err.Error(), "garage-key-is-malformed") {
+				t.Errorf("the error should name the rule garage-key-is-malformed, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the error should name the field %s, got: %v", tc.want, err)
+			}
+		})
 	}
 }

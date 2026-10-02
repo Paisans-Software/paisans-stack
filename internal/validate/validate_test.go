@@ -52,6 +52,7 @@ func TestRulesFire(t *testing.T) {
 		{"gate-without-a-gate-app", "gate-without-a-gate-app", validate.Refuse},
 		{"gated-matrix-hostname", "gated-matrix-hostname", validate.Refuse},
 		{"homeserver-must-be-pinned", "homeserver-must-be-pinned", validate.Refuse},
+		{"object-storage-without-a-media-hostname", "object-storage-without-a-media-hostname", validate.Refuse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {

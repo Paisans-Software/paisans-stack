@@ -222,9 +222,15 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	}
 
 	if site.IsGarage {
+		// No fallback onto admin_token, which is what this used to do.
+		// admin_token is a base64 password and rpc_secret is parsed as a hex
+		// encoded 32 byte key, so the fallback could only ever render a file
+		// Garage refuses to start against: "Invalid RPC secret key: expected
+		// 32 bits of entropy". Failing by name here sends an operator to
+		// `paisans init`, which generates one in the right shape.
 		rpcSecret := p.secrets.Storage.Garage.RPCSecret
 		if rpcSecret == "" {
-			rpcSecret = p.secrets.Storage.Garage.AdminToken
+			return nil, fmt.Errorf("secrets storage.garage.rpc_secret: required for a site with a Garage role, and there is no fallback. Garage parses it as 64 hex characters and will not start without one. Run `paisans init` to generate it")
 		}
 		toml, err := p.renderTemplate("garage.toml.tmpl", map[string]any{
 			"Site":        site,
@@ -246,6 +252,8 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"GateSnippets":   p.gateSnippetMounts(),
 			"TrustedProxies": p.mesh,
 			"ACMEDirective":  acme.Directive(p.cfg.ACME.Provider),
+			"MediaHostname":  p.cfg.Storage.MediaHostname,
+			"MediaSnippet":   snippetMount + mediaSnippetFile,
 		})
 		if err != nil {
 			return nil, err
@@ -257,6 +265,16 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			return nil, err
 		}
 		files = append(files, snippets...)
+
+		if p.cfg.Storage.MediaHostname != "" {
+			media, err := p.renderTemplate("media.caddy.snippet.tmpl", map[string]any{
+				"GarageAddress": garageEndpointHost(p),
+			})
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, File{Path: base + snippetDir + mediaSnippetFile, Content: media, Mode: 0o644})
+		}
 
 		gateSnippets, err := p.renderGateSnippets(base)
 		if err != nil {
@@ -303,6 +321,10 @@ const (
 	snippetDir   = "srv/infra/caddy/snippets/"
 	snippetMount = "/etc/caddy/snippets/"
 )
+
+// mediaSnippetFile is the media hostname's own routing, the one snippet
+// rendered from the storage configuration rather than from an app.
+const mediaSnippetFile = "media.caddy"
 
 // renderSnippets renders every hostname's routing onto a gateway.
 //
