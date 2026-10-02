@@ -233,6 +233,17 @@ That is read from how SigV4 works rather than observed against a running
 Outline, and it is the single claim here most likely to be wrong. The
 integration test above is where it gets settled.
 
+**The path style premise holds only for authenticated requests.** Garage's S3
+API on port 3900 refuses every unauthenticated request with `403 Forbidden:
+Garage does not support anonymous access yet`. This means Mbin's media does not
+work: the render section states that a bucket is a path under the media
+hostname, which is correct for authenticated requests only. Mbin publishes
+unsigned URLs that browsers fetch anonymously, so every image and every Liip
+Imagine thumbnail returns 403 today. The decided fix, which is not in this
+branch, is to render the separate `s3_web` endpoint, run `garage bucket website
+--allow` for buckets meant to be public, and configure the gateway to map the
+media hostname onto the vhost form Garage expects.
+
 ## Out of scope
 
 * Replication beyond a single node, and the layout changes a second site needs.

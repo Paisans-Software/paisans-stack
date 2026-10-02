@@ -108,6 +108,16 @@ This check lives in `internal/validate` rather than as a structural error in
 storage, already imports `internal/config`; `config` asking `kinds` back would
 be an import cycle.
 
+**Current limitation: Garage's S3 API does not support anonymous reads.** Outline
+works because its server presigns every object URL, so the browser's request is
+authenticated. Mbin does not work: `KBIN_STORAGE_URL` publishes an unsigned URL,
+the browser fetches it anonymously, and Garage returns `403 Forbidden: Garage
+does not support anonymous access yet`. Garage has a separate `s3_web` endpoint
+that serves anonymous reads via vhost-style requests, but the toolkit does not
+render it yet. The fix is known and scoped separately: render the `[s3_web]`
+section, run `garage bucket website --allow` for public buckets, and configure
+the gateway to map the media hostname onto the vhost form Garage expects.
+
 ### Rule 4: the domain is a one-way door
 
 Federation identity is the hostname. Mbin's actor keys are bound to it, and
