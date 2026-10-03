@@ -54,12 +54,12 @@ type Provider struct {
 var supported = map[string]Provider{
 	"cloudflare": {
 		Module:    "dns.providers.cloudflare",
-		Image:     "ghcr.io/paisans-software/caddy:2.11.4@sha256:afd8356c2b12dc8a7473ed10a99e1e575e453482e2530582bbb32de8d0be47a6",
+		Image:     "ghcr.io/paisans-software/caddy:2.11.6@sha256:ab053ca6172cdd3723701fff652f3ecd75572e03447e07a55d08464143e81147",
 		directive: "\tacme_dns cloudflare {env.ACME_DNS_TOKEN}",
 	},
 	"desec": {
 		Module: "dns.providers.desec",
-		Image:  "ghcr.io/paisans-software/caddy:2.11.4@sha256:afd8356c2b12dc8a7473ed10a99e1e575e453482e2530582bbb32de8d0be47a6",
+		Image:  "ghcr.io/paisans-software/caddy:2.11.6@sha256:ab053ca6172cdd3723701fff652f3ecd75572e03447e07a55d08464143e81147",
 		directive: "\tacme_dns desec {\n" +
 			"\t\ttoken {env.ACME_DNS_TOKEN}\n" +
 			"\t}",
