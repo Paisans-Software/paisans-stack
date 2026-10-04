@@ -1164,8 +1164,12 @@ func TestObjectStorageIsPublishedOnTheMediaHostname(t *testing.T) {
 	// reads take, must forward Host unchanged or its signatures stop
 	// verifying. TestOnlyAPublicBucketIsRewrittenToTheWebEndpoint covers the
 	// bucket route itself; this asserts the fallback never rewrites.
-	if strings.Contains(snippet, "header_up Host {upstream_hostport}") {
-		t.Error("the fallback must forward Host unchanged or Outline's presigned URLs stop verifying")
+	//
+	// Scoped to the fallback block rather than matched against a longer
+	// string: any `header_up Host` at all in that region is the bug, whatever
+	// value it carries.
+	if fallback := fallbackHandle(t, snippet); strings.Contains(fallback, "header_up Host") {
+		t.Errorf("the fallback must forward Host unchanged or Outline's presigned URLs stop verifying, got:\n%s", fallback)
 	}
 }
 
@@ -1244,8 +1248,8 @@ func TestOnlyAPublicBucketIsRewrittenToTheWebEndpoint(t *testing.T) {
 	if !strings.Contains(snippet, ":3900") {
 		t.Error("the fallback should reach the S3 API")
 	}
-	if strings.Contains(snippet, "header_up Host {upstream_hostport}") {
-		t.Error("the fallback must not rewrite Host")
+	if fallback := fallbackHandle(t, snippet); strings.Contains(fallback, "header_up Host") {
+		t.Errorf("the fallback must not rewrite Host, got:\n%s", fallback)
 	}
 
 	// Matcher length, not file order, is what Caddy sorts on. Prove the
@@ -1257,4 +1261,39 @@ func TestOnlyAPublicBucketIsRewrittenToTheWebEndpoint(t *testing.T) {
 	if !strings.Contains(snippet, "handle {\n\treverse_proxy") {
 		t.Errorf("the fallback route should carry no path matcher:\n%s", snippet)
 	}
+}
+
+// fallbackHandle returns the text of the media snippet's fallback `handle`
+// block: the one with no path matcher, which is what everything that is not a
+// public bucket takes.
+//
+// A test that wants to say "the fallback does not rewrite Host" has to look at
+// the fallback and nothing else, because the public bucket routes rewrite Host
+// legitimately and a search over the whole snippet would always match. Scoping
+// is what makes the assertion able to fail: an earlier version of it searched
+// the whole file for a longer string the template cannot produce, which made it
+// unfalsifiable and so no protection at all.
+func fallbackHandle(t *testing.T, snippet string) string {
+	t.Helper()
+	open := strings.Index(snippet, "\nhandle {\n")
+	if open < 0 {
+		t.Fatalf("the media snippet has no fallback handle block:\n%s", snippet)
+	}
+	// Brace counting from the block's own opening brace, so a nested block
+	// (the reverse_proxy body, when it has one) does not end the region early.
+	start := open + len("\nhandle ")
+	depth := 0
+	for i := start; i < len(snippet); i++ {
+		switch snippet[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return snippet[start : i+1]
+			}
+		}
+	}
+	t.Fatalf("unterminated fallback handle block:\n%s", snippet[start:])
+	return ""
 }
