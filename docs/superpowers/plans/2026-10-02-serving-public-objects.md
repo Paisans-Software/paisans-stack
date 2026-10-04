@@ -528,3 +528,369 @@ MSG
 **Type consistency.** `kinds.ServesObjectsPublicly` is declared in Task 1 and used by name in Tasks 2 and 3. `PublicBuckets`, with `Bucket` and `Vhost`, is introduced in Task 2 and used only there; Task 2 step 4 says to match the template to the names chosen in step 3 rather than assuming these. `garage.Build` and `garage.Execute` keep the signatures the previous branch established.
 
 **One risk the plan cannot remove.** Task 4 depends on the pinned Caddy image accepting `uri strip_prefix` inside a `handle` block with a `header_up Host` override, which I have not run. If Caddy rejects that shape, Task 4 fails loudly rather than silently, which is the correct place for that discovery.
+
+---
+
+## Amendment, 2026-10-04: `writefreely` becomes the wisp fork
+
+Tasks 5 and 6 implement the spec's amendment of the same date. They are
+independent of Tasks 1 to 4 except where noted: nothing here touches the media
+hostname, the `s3_web` endpoint or the gateway routing, because the fork serves
+its own images and never exposes its bucket.
+
+### What this change contradicts, found before dispatching
+
+Four existing tests assert the truth this amendment reverses, and one refusal
+loses its only fixture. Each must be updated deliberately rather than
+discovered by a red suite:
+
+| Location | Asserts today | After |
+|---|---|---|
+| `internal/kinds/kinds_test.go:21` | `UsesObjectStorage(writefreely)` is false | true |
+| `internal/render/render_test.go:230` | no file under `blog/` contains `postgresql://`, "which it has never supported" | its config carries a Postgres host, so the assertion inverts |
+| `internal/secretsgen/secretsgen_test.go:137` | WriteFreely gets no `database_password` | it gets one |
+| `internal/render/render_test.go:545` | lists the kinds shipping a template set | unchanged, writefreely still ships one |
+| `internal/validate/testdata/cluster-placement-without-a-cluster.yaml:56` | uses writefreely as the kind with no Postgres, to trip that refusal | **the fixture stops tripping the rule and must switch kinds** |
+
+That last row is the one that matters. The rule refuses `placement: cluster`
+for a kind with no Postgres service, and writefreely was its example. After
+this change writefreely has one, so the fixture validates cleanly and the rule
+has no coverage at all. The fixture must move to a kind that still has no
+Postgres: `element` or `oauth2-proxy`. Check which of those the fixture can use
+without tripping a different rule, and say in the commit message which you
+chose and why.
+
+---
+
+### Task 5: The kind gains Postgres and object storage, and the fork's image
+
+**Files:**
+- Modify: `internal/kinds/kinds.go`
+- Modify: `internal/kinds/kinds_test.go`
+- Modify: `internal/validate/testdata/cluster-placement-without-a-cluster.yaml`
+- Test: `internal/kinds/kinds_test.go`, `internal/validate/validate_test.go`
+
+**Interfaces:**
+- Consumes: `kinds.ServesObjectsPublicly` from Task 1, which must return **false** for writefreely.
+- Produces: `writefreely` with a `postgres` service, `UsesPostgres` and `UsesObjectStorage` true, `ServesObjectsPublicly` false, and the fork's image as its default.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+// The wisp fork supports Postgres and S3, so the blog joins the same cluster
+// and the same object store as everything else. Its objects are not public:
+// the fork streams images through its own /uploads/ route rather than emitting
+// an S3 URL, so nothing anonymous ever reaches its bucket.
+func TestWriteFreelyUsesPostgresAndPrivateObjectStorage(t *testing.T) {
+	if !kinds.UsesPostgres(config.KindWriteFreely) {
+		t.Error("the wisp fork keeps its data in Postgres")
+	}
+	if !kinds.UsesObjectStorage(config.KindWriteFreely) {
+		t.Error("the wisp fork keeps uploaded images in S3")
+	}
+	if kinds.ServesObjectsPublicly(config.KindWriteFreely) {
+		t.Fatal("the fork serves its own images, so its bucket must never be world readable")
+	}
+	var sawPostgres bool
+	for _, s := range kinds.Services(config.KindWriteFreely) {
+		if s.Name == kinds.PostgresService {
+			sawPostgres = true
+		}
+	}
+	if !sawPostgres {
+		t.Error("a pinned blog runs its own Postgres beside itself, so the kind needs that service")
+	}
+}
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `go test ./internal/kinds -run TestWriteFreelyUsesPostgresAndPrivateObjectStorage -v`
+Expected: FAIL on every assertion.
+
+- [ ] **Step 3: Change the catalogue entry**
+
+Replace the comment that says WriteFreely has never supported Postgres. The
+entry gains a `postgres` service alongside `app`, exactly as mbin and outline
+have one, and its app image becomes:
+
+```
+ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea
+```
+
+The comment must say three things, because each is a fact somebody will
+otherwise have to rediscover: that this kind means the wisp fork rather than
+upstream WriteFreely, that upstream's image will reject the configuration this
+kind renders, and that the digest is a `develop` build because no release
+carries Postgres or S3 yet, with a note to bump it when one does.
+
+Do not take the digest on trust. Resolve it yourself and confirm it is a
+multi architecture index covering amd64 and arm64, and that its binary
+contains the `s3_secret_access_key` ini tag. Put the commands and their output
+in your report. If the digest no longer resolves or lacks the features, stop
+and report that rather than pinning something else.
+
+- [ ] **Step 4: Update the three tests that assert the old truth**
+
+`internal/kinds/kinds_test.go:21` flips `config.KindWriteFreely` to true in the
+`UsesObjectStorage` table. Add writefreely to whatever table covers
+`UsesPostgres`, and to the `ServesObjectsPublicly` coverage from Task 1 as
+false.
+
+`internal/secretsgen/secretsgen_test.go:137` asserts WriteFreely gets no
+`database_password`. It now gets one. Invert the assertion and reword the
+comment, which currently says it has never supported Postgres.
+
+`internal/render/render_test.go:230` asserts no file under `blog/` contains
+`postgresql://`. Task 6 renders the Postgres connection, so this assertion
+belongs to Task 6's step where the rendering lands. In this task, leave it
+alone: it still passes, because nothing renders a connection yet.
+
+- [ ] **Step 5: Move the refusal's fixture to a kind that still has no Postgres**
+
+`internal/validate/testdata/cluster-placement-without-a-cluster.yaml` uses
+writefreely to trip `cluster-placement-without-a-cluster`, and the comment in
+it says WriteFreely has no Postgres so there is no cluster for it to join.
+After step 3 that is false and the fixture validates cleanly, which silently
+removes the rule's only coverage.
+
+Switch it to `element` or `oauth2-proxy`, whichever does not trip a different
+rule, and update the comment to say why that kind has no cluster to join. Run
+the validate suite and confirm the fixture still produces exactly one finding,
+and that it is still `cluster-placement-without-a-cluster`.
+
+- [ ] **Step 6: Run everything and commit**
+
+```bash
+go test ./... -count=1 && go vet ./...
+git add internal/kinds internal/validate
+git commit -m "feat: writefreely means the wisp fork, with Postgres and S3
+
+$(cat <<'MSG'
+The fork supports both, so the blog joins the same Patroni cluster and the same
+Garage node as everything else rather than running a SQLite file nothing else
+can reach.
+
+Its objects stay private. The fork streams images through its own /uploads/
+route from whichever store is configured and never emits or presigns an S3 URL,
+so nothing anonymous reaches its bucket and it needs no website access.
+
+This breaks an adopter running upstream's image, which has no Postgres and no
+[storage] section and will reject what this kind renders. The README and the
+decision record say so in those words.
+
+The image is a develop build by digest because no release carries these
+features. The digest was resolved and its binary checked rather than trusted.
+
+cluster-placement-without-a-cluster used writefreely as its example of a kind
+with no Postgres. That is no longer true, so the fixture moved to a kind that
+still has none, or the rule would have kept passing with no coverage.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+MSG
+)"
+```
+
+---
+
+### Task 6: Render the fork's Postgres and S3 configuration
+
+**Files:**
+- Modify: `internal/render/templates/writefreely/config.ini.secret.tmpl`
+- Modify: `internal/render/templates/writefreely/compose.yaml.tmpl`
+- Modify: `internal/render/render_test.go`
+- Modify: `README.md`, `docs/decisions.md`, `examples/paisans.example.yaml`
+- Test: `internal/render/render_test.go`
+
+**Interfaces:**
+- Consumes: everything from Task 5, plus the per app S3 credentials and `DSN` the app view already provides for mbin and outline.
+- Produces: a `config.ini` whose `[database]` and `[storage]` sections match the fork's own keys.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+// The fork reads these keys and validates them at load rather than at the
+// first upload, so a wrong key name is a container that will not start.
+// Checked against config/config.go and config/storage.go on the fork's
+// develop branch.
+func TestTheBlogReadsPostgresAndS3(t *testing.T) {
+	tree := build(t)
+	conf := tree.file(t, "home-a/srv/blog/config.ini")
+
+	for _, want := range []string{
+		"type = postgres",
+		"type = s3",
+		"s3_endpoint = http://10.44.0.1:3900",
+		"s3_bucket = blog-uploads",
+		"s3_access_key_id = ",
+		"s3_secret_access_key = ",
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("config.ini is missing %q:\n%s", want, conf)
+		}
+	}
+	if strings.Contains(conf, "type = sqlite3") {
+		t.Error("the fork keeps its data in Postgres, so the SQLite section should be gone")
+	}
+	if strings.Contains(conf, "s3_virtual_host = true") {
+		t.Error("Garage needs path style addressing, which is the fork's default")
+	}
+}
+```
+
+Read the fixture before fixing the expected endpoint and bucket: the endpoint
+is whatever `garageEndpointHost` yields for the fixture and the bucket is the
+app's own name plus `-uploads` unless a setting overrides it. Assert the
+endpoint is the same internal address Mbin writes through rather than a
+hardcoded value, the way Task 3 of the previous branch did.
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `go test ./internal/render -run TestTheBlogReadsPostgresAndS3 -v`
+Expected: FAIL, the template still renders `type = sqlite3` and no storage
+section.
+
+- [ ] **Step 3: Render the two sections**
+
+Replace the `[database]` section in
+`internal/render/templates/writefreely/config.ini.secret.tmpl`:
+
+```
+[database]
+; Postgres, the same cluster everything else uses. A pinned blog talks to the
+; Postgres container beside it; a clustered one talks to the local HAProxy,
+; which is what .DSN already resolves for every other kind.
+;
+; tls is false because the connection does not leave the host: the fork maps
+; true to sslmode=require and false to sslmode=disable, so this is the
+; difference between requiring TLS to a local socket and not.
+type = postgres
+host = {{ .DBHost }}
+port = {{ .DBPort }}
+database = {{ .DBName }}
+username = {{ .DBUser }}
+password = {{ .DBPassword }}
+tls = false
+```
+
+and add, after `[uploads]` if there is one or beside it:
+
+```
+[storage]
+; Uploaded images live in Garage rather than on the container's disk, so a
+; clustered blog does not pin itself to one node by its own uploads.
+;
+; This bucket is NOT public, and that is not an oversight. The fork streams
+; images through its own /uploads/ route with http.ServeContent, from whichever
+; store is configured, and never emits or presigns an S3 URL. Nothing anonymous
+; ever reaches this bucket, so it gets no website access and no route on the
+; media hostname.
+;
+; s3_virtual_host is left at its default, which is path style, because that is
+; what Garage needs.
+type = s3
+s3_endpoint = {{ .S3.Endpoint }}
+s3_region = {{ .S3.Region }}
+s3_bucket = {{ .S3.Bucket }}
+s3_access_key_id = {{ .S3.AccessKeyID }}
+s3_secret_access_key = {{ .S3.SecretKey }}
+```
+
+The view fields are whatever the existing app view calls them; `DBHost` and
+friends are illustrative. Read `appview.go` and use what mbin and outline
+already use for the same job rather than adding parallel fields. If the view
+exposes a single `DSN` and no parts, the fork needs the parts, so derive them
+in the view beside the DSN rather than parsing it in the template.
+
+- [ ] **Step 4: Make the compose file match**
+
+`internal/render/templates/writefreely/compose.yaml.tmpl` describes a SQLite
+file in a comment, and a pinned blog now needs the `postgres` service the kind
+gained. Follow the mbin or outline compose template, which already render that
+service for a pinned app and omit it for a clustered one, and correct the
+comment.
+
+- [ ] **Step 5: Invert the test that forbade a Postgres connection**
+
+`internal/render/render_test.go` asserts that no file under `blog/` contains
+`postgresql://`, with the message "which it has never supported". Replace it
+with the opposite: the blog's configuration must now carry the same database
+host the rest of the deployment uses. Keep a test there rather than deleting
+it, because the thing worth asserting is that the blog and its neighbours
+agree about where the database is.
+
+- [ ] **Step 6: Regenerate the golden tree and read it**
+
+Run `go test ./internal/render -run TestRender -update`, then
+`git diff internal/render/testdata/golden`.
+
+Expected: `blog/config.ini` on each site that runs it, `blog/compose.yaml`, the
+manifests, and a `blog` Postgres password and S3 credentials appearing in the
+fixture secrets if `init` is what fills them. **If the blog's placement in the
+fixture is pinned, its Postgres service appears; if clustered, it does not.**
+Confirm which the fixture declares and that the output matches.
+
+- [ ] **Step 7: Say what changed, where an adopter will see it**
+
+`README.md`: the `writefreely` kind means the wisp fork. It keeps its data in
+Postgres and its uploads in Garage, it can be clustered, and **upstream
+WriteFreely's image will reject this configuration**. Say that plainly, in the
+section listing the kinds.
+
+`docs/decisions.md`: an entry recording that the kind changed meaning, that
+this is a breaking change for a public toolkit, that a second kind for the fork
+was the rejected alternative, that the image is an unreleased `develop` build
+pinned by digest and why, and the finding that the fork serves its own images
+so its bucket stays private.
+
+`examples/paisans.example.yaml`: if it comments on the blog being SQLite or
+pinned for that reason, correct it.
+
+- [ ] **Step 8: Run everything and commit**
+
+```bash
+go test ./... -count=1 && go vet ./... && go test -tags garage_integration ./internal/garage -count=1
+git add internal/render README.md docs/decisions.md examples
+git commit -m "feat: render the blog's Postgres and S3 configuration
+
+$(cat <<'MSG'
+The fork reads [database] type = postgres and [storage] type = s3, and
+validates both at load rather than at the first upload, so a wrong key name is
+a container that does not start. The keys here were read from config/config.go
+and config/storage.go on the fork's develop branch.
+
+s3_virtual_host is left at its default, path style, because that is what Garage
+needs and the fork's comment says so.
+
+The bucket is private. The fork streams images through its own /uploads/ route
+and never emits an S3 URL, so nothing anonymous reaches it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+MSG
+)"
+```
+
+---
+
+## Amended self-review
+
+**Spec coverage for the amendment.** The kind's services, predicates and image:
+Task 5. The rendered configuration, the compose change, the breaking change
+notice and the record: Task 6. The spec's finding that the fork serves its own
+images is enforced in Task 5 by asserting `ServesObjectsPublicly` is false and
+in Task 6 by the comment in the rendered template, which is where the next
+person will be standing.
+
+**The contradiction table above is the preflight scan for this amendment.**
+Every row was found by reading the tests rather than by running them, and the
+`cluster-placement-without-a-cluster` row is the one that would otherwise pass
+silently with no coverage.
+
+**What the amendment does not test, stated plainly.** Nothing here runs the
+fork. The claim that it accepts this configuration rests on reading its
+`config.go` and `storage.go`, and the claim that it serves images itself rests
+on reading `imagestore.go`. Booting the image against the rendered `config.ini`
+would settle the first and is worth trying in Task 6: if it is cheap, do it and
+report the output; if it needs a reachable Postgres and a reachable Garage to
+get far enough to validate, say so and leave it, because the integration test
+that would arrange all three belongs to its own task rather than this one.
