@@ -252,6 +252,63 @@ func TestASiteWithNoGarageRoleIsRefused(t *testing.T) {
 	}
 }
 
+// Website access is what makes an object readable with no credential, and it
+// is per bucket. Mbin's bucket needs it. Outline's must never have it, because
+// its bucket holds the attachments of documents only members can read.
+func TestOnlyAPublicBucketIsAllowedWebsiteAccess(t *testing.T) {
+	transport := &fakeTransport{responses: map[string]response{
+		"layout show": {out: "Connection established to 51494feb5444d466\n==== CURRENT CLUSTER LAYOUT ====\nID  Tags  Zone  Capacity\n51494feb5444d466  []  home-a  100.0 GB\n\nCurrent cluster layout version: 1\n"},
+		"node id -q":  {out: "51494feb5444d466aaaabbbbccccddddeeeeffff00001111222233334444abcd@10.44.0.1:3901\n"},
+		"key info":    {out: "Key name: talk\nKey ID: GK00112233445566778899aabb\n"},
+		"bucket info": {out: "Bucket: cfc236316d4a81858f84f84c287f5a0d\nSize: 0 B\nObjects: 0\n"},
+	}}
+
+	plan, err := garage.Build("home-a", fixtureConfig(t), fixtureSecrets(t), transport)
+	if err != nil {
+		t.Fatalf("building the plan: %v", err)
+	}
+
+	var website []string
+	for _, s := range plan.Steps {
+		if strings.Contains(s.Command, "bucket website") {
+			website = append(website, s.Command)
+		}
+	}
+	joined := strings.Join(website, "\n")
+	if !strings.Contains(joined, "bucket website --allow talk-uploads") {
+		t.Errorf("mbin's bucket needs website access or its media stays unreadable, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "docs-uploads") {
+		t.Errorf("outline's bucket must never be world readable, got:\n%s", joined)
+	}
+}
+
+// Garage cannot allow website access on a bucket that does not exist, so the
+// website step for a given bucket must come after that bucket's create step.
+func TestWebsiteAccessIsPlannedAfterTheBucketExists(t *testing.T) {
+	transport := &fakeTransport{responses: map[string]response{
+		"layout show": {out: "Connection established to 51494feb5444d466\n==== CURRENT CLUSTER LAYOUT ====\nNo nodes currently have a role in the cluster.\n\nCurrent cluster layout version: 0\n"},
+		"node id -q":  {out: "51494feb5444d466aaaabbbbccccddddeeeeffff00001111222233334444abcd@127.0.0.1:3901\n"},
+		"key info":    {out: "Error: 0 matching keys", err: errors.New("exit status 1")},
+		"bucket info": {out: "Error: Bucket not found / several matching buckets: talk-uploads", err: errors.New("exit status 1")},
+	}}
+
+	plan, err := garage.Build("home-a", fixtureConfig(t), fixtureSecrets(t), transport)
+	if err != nil {
+		t.Fatalf("building the plan: %v", err)
+	}
+
+	commands := commandsOf(plan)
+	create := indexOfContaining(commands, "bucket create talk-uploads")
+	website := indexOfContaining(commands, "bucket website --allow talk-uploads")
+	if create < 0 || website < 0 {
+		t.Fatalf("expected both a bucket create and a website allow step for talk-uploads, got:\n%s", strings.Join(commands, "\n"))
+	}
+	if !(create < website) {
+		t.Errorf("website access must be planned after the bucket exists, got create at %d and website at %d:\n%s", create, website, strings.Join(commands, "\n"))
+	}
+}
+
 // Execute stops at the first failing step and names it, rather than carrying
 // on and leaving a node in a state nobody can describe.
 //

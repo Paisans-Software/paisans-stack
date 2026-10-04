@@ -297,6 +297,25 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 			Describe: fmt.Sprintf("grant %s's key read/write/owner on its bucket", name),
 			Command:  fmt.Sprintf("%s bucket allow --read --write --owner %s --key %s", garageCmd, bucket, keyID),
 		})
+
+		if kinds.ServesObjectsPublicly(app.Kind) {
+			// Website access is what lets a request with no credential read
+			// this bucket. It is planned unconditionally, like the grant
+			// above, because it is a set rather than a create: established by
+			// running `garage bucket website --allow` twice against a real
+			// dxflrs/garage:v1.0.1 container, which printed the identical
+			// "Website access allowed for <bucket>" and exited 0 both times.
+			//
+			// Nothing here ever revokes it. A bucket that stops being public
+			// is a change to the kinds catalogue, which is a code change with
+			// a review, and a provisioner that guessed a human meant to
+			// withdraw public access would be guessing about the one thing in
+			// this package that cannot be undone quietly.
+			plan.Steps = append(plan.Steps, Step{
+				Describe: fmt.Sprintf("allow website access on %s's bucket", name),
+				Command:  fmt.Sprintf("%s bucket website --allow %s", garageCmd, bucket),
+			})
+		}
 	}
 
 	return plan, nil
