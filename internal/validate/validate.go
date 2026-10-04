@@ -137,6 +137,7 @@ func Check(cfg *config.Config) Result {
 	c.objectStorageWithoutAMediaHostname()
 	c.configKeyIsNestedInAnEnvFile()
 	c.configKeyLooksLikeASecret()
+	c.configKeySteersCompose()
 
 	c.evenVoters()
 	c.meshIsNotPrivate()
@@ -801,8 +802,10 @@ func (c *checker) configKeyIsNestedInAnEnvFile() {
 	}
 }
 
-// secretWords are the fragments of a key name that suggest a credential.
-var secretWords = []string{"password", "secret", "token", "apikey", "private_key"}
+// secretWords are the fragments of a key name that suggest a credential,
+// matched against the lowercased name with `_`, `-` and `.` removed, so that
+// SENDGRID_API_KEY, privateKey and private-key all read as the same word.
+var secretWords = []string{"password", "secret", "token", "apikey", "privatekey"}
 
 // configKeyLooksLikeASecret refuses a key named like a credential.
 //
@@ -811,17 +814,56 @@ var secretWords = []string{"password", "secret", "token", "apikey", "private_key
 // a long day. The check is by name and is deliberately narrow: it refuses the
 // one thing it can see, and says so, rather than claiming to be a policy.
 func (c *checker) configKeyLooksLikeASecret() {
+	squash := strings.NewReplacer("_", "", "-", "", ".", "")
 	for _, name := range c.cfg.AppNames() {
 		app := c.cfg.Apps[name]
 		for _, key := range sortedKeys(app.Config) {
-			lower := strings.ToLower(key)
+			squashed := squash.Replace(strings.ToLower(key))
 			for _, word := range secretWords {
-				if !strings.Contains(lower, word) {
+				if !strings.Contains(squashed, word) {
 					continue
 				}
 				c.refuse("config-key-looks-like-a-secret", fmt.Sprintf("apps.%s.config.%s", name, key),
-					"is named like a credential (it contains %q). paisans.yaml is plaintext and meant to be committed, so a secret does not belong in it: put the value in secrets.enc.yaml. This check is by name and will not catch a credential named something else, so it is no substitute for looking.",
+					"is named like a credential (it contains %q, ignoring case and the separators _ - and .). paisans.yaml is plaintext and meant to be committed, so a secret does not belong in it: put the value in secrets.enc.yaml. This check is by name and will not catch a credential named something else, so it is no substitute for looking.",
 					word)
+				break
+			}
+		}
+	}
+}
+
+// composeSteeringPrefixes are the variable name prefixes refused on an env
+// kind by configKeySteersCompose.
+var composeSteeringPrefixes = []string{"COMPOSE_", "DOCKER_"}
+
+// configKeySteersCompose refuses an env key that would configure compose
+// rather than the application.
+//
+// apply runs `docker compose -f /srv/<app>/compose.yaml up -d`, and compose
+// reads the .env beside that file for its own settings as well as handing it
+// to the containers. Run with `docker compose config` on Docker Compose
+// v5.4.0 (the operator's Mac, not a host): COMPOSE_PROJECT_NAME in that .env
+// renamed the project and COMPOSE_PROFILES changed which services were
+// active. That apply would then address containers under another project
+// name than the ones it started before is reasoned, not run. DOCKER_HOST in
+// the same .env did NOT redirect `docker compose ps` in that run; DOCKER_ is
+// refused anyway as the docker CLI's own namespace, which no application
+// variable should need, so the rule does not depend on knowing which of
+// those compose honours from a file.
+func (c *checker) configKeySteersCompose() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if kinds.ConfigFormat(app.Kind) != kinds.ConfigEnv {
+			continue
+		}
+		for _, key := range sortedKeys(app.Config) {
+			for _, prefix := range composeSteeringPrefixes {
+				if !strings.HasPrefix(key, prefix) {
+					continue
+				}
+				c.refuse("config-key-steers-compose", fmt.Sprintf("apps.%s.config.%s", name, key),
+					"starts with %s. When apply runs compose for this stack, compose reads the stack's %s for its own settings as well as handing it to the application, and a variable there can rename the project or change which services are active. That is compose's configuration, not the application's: it belongs in the toolkit, not in config.",
+					prefix, kinds.ConfigFile(app.Kind))
 				break
 			}
 		}

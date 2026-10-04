@@ -55,6 +55,7 @@ func TestRulesFire(t *testing.T) {
 		{"object-storage-without-a-media-hostname", "object-storage-without-a-media-hostname", validate.Refuse},
 		{"config-key-is-nested-in-an-env-file", "config-key-is-nested-in-an-env-file", validate.Refuse},
 		{"config-key-looks-like-a-secret", "config-key-looks-like-a-secret", validate.Refuse},
+		{"config-key-steers-compose", "config-key-steers-compose", validate.Refuse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
@@ -84,6 +85,88 @@ func TestRulesFire(t *testing.T) {
 				t.Fatalf("a warning blocked rendering: %v", result.Refusals())
 			}
 		})
+	}
+}
+
+// withConfig is the valid fixture plus the element app of the secret fixture,
+// so that env (docs, auth) and json (web) kinds are all present, with every
+// passthrough map emptied and then one app's replaced by keys.
+func withConfig(t *testing.T, app string, keys map[string]any) *config.Config {
+	t.Helper()
+	cfg := load(t, "config-key-looks-like-a-secret")
+	for name, a := range cfg.Apps {
+		a.Config = nil
+		cfg.Apps[name] = a
+	}
+	if result := validate.Check(cfg); len(result.Findings) != 0 {
+		t.Fatalf("the base for these cases is not quiet: %v", result.Findings)
+	}
+	a, ok := cfg.Apps[app]
+	if !ok {
+		t.Fatalf("the fixture declares no app %q", app)
+	}
+	a.Config = keys
+	cfg.Apps[app] = a
+	return cfg
+}
+
+// refusedFor reports whether rule refused exactly the given key.
+func refusedFor(result validate.Result, rule, key string) bool {
+	for _, f := range result.Refusals() {
+		if f.Rule == rule && f.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// The secret check reads a name the way people write one, so the separator a
+// convention puts between the words does not hide the word. The env spelling
+// API_KEY is the likeliest real case, and the camel case privateKey the json
+// one.
+func TestTheSecretCheckIgnoresSeparatorsAndCase(t *testing.T) {
+	cases := []struct {
+		app, key string
+		refused  bool
+	}{
+		{"docs", "SENDGRID_API_KEY", true},
+		{"web", "privateKey", true},
+		{"web", "signing.private-key", true},
+		{"docs", "SMTP_PASSWORD", true},
+		{"web", "app.api_token", true},
+		// A control: an ordinary name in the same places is not refused, so
+		// the rows above are not passing because everything is.
+		{"docs", "DEFAULT_LANGUAGE", false},
+		{"web", "default_theme", false},
+	}
+	for _, tc := range cases {
+		result := validate.Check(withConfig(t, tc.app, map[string]any{tc.key: "x"}))
+		got := refusedFor(result, "config-key-looks-like-a-secret", "apps."+tc.app+".config."+tc.key)
+		if got != tc.refused {
+			t.Errorf("%s on %s: refused=%v, want %v. findings: %v", tc.key, tc.app, got, tc.refused, result.Findings)
+		}
+	}
+}
+
+// Both prefixes are refused on an env kind, whose .env compose also reads,
+// and on no other kind, whose config file compose never sees.
+func TestComposeSteeringKeysAreRefusedOnEnvKindsOnly(t *testing.T) {
+	cases := []struct {
+		app, key string
+		refused  bool
+	}{
+		{"docs", "COMPOSE_PROJECT_NAME", true},
+		{"docs", "COMPOSE_PROFILES", true},
+		{"auth", "DOCKER_HOST", true},
+		{"web", "COMPOSE_PROJECT_NAME", false},
+		{"docs", "MY_COMPOSE_NOTE", false},
+	}
+	for _, tc := range cases {
+		result := validate.Check(withConfig(t, tc.app, map[string]any{tc.key: "x"}))
+		got := refusedFor(result, "config-key-steers-compose", "apps."+tc.app+".config."+tc.key)
+		if got != tc.refused {
+			t.Errorf("%s on %s: refused=%v, want %v. findings: %v", tc.key, tc.app, got, tc.refused, result.Findings)
+		}
 	}
 }
 
