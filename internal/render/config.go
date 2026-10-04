@@ -72,6 +72,53 @@ func owningSetting(kind config.Kind, key string) (string, bool) {
 	return "", false
 }
 
+// templateOmission records a key a kind's template leaves out of its config
+// file on purpose, because putting it back would undo a decision the toolkit
+// made. Such a key is owned by the template exactly as a key it writes is, and
+// a passthrough key that names it is refused as config-key-already-rendered.
+//
+// Only keys the template's own comments name as deliberately absent are here,
+// so that this table records decisions rather than guesses. Synapse's header
+// says the file "deliberately declares no identity provider of its own and no
+// local password database". The six keys below are Synapse's blocks for
+// those: oidc_providers, oidc_config (its deprecated single provider form),
+// saml2_config, cas_config and jwt_config each describe a way to register or
+// log in, and password_config the local password logins. Read in
+// docs/usage/configuration/config_documentation.md at tag v1.160.0, the
+// version the kind pins, on 2026-10-04. WriteFreely's [uploads] comment says
+// "dir is deliberately absent".
+type templateOmission struct {
+	Kind config.Kind
+	// Key is in that kind's `config` syntax. It matches itself and any path
+	// beneath it, so oidc_config.enabled is caught by oidc_config.
+	Key string
+	// Why completes the refusal's "leaves <key> out of <file> on purpose: ".
+	Why string
+}
+
+const synapseIdentity = "this homeserver is a resource server and Matrix Authentication Service owns every login, so an identity provider or a password database of its own would be a second way in that bypasses the group restriction at the identity provider"
+
+var templateOmissions = []templateOmission{
+	{config.KindSynapse, "cas_config", synapseIdentity},
+	{config.KindSynapse, "jwt_config", synapseIdentity},
+	{config.KindSynapse, "oidc_config", synapseIdentity},
+	{config.KindSynapse, "oidc_providers", synapseIdentity},
+	{config.KindSynapse, "password_config", synapseIdentity},
+	{config.KindSynapse, "saml2_config", synapseIdentity},
+
+	{config.KindWriteFreely, "uploads.dir", "uploads are stored in S3 through [storage], and dir names a path on one node that only the local image store reads, so it would do nothing here and suggest that it did"},
+}
+
+// omittedOnPurpose is the omission a passthrough key falls under, if any.
+func omittedOnPurpose(kind config.Kind, key string) (templateOmission, bool) {
+	for _, o := range templateOmissions {
+		if o.Kind == kind && (key == o.Key || strings.HasPrefix(key, o.Key+".")) {
+			return o, true
+		}
+	}
+	return templateOmission{}, false
+}
+
 // mergers is the configmerge function for each format.
 var mergers = map[kinds.Format]func(string, map[string]any) (string, error){
 	kinds.ConfigEnv:  configmerge.Env,
@@ -91,8 +138,9 @@ func mergeConfig(app plannedApp, keys map[string]any, stack string, files []File
 	format := kinds.ConfigFormat(app.Kind)
 	merge, ok := mergers[format]
 	if !ok {
-		// validate refuses this first; this is the guard for a caller that
-		// reaches Build without validating.
+		// Unreachable today: every kind renders a config file, so no rule in
+		// validate refuses this first (that refusal was dropped for having
+		// nothing to refuse). This is the guard for a future kind without one.
 		return fmt.Errorf("apps.%s.config: kind %s renders no configuration file, so there is nowhere for a passthrough key to go", app.Name, app.Kind)
 	}
 	name := kinds.ConfigFile(app.Kind)
@@ -104,6 +152,13 @@ func mergeConfig(app plannedApp, keys map[string]any, stack string, files []File
 	}
 	if target < 0 {
 		return fmt.Errorf("apps.%s.config: kind %s reads its configuration from %s, but its template set rendered no such file", app.Name, app.Kind, name)
+	}
+
+	for _, key := range sortedKeys(keys) {
+		if o, ok := omittedOnPurpose(app.Kind, key); ok {
+			return fmt.Errorf("config-key-already-rendered: apps.%s.config.%s: the template %s leaves %s out of /srv/%s/%s on purpose: %s. A key a template omits by decision is owned by the template as surely as one it writes, so a passthrough key may not put it back; that is a template change, and it is reviewable.",
+				app.Name, key, strings.TrimPrefix(sources[files[target].Path], "templates/"), o.Key, app.Name, name, o.Why)
+		}
 	}
 
 	// Compose gives a service's `environment:` precedence over its env_file,

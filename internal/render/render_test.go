@@ -1547,6 +1547,57 @@ func TestBuildRefusesAKeyTheTemplateAlreadyWrote(t *testing.T) {
 	}
 }
 
+// A key the template leaves out on purpose is owned by the template as much as
+// one it writes. Synapse writes no identity provider and no password database
+// of its own, so no collision would ever catch one of those blocks coming
+// back: the refusal has to know the template's decision. A path beneath the
+// key is caught by its top level segment, and a name that merely starts the
+// same way is not.
+func TestBuildRefusesAKeyTheTemplateLeavesOutOnPurpose(t *testing.T) {
+	refused := []struct {
+		app, key, omitted, template string
+		value                       any
+	}{
+		{"chat", "oidc_providers", "oidc_providers", "synapse/homeserver.yaml.secret.tmpl", "x"},
+		{"chat", "oidc_config.enabled", "oidc_config", "synapse/homeserver.yaml.secret.tmpl", true},
+		{"chat", "cas_config.enabled", "cas_config", "synapse/homeserver.yaml.secret.tmpl", true},
+		{"chat", "saml2_config.config_path", "saml2_config", "synapse/homeserver.yaml.secret.tmpl", "/data/saml.yaml"},
+		{"chat", "jwt_config.enabled", "jwt_config", "synapse/homeserver.yaml.secret.tmpl", true},
+		{"chat", "password_config.enabled", "password_config", "synapse/homeserver.yaml.secret.tmpl", true},
+		{"blog", "uploads.dir", "uploads.dir", "writefreely/config.ini.secret.tmpl", "/data/uploads"},
+	}
+	for _, tc := range refused {
+		_, err := render.Build(withConfig(t, tc.app, map[string]any{tc.key: tc.value}), fixtureSecrets(t))
+		if err == nil {
+			t.Errorf("%s on %s: the template leaves %s out on purpose, so the build must stop", tc.key, tc.app, tc.omitted)
+			continue
+		}
+		for _, want := range []string{
+			"config-key-already-rendered",
+			"apps." + tc.app + ".config." + tc.key,
+			"leaves " + tc.omitted + " out of",
+			"on purpose",
+			tc.template,
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s on %s: the error should name %q, got: %v", tc.key, tc.app, want, err)
+			}
+		}
+	}
+
+	// Controls: a top level name that only starts like an omitted one, and a
+	// key in the same ini section, both render. Without them the rows above
+	// would pass for a rule that refused everything.
+	for _, ok := range []struct{ app, key string }{
+		{"chat", "oidc_providers_note"},
+		{"blog", "uploads.directory_note"},
+	} {
+		if _, err := render.Build(withConfig(t, ok.app, map[string]any{ok.key: "x"}), fixtureSecrets(t)); err != nil {
+			t.Errorf("%s on %s is not an omitted key and should render: %v", ok.key, ok.app, err)
+		}
+	}
+}
+
 // Where a sanctioned settings input already controls the value, the refusal
 // sends the operator there, because that is the reviewable way to change it.
 func TestACollisionNamesTheSettingThatOwnsTheValue(t *testing.T) {
