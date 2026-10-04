@@ -236,7 +236,11 @@ func TestTheNarrowerActionIsChosen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Blog is WriteFreely: a bind mounted config.ini and no environment.
+	// Blog is WriteFreely: the application itself reads no environment, so
+	// everything it is configured with is in this bind mounted file. It does
+	// now render a .env as well, but only for the Postgres container's own
+	// password, and that file is left alone here so that the action under
+	// test comes from the bind mount and nothing else.
 	host.files["/srv/blog/config.ini"] = "; drifted\n"
 	// Talk's environment changed, which a restart cannot pick up.
 	host.files["/srv/talk/.env"] = "DRIFTED=1\n"

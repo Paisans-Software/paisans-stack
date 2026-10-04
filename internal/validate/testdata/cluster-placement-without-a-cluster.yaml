@@ -52,9 +52,9 @@ apps:
     placement: cluster
     settings:
       s3_bucket: docs-uploads
-  blog:
+  gate:
     kind: oauth2-proxy
-    hostname: blog.example.org
+    hostname: gate.example.org
     # oauth2-proxy keeps a session in a cookie rather than a database, so
     # there is no cluster for it to join.
     placement: cluster
