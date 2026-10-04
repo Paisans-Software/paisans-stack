@@ -1098,8 +1098,13 @@ func TestObjectStorageIsPublishedOnTheMediaHostname(t *testing.T) {
 	if !strings.Contains(snippet, "3900") {
 		t.Errorf("the media snippet should reach Garage on 3900, got:\n%s", snippet)
 	}
-	if strings.Contains(snippet, "header_up Host") {
-		t.Error("Host must be forwarded unchanged or Outline's presigned URLs stop verifying")
+	// Only a public bucket's own route rewrites Host, to reach the web
+	// endpoint's vhost. The fallback, which is what Outline's presigned
+	// reads take, must forward Host unchanged or its signatures stop
+	// verifying. TestOnlyAPublicBucketIsRewrittenToTheWebEndpoint covers the
+	// bucket route itself; this asserts the fallback never rewrites.
+	if strings.Contains(snippet, "header_up Host {upstream_hostport}") {
+		t.Error("the fallback must forward Host unchanged or Outline's presigned URLs stop verifying")
 	}
 }
 
@@ -1125,5 +1130,61 @@ func TestGarageServesAWebEndpointOnAnInternalSuffix(t *testing.T) {
 	}
 	if strings.Contains(conf, "index =") {
 		t.Error("no index document: a prefix with no object must 404 rather than return something else")
+	}
+}
+
+// A public bucket's objects reach the web endpoint, which needs a vhost style
+// Host. Everything else stays on the S3 API with Host untouched, because that
+// is what makes Outline's presigned URLs verify.
+//
+// Caddy sorts same directive routes by path matcher length, longest first, so
+// this asserts matcher length rather than the order the lines happen to be
+// written in. The file order is not what decides it.
+func TestOnlyAPublicBucketIsRewrittenToTheWebEndpoint(t *testing.T) {
+	tree := build(t)
+	files := map[string]string{}
+	for _, f := range tree.Files {
+		files[f.Path] = f.Content
+	}
+	snippet := files["vm/srv/infra/caddy/snippets/media.caddy"]
+
+	// talk-uploads is Mbin's bucket in this fixture (app "talk", no
+	// s3_bucket override, so the default is the app name plus "-uploads").
+	if !strings.Contains(snippet, "handle /talk-uploads/*") {
+		t.Errorf("mbin's bucket should have its own route:\n%s", snippet)
+	}
+	if !strings.Contains(snippet, "uri strip_prefix /talk-uploads") {
+		t.Error("the bucket prefix must be stripped: the web endpoint takes the key as the path")
+	}
+	if !strings.Contains(snippet, "header_up Host talk-uploads.web.garage.internal") {
+		t.Error("the web endpoint resolves the bucket from Host, so Host must be rewritten")
+	}
+	if !strings.Contains(snippet, ":3902") {
+		t.Error("a public bucket's reads go to the web endpoint")
+	}
+
+	// Outline's bucket (docs-uploads, declared in the fixture) must not
+	// appear at all. Its attachments are private and its reads are
+	// presigned, so they belong on the S3 API with the fallback.
+	if strings.Contains(snippet, "docs-uploads") {
+		t.Errorf("outline's bucket must not be routed to the anonymous endpoint:\n%s", snippet)
+	}
+
+	// The fallback keeps Host, which is the whole reason presigned URLs verify.
+	if !strings.Contains(snippet, ":3900") {
+		t.Error("the fallback should reach the S3 API")
+	}
+	if strings.Contains(snippet, "header_up Host {upstream_hostport}") {
+		t.Error("the fallback must not rewrite Host")
+	}
+
+	// Matcher length, not file order, is what Caddy sorts on. Prove the
+	// bucket route carries a path matcher and the fallback carries none,
+	// which is the property that makes Caddy put the bucket route first.
+	if !strings.Contains(snippet, "handle /talk-uploads/* {") {
+		t.Errorf("the bucket route should carry a path matcher:\n%s", snippet)
+	}
+	if !strings.Contains(snippet, "handle {\n\treverse_proxy") {
+		t.Errorf("the fallback route should carry no path matcher:\n%s", snippet)
 	}
 }
