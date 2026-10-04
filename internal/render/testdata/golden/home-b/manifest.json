@@ -48,7 +48,7 @@
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "dbf033eec2e6ad3f2c1898838b7415c90952359713750e2c2a5486fdfe14f098",
+      "sha256": "cc7453b019b14d45d8ce44da9520db5ce52952f60fcb4a4b360a2258e1440665",
       "mode": "0600"
     },
     {
@@ -68,7 +68,7 @@
     },
     {
       "path": "srv/web/config.json",
-      "sha256": "c3db6176934cac613f61ba6e62787c77f8650b59c37f4e6fed478ceef6e7d9ec",
+      "sha256": "94f6dc0349cd44b21a57afa907ed2d8f31fbb2af13a0dbee5c17001d595611c2",
       "mode": "0644"
     }
   ]

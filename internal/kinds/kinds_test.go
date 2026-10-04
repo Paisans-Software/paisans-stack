@@ -66,3 +66,35 @@ func TestWriteFreelyUsesPostgresAndPrivateObjectStorage(t *testing.T) {
 		t.Error("a pinned blog runs its own Postgres beside itself, so the kind needs that service")
 	}
 }
+
+// Each kind reads its configuration from a different file in a different
+// syntax, so a passthrough key means something different per kind. This is a
+// fact about the applications rather than a choice, and getting it wrong puts
+// a key in a file nothing reads.
+func TestEachKindsConfigFileAndFormat(t *testing.T) {
+	cases := map[config.Kind]struct {
+		format kinds.Format
+		file   string
+	}{
+		config.KindMbin:        {kinds.ConfigEnv, ".env"},
+		config.KindOutline:     {kinds.ConfigEnv, ".env"},
+		config.KindPocketID:    {kinds.ConfigEnv, ".env"},
+		config.KindOAuth2Proxy: {kinds.ConfigEnv, ".env"},
+		config.KindWriteFreely: {kinds.ConfigINI, "config.ini"},
+		config.KindSynapse:     {kinds.ConfigYAML, "homeserver.yaml"},
+		config.KindElement:     {kinds.ConfigJSON, "config.json"},
+	}
+	for _, kind := range config.Kinds() {
+		want, known := cases[kind]
+		if !known {
+			t.Errorf("%s is not in this table, so nobody decided where its configuration lives", kind)
+			continue
+		}
+		if got := kinds.ConfigFormat(kind); got != want.format {
+			t.Errorf("%s: format is %q, want %q", kind, got, want.format)
+		}
+		if got := kinds.ConfigFile(kind); got != want.file {
+			t.Errorf("%s: file is %q, want %q", kind, got, want.file)
+		}
+	}
+}

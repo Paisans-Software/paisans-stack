@@ -477,6 +477,7 @@ func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error)
 	}
 
 	var files []File
+	sources := map[string]string{}
 	err = fs.WalkDir(templateFS, dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
 			return err
@@ -500,11 +501,21 @@ func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error)
 		if err != nil {
 			return err
 		}
-		files = append(files, File{Path: base + "srv/" + app.Name + "/" + rel, Content: content, Mode: mode})
+		dest := base + "srv/" + app.Name + "/" + rel
+		files = append(files, File{Path: dest, Content: content, Mode: mode})
+		sources[dest] = path
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// Only when the app declares keys: an app without them renders exactly
+	// what its templates wrote, with no merge in the way.
+	if keys := p.cfg.Apps[app.Name].Config; len(keys) > 0 {
+		if err := mergeConfig(app, keys, base+"srv/"+app.Name+"/", files, sources); err != nil {
+			return nil, err
+		}
 	}
 	return files, nil
 }

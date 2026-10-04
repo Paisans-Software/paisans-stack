@@ -135,6 +135,9 @@ func Check(cfg *config.Config) Result {
 	c.gatedMatrixHostname()
 	c.homeserverMustBePinned()
 	c.objectStorageWithoutAMediaHostname()
+	c.configKeyIsNestedInAnEnvFile()
+	c.configKeyLooksLikeASecret()
+	c.configKeySteersCompose()
 
 	c.evenVoters()
 	c.meshIsNotPrivate()
@@ -770,6 +773,99 @@ func (c *checker) hostnameRoles() {
 			c.refuse("unknown-hostname-role", fmt.Sprintf("apps.%s.hostnames.%s", name, role),
 				"names a hostname role %q, which the %s kind does not understand. A role selects the Caddy snippet that hostname gets, so an unknown one would import a file that does not exist and the gateway would fail to load at all. Roles for this kind: %s.",
 				role, app.Kind, strings.Join(kinds.HostnameRoles(app.Kind), ", "))
+		}
+	}
+}
+
+// configKeyIsNestedInAnEnvFile refuses a dotted key on a kind configured by
+// environment.
+//
+// Env has no nesting. In ini and yaml a dot is a path and means something, so
+// the same habit carried over here produces a variable called `a.b` that the
+// application never reads and the shell may not even accept. It is refused
+// rather than passed through because the likeliest reading is a typo for an
+// underscore, and a typo that renders is the worst outcome available.
+func (c *checker) configKeyIsNestedInAnEnvFile() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if kinds.ConfigFormat(app.Kind) != kinds.ConfigEnv {
+			continue
+		}
+		for _, key := range sortedKeys(app.Config) {
+			if !strings.Contains(key, ".") {
+				continue
+			}
+			c.refuse("config-key-is-nested-in-an-env-file", fmt.Sprintf("apps.%s.config.%s", name, key),
+				"is a dotted key, and %s is an env file. Env has no nesting, so a dot is a typo here rather than a path. Write the variable name the application reads, for example with underscores.",
+				kinds.ConfigFile(app.Kind))
+		}
+	}
+}
+
+// secretWords are the fragments of a key name that suggest a credential,
+// matched against the lowercased name with `_`, `-` and `.` removed, so that
+// SENDGRID_API_KEY, privateKey and private-key all read as the same word.
+var secretWords = []string{"password", "secret", "token", "apikey", "privatekey"}
+
+// configKeyLooksLikeASecret refuses a key named like a credential.
+//
+// paisans.yaml is plaintext and meant to be read, committed and diffed. A
+// passthrough map is exactly where somebody pastes an API token at the end of
+// a long day. The check is by name and is deliberately narrow: it refuses the
+// one thing it can see, and says so, rather than claiming to be a policy.
+func (c *checker) configKeyLooksLikeASecret() {
+	squash := strings.NewReplacer("_", "", "-", "", ".", "")
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		for _, key := range sortedKeys(app.Config) {
+			squashed := squash.Replace(strings.ToLower(key))
+			for _, word := range secretWords {
+				if !strings.Contains(squashed, word) {
+					continue
+				}
+				c.refuse("config-key-looks-like-a-secret", fmt.Sprintf("apps.%s.config.%s", name, key),
+					"is named like a credential (it contains %q, ignoring case and the separators _ - and .). paisans.yaml is plaintext and meant to be committed, so a secret does not belong in it: put the value in secrets.enc.yaml. This check is by name and will not catch a credential named something else, so it is no substitute for looking.",
+					word)
+				break
+			}
+		}
+	}
+}
+
+// composeSteeringPrefixes are the variable name prefixes refused on an env
+// kind by configKeySteersCompose.
+var composeSteeringPrefixes = []string{"COMPOSE_", "DOCKER_"}
+
+// configKeySteersCompose refuses an env key that would configure compose
+// rather than the application.
+//
+// apply runs `docker compose -f /srv/<app>/compose.yaml up -d`, and compose
+// reads the .env beside that file for its own settings as well as handing it
+// to the containers. Run with `docker compose config` on Docker Compose
+// v5.4.0 (the operator's Mac, not a host): COMPOSE_PROJECT_NAME in that .env
+// renamed the project and COMPOSE_PROFILES changed which services were
+// active. That apply would then address containers under another project
+// name than the ones it started before is reasoned, not run. DOCKER_HOST in
+// the same .env did NOT redirect `docker compose ps` in that run; DOCKER_ is
+// refused anyway as the docker CLI's own namespace, which no application
+// variable should need, so the rule does not depend on knowing which of
+// those compose honours from a file.
+func (c *checker) configKeySteersCompose() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if kinds.ConfigFormat(app.Kind) != kinds.ConfigEnv {
+			continue
+		}
+		for _, key := range sortedKeys(app.Config) {
+			for _, prefix := range composeSteeringPrefixes {
+				if !strings.HasPrefix(key, prefix) {
+					continue
+				}
+				c.refuse("config-key-steers-compose", fmt.Sprintf("apps.%s.config.%s", name, key),
+					"starts with %s. When apply runs compose for this stack, compose reads the stack's %s for its own settings as well as handing it to the application, and a variable there can rename the project or change which services are active. That is compose's configuration, not the application's: it belongs in the toolkit, not in config.",
+					prefix, kinds.ConfigFile(app.Kind))
+				break
+			}
 		}
 	}
 }

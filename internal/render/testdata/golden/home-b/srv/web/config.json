@@ -13,5 +13,6 @@
   "setting_defaults": {
     "UIFeature.registration": false,
     "UIFeature.passwordReset": false
-  }
+  },
+  "default_theme": "dark"
 }

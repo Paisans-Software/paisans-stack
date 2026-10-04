@@ -82,3 +82,6 @@ matrix_authentication_service:
 # An allowlist posture starts with trusting no third party key server. Add one
 # only when federating with servers whose keys have to be fetched indirectly.
 trusted_key_servers: []
+
+# Set by `config` in paisans.yaml, not by a template.
+require_auth_for_profile_requests: true

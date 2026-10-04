@@ -28,7 +28,7 @@
     },
     {
       "path": "srv/blog/config.ini",
-      "sha256": "79970ec91e98a71d4c522357f19145b66339220b74c29018fd2ca4186289313e",
+      "sha256": "f095ef6f5d0c2b8d00c439929650581cb1824e1b36ac3434060baed055bd3861",
       "mode": "0600"
     },
     {
@@ -73,7 +73,7 @@
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "8c78323e747f516e2edd3ffdad044bc6321a8b0e99d0dc7f7c021b03fc14b7f3",
+      "sha256": "278108df04587125aeb66b7e71e62731ae1082c1ae3aa01b179ba21c9ae317ff",
       "mode": "0600"
     },
     {

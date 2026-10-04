@@ -18,7 +18,7 @@
     },
     {
       "path": "srv/chat/homeserver.yaml",
-      "sha256": "eaa38e354e5fb51de9eaea0181bfa84aa0fb14b78616c2ca56975c7d3b500e42",
+      "sha256": "b1d0ef375392690cd5f7fe7a5e072a23d7517253d46ae69a026511016ff13cba",
       "mode": "0600"
     },
     {
