@@ -175,6 +175,27 @@ func UsesObjectStorage(kind config.Kind) bool {
 	}
 }
 
+// ServesObjectsPublicly reports whether a kind's objects must be readable
+// without a credential.
+//
+// Mbin's are: a federating server fetching an image is a machine with no
+// account here, and a remote instance caches the URL it was given. Outline's
+// are not, because its bucket holds the attachments of documents that are
+// readable only to members, and its server presigns every read it issues.
+//
+// This is deliberately not a configuration key. Garage's website access is per
+// bucket and opt in, so the only way Outline's bucket becomes world readable
+// is a change to this function, which is a code change with a review rather
+// than a line somebody edits at two in the morning.
+//
+// A kind storing objects (UsesObjectStorage) is not the same question as one
+// whose objects are fetched anonymously: a kind can keep its uploads in S3
+// while serving them through its own application route, never exposing its
+// bucket directly.
+func ServesObjectsPublicly(kind config.Kind) bool {
+	return kind == config.KindMbin
+}
+
 // ServiceNames returns a kind's service names, sorted, for an error message
 // that has to list them.
 func ServiceNames(kind config.Kind) []string {

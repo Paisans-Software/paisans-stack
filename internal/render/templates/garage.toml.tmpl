@@ -19,6 +19,21 @@ s3_region = "garage"
 api_bind_addr = "{{ .Site.Address }}:3900"
 root_domain = ".s3.{{ .Domain }}"
 
+[s3_web]
+# The only way an object is readable without a credential. Garage's S3 API
+# refuses every unauthenticated request outright, so Mbin's media would answer
+# 403 to a browser without this endpoint.
+#
+# root_domain is a suffix that resolves nowhere on purpose. This endpoint
+# resolves a bucket from the request's Host, and the gateway is the only thing
+# that ever sends one: it rewrites a path style media URL into the vhost form
+# this expects. Nothing outside the mesh ever sends a Host matching it, so
+# there is no DNS record and no certificate here.
+#
+# No index document. A prefix with no object must be a 404.
+bind_addr = "{{ .Site.Address }}:3902"
+root_domain = ".web.garage.internal"
+
 [admin]
 api_bind_addr = "{{ .Site.Address }}:3903"
 admin_token = "{{ .AdminToken }}"

@@ -1102,3 +1102,28 @@ func TestObjectStorageIsPublishedOnTheMediaHostname(t *testing.T) {
 		t.Error("Host must be forwarded unchanged or Outline's presigned URLs stop verifying")
 	}
 }
+
+// Garage's S3 API has no anonymous mode at all, so the only way a browser can
+// fetch an object is the s3_web endpoint. Its root_domain is a suffix nothing
+// resolves: the gateway is the only thing that ever sends a Host matching it,
+// and it never leaves the gateway, so there is no DNS record and no
+// certificate for an adopter to set up.
+func TestGarageServesAWebEndpointOnAnInternalSuffix(t *testing.T) {
+	files := map[string]string{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+	}
+	conf := files["home-a/srv/infra/garage/garage.toml"]
+	if !strings.Contains(conf, "[s3_web]") {
+		t.Errorf("no s3_web section, so nothing can read an object anonymously:\n%s", conf)
+	}
+	if !strings.Contains(conf, `root_domain = ".web.garage.internal"`) {
+		t.Errorf("the web root domain should be the internal suffix, got:\n%s", conf)
+	}
+	if !strings.Contains(conf, ":3902") {
+		t.Error("s3_web should bind 3902")
+	}
+	if strings.Contains(conf, "index =") {
+		t.Error("no index document: a prefix with no object must 404 rather than return something else")
+	}
+}

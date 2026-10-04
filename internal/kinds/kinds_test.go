@@ -26,3 +26,18 @@ func TestUsesObjectStorage(t *testing.T) {
 		}
 	}
 }
+
+// Mbin's media must be fetchable by a federating server with no credential,
+// which is why its bucket is public. Outline's bucket holds document
+// attachments and must never be.
+func TestOnlyMbinServesObjectsPublicly(t *testing.T) {
+	for _, kind := range config.Kinds() {
+		want := kind == config.KindMbin
+		if got := kinds.ServesObjectsPublicly(kind); got != want {
+			t.Errorf("%s: ServesObjectsPublicly is %v, want %v", kind, got, want)
+		}
+	}
+	if kinds.ServesObjectsPublicly(config.KindOutline) {
+		t.Fatal("outline's bucket holds document attachments and must never be world readable")
+	}
+}
