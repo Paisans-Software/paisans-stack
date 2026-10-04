@@ -4,6 +4,8 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1316,4 +1318,92 @@ func fallbackHandle(t *testing.T, snippet string) string {
 	}
 	t.Fatalf("unterminated fallback handle block:\n%s", snippet[start:])
 	return ""
+}
+
+// requiredComposeVar matches a `${VAR:?message}` reference, which is Compose's
+// way of saying the variable has no default. Compose aborts the entire `up`
+// when one is unset, so every such reference is a hard dependency on something
+// else in the same stack directory.
+var requiredComposeVar = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*):\?`)
+
+// A rendered compose file and the rendered `.env` beside it are two halves of
+// one thing, and only compose knows that. It reads `.env` from the project
+// directory for ${VAR} substitution whether or not a service declares
+// env_file, so a `${VAR:?...}` reference with no matching assignment is a
+// stack that cannot start at all: `docker compose up` aborts before creating
+// anything, naming the variable.
+//
+// This repository has lost a template to .gitignore twice, and the shape of
+// that loss is exactly this. `.env.secret.tmpl` matches the `.env.*` ignore
+// rule, so deleting one, or failing to commit it, is invisible: every other
+// test still passes, the golden tree regenerates happily without it, and
+// TestEveryKindShipsACommittedTemplateSet is satisfied by any one of several
+// configuration file suffixes, so a kind that ships a `config.ini.secret.tmpl`
+// passes with its `.env.secret.tmpl` gone.
+//
+// Checking the references rather than a per kind file list is what makes this
+// catch the class: a new kind, a new variable or a renamed template is covered
+// without anybody remembering to extend a list.
+func TestEveryRequiredComposeVariableIsSetInTheStacksEnv(t *testing.T) {
+	files := map[string]string{}
+	var paths []string
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+		paths = append(paths, f.Path)
+	}
+	sort.Strings(paths)
+
+	checked := 0
+	for _, path := range paths {
+		if filepath.Base(path) != "compose.yaml" {
+			continue
+		}
+		refs := requiredComposeVar.FindAllStringSubmatch(files[path], -1)
+		if len(refs) == 0 {
+			continue
+		}
+		envPath := filepath.ToSlash(filepath.Join(filepath.Dir(path), ".env"))
+		env, ok := files[envPath]
+		if !ok {
+			t.Errorf("%s requires %s but no %s is rendered, so `docker compose up` aborts and the stack never starts. A missing .env.secret.tmpl looks exactly like this: the repository ignores .env.*, so check that the template is committed.",
+				path, refNames(refs), envPath)
+			continue
+		}
+		for _, ref := range refs {
+			name := ref[1]
+			if !assignsEnvVar(env, name) {
+				t.Errorf("%s requires %s, which %s does not set. `docker compose up` aborts naming that variable, before creating anything.", path, name, envPath)
+			}
+			checked++
+		}
+	}
+
+	// A test that silently checked nothing would be the same failure as the
+	// one it is here to catch. The fixture renders a pinned blog and a pinned
+	// Synapse, so there is at least one reference to find.
+	if checked == 0 {
+		t.Fatal("no `${VAR:?...}` reference was found in any rendered compose file, so this test verified nothing")
+	}
+}
+
+// refNames lists the variable names in a match set, for one readable message.
+func refNames(refs [][]string) string {
+	var names []string
+	for _, ref := range refs {
+		names = append(names, ref[1])
+	}
+	return strings.Join(names, ", ")
+}
+
+// assignsEnvVar reports whether a rendered `.env` assigns name. Compose takes
+// the whole line, so an assignment is a line beginning with the name and an
+// equals sign; a commented line is not one, and the leading "#" makes that
+// fall out rather than needing a check.
+func assignsEnvVar(env, name string) bool {
+	for _, line := range strings.Split(env, "\n") {
+		if strings.HasPrefix(line, name+"=") {
+			return true
+		}
+	}
+	return false
 }
