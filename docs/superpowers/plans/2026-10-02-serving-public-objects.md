@@ -16,7 +16,7 @@
 - Every commit message ends with exactly: `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` and no other attribution, whatever model writes it.
 - `go test ./... -count=1` and `go vet ./...` pass before every commit.
 - Templates live in `internal/render/templates/` and are embedded with `//go:embed all:templates`. The `all:` prefix is required or dotfiles are skipped, and a shell glob does not match dotfiles either. Run `git check-ignore -v` on any new template and confirm it is tracked in the commit. This repository has lost template files to that trap twice.
-- The golden tree at `internal/render/testdata/golden` is a specification of what an operator receives. Regenerate with `go test ./internal/render -run TestRender -update`, read `git diff` on it, and confirm every changed file is explained by the task. Never regenerate blind.
+- The golden tree at `internal/render/testdata/golden` is a specification of what an operator receives. Regenerate with `go test ./internal/render -run TestGoldenTree -update`, read `git diff` on it, and confirm every changed file is explained by the task. Never regenerate blind.
 - `internal/render/testdata/deployment.yaml` must pass `validate.Check` with zero refusals; `fixture(t)` enforces it and every render test goes through that helper.
 - Never claim in a commit message or report that you verified something you did not run yourself. Where you reason instead, say so in those words.
 
@@ -166,7 +166,7 @@ root_domain = ".web.garage.internal"
 Run: `go test ./internal/kinds ./internal/render -run 'TestOnlyMbinServesObjectsPublicly|TestGarageServesAWebEndpointOnAnInternalSuffix' -v`
 Expected: PASS.
 
-Then `go test ./internal/render -run TestRender -update`, then `git diff internal/render/testdata/golden`. Expected: `garage.toml` on each Garage site, and the manifests. Anything else is a finding: stop and say so.
+Then `go test ./internal/render -run TestGoldenTree -update`, then `git diff internal/render/testdata/golden`. Expected: `garage.toml` on each Garage site, and the manifests. Anything else is a finding: stop and say so.
 
 **One existing test will now matter.** The previous branch added coverage that boots the real image against the rendered `garage.toml`. Run it: `go test -tags garage_integration ./internal/garage -count=1`. A malformed `[s3_web]` section will stop Garage starting, and that test is what tells you. Put its output in your report.
 
@@ -314,7 +314,7 @@ Match the field names to whatever you called them in step 3.
 Run: `go test ./internal/render -run TestOnlyAPublicBucketIsRewrittenToTheWebEndpoint -v`
 Expected: PASS.
 
-Then `go test ./internal/render -run TestRender -update` and `git diff internal/render/testdata/golden`. Expected: the gateway's `media.caddy` and the manifest. If any app's `.env` changed, something is wrong: the published URL form must not move, because Mbin has already written URLs of that shape into federated posts.
+Then `go test ./internal/render -run TestGoldenTree -update` and `git diff internal/render/testdata/golden`. Expected: the gateway's `media.caddy` and the manifest. If any app's `.env` changed, something is wrong: the published URL form must not move, because Mbin has already written URLs of that shape into federated posts.
 
 - [ ] **Step 6: Commit**
 
@@ -821,7 +821,7 @@ agree about where the database is.
 
 - [ ] **Step 6: Regenerate the golden tree and read it**
 
-Run `go test ./internal/render -run TestRender -update`, then
+Run `go test ./internal/render -run TestGoldenTree -update`, then
 `git diff internal/render/testdata/golden`.
 
 Expected: `blog/config.ini` on each site that runs it, `blog/compose.yaml`, the
