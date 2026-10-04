@@ -108,15 +108,36 @@ This check lives in `internal/validate` rather than as a structural error in
 storage, already imports `internal/config`; `config` asking `kinds` back would
 be an import cycle.
 
-**Current limitation: Garage's S3 API does not support anonymous reads.** Outline
-works because its server presigns every object URL, so the browser's request is
-authenticated. Mbin does not work: `KBIN_STORAGE_URL` publishes an unsigned URL,
-the browser fetches it anonymously, and Garage returns `403 Forbidden: Garage
-does not support anonymous access yet`. Garage has a separate `s3_web` endpoint
-that serves anonymous reads via vhost-style requests, but the toolkit does not
-render it yet. The fix is known and scoped separately: render the `[s3_web]`
-section, run `garage bucket website --allow` for public buckets, and configure
-the gateway to map the media hostname onto the vhost form Garage expects.
+**A public bucket's objects are served without a credential, and a private
+bucket's are not.** Garage's S3 API refuses every unauthenticated request
+outright, with `403 Forbidden: Garage does not support anonymous access yet`,
+and that is the only mode it has. Garage's separate web endpoint is the one
+that serves an object anonymously, so the toolkit renders it as `[s3_web]` in
+`garage.toml` and grants `garage bucket website --allow` on public buckets
+only.
+
+The gateway is what joins the two. The media hostname carries one route per
+public bucket: the bucket prefix is stripped from the path and the `Host` is
+rewritten to the vhost form the web endpoint resolves a bucket from, which is
+an internal suffix that resolves nowhere on purpose. Everything else falls
+through to the S3 API with `Host` forwarded unchanged, which is load bearing
+rather than tidy: Outline presigns its object URLs, a SigV4 signature covers
+the host it was signed with, and rewriting that header would invalidate every
+URL Outline issues.
+
+Nothing an app publishes changes, and that is the point of rewriting at the
+gateway rather than changing the URL: `KBIN_STORAGE_URL` stays the path style
+media URL it always was, because remote instances have cached Mbin's URLs and
+we cannot recall them.
+
+Which kinds are public is a property of the kind, in `internal/kinds`, not a
+setting. A federating server fetching an image is a machine with no account,
+so Mbin's media has to be readable without one; Outline's is read by people
+who are signed in, and its bucket is never routed to the web endpoint at all.
+There is no configuration key that can get this wrong in either direction.
+
+`TestAnonymousFetchReadsMbinsMediaAndNotOutlines` in `internal/garage` is what
+keeps that honest, against a real Garage behind a real Caddy.
 
 ### Rule 4: the domain is a one-way door
 

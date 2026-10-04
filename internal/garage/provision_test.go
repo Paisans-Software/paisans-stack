@@ -112,7 +112,12 @@ func TestAFreshNodeIsLaidOutBeforeAnyKeyIsImported(t *testing.T) {
 }
 
 // key import and bucket create both fail when the object exists, so a second
-// run must not plan them. bucket allow is idempotent and is always planned.
+// run must not plan them. The idempotent steps are planned every run and this
+// test asserts nothing about them: bucket allow for both of the fixture's
+// storage apps, and bucket website --allow for talk, which is mbin and
+// therefore serves its objects publicly. A fully provisioned node is
+// therefore not a node with an empty plan, which is what the old name of this
+// test claimed.
 //
 // `node id -q` returns the full 64 character node ID, but `layout show`'s
 // table prints only its first 16 characters, exactly as dxflrs/garage:v1.0.1
@@ -121,11 +126,11 @@ func TestAFreshNodeIsLaidOutBeforeAnyKeyIsImported(t *testing.T) {
 // and would replan the layout on every single run. This fixture is what
 // catches that: node id -q returns the full ID below, the table row carries
 // only its first 16 characters, and the two have to be recognised as the
-// same node for this test to see nothing planned. The layout show output
+// same node for this test to see no layout step planned. The layout show output
 // also carries the connection preamble real Garage prints ahead of the
 // table, so this fixture exercises both the truncation and the preamble at
 // once, the way a real run would.
-func TestAProvisionedNodePlansNothingButTheGrant(t *testing.T) {
+func TestAProvisionedNodeReplansOnlyTheIdempotentSteps(t *testing.T) {
 	const fullNodeID = "bce014be16f81a9033b33dbb8ba6cc4c528353dd045d73aed6ef0c807389129a"
 	const shortNodeID = "bce014be16f81a90" // fullNodeID's first 16 characters
 	transport := &fakeTransport{responses: map[string]response{
