@@ -158,3 +158,85 @@ from `KBIN_STORAGE_URL` and that Outline presigns its reads remains read from
 their source rather than observed in those applications. What this branch can
 and must observe is the HTTP behaviour on both sides of the gateway, which is
 where the previous design went wrong.
+
+## Amendment, 2026-10-04: `writefreely` means the wisp fork
+
+Founder direction in session. The fork gained Postgres and S3 support, so the
+blog can join the same Patroni cluster and the same Garage node as everything
+else, and the toolkit should describe that rather than the SQLite shape.
+
+### What the fork actually does, read from its source on `develop`
+
+**Its images are served by the application, not by Garage.** `imagestore.go`
+streams them through the app's own `/uploads/` route with
+`http.ServeContent`, from whichever store is configured. It never emits an S3
+URL and never presigns one.
+
+That inverts the obvious conclusion. Blog images are public to a reader, but
+nothing anonymous ever reaches the object store, so **its bucket stays
+private**: no website access, no gateway route, no path prefix on the media
+hostname. `ServesObjectsPublicly` is false for this kind, and the only thing
+that reads its bucket is the application with its own credential.
+
+**The configuration keys are these**, with the fork's own defaults:
+
+```
+[database]
+type = postgres
+host, port, database, username, password
+tls      # true maps to sslmode=require, false to sslmode=disable
+
+[storage]
+type = s3
+s3_endpoint, s3_region, s3_bucket, s3_prefix
+s3_access_key_id, s3_secret_access_key
+s3_virtual_host  # default false: path style, which is what Garage needs
+```
+
+The fork validates that section at load rather than at first upload, and
+refuses an endpoint carrying credentials or a path. Nothing the toolkit renders
+should trip those, and the plan asserts it.
+
+### The kind changes meaning, and that is a breaking change
+
+`writefreely` now means the fork. It gains a `postgres` service, so clustered
+placement becomes legal for it and the existing refusal stops applying on its
+own, with no rule to edit.
+
+**Stated rather than buried: an adopter running upstream's image will break.**
+Upstream WriteFreely has no Postgres and no `[storage]` section, so it rejects
+the configuration this kind renders. This repository is public, so that is a
+breaking change for people we do not know, and it belongs in `README.md` and in
+`docs/decisions.md` in those words. The rejected alternative was a second kind
+for the fork, which keeps upstream working at the cost of two template sets
+that mostly agree; the founder chose one kind.
+
+### The image is pinned to an unreleased build, deliberately
+
+There is no released wisp image with these features. `v0.20.0+wisp` carries
+neither, and `develop` is 377 commits ahead of it with `softwareVer` still at
+`0.20.0`, so nothing has been cut.
+
+The default is therefore the `develop` build by digest:
+
+```
+ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea
+```
+
+Checked rather than assumed: that digest was resolved from the registry on
+2026-10-04, is a multi architecture index covering amd64 and arm64, and its
+binary contains the `s3_secret_access_key` ini tag and the Postgres `sslmode`
+handling, so the features really are in it.
+
+A digest names one set of bytes, which is the toolkit's actual rule, and a
+branch build satisfies it. What it does not carry is a release's provenance,
+so the catalogue comment says it is an unreleased build and says to bump it
+when a release exists. The founder chose this over waiting on a release in
+another repository.
+
+### What this does not change
+
+The media hostname work above is untouched. Mbin remains the only kind whose
+objects are served anonymously, and the blog's bucket is private for a
+different reason than Outline's: Outline presigns because its documents are
+member only, and the blog never exposes its store at all.
