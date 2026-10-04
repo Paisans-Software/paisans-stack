@@ -17,13 +17,18 @@
       "mode": "0644"
     },
     {
+      "path": "srv/blog/.env",
+      "sha256": "e854784bc5466cf97ed3edd4b254baebc74a760999c98b0fcbd21c8cf7a94773",
+      "mode": "0600"
+    },
+    {
       "path": "srv/blog/compose.yaml",
-      "sha256": "d566b8a198dec1f5b5f372eea6587fcadc8a34fa897a46abbe4e439276d35d3f",
+      "sha256": "9c2b36c16f2566edaaacf84a03dd81ab5b7126ab083f178c4ae9a59d0619fd9a",
       "mode": "0644"
     },
     {
       "path": "srv/blog/config.ini",
-      "sha256": "24bb5458e0c90aff00b05998edfb3cf1fa7a29b7dd6115fedee3319c27b7dea7",
+      "sha256": "11d911804134fe830f549464f6dafd04bba368c37aed21bc55fa69635d6b97c3",
       "mode": "0600"
     },
     {

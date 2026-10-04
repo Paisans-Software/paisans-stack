@@ -70,7 +70,7 @@ toolkit should not overstate it:
 | Outline | full | `FILE_STORAGE=s3` with the `AWS_*` variables; non-AWS endpoints need `AWS_S3_FORCE_PATH_STYLE=true`. Known upstream bug: the bucket must not be named `outline` |
 | Synapse | partial | `synapse-s3-storage-provider` is a *storage provider* that supplements the media store. **A local media directory is still required.** `store_synchronous: True` writes to S3 immediately; the bucket prefix cannot be changed once media exists |
 | Pocket ID | full, plus better | `FILE_BACKEND` takes `filesystem` (default), `s3`, or **`database`**. See the note below — `database` is the recommendation |
-| WriteFreely | none | no object storage support; see the open question about this stack |
+| WriteFreely | full, but private | the kind means the [writefreely-wisp](https://github.com/josephquigley/writefreely-wisp) fork, which adds `[storage] type = s3`. Its bucket is never routed to the media hostname: the fork streams uploads through its own `/uploads/` route rather than emitting an S3 URL, so nothing anonymous reaches the bucket directly |
 
 **Pocket ID should use `FILE_BACKEND=database`, not S3.** Its uploads are
 profile pictures and admin-uploaded branding — on a real deployment, about a
@@ -161,12 +161,20 @@ The media store cannot leave the node, and the kind renders its own Postgres
 plus the initialisation hook that creates the authentication service's database
 beside it, neither of which exists on a clustered site. A clustered homeserver
 would render and then meet the missing database at the first sign in. The same
-reasoning refuses `writefreely`, which has never supported Postgres,
-`element`, which is a static client with no server side state, and
-`oauth2-proxy`, whose session is a cookie. So the refusal is the existing shape
-rather than a special case for Matrix: a kind with no Postgres service has
-nothing to join, and cluster placement would render it onto every apps site
-with storage of its own.
+reasoning refuses `element`, which is a static client with no server side
+state, and `oauth2-proxy`, whose session is a cookie. So the refusal is the
+existing shape rather than a special case for Matrix: a kind with no Postgres
+service has nothing to join, and cluster placement would render it onto every
+apps site with storage of its own.
+
+`writefreely` used to be in that list. It no longer is: the kind now means the
+[writefreely-wisp](https://github.com/josephquigley/writefreely-wisp) fork,
+which adds Postgres and S3 support upstream WriteFreely does not have, so the
+blog can join the cluster like any other app. **This is a breaking change for
+anyone who adopted this toolkit before it:** the fork's image replaces
+upstream's, and upstream's own image will reject the configuration this kind
+now renders, because it has no `[database]` Postgres driver and no
+`[storage]` section at all. See `docs/decisions.md` for the record.
 
 **"The authentication service's database" is Matrix Authentication Service,
 and the `synapse` kind renders it as a second container beside the
@@ -213,10 +221,12 @@ with the apps role and sharing one database through the local proxy. An
 application storing its data anywhere else gets neither half: it would be
 rendered onto each of those sites with its own separate storage, so one
 hostname would serve two deployments that diverge the moment anybody writes,
-and a failover would move readers between them. WriteFreely is the case that
-exists, having never supported Postgres and running on a SQLite file in its own
-data directory. Pinning it is not a downgrade, because that was always its
-availability.
+and a failover would move readers between them. Element and oauth2-proxy are
+the cases that exist: a static client with no server side state, and a
+session kept in a cookie rather than a database. Pinning either is not a
+downgrade, because that was always its availability. WriteFreely used to be
+in this group too, before the fork it now runs gained Postgres support; see
+Rule 5 above.
 
 #### A pinned app must be pinned all the way down
 
@@ -517,10 +527,13 @@ A secret in a bind-mounted file is cheaper to change, for the reason below.
 Not every application is configured through environment variables, and the
 stacks named in this document are already split on it. Mbin reads `.env`.
 WriteFreely reads an INI file, `config.ini`, whose `[server]`, `[app]`,
-`[database]` and `[oauth.generic]` sections carry everything it needs, SSO
-client credentials and `disable_password_auth` included
-([config reference](https://writefreely.org/docs/latest/admin/config)). Synapse
-reads [`homeserver.yaml`](https://element-hq.github.io/synapse/latest/usage/configuration/homeserver_sample_config.html).
+`[database]`, `[storage]` and `[oauth.generic]` sections carry everything it
+needs, SSO client credentials and `disable_password_auth` included. The
+`[database]` and `[storage]` sections are the writefreely-wisp fork's own,
+read from its `config/config.go` and `config/storage.go` rather than from
+upstream's [config reference](https://writefreely.org/docs/latest/admin/config),
+which documents neither. Synapse reads
+[`homeserver.yaml`](https://element-hq.github.io/synapse/latest/usage/configuration/homeserver_sample_config.html).
 
 So the unit the toolkit ships per `kind` is a **template directory**, and
 `apply` renders every file in it:
@@ -529,8 +542,8 @@ So the unit the toolkit ships per `kind` is a **template directory**, and
 templates/mbin/                             templates/writefreely/
   compose.yaml.tmpl                           compose.yaml.tmpl
   .env.tmpl                                   config.ini.tmpl
-  caddy.snippet.tmpl                          caddy.snippet.tmpl
-  config/packages/oneup_flysystem.yaml.tmpl
+  caddy.snippet.tmpl                          .env.tmpl
+  config/packages/oneup_flysystem.yaml.tmpl   caddy.snippet.tmpl
 ```
 
 **A template's path is its destination.** The layout under `templates/<kind>/`

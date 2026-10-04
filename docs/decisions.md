@@ -445,3 +445,64 @@ role survives the refusal, and the second site's pass applies both at once.
 Nothing in `garage.Build` stages both nodes before applying, and nothing in it
 joins a node to a cluster either; a real deployment's nodes find each other
 over the mesh, and the test does that join itself.
+
+## 2026-10-04: The `writefreely` kind now means the writefreely-wisp fork, not upstream
+
+### This is a breaking change for a public toolkit
+
+`writefreely` used to mean upstream WriteFreely, which has no Postgres driver
+and no S3 support: it kept its data in a SQLite file in its own data
+directory, and that was the whole reason the kind could only be pinned. The
+kind now renders the [writefreely-wisp](https://github.com/josephquigley/writefreely-wisp)
+fork instead, which adds both. Its `config.ini` carries `[database] type =
+postgres` and `[storage] type = s3`, so the same `writefreely.yaml` that used
+to render a SQLite file now renders a Postgres connection and an S3 bucket,
+and the blog can join the cluster like any other app.
+
+Nobody using this toolkit asked for that, and there is no way to opt out of
+it short of pinning an older release of the toolkit itself: the `writefreely`
+name did not change meaning for a new deployment only, it changed meaning for
+every existing one the next time `paisans apply` runs. That makes it a
+breaking change, and because `paisans-stack` is public and handed to people
+we do not know, it is documented in the open, in `README.md`, in the section
+listing what each kind means, rather than left for an adopter to discover
+from a container that will not start.
+
+### A second kind for the fork was the rejected alternative
+
+Adding `writefreely-wisp` as its own kind, leaving `writefreely` alone, was
+considered. It was rejected because the two are not a stack and a variant of
+a stack in the way, say, Mbin and a possible future fork of it would be: the
+wisp fork is the only WriteFreely this toolkit can run correctly going
+forward, since upstream's image actively rejects the configuration an
+operator would otherwise want (Postgres and S3, instead of a SQLite file one
+node owns). Keeping both names would mean the toolkit ships a kind, `writefreely`,
+that is known to be the wrong choice for anyone who can use the other one,
+with no way for validation to say so. One name that means the better thing is
+simpler to maintain and to document than two names where one is a trap.
+
+### The image is an unreleased `develop` build, pinned by digest
+
+No tagged release of the fork carries Postgres or S3 support yet; both exist
+only on its `develop` branch. The catalogue pins
+`ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea`
+rather than a tag, because `develop` is a moving branch and a tag that tracked
+it would silently change what an existing deployment runs on its next
+`apply`. The digest was resolved against ghcr.io on 2026-10-04 with `docker
+manifest inspect`, which returned a multi architecture index covering
+linux/amd64 and linux/arm64, and confirmed by pulling the amd64 manifest and
+checking the binary with `strings` for the `s3_secret_access_key` ini tag and
+the Postgres `sslmode` field. The pin should move to a tagged release's
+digest once one exists, and the comment in `internal/kinds/kinds.go` says so.
+
+### The fork serves its own images, so its bucket stays private
+
+The fork's `imagestore.go` streams uploads through its own `/uploads/` route
+with `http.ServeContent`, from whichever store is configured, and never
+emits or presigns an S3 URL. That means nothing anonymous ever needs to reach
+the bucket directly, unlike Mbin's: `kinds.ServesObjectsPublicly` answers
+false for `writefreely`, so the blog's bucket gets no `garage bucket website
+--allow` and no route on the media hostname. The rendered `config.ini` says
+this in a comment, next to `[storage]`, because that is where the next
+person reading it will be standing and wondering why the blog is absent from
+the media routing everything else gets.

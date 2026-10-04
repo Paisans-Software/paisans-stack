@@ -199,7 +199,7 @@ func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
 		mode    uint32
 		carries string
 	}{
-		{"home-a/srv/blog/config.ini", 0o600, "type = sqlite3"},
+		{"home-a/srv/blog/config.ini", 0o600, "type = postgres"},
 		{"vm/srv/chat/homeserver.yaml", 0o600, "name: psycopg2"},
 		{"home-a/srv/talk/.env", 0o600, "DATABASE_URL="},
 		{"home-a/srv/talk/compose.yaml", 0o644, "name: paisans-talk"},
@@ -220,15 +220,76 @@ func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
 		}
 	}
 
-	// The blog has no Postgres anywhere: no service, no role, no connection
-	// string. A configuration pointing it at the cluster would be a lie.
-	for path, f := range files {
-		if !strings.HasPrefix(path, "home-a/srv/blog/") {
-			continue
+	// The blog is pinned, so it talks to the postgres container beside it,
+	// the same host every other pinned app in this deployment connects to its
+	// own sidecar on. The property worth asserting is that the two agree,
+	// not merely that a connection exists: a wrong host would still start the
+	// container and only fail at the first query.
+	configIni, ok := files["home-a/srv/blog/config.ini"]
+	if !ok {
+		t.Fatal("the blog's config.ini was not rendered")
+	}
+	if !strings.Contains(configIni.Content, "host = postgres") {
+		t.Errorf("home-a/srv/blog/config.ini does not point at the postgres container beside it:\n%s", configIni.Content)
+	}
+	composeYaml, ok := files["home-a/srv/blog/compose.yaml"]
+	if !ok {
+		t.Fatal("the blog's compose.yaml was not rendered")
+	}
+	if !strings.Contains(composeYaml.Content, "postgres:") {
+		t.Error("home-a/srv/blog/compose.yaml does not declare the postgres service config.ini connects to")
+	}
+}
+
+// The fork reads these keys and validates them at load rather than at the
+// first upload, so a wrong key name is a container that will not start.
+// Checked against config/config.go and config/storage.go on the fork's
+// develop branch.
+func TestTheBlogReadsPostgresAndS3(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+	conf, ok := files["home-a/srv/blog/config.ini"]
+	if !ok {
+		t.Fatal("the blog's config.ini was not rendered")
+	}
+
+	// The endpoint is a fact of the fixture (garageEndpointHost picks the
+	// first Garage site by sorted name), not of this change, so it is read
+	// from the committed golden tree rather than guessed, the same way
+	// TestObjectStorageIsPublishedOnTheMediaHostname reads Mbin's.
+	golden, err := os.ReadFile(filepath.Join("testdata", "golden", "home-a", "srv", "talk", ".env"))
+	if err != nil {
+		t.Fatalf("reading the golden talk .env: %v", err)
+	}
+	endpoint := ""
+	for _, line := range strings.Split(string(golden), "\n") {
+		if strings.HasPrefix(line, "S3_ENDPOINT=") {
+			endpoint = strings.TrimPrefix(line, "S3_ENDPOINT=")
 		}
-		if strings.Contains(f.Content, "postgresql://") {
-			t.Errorf("%s hands WriteFreely a Postgres connection, which it has never supported:\n%s", path, f.Content)
+	}
+	if endpoint == "" {
+		t.Fatal("the golden tree has no S3_ENDPOINT to compare against")
+	}
+
+	for _, want := range []string{
+		"type = postgres",
+		"type = s3",
+		"s3_endpoint = " + endpoint,
+		"s3_bucket = blog-uploads",
+		"s3_access_key_id = ",
+		"s3_secret_access_key = ",
+	} {
+		if !strings.Contains(conf.Content, want) {
+			t.Errorf("config.ini is missing %q:\n%s", want, conf.Content)
 		}
+	}
+	if strings.Contains(conf.Content, "type = sqlite3") {
+		t.Error("the fork keeps its data in Postgres, so the SQLite section should be gone")
+	}
+	if strings.Contains(conf.Content, "s3_virtual_host = true") {
+		t.Error("Garage needs path style addressing, which is the fork's default")
 	}
 }
 
