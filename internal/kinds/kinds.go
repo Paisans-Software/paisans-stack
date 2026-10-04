@@ -106,14 +106,24 @@ var catalogue = map[config.Kind][]Service{
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
 	config.KindWriteFreely: {
-		// v0.17.2 is tagged on GitHub but no image was published for it; the
-		// newest reference that resolves is v0.17.1.
+		// This kind means the writefreely-wisp fork, not upstream WriteFreely.
+		// The fork adds Postgres and S3 support upstream does not have, so the
+		// blog joins the same Patroni cluster and the same Garage node as
+		// everything else instead of a SQLite file nothing else can reach.
+		// Upstream's image has no [database] Postgres driver and no [storage]
+		// section at all, so it will reject the configuration this kind
+		// renders; do not point this kind at ghcr.io/writefreely/writefreely.
 		//
-		// No database service: WriteFreely supports MySQL and SQLite and has
-		// never supported Postgres, so it runs on a SQLite file in its own data
-		// directory. That is what keeps one blog from adding a second database
-		// engine to operate.
-		{Name: "app", Image: "ghcr.io/writefreely/writefreely:v0.17.1", Purpose: "the application"},
+		// The digest below is a `develop` build, not a release: no tagged
+		// release of the fork carries Postgres or S3 support yet. Resolved
+		// against ghcr.io on 2026-10-04 with `docker manifest inspect`, which
+		// returned a multi architecture index covering linux/amd64 and
+		// linux/arm64, and confirmed by pulling the amd64 manifest and
+		// checking the binary with `strings` for the `s3_secret_access_key`
+		// ini tag and the Postgres `sslmode` field. Bump this once a release
+		// carries the same features, and drop this paragraph when it does.
+		{Name: "app", Image: "ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea", Purpose: "the application"},
+		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
 }
 
@@ -148,15 +158,14 @@ func DefaultImage(kind config.Kind, service string) (string, bool) {
 
 // UsesPostgres reports whether a kind stores its data in Postgres at all.
 //
-// Three kinds do not: WriteFreely, which has never supported it; Element,
-// which is a static client with no server side state at all; and oauth2-proxy,
-// which keeps a session in a cookie. The difference is load bearing rather than
-// cosmetic in two directions. An app that uses no Postgres needs no database
-// role, no password and no place in the cluster, so requiring one would refuse
-// a configuration that is entirely correct. It is also what
-// cluster-placement-without-a-cluster reads: a kind answering false here can
-// only be pinned, because cluster placement would render it onto every apps
-// site with storage of its own.
+// Two kinds do not: Element, which is a static client with no server side
+// state at all, and oauth2-proxy, which keeps a session in a cookie. The
+// difference is load bearing rather than cosmetic in two directions. An app
+// that uses no Postgres needs no database role, no password and no place in
+// the cluster, so requiring one would refuse a configuration that is entirely
+// correct. It is also what cluster-placement-without-a-cluster reads: a kind
+// answering false here can only be pinned, because cluster placement would
+// render it onto every apps site with storage of its own.
 func UsesPostgres(kind config.Kind) bool {
 	return Has(kind, PostgresService)
 }
@@ -168,7 +177,7 @@ func UsesPostgres(kind config.Kind) bool {
 // homeserver owns, which is also why the synapse kind is pinned to one node.
 func UsesObjectStorage(kind config.Kind) bool {
 	switch kind {
-	case config.KindMbin, config.KindOutline:
+	case config.KindMbin, config.KindOutline, config.KindWriteFreely:
 		return true
 	default:
 		return false
@@ -191,7 +200,10 @@ func UsesObjectStorage(kind config.Kind) bool {
 // A kind storing objects (UsesObjectStorage) is not the same question as one
 // whose objects are fetched anonymously: a kind can keep its uploads in S3
 // while serving them through its own application route, never exposing its
-// bucket directly.
+// bucket directly. WriteFreely (meaning the wisp fork) is exactly that case:
+// it streams images through its own /uploads/ route with http.ServeContent
+// and never emits or presigns an S3 URL, so its bucket gets no website access
+// even though the kind uses object storage.
 func ServesObjectsPublicly(kind config.Kind) bool {
 	return kind == config.KindMbin
 }

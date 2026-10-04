@@ -123,9 +123,10 @@ func TestFillCoversWhatWasAddedLater(t *testing.T) {
 	}
 }
 
-// Secrets differ per app and per kind. WriteFreely has no database role at all,
-// and only Mbin runs a broker and a cache of its own, so generating a password
-// for a role nobody creates would be noise in a file an operator has to trust.
+// Secrets differ per app and per kind. The writefreely-wisp fork keeps its
+// data in Postgres, and only Mbin runs a broker and a cache of its own, so
+// generating a password for a role nobody creates would be noise in a file an
+// operator has to trust.
 func TestFillMatchesEachKindsNeeds(t *testing.T) {
 	cfg := load(t)
 	secrets := &config.Secrets{}
@@ -133,8 +134,8 @@ func TestFillMatchesEachKindsNeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, ok := secrets.Apps["blog"]["database_password"]; ok {
-		t.Error("WriteFreely was given a database password, and it has never supported Postgres")
+	if _, ok := secrets.Apps["blog"]["database_password"]; !ok {
+		t.Error("the wisp fork keeps its data in Postgres and needs a database password")
 	}
 	for _, key := range []string{"database_password", "mercure_jwt_secret", "rabbitmq_password", "valkey_password"} {
 		if _, ok := secrets.Apps["talk"][key]; !ok {

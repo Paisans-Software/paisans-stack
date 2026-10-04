@@ -7,9 +7,9 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
-// Mbin and Outline keep uploads in S3; Synapse is deliberately excluded
-// because its media store is a directory the homeserver owns, not a bucket.
-// The other kinds have no uploads at all.
+// Mbin, Outline and the writefreely-wisp fork keep uploads in S3; Synapse is
+// deliberately excluded because its media store is a directory the homeserver
+// owns, not a bucket. The other kinds have no uploads at all.
 func TestUsesObjectStorage(t *testing.T) {
 	cases := map[config.Kind]bool{
 		config.KindMbin:        true,
@@ -18,7 +18,7 @@ func TestUsesObjectStorage(t *testing.T) {
 		config.KindElement:     false,
 		config.KindOAuth2Proxy: false,
 		config.KindPocketID:    false,
-		config.KindWriteFreely: false,
+		config.KindWriteFreely: true,
 	}
 	for kind, want := range cases {
 		if got := kinds.UsesObjectStorage(kind); got != want {
@@ -39,5 +39,30 @@ func TestOnlyMbinServesObjectsPublicly(t *testing.T) {
 	}
 	if kinds.ServesObjectsPublicly(config.KindOutline) {
 		t.Fatal("outline's bucket holds document attachments and must never be world readable")
+	}
+}
+
+// The wisp fork supports Postgres and S3, so the blog joins the same cluster
+// and the same object store as everything else. Its objects are not public:
+// the fork streams images through its own /uploads/ route rather than emitting
+// an S3 URL, so nothing anonymous ever reaches its bucket.
+func TestWriteFreelyUsesPostgresAndPrivateObjectStorage(t *testing.T) {
+	if !kinds.UsesPostgres(config.KindWriteFreely) {
+		t.Error("the wisp fork keeps its data in Postgres")
+	}
+	if !kinds.UsesObjectStorage(config.KindWriteFreely) {
+		t.Error("the wisp fork keeps uploaded images in S3")
+	}
+	if kinds.ServesObjectsPublicly(config.KindWriteFreely) {
+		t.Fatal("the fork serves its own images, so its bucket must never be world readable")
+	}
+	var sawPostgres bool
+	for _, s := range kinds.Services(config.KindWriteFreely) {
+		if s.Name == kinds.PostgresService {
+			sawPostgres = true
+		}
+	}
+	if !sawPostgres {
+		t.Error("a pinned blog runs its own Postgres beside itself, so the kind needs that service")
 	}
 }

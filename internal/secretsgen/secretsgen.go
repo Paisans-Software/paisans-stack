@@ -185,8 +185,8 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 }
 
 // appSecretKeys is what one app's stanza needs, which depends on the kind:
-// WriteFreely has no database role, and only Mbin runs a message broker and a
-// cache of its own.
+// the writefreely-wisp fork has a database role like any other Postgres
+// backed kind, and only Mbin runs a message broker and a cache of its own.
 func appSecretKeys(app config.App) []string {
 	var keys []string
 	if kinds.UsesPostgres(app.Kind) {

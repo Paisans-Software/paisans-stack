@@ -18,7 +18,7 @@
     },
     {
       "path": "srv/blog/compose.yaml",
-      "sha256": "760606ed8bd458d82cf252a49ffd669e1f1a14e1cb3bc06e257d4728c3928573",
+      "sha256": "d566b8a198dec1f5b5f372eea6587fcadc8a34fa897a46abbe4e439276d35d3f",
       "mode": "0644"
     },
     {

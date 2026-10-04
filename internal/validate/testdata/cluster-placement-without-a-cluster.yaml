@@ -53,9 +53,10 @@ apps:
     settings:
       s3_bucket: docs-uploads
   blog:
-    kind: writefreely
+    kind: oauth2-proxy
     hostname: blog.example.org
-    # WriteFreely has no Postgres, so there is no cluster for it to join.
+    # oauth2-proxy keeps a session in a cookie rather than a database, so
+    # there is no cluster for it to join.
     placement: cluster
   auth:
     kind: pocket-id

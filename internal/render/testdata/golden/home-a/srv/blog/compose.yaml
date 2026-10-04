@@ -13,7 +13,7 @@ name: paisans-blog
 
 services:
   app:
-    image: ghcr.io/writefreely/writefreely:v0.17.1
+    image: ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea
     restart: unless-stopped
     ports:
       - "8080:8080"
