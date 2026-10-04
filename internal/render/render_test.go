@@ -280,6 +280,23 @@ func TestTheBlogReadsPostgresAndS3(t *testing.T) {
 		"s3_bucket = blog-uploads",
 		"s3_access_key_id = ",
 		"s3_secret_access_key = ",
+		// Path style addressing, rendered rather than defaulted: Garage
+		// cannot serve bucket.endpoint/key, and a fork release that flipped
+		// its own default would otherwise break every image with nothing in
+		// the configuration to explain it.
+		"s3_virtual_host = false",
+		// The [storage] block above is inert without this. uploads.enabled
+		// defaults to false in the fork, and with it false POST
+		// /api/me/images is not routed, the /uploads/ route is gated off,
+		// and checkUploadsAtStartup never runs, so a wrong bucket or a
+		// refused key is not reported at boot either.
+		"[uploads]",
+		"enabled = true",
+		"max_size_mb = 10",
+		// Two settings the fork's registry rejects at the zero an absent key
+		// leaves behind, logging an ERROR on every boot until they are
+		// rendered.
+		"min_username_len = 3",
 	} {
 		if !strings.Contains(conf.Content, want) {
 			t.Errorf("config.ini is missing %q:\n%s", want, conf.Content)
@@ -288,8 +305,11 @@ func TestTheBlogReadsPostgresAndS3(t *testing.T) {
 	if strings.Contains(conf.Content, "type = sqlite3") {
 		t.Error("the fork keeps its data in Postgres, so the SQLite section should be gone")
 	}
-	if strings.Contains(conf.Content, "s3_virtual_host = true") {
-		t.Error("Garage needs path style addressing, which is the fork's default")
+	// uploads.dir names a path on this node and only the local image store
+	// reads it. Rendering it beside type = s3 would describe a directory
+	// nothing consults.
+	if strings.Contains(conf.Content, "dir = ") {
+		t.Errorf("uploads.dir is not read with an S3 store, so it should not be rendered:\n%s", conf.Content)
 	}
 }
 

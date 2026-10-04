@@ -28,7 +28,7 @@
     },
     {
       "path": "srv/blog/config.ini",
-      "sha256": "11d911804134fe830f549464f6dafd04bba368c37aed21bc55fa69635d6b97c3",
+      "sha256": "79970ec91e98a71d4c522357f19145b66339220b74c29018fd2ca4186289313e",
       "mode": "0600"
     },
     {
