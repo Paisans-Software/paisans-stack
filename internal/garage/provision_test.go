@@ -286,6 +286,13 @@ func TestOnlyAPublicBucketIsAllowedWebsiteAccess(t *testing.T) {
 	if strings.Contains(joined, "docs-uploads") {
 		t.Errorf("outline's bucket must never be world readable, got:\n%s", joined)
 	}
+	// The blog's bucket (blog-uploads) must never be world readable either,
+	// for a different reason than outline's: the wisp fork streams its
+	// images through its own /uploads/ route and never addresses the object
+	// store from a browser at all.
+	if strings.Contains(joined, "blog-uploads") {
+		t.Errorf("the blog's bucket must never be world readable, got:\n%s", joined)
+	}
 }
 
 // Garage cannot allow website access on a bucket that does not exist, so the

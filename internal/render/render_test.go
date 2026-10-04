@@ -1170,6 +1170,15 @@ func TestOnlyAPublicBucketIsRewrittenToTheWebEndpoint(t *testing.T) {
 		t.Errorf("outline's bucket must not be routed to the anonymous endpoint:\n%s", snippet)
 	}
 
+	// The blog's bucket (blog-uploads, the default for app "blog", no
+	// s3_bucket override in the fixture) must not appear either, and for a
+	// different reason than Outline's: the wisp fork streams its images
+	// through its own /uploads/ route and never addresses the object store
+	// from a browser at all, so there is no anonymous read to route here.
+	if strings.Contains(snippet, "blog-uploads") {
+		t.Errorf("the blog's bucket must not be routed to the anonymous endpoint:\n%s", snippet)
+	}
+
 	// The fallback keeps Host, which is the whole reason presigned URLs verify.
 	if !strings.Contains(snippet, ":3900") {
 		t.Error("the fallback should reach the S3 API")
