@@ -21,6 +21,13 @@
 // encoding/json's indented style, which is the style the template writes, so
 // the only lines that change are the ones a key was added to.
 //
+// A dotted key is a path in yaml and json, so it cannot name a key whose own
+// name contains a dot, such as Element's "m.homeserver" or a setting_defaults
+// entry like "UIFeature.feedback". Where such a key already exists and the
+// rest of the path could join into its name, the path is refused as ambiguous
+// rather than building a new "m" object beside the real key. A new key with a
+// dot in its name cannot be expressed through `config` at all.
+//
 // In every format the keys are sorted before anything is written, so the same
 // declaration renders the same bytes. A key the rendered file already carries
 // is a Collision rather than an overwrite, and a value is a scalar: nesting is
@@ -249,6 +256,12 @@ func INI(rendered string, keys map[string]any) (string, error) {
 			return "", err
 		}
 		section, name := m[1], m[2]
+		if section == "DEFAULT" {
+			// go-ini's name for the lines before any header, which this
+			// writer does not scan for collisions. Only the exact upper case
+			// name is special under the default options WriteFreely loads with.
+			return "", fmt.Errorf("config key %s: DEFAULT is the ini parser's section for lines before any header, and cannot be set through config", k)
+		}
 		line := name + " = " + v + "\n"
 		if s, ok := sections[section]; ok {
 			if s.keys[name] {
@@ -291,7 +304,9 @@ func INI(rendered string, keys map[string]any) (string, error) {
 
 // iniValue refuses what an ini parser could read as something other than the
 // value: a newline ends it, `;` and `#` start an inline comment, edge
-// whitespace is trimmed, and surrounding quotes or backticks are stripped.
+// whitespace is trimmed, surrounding quotes or backticks are stripped, and a
+// trailing backslash joins the next line onto the value, swallowing the key
+// written after it.
 // Each of those was observed with github.com/go-ini/ini v1.67.0, the version
 // the WriteFreely fork pins, loading with its default options: `a;b` and
 // `a#b` both read back as `a`. The template writes values bare, and so does
@@ -306,6 +321,8 @@ func iniValue(key, v string) (string, error) {
 		return "", fmt.Errorf("config key %s: an ini value cannot start or end with whitespace, which an ini parser trims", key)
 	case v != "" && strings.ContainsRune("\"'`", rune(v[0])):
 		return "", fmt.Errorf("config key %s: an ini value cannot start with a quote, which an ini parser may strip", key)
+	case strings.HasSuffix(v, `\`):
+		return "", fmt.Errorf("config key %s: an ini value cannot end with a backslash, which an ini parser reads as a line continuation", key)
 	}
 	return v, nil
 }
@@ -343,6 +360,21 @@ func paths(keys map[string]any) ([]string, map[string][]string, error) {
 	return sorted, segs, nil
 }
 
+// dottedName returns an existing key, as reported by has, whose name joins
+// two or more of path's leading segments with dots, or "" when there is none.
+func dottedName(has func(string) bool, path []string) string {
+	for j := len(path); j >= 2; j-- {
+		if name := strings.Join(path[:j], "."); has(name) {
+			return name
+		}
+	}
+	return ""
+}
+
+func ambiguous(key, existing string) error {
+	return fmt.Errorf("config key %s is ambiguous: %q is already one key with a dot in its name, and a dotted path cannot tell it from a nested one", key, existing)
+}
+
 // ---- yaml ----
 
 // YAML sets each dotted key as a nested path in a rendered yaml document.
@@ -377,12 +409,20 @@ func YAML(rendered string, keys map[string]any) (string, error) {
 			return "", fmt.Errorf("config key %s: %w", k, err)
 		}
 		path := segs[k]
+		if root != nil {
+			if name := dottedName(yamlHas(root), path); name != "" {
+				return "", ambiguous(k, name)
+			}
+		}
 		if root == nil || (!flow && yamlLookup(root, path[0]) == nil) {
 			yamlSet(appended, path, value)
 			continue
 		}
 		node := root
 		for i, seg := range path {
+			if name := dottedName(yamlHas(node), path[i:]); name != "" {
+				return "", ambiguous(k, name)
+			}
 			child := yamlLookup(node, seg)
 			if child == nil {
 				// Inside the template's own mapping the label goes on the
@@ -428,6 +468,10 @@ func YAML(rendered string, keys map[string]any) (string, error) {
 		return "", errors.New("the merged yaml is more than one document; the rendered file must be a single document without an end marker")
 	}
 	return out, nil
+}
+
+func yamlHas(mapping *yaml.Node) func(string) bool {
+	return func(k string) bool { return yamlLookup(mapping, k) != nil }
 }
 
 func yamlLookup(mapping *yaml.Node, key string) *yaml.Node {
@@ -518,6 +562,9 @@ func JSON(rendered string, keys map[string]any) (string, error) {
 		node := root
 		path := segs[k]
 		for i, seg := range path {
+			if name := dottedName(node.has, path[i:]); name != "" {
+				return "", ambiguous(k, name)
+			}
 			child, exists := node.vals[seg]
 			if i == len(path)-1 {
 				if exists {
@@ -545,6 +592,11 @@ func JSON(rendered string, keys map[string]any) (string, error) {
 		b.WriteString("\n")
 	}
 	return b.String(), nil
+}
+
+func (o *object) has(k string) bool {
+	_, ok := o.vals[k]
+	return ok
 }
 
 func (o *object) set(k string, v any) {

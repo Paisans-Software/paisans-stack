@@ -299,6 +299,35 @@ func sectionBody(file, name string) string {
 	return rest
 }
 
+// The key goes after the section's last assignment, before the blank line and
+// the comment that introduce the next section, so that comment stays with the
+// section it describes.
+func TestINIInsertsAfterTheLastAssignmentOfTheSection(t *testing.T) {
+	rendered := "[app]\nk = v\n\n; about db\n[database]\ntype = postgres\n"
+	out, err := configmerge.INI(rendered, map[string]any{"app.n": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[app]\nk = v\n" + iniLabel + "\nn = 1\n\n; about db\n[database]\ntype = postgres\n"
+	if out != want {
+		t.Errorf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+// go-ini reads [DEFAULT] as the section of the lines before any header,
+// which this writer does not scan for collisions, so the name is refused.
+// Under the default options WriteFreely loads with, only the exact upper
+// case name is special: [default] is an ordinary section.
+func TestINIRefusesTheDefaultSection(t *testing.T) {
+	_, err := configmerge.INI("top = 1\n[app]\n", map[string]any{"DEFAULT.top": "2"})
+	if err == nil || !strings.Contains(err.Error(), "DEFAULT.top") {
+		t.Errorf("want an error naming DEFAULT.top, got %v", err)
+	}
+	if _, err := configmerge.INI("[app]\n", map[string]any{"default.k": "x"}); err != nil {
+		t.Errorf("[default] is an ordinary section to go-ini: %v", err)
+	}
+}
+
 // A collision is per section: the same key name in another section is fine.
 func TestINIRefusesAKeyTheTemplateAlreadyWroteInThatSection(t *testing.T) {
 	rendered := readGolden(t, goldenINI)
@@ -315,7 +344,7 @@ func TestINIRefusesAKeyTheTemplateAlreadyWroteInThatSection(t *testing.T) {
 
 // An ini key is exactly section.key. Anything else is an error naming it.
 func TestINIRefusesAKeyThatIsNotSectionDotKey(t *testing.T) {
-	for _, key := range []string{"max_blogs", "oauth.generic.client_id", ".x", "x.", "a b.c", "a.b=c", "a].b"} {
+	for _, key := range []string{"max_blogs", "oauth.generic.client_id", ".x", "x.", "a b.c", "a.b=c", "a].b", "DEFAULT.k"} {
 		_, err := configmerge.INI("[app]\n", map[string]any{key: "x"})
 		if err == nil || !strings.Contains(err.Error(), key) {
 			t.Errorf("%q: want an error naming the key, got %v", key, err)
@@ -325,7 +354,7 @@ func TestINIRefusesAKeyThatIsNotSectionDotKey(t *testing.T) {
 
 // Values the ini syntax could misread are refused rather than guessed at.
 func TestINIRefusesAValueTheSyntaxWouldMisread(t *testing.T) {
-	for _, value := range []string{"a\nb", "a ; b", "a # b", " lead", "trail ", `"quoted"`, "`tick`"} {
+	for _, value := range []string{"a\nb", "a ; b", "a # b", " lead", "trail ", `"quoted"`, "`tick`", `C:\dir\`} {
 		_, err := configmerge.INI("[app]\n", map[string]any{"app.k": value})
 		if err == nil || !strings.Contains(err.Error(), "app.k") {
 			t.Errorf("%q: want an error naming the key, got %v", value, err)
@@ -514,20 +543,48 @@ func TestJSONKeepsTheRealConfigsOrderAndIndent(t *testing.T) {
 
 func TestJSONRefusesAPathTheTemplateAlreadyWrote(t *testing.T) {
 	rendered := readGolden(t, goldenJSON)
-	for _, key := range []string{"brand", "default_server_config.m.homeserver", "brand.x"} {
+	for _, key := range []string{"brand", "brand.x"} {
 		_, err := configmerge.JSON(rendered, map[string]any{key: "x"})
 		var collision *configmerge.Collision
-		if key == "default_server_config.m.homeserver" {
-			// "m.homeserver" is one key with a dot in it, which a dotted path
-			// cannot name: this reaches default_server_config.m, which is new.
-			if err != nil {
-				t.Errorf("%s: %v", key, err)
-			}
-			continue
-		}
 		if !errors.As(err, &collision) || collision.Key != key {
 			t.Errorf("%s: want a Collision naming it, got %v", key, err)
 		}
+	}
+}
+
+// A dotted path cannot name a key whose own name has a dot in it, such as
+// Element's "m.homeserver". Walking it would build a new "m" object beside
+// the real key, which is never what was meant, so it is refused as ambiguous,
+// naming both the operator's key and the dotted key already there.
+func TestADottedPathThatCouldMeanADottedKeyIsAmbiguous(t *testing.T) {
+	cases := []struct {
+		name     string
+		merge    mergeFunc
+		rendered string
+		key      string
+		existing string
+	}{
+		{"json, nested", configmerge.JSON, readGolden(t, goldenJSON), "default_server_config.m.homeserver.base_url", "m.homeserver"},
+		{"json, the key itself", configmerge.JSON, readGolden(t, goldenJSON), "default_server_config.m.homeserver", "m.homeserver"},
+		{"json, three segments", configmerge.JSON, `{"a":{"x.y.z":1}}` + "\n", "a.x.y.z", "x.y.z"},
+		{"json, at the root", configmerge.JSON, `{"m.homeserver":{}}` + "\n", "m.homeserver.x", "m.homeserver"},
+		{"yaml, nested", configmerge.YAML, "a:\n  m.homeserver:\n    base_url: x\n", "a.m.homeserver.other", "m.homeserver"},
+		{"yaml, at the root", configmerge.YAML, "m.homeserver: 1\n", "m.homeserver.x", "m.homeserver"},
+	}
+	for _, c := range cases {
+		_, err := c.merge(c.rendered, map[string]any{c.key: "x"})
+		if err == nil || !strings.Contains(err.Error(), c.key) || !strings.Contains(err.Error(), strconv.Quote(c.existing)) {
+			t.Errorf("%s: want an error naming %s and %q, got %v", c.name, c.key, c.existing, err)
+		}
+	}
+	// A dotted key elsewhere does not make an unrelated path ambiguous.
+	// The rule is about names the remaining segments could join into, not
+	// about any dotted key nearby: "m.identity_server" is not there.
+	if _, err := configmerge.JSON(readGolden(t, goldenJSON), map[string]any{"default_server_config.m.identity_server": "x"}); err != nil {
+		t.Errorf("no existing key is m.identity_server: %v", err)
+	}
+	if _, err := configmerge.JSON(readGolden(t, goldenJSON), map[string]any{"setting_defaults.use_system_theme": false}); err != nil {
+		t.Errorf("setting_defaults has dotted keys, but none of them is use_system_theme: %v", err)
 	}
 }
 
