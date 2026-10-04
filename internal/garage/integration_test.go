@@ -611,10 +611,19 @@ func startMediaCluster(t *testing.T) *mediaCluster {
 		}
 	}
 
-	// Joining the nodes is this test's own scaffolding, not the toolkit's:
-	// garage.Build plans a layout, keys and buckets, and nothing in it runs
-	// `node connect`. A real deployment's nodes find each other over the
-	// mesh.
+	// Joining the nodes is this test's own scaffolding, and it is a step the
+	// toolkit never plans. garage.Build plans a layout, keys and buckets, and
+	// nothing in it runs `node connect`; nothing it renders carries
+	// bootstrap_peers, Consul discovery or Kubernetes discovery either. A
+	// shared rpc_secret authenticates a peer, it does not find one, so two
+	// nodes started from these very files sit alone until something joins
+	// them. The join below is that something, performed by the test.
+	//
+	// It is also why `paisans storage init` cannot converge on a multi site
+	// deployment by itself: with each node alone, `layout apply` is refused
+	// because the node count is below the replication factor, and Execute
+	// stops at the first failing step, so no key, no bucket and no website
+	// grant is ever created. README.md says so where an operator will look.
 	first := cluster.Nodes[garageNodes[0].Site]
 	for _, node := range garageNodes[1:] {
 		idOut, err := cluster.Nodes[node.Site].Run(garageCmd + " node id -q")

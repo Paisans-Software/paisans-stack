@@ -443,8 +443,22 @@ test runs two. The per node `Build` and `Execute` reflect that: the first
 site's layout apply is refused while only its own role is staged, the staged
 role survives the refusal, and the second site's pass applies both at once.
 Nothing in `garage.Build` stages both nodes before applying, and nothing in it
-joins a node to a cluster either; a real deployment's nodes find each other
-over the mesh, and the test does that join itself.
+joins a node to a cluster either. The test does that join itself, with `garage
+node connect`, and that is a step the toolkit never plans: nothing it renders
+carries `bootstrap_peers`, Consul discovery or Kubernetes discovery, and a
+shared `rpc_secret` authenticates a peer rather than finding one. Two nodes
+started from the fixture's own rendered `garage.toml` files, on the mesh
+subnet, with that shared secret and no `node connect`, each list only
+themselves in `garage status`.
+
+The consequence is operational rather than theoretical. **A multi site Garage
+deployment needs a manual `garage node connect` before `paisans storage init`
+can converge.** Without it each node is alone, so both sites' `layout apply`
+is refused for a node count below the replication factor, and `Execute` stops
+at the first failing step: no key, no bucket and no website grant is ever
+created. This is written down in `README.md`, in the `storage init` section,
+because a decision record is not where an operator looks for an instruction.
+Fixing the planner so it plans the join is deliberately out of scope here.
 
 ## 2026-10-04: The `writefreely` kind now means the writefreely-wisp fork, not upstream
 
@@ -455,7 +469,7 @@ and no S3 support: it kept its data in a SQLite file in its own data
 directory, and that was the whole reason the kind could only be pinned. The
 kind now renders the [writefreely-wisp](https://github.com/josephquigley/writefreely-wisp)
 fork instead, which adds both. Its `config.ini` carries `[database] type =
-postgres` and `[storage] type = s3`, so the same `writefreely.yaml` that used
+postgres` and `[storage] type = s3`, so the same `paisans.yaml` that used
 to render a SQLite file now renders a Postgres connection and an S3 bucket,
 and the blog can join the cluster like any other app.
 

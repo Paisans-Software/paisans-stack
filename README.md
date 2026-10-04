@@ -761,6 +761,40 @@ application key can reach one, so the failure an adopter meets is an
 application error with no obvious cause, not a message naming a missing step.
 `storage init` is that missing step.
 
+#### A second Garage site has to be joined by hand first
+
+**One Garage site needs nothing extra.** Run `paisans storage init --site
+<name> --execute` after the infrastructure stack is up and it does the whole
+job.
+
+**A second Garage site needs a `garage node connect` first, run by you.** The
+toolkit does not plan that join and nothing it renders performs one: there is
+no `bootstrap_peers` in the rendered `garage.toml`, and no Consul or Kubernetes
+discovery. The shared `rpc_secret` every site carries authenticates a peer; it
+does not find one. Two nodes brought up from rendered configuration sit alone
+indefinitely, each listing only itself in `garage status`.
+
+Until they are joined, `storage init` cannot converge on either site. With one
+node visible, `garage layout apply` is refused because the node count is below
+the declared `replication`, and `storage init` stops at the first failing step,
+so no application key, no bucket and no website grant is created anywhere.
+
+From one site, once both nodes are running:
+
+```sh
+# On the second site, read its node ID. This is the command shape
+# `storage init` prints for everything else it runs.
+ssh <site-b> docker compose -f /srv/infra/compose.yaml exec -T garage \
+    /garage node id -q
+
+# On the first site, join it. Pass the whole id@address that printed.
+ssh <site-a> docker compose -f /srv/infra/compose.yaml exec -T garage \
+    /garage node connect <id@address>
+```
+
+`garage status` on either node should then list both. Run `paisans storage init
+--site <name> --execute` for each site afterwards, in either order.
+
 ### Decryption happens on a workstation, not on a host
 
 Rendering locally and pushing means no age key ever reaches a host. That
