@@ -584,19 +584,31 @@ Garage and its helpers belong beside the fixture in `internal/render`.
 
 The run also showed something the spec did not anticipate. The fork moves most
 of `[app]` and `[uploads]` into its database on the first start against an empty
-database, and after that the database is in force. Started again against an
-existing database with the key added, the fork logs `config.ini disagrees with
-the database on app.max_blogs; the database value is in force` and still
-reports `0`. The test asserts that as well, because the README states it and a
-fork release that changed it should fail here rather than leave the README
-wrong. A passthrough key for those sections therefore takes effect on a new
-blog only, and a running one is changed with `writefreely settings set`. That
-is the fork's design and applies to the template's own keys too; this toolkit
-does not try to reconcile the two.
+database, and after that the database is in force. Started once more against
+that existing database with the key added, the fork logged `config.ini
+disagrees with the database on app.max_blogs; the database value is in force`
+and still reported `0`. The test asserts that as well, because the README
+states it and a fork release that changed it should fail here rather than leave
+the README wrong. A passthrough key for those sections therefore takes effect
+on a new blog only. That restart is the only one observed.
 
-The rendered compose file mounts `config.ini` read only, so on every boot the
-fork also logs that it could not mark the file or strip the moved keys from it.
-That is noise the fork documents as harmless, and was left alone.
+What follows was read from the fork's source at `ff9dcebe`, the revision the
+pinned image's label names, and was not run. `importSettings` in
+`settings_runtime.go` is commented as running "at every start", so the
+disagreement line is expected on every boot rather than only the one seen.
+`cmd/writefreely/settings.go` has `writefreely settings set <name> <value>`,
+described as "running servers apply it on their next request"; it looks like
+the way to change a running blog's setting, and nobody has used it here. The
+drift check covers every database-bound key present in the file, which reads
+as though the template's own keys in those sections would be ignored the same
+way after the first start; that is untested too. This toolkit does not try to
+reconcile the two.
+
+On the boots that were run, the rendered compose file mounts `config.ini` read
+only, and the fork logged that it could not add its `settings_location` marker
+to the file or strip the moved keys from it. The fork's `docker-entrypoint.sh`
+says "A read-only config.ini is fine: the keys are logged and ignored", which
+is the fork's own claim and was not tested further here. It was left alone.
 
 ### Yaml appends a new top level key, and re-emits only under an existing mapping
 
@@ -624,18 +636,46 @@ silently creating a nested `m` object beside it.
 the key, and names the `settings` key that owns the value when there is one.
 Overriding was the alternative and was rejected for two reasons. Two sources of
 truth for one value is how a deployment ends up with a setting nobody can
-locate. And a passthrough that could override would route around every refusal
-`validate` makes because a value is not an operator's to change casually:
-`oidc_providers` back into a homeserver that is supposed to be a resource
-server, `type = sqlite3` into a blog that belongs in the cluster. The cost is
+locate. And a passthrough that could override would route around decisions the
+templates encode: `database.type = sqlite3` into a blog that belongs in the
+cluster is refused because the template writes `type = postgres`. The cost is
 real and stated in the README: a template owned default cannot be changed
 through `config`, only by a `settings` key or a template change, both of which
 are reviewable.
 
+### A key a template leaves out on purpose is refused the same way
+
+A collision check alone does not stop `oidc_providers` going back into a
+homeserver that is supposed to be a resource server, because the synapse
+template deliberately writes no identity provider and no password database:
+there is nothing to collide with. The final review found that
+`oidc_providers`, `oidc_config.enabled` and `cas_config.enabled` all rendered.
+
+So a key a template omits by decision is treated as owned by that template and
+refused under the same rule name, with a message saying the template leaves it
+out on purpose and why. One rule name keeps the README to one entry. The
+entries are limited to keys the template's own comments name as deliberately
+absent, so the table records decisions rather than guesses:
+
+* synapse: `oidc_providers`, `oidc_config`, `saml2_config`, `cas_config`,
+  `jwt_config` and `password_config`. The template's header says it
+  "deliberately declares no identity provider of its own and no local password
+  database"; these six are Synapse's blocks for those, read in its
+  configuration manual at v1.160.0. The match is on the top level segment, so
+  `oidc_config.enabled` is caught and `oidc_providers_note` is not.
+* writefreely: `uploads.dir`, which the template's `[uploads]` comment calls
+  "deliberately absent" because uploads go to S3.
+
+No other template names a deliberately absent key, so no other kind has
+entries. `registration_shared_secret`, which the synapse kind also never
+renders, is not in the table because the template's comments do not name it;
+the credential name check refuses it in `validate` before rendering.
+
 For env kinds the check covers the stack's `compose.yaml` as well. Docker
-Compose v5.4.0 was run with the same variable in `env_file` and in
-`environment:`, in both map and list form, and `docker compose config` showed
-`environment:` winning and the `env_file` value dropped without a warning. So a
+Compose v5.4.0 was run on the operator's Mac, with the version on any host not
+checked, with the same variable in `env_file` and in `environment:`, in both
+map and list form, and `docker compose config` showed `environment:` winning
+and the `env_file` value dropped without a warning. So a
 variable `compose.yaml` sets under `environment:`, or interpolates as `${VAR}`,
 is refused too. The interpolation case over-refuses on purpose: the only
 references today are `${POSTGRES_PASSWORD:?...}`, which the credential check
@@ -643,12 +683,35 @@ already refuses.
 
 ### The secret check is by name, and says so
 
-`config-key-looks-like-a-secret` refuses a key containing `password`, `secret`,
-`token`, `apikey` or `private_key`, because `paisans.yaml` is plaintext and
-committed and a passthrough map is where a token gets pasted at the end of a
-long day. It will not catch a credential called anything else, and the message
-and the README both say that, the same way `acme-image-is-stock-caddy` refuses
-the one thing it can prove instead of claiming to be a policy.
+`config-key-looks-like-a-secret` lowercases a key, removes `_`, `-` and `.`,
+and refuses it if what is left contains `password`, `secret`, `token`, `apikey`
+or `privatekey`, because `paisans.yaml` is plaintext and committed and a
+passthrough map is where a token gets pasted at the end of a long day. The
+separators are removed because the first version matched `apikey` and
+`private_key` as written, and the final review found `SENDGRID_API_KEY` and
+`privateKey` passing; the env spelling is the likeliest real case. It will not
+catch a credential called anything else, and the message and the README both
+say that, the same way `acme-image-is-stock-caddy` refuses the one thing it can
+prove instead of claiming to be a policy. It also refuses some innocent names,
+such as WriteFreely's `app.disable_password_auth`, and the README says so.
+
+### An env key that would configure compose is refused
+
+`apply` runs `docker compose -f /srv/<app>/compose.yaml up -d`, so the stack's
+`.env` is also the file compose reads for its own settings. With `docker compose
+config` on Docker Compose v5.4.0, on the operator's Mac and with no container
+started, `COMPOSE_PROJECT_NAME=other` in that `.env` renamed the project from
+`probe` to `other`, and `COMPOSE_PROFILES=hidden` made a service behind that
+profile active. The run was made from another directory with `-f`, as `apply`
+does. That `apply` would then address different containers from the ones it
+started before is reasoned from the renamed project, not run.
+
+`config-key-steers-compose` refuses an env kind's key starting `COMPOSE_` or
+`DOCKER_`. `DOCKER_HOST` in the same `.env` did not redirect `docker compose
+ps` in that run, while the same variable in the shell did. `DOCKER_` is refused
+anyway as the docker CLI's own namespace, so the rule does not depend on
+knowing which of those compose honours from a file; no application variable is
+known to need that prefix.
 
 ### The refusal for a kind with no config file was dropped
 
@@ -661,7 +724,7 @@ without a config file has to add it back.
 ### What is proven, and against what
 
 The ini merge is proven against the application that reads it, above. The env
-merge's quoting is proven against `docker compose config`. The yaml and json
+merge's quoting is proven against `docker compose config`, below. The yaml and json
 merges are proven against Go's own parsers only: the tests show the rendered
 file parses and carries the value at the requested path. Synapse reads
 `homeserver.yaml` with Python and Element reads `config.json` in a browser, and
@@ -671,3 +734,36 @@ was found by reading rather than running: Synapse 1.160.0's
 unless a list valued `url_preview_ip_range_blacklist` is also set, and a list is
 not a value `config` can carry, which is why the fixture uses
 `require_auth_for_profile_requests` instead.
+
+### Env values are quoted only where compose would rewrite them
+
+Run with `docker compose config` on Docker Compose v5.4.0, on the operator's
+Mac; the version on any host was not checked, and no container was started.
+`TestEnvQuotesWhatComposeWouldOtherwiseRewrite` pins the line forms that run
+chose. What compose did to a hand written `env_file` line:
+
+| Line in the file | What compose delivered |
+|---|---|
+| `K=a b` | `a b` |
+| `K=a #b` | `a`: a space then `#` starts a comment |
+| `K=a#b` | `a#b` |
+| `K=$HOME/x` | the value of `$HOME`, then `/x` |
+| `K="quoted"` | `quoted`: the quotes are stripped |
+| `K=trail  ` and `K= lead` | `trail` and `lead`: edge whitespace is trimmed |
+| `K=a\nb` unquoted | the four characters `a\nb` |
+| `K='...'` | literal, for a space, `#`, `$`, `"` and backslash |
+| `K="a\nb"` | `a`, a real newline, `b` |
+| `K="a\$b"`, `K="a\\b"`, `K="say \"hi\""` | `a$b`, `a\b`, `say "hi"` |
+
+So a value is written bare, the templates' style, when it has no leading or
+trailing whitespace and none of `#`, `$`, `'`, `"`, backslash, tab or newline.
+Otherwise it is double quoted, with backslash, `"`, `$` and newline escaped,
+the four escapes compose undid inside double quotes. A carriage return or other
+control character is refused, since no form was observed to carry one.
+
+A file written by `configmerge.Env` itself was then read back the same way,
+with 24 values covering each of those cases plus empty, numbers, booleans,
+`=`, a URL with `#` and `&`, and non-ASCII text. Every value compose delivered
+matched the Go input, after undoing the `$$` compose prints for a literal `$`
+in its output. Reading `$$` as that escape is an inference from the output
+being consistently doubled, not documented behaviour that was looked up.

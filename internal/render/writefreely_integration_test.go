@@ -12,6 +12,15 @@
 // It has its own build tag rather than garage_integration because nothing in
 // it touches Garage, and the helpers it needs live beside the fixture in this
 // package rather than in internal/garage.
+//
+// Every container, the network and the volume it creates are removed in
+// t.Cleanup, and a `go test` timeout skips that: the timeout panics the test
+// binary, and no cleanup function runs. The docker host is shared with other
+// work, so leftovers named paisans-wf-* are left for someone else to find. The
+// test may pull images and boots the application three times, so give it a
+// generous limit rather than the 10 minute default, for example:
+//
+//	go test -tags writefreely_integration -timeout 30m -run TestRenderedPassthroughKeyIsReadByWriteFreely ./internal/render/
 package render_test
 
 import (

@@ -525,10 +525,12 @@ own block and leaves the rest of `homeserver.yaml` byte for byte as rendered.
 A key under a mapping the template already writes, such as
 `database.args.sslmode`, makes the file be re-emitted: comments survive, but the
 blank lines between top level keys do not. Json keeps the template's key order.
-In env, ini and an appended yaml block, a comment above the key says `config`
-put it there.
+In every format except json, which has no comments, a comment says `config`
+put the key there: above the appended block in env and yaml, above the inserted
+lines in ini, and on the key itself when yaml re-emits under an existing
+mapping.
 
-Two mistakes are knowable from the file alone, so `paisans validate` refuses
+Three mistakes are knowable from the file alone, so `paisans validate` refuses
 them:
 
 **A dotted key on an env file is refused as
@@ -537,27 +539,63 @@ for an underscore rather than a path.
 
 **A key named like a credential is refused as `config-key-looks-like-a-secret`.**
 `paisans.yaml` is plaintext and meant to be committed; the value belongs in
-`secrets.enc.yaml`. The check is by name (`password`, `secret`, `token`,
-`apikey`, `private_key`) and will not catch a credential called something
-else. It refuses the one thing it can see and does not claim to be a policy.
+`secrets.enc.yaml`. The check is by name: the key is lowercased, `_`, `-` and
+`.` are removed, and what is left is searched for `password`, `secret`,
+`token`, `apikey` and `privatekey`, so `SENDGRID_API_KEY` and `privateKey` are
+both caught. It will not catch a credential called something else. It refuses
+the one thing it can see and does not claim to be a policy.
+
+Being by name, it also refuses some keys that are not credentials at all.
+WriteFreely's `app.disable_password_auth` is a switch that turns the password
+login off, and it is refused because its name contains `password`. Such a key
+needs a `settings` key or a template change.
+
+**An env key starting `COMPOSE_` or `DOCKER_` is refused as
+`config-key-steers-compose`.** `apply` runs `docker compose -f
+/srv/<app>/compose.yaml up -d`, and compose reads the `.env` beside that file
+for its own settings as well as handing it to the application. With
+`docker compose config` on Docker Compose v5.4.0, run on the operator's Mac
+rather than a host, `COMPOSE_PROJECT_NAME=other` in that `.env` renamed the
+project to `other` and `COMPOSE_PROFILES` switched on a service the compose
+file kept behind a profile. `DOCKER_HOST` in the same `.env` did not redirect
+`docker compose ps` in that run; `DOCKER_` is refused anyway, as the docker
+CLI's own namespace, so the rule does not depend on knowing which of those
+compose honours from a file.
 
 **A key the template already writes is refused when rendering, as
 `config-key-already-rendered`.** The message names the key and the file, and
 either the template that writes it or, when there is one, the `settings` key
 that is the sanctioned input for the same value. `config` adds; it never
 overrides. Two sources of truth for one value is how a deployment ends up with
-a setting nobody can locate, and an override would also route around the
-refusals in `validate` that exist because some values are not an operator's to
-change casually: `oidc_providers` back into a homeserver that is a resource
-server, or `type = sqlite3` into a blog that belongs in the cluster. To change a
-template owned value, use its `settings` key if it has one. If it has none, the
-answer is a pull request that makes it one, or a template change, and both are
-reviewable where a local override is not.
+a setting nobody can locate, and an override would route around decisions the
+templates encode: `database.type = sqlite3` into a blog that belongs in the
+cluster is refused this way, because the template writes `type = postgres`.
+
+The same rule covers a key a template leaves out on purpose, because no
+collision would ever catch one of those coming back. The message says the
+template omits it by decision, and why. The list is limited to what a
+template's own comments say it leaves out on purpose, and today that is:
+
+* Synapse: `oidc_providers`, `oidc_config`, `saml2_config`, `cas_config`,
+  `jwt_config` and `password_config`, and any path beneath them, such as
+  `oidc_config.enabled`. The homeserver is a resource server behind Matrix
+  Authentication Service, and an identity provider or password database of its
+  own would be a second way in.
+* WriteFreely: `uploads.dir`. Uploads go to S3, and `dir` is read only by the
+  local image store, so it would do nothing.
+
+Any other key the toolkit does not render is passed through, so this list is
+the whole of what is enforced beyond collisions. To change a template owned
+value, use its `settings` key if it has one. If it has none, the answer is a
+pull request that makes it one, or a template change, and both are reviewable
+where a local override is not.
 
 For the env kinds the check reaches past `.env`. A variable the stack's
 `compose.yaml` sets under `environment:`, or interpolates as `${VAR}`, is
 refused too, because compose gives `environment:` precedence over `env_file`
-and the `.env` value would be dropped without a word.
+and the `.env` value would be dropped without a word. That precedence was
+observed with `docker compose config` on Docker Compose v5.4.0 on the
+operator's Mac; the version on any host was not checked.
 
 **Some keys cannot be written at all.**
 
@@ -567,8 +605,7 @@ and the `.env` value would be dropped without a word.
   under `default_server_config.m.homeserver`, is refused as ambiguous rather
   than guessed at.
 * An ini section whose name contains a dot. `[oauth.generic]` is unreachable,
-  because a key names exactly one section and one key. Every key in that
-  section is template owned anyway.
+  because a key names exactly one section and one key.
 * The ini section `DEFAULT`, which is the parser's name for the lines before
   any header.
 * An ini value that WriteFreely's parser would read as something else: one
@@ -579,12 +616,24 @@ and the `.env` value would be dropped without a word.
 
 **WriteFreely reads its settings from `config.ini` once.** The fork moves most
 of `[app]` and `[uploads]` into its database on the first start against an empty
-database, and from then on the database is in force. A key added to `config`
-after that first start is rendered, and the fork logs `config.ini disagrees
-with the database on app.max_blogs; the database value is in force` on every
-boot and ignores it. Change a running blog's setting with `writefreely settings
-set` inside the container. This is the fork's design, not the toolkit's, and it
-applies to the template's own keys in those sections in the same way.
+database, and from then on the database is in force. That much was run: a key
+added to `config` after the first start is rendered, and when the integration
+test restarted the blog once against the existing database, the fork logged
+`config.ini disagrees with the database on app.max_blogs; the database value
+is in force` and `writefreely settings get` still reported `0`, the value the database already
+held.
+
+The rest is read from the fork's source at the revision the pinned image
+carries (`ff9dcebe`) and was not run. `importSettings` in
+`settings_runtime.go` says it "runs at every start", so the same line is
+expected on every boot, not only the one restart observed. `writefreely
+settings set <name> <value>` exists in `cmd/writefreely/settings.go` ("running
+servers apply it on their next request") and looks like the way to change a
+running blog's setting, but nobody has used it here. And the drift check
+compares every database-bound key present in the file, which reads as though a
+template's own key in those sections, such as `app.site_name` from the
+`site_name` setting, would be ignored the same way after the first start;
+that too is untested. This is the fork's design, not the toolkit's.
 
 **What has been run, and what has not.** The ini insertion is proven against the
 software: `go test -tags writefreely_integration ./internal/render/` boots the

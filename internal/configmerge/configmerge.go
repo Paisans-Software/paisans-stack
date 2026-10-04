@@ -163,7 +163,9 @@ func envAssigned(rendered string) map[string]bool {
 
 // envValue writes a value so that docker compose, reading the file as an
 // env_file, delivers it byte for byte. Both behaviours were observed by
-// running `docker compose config`, not reasoned from documentation.
+// running `docker compose config`, not reasoned from documentation: Docker
+// Compose v5.4.0 on the operator's Mac, with the version on any host not
+// checked. docs/decisions.md summarises the run.
 //
 // A value with none of the characters compose treats specially is written
 // bare, which is the style every .env template uses. Unquoted, compose strips

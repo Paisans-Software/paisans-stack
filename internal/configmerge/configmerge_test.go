@@ -137,7 +137,8 @@ func TestEnvRefusesAKeyThatIsNotAName(t *testing.T) {
 }
 
 // Each line here was checked against `docker compose config` reading the
-// file as an env_file; see the task report. A plain value stays unquoted, the
+// file as an env_file, with Docker Compose v5.4.0 on the operator's Mac; the
+// version on any host was not checked. docs/decisions.md summarises the run. A plain value stays unquoted, the
 // style every .env template uses. Anything compose would rewrite is double
 // quoted with the four escapes compose's dotenv parser undoes.
 func TestEnvQuotesWhatComposeWouldOtherwiseRewrite(t *testing.T) {
