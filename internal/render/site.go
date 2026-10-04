@@ -267,8 +267,13 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		files = append(files, snippets...)
 
 		if p.cfg.Storage.MediaHostname != "" {
+			publicBuckets, err := p.publicBuckets()
+			if err != nil {
+				return nil, err
+			}
 			media, err := p.renderTemplate("media.caddy.snippet.tmpl", map[string]any{
 				"GarageAddress": garageEndpointHost(p),
+				"PublicBuckets": publicBuckets,
 			})
 			if err != nil {
 				return nil, err

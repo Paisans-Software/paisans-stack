@@ -112,7 +112,12 @@ func TestAFreshNodeIsLaidOutBeforeAnyKeyIsImported(t *testing.T) {
 }
 
 // key import and bucket create both fail when the object exists, so a second
-// run must not plan them. bucket allow is idempotent and is always planned.
+// run must not plan them. The idempotent steps are planned every run and this
+// test asserts nothing about them: bucket allow for both of the fixture's
+// storage apps, and bucket website --allow for talk, which is mbin and
+// therefore serves its objects publicly. A fully provisioned node is
+// therefore not a node with an empty plan, which is what the old name of this
+// test claimed.
 //
 // `node id -q` returns the full 64 character node ID, but `layout show`'s
 // table prints only its first 16 characters, exactly as dxflrs/garage:v1.0.1
@@ -121,11 +126,11 @@ func TestAFreshNodeIsLaidOutBeforeAnyKeyIsImported(t *testing.T) {
 // and would replan the layout on every single run. This fixture is what
 // catches that: node id -q returns the full ID below, the table row carries
 // only its first 16 characters, and the two have to be recognised as the
-// same node for this test to see nothing planned. The layout show output
+// same node for this test to see no layout step planned. The layout show output
 // also carries the connection preamble real Garage prints ahead of the
 // table, so this fixture exercises both the truncation and the preamble at
 // once, the way a real run would.
-func TestAProvisionedNodePlansNothingButTheGrant(t *testing.T) {
+func TestAProvisionedNodeReplansOnlyTheIdempotentSteps(t *testing.T) {
 	const fullNodeID = "bce014be16f81a9033b33dbb8ba6cc4c528353dd045d73aed6ef0c807389129a"
 	const shortNodeID = "bce014be16f81a90" // fullNodeID's first 16 characters
 	transport := &fakeTransport{responses: map[string]response{
@@ -249,6 +254,70 @@ func TestASiteWithNoGarageRoleIsRefused(t *testing.T) {
 	}
 	if len(transport.ran) != 0 {
 		t.Errorf("the refusal must happen before any transport call, but ran: %v", transport.ran)
+	}
+}
+
+// Website access is what makes an object readable with no credential, and it
+// is per bucket. Mbin's bucket needs it. Outline's must never have it, because
+// its bucket holds the attachments of documents only members can read.
+func TestOnlyAPublicBucketIsAllowedWebsiteAccess(t *testing.T) {
+	transport := &fakeTransport{responses: map[string]response{
+		"layout show": {out: "Connection established to 51494feb5444d466\n==== CURRENT CLUSTER LAYOUT ====\nID  Tags  Zone  Capacity\n51494feb5444d466  []  home-a  100.0 GB\n\nCurrent cluster layout version: 1\n"},
+		"node id -q":  {out: "51494feb5444d466aaaabbbbccccddddeeeeffff00001111222233334444abcd@10.44.0.1:3901\n"},
+		"key info":    {out: "Key name: talk\nKey ID: GK00112233445566778899aabb\n"},
+		"bucket info": {out: "Bucket: cfc236316d4a81858f84f84c287f5a0d\nSize: 0 B\nObjects: 0\n"},
+	}}
+
+	plan, err := garage.Build("home-a", fixtureConfig(t), fixtureSecrets(t), transport)
+	if err != nil {
+		t.Fatalf("building the plan: %v", err)
+	}
+
+	var website []string
+	for _, s := range plan.Steps {
+		if strings.Contains(s.Command, "bucket website") {
+			website = append(website, s.Command)
+		}
+	}
+	joined := strings.Join(website, "\n")
+	if !strings.Contains(joined, "bucket website --allow talk-uploads") {
+		t.Errorf("mbin's bucket needs website access or its media stays unreadable, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "docs-uploads") {
+		t.Errorf("outline's bucket must never be world readable, got:\n%s", joined)
+	}
+	// The blog's bucket (blog-uploads) must never be world readable either,
+	// for a different reason than outline's: the wisp fork streams its
+	// images through its own /uploads/ route and never addresses the object
+	// store from a browser at all.
+	if strings.Contains(joined, "blog-uploads") {
+		t.Errorf("the blog's bucket must never be world readable, got:\n%s", joined)
+	}
+}
+
+// Garage cannot allow website access on a bucket that does not exist, so the
+// website step for a given bucket must come after that bucket's create step.
+func TestWebsiteAccessIsPlannedAfterTheBucketExists(t *testing.T) {
+	transport := &fakeTransport{responses: map[string]response{
+		"layout show": {out: "Connection established to 51494feb5444d466\n==== CURRENT CLUSTER LAYOUT ====\nNo nodes currently have a role in the cluster.\n\nCurrent cluster layout version: 0\n"},
+		"node id -q":  {out: "51494feb5444d466aaaabbbbccccddddeeeeffff00001111222233334444abcd@127.0.0.1:3901\n"},
+		"key info":    {out: "Error: 0 matching keys", err: errors.New("exit status 1")},
+		"bucket info": {out: "Error: Bucket not found / several matching buckets: talk-uploads", err: errors.New("exit status 1")},
+	}}
+
+	plan, err := garage.Build("home-a", fixtureConfig(t), fixtureSecrets(t), transport)
+	if err != nil {
+		t.Fatalf("building the plan: %v", err)
+	}
+
+	commands := commandsOf(plan)
+	create := indexOfContaining(commands, "bucket create talk-uploads")
+	website := indexOfContaining(commands, "bucket website --allow talk-uploads")
+	if create < 0 || website < 0 {
+		t.Fatalf("expected both a bucket create and a website allow step for talk-uploads, got:\n%s", strings.Join(commands, "\n"))
+	}
+	if !(create < website) {
+		t.Errorf("website access must be planned after the bucket exists, got create at %d and website at %d:\n%s", create, website, strings.Join(commands, "\n"))
 	}
 }
 

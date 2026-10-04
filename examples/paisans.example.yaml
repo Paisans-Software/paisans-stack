@@ -191,13 +191,11 @@ apps:
   blog:
     kind: writefreely
     hostname: blog.example.org
-    # Pinned, and it has no choice: WriteFreely has never supported Postgres,
-    # so it cannot join the cluster and runs on a SQLite file in its own data
-    # directory. Cluster placement would give it one file per site, which is
-    # two divergent blogs behind one hostname, and is refused.
-    #
-    # Pinning to a home is as valid as pinning to the gateway. Its availability
-    # is that site's, and its backups are that file.
+    # This kind means the writefreely-wisp fork, not upstream WriteFreely: the
+    # fork adds Postgres and S3 support upstream does not have, so the blog
+    # could join the cluster like any other app. It is pinned here as an
+    # ordinary choice, not a forced one: pinning to a home is as valid as
+    # pinning to the gateway, and its availability is that site's.
     placement: { pinned: home-a }
     settings:
       # WriteFreely reads config.ini rather than an environment, and this is

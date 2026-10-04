@@ -1,19 +1,17 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
-# WriteFreely supports MySQL and SQLite and has never supported Postgres, so it
-# takes no part in the Postgres cluster whatever its placement says about the
-# rest of the stack. It runs on SQLite, in a file under /srv/blog, which
-# is what makes it a self contained stack rather than a second database engine
-# to operate: no Galera, no arbitrator, no second set of failover semantics for
-# one blog.
-#
-# Its availability is its site's, and its backups are the file. Nothing here
-# replicates.
+# This is the writefreely-wisp fork, not upstream WriteFreely. The fork keeps
+# its data in Postgres and its uploads in Garage, so it joins the same cluster
+# and the same object store as everything else instead of a SQLite file and a
+# local disk nothing else can reach.
+# blog is pinned to home-a: app, database and media
+# together. A half pinned app needs both its own location and the cluster site
+# to be reachable, which makes it less available than either alone.
 name: paisans-blog
 
 services:
   app:
-    image: ghcr.io/writefreely/writefreely:v0.17.1
+    image: ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -24,3 +22,15 @@ services:
       # environment: `docker inspect` and /proc/<pid>/environ would show the
       # latter.
       - /srv/blog/config.ini:/data/config.ini:ro
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: blog
+      POSTGRES_USER: blog
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - /srv/blog/postgres:/var/lib/postgresql/data

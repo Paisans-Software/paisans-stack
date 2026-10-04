@@ -70,7 +70,7 @@ toolkit should not overstate it:
 | Outline | full | `FILE_STORAGE=s3` with the `AWS_*` variables; non-AWS endpoints need `AWS_S3_FORCE_PATH_STYLE=true`. Known upstream bug: the bucket must not be named `outline` |
 | Synapse | partial | `synapse-s3-storage-provider` is a *storage provider* that supplements the media store. **A local media directory is still required.** `store_synchronous: True` writes to S3 immediately; the bucket prefix cannot be changed once media exists |
 | Pocket ID | full, plus better | `FILE_BACKEND` takes `filesystem` (default), `s3`, or **`database`**. See the note below — `database` is the recommendation |
-| WriteFreely | none | no object storage support; see the open question about this stack |
+| WriteFreely | full, but private | the kind means the [writefreely-wisp](https://github.com/josephquigley/writefreely-wisp) fork, which adds `[storage] type = s3`. Its bucket is never routed to the media hostname: the fork streams uploads through its own `/uploads/` route rather than emitting an S3 URL, so nothing anonymous reaches the bucket directly |
 
 **Pocket ID should use `FILE_BACKEND=database`, not S3.** Its uploads are
 profile pictures and admin-uploaded branding — on a real deployment, about a
@@ -108,15 +108,36 @@ This check lives in `internal/validate` rather than as a structural error in
 storage, already imports `internal/config`; `config` asking `kinds` back would
 be an import cycle.
 
-**Current limitation: Garage's S3 API does not support anonymous reads.** Outline
-works because its server presigns every object URL, so the browser's request is
-authenticated. Mbin does not work: `KBIN_STORAGE_URL` publishes an unsigned URL,
-the browser fetches it anonymously, and Garage returns `403 Forbidden: Garage
-does not support anonymous access yet`. Garage has a separate `s3_web` endpoint
-that serves anonymous reads via vhost-style requests, but the toolkit does not
-render it yet. The fix is known and scoped separately: render the `[s3_web]`
-section, run `garage bucket website --allow` for public buckets, and configure
-the gateway to map the media hostname onto the vhost form Garage expects.
+**A public bucket's objects are served without a credential, and a private
+bucket's are not.** Garage's S3 API refuses every unauthenticated request
+outright, with `403 Forbidden: Garage does not support anonymous access yet`,
+and that is the only mode it has. Garage's separate web endpoint is the one
+that serves an object anonymously, so the toolkit renders it as `[s3_web]` in
+`garage.toml` and grants `garage bucket website --allow` on public buckets
+only.
+
+The gateway is what joins the two. The media hostname carries one route per
+public bucket: the bucket prefix is stripped from the path and the `Host` is
+rewritten to the vhost form the web endpoint resolves a bucket from, which is
+an internal suffix that resolves nowhere on purpose. Everything else falls
+through to the S3 API with `Host` forwarded unchanged, which is load bearing
+rather than tidy: Outline presigns its object URLs, a SigV4 signature covers
+the host it was signed with, and rewriting that header would invalidate every
+URL Outline issues.
+
+Nothing an app publishes changes, and that is the point of rewriting at the
+gateway rather than changing the URL: `KBIN_STORAGE_URL` stays the path style
+media URL it always was, because remote instances have cached Mbin's URLs and
+we cannot recall them.
+
+Which kinds are public is a property of the kind, in `internal/kinds`, not a
+setting. A federating server fetching an image is a machine with no account,
+so Mbin's media has to be readable without one; Outline's is read by people
+who are signed in, and its bucket is never routed to the web endpoint at all.
+There is no configuration key that can get this wrong in either direction.
+
+`TestAnonymousFetchReadsMbinsMediaAndNotOutlines` in `internal/garage` is what
+keeps that honest, against a real Garage behind a real Caddy.
 
 ### Rule 4: the domain is a one-way door
 
@@ -140,12 +161,20 @@ The media store cannot leave the node, and the kind renders its own Postgres
 plus the initialisation hook that creates the authentication service's database
 beside it, neither of which exists on a clustered site. A clustered homeserver
 would render and then meet the missing database at the first sign in. The same
-reasoning refuses `writefreely`, which has never supported Postgres,
-`element`, which is a static client with no server side state, and
-`oauth2-proxy`, whose session is a cookie. So the refusal is the existing shape
-rather than a special case for Matrix: a kind with no Postgres service has
-nothing to join, and cluster placement would render it onto every apps site
-with storage of its own.
+reasoning refuses `element`, which is a static client with no server side
+state, and `oauth2-proxy`, whose session is a cookie. So the refusal is the
+existing shape rather than a special case for Matrix: a kind with no Postgres
+service has nothing to join, and cluster placement would render it onto every
+apps site with storage of its own.
+
+`writefreely` used to be in that list. It no longer is: the kind now means the
+[writefreely-wisp](https://github.com/josephquigley/writefreely-wisp) fork,
+which adds Postgres and S3 support upstream WriteFreely does not have, so the
+blog can join the cluster like any other app. **This is a breaking change for
+anyone who adopted this toolkit before it:** the fork's image replaces
+upstream's, and upstream's own image will reject the configuration this kind
+now renders, because it has no `[database]` Postgres driver and no
+`[storage]` section at all. See `docs/decisions.md` for the record.
 
 **"The authentication service's database" is Matrix Authentication Service,
 and the `synapse` kind renders it as a second container beside the
@@ -192,10 +221,12 @@ with the apps role and sharing one database through the local proxy. An
 application storing its data anywhere else gets neither half: it would be
 rendered onto each of those sites with its own separate storage, so one
 hostname would serve two deployments that diverge the moment anybody writes,
-and a failover would move readers between them. WriteFreely is the case that
-exists, having never supported Postgres and running on a SQLite file in its own
-data directory. Pinning it is not a downgrade, because that was always its
-availability.
+and a failover would move readers between them. Element and oauth2-proxy are
+the cases that exist: a static client with no server side state, and a
+session kept in a cookie rather than a database. Pinning either is not a
+downgrade, because that was always its availability. WriteFreely used to be
+in this group too, before the fork it now runs gained Postgres support; see
+Rule 5 above.
 
 #### A pinned app must be pinned all the way down
 
@@ -496,10 +527,13 @@ A secret in a bind-mounted file is cheaper to change, for the reason below.
 Not every application is configured through environment variables, and the
 stacks named in this document are already split on it. Mbin reads `.env`.
 WriteFreely reads an INI file, `config.ini`, whose `[server]`, `[app]`,
-`[database]` and `[oauth.generic]` sections carry everything it needs, SSO
-client credentials and `disable_password_auth` included
-([config reference](https://writefreely.org/docs/latest/admin/config)). Synapse
-reads [`homeserver.yaml`](https://element-hq.github.io/synapse/latest/usage/configuration/homeserver_sample_config.html).
+`[database]`, `[storage]` and `[oauth.generic]` sections carry everything it
+needs, SSO client credentials and `disable_password_auth` included. The
+`[database]` and `[storage]` sections are the writefreely-wisp fork's own,
+read from its `config/config.go` and `config/storage.go` rather than from
+upstream's [config reference](https://writefreely.org/docs/latest/admin/config),
+which documents neither. Synapse reads
+[`homeserver.yaml`](https://element-hq.github.io/synapse/latest/usage/configuration/homeserver_sample_config.html).
 
 So the unit the toolkit ships per `kind` is a **template directory**, and
 `apply` renders every file in it:
@@ -508,8 +542,8 @@ So the unit the toolkit ships per `kind` is a **template directory**, and
 templates/mbin/                             templates/writefreely/
   compose.yaml.tmpl                           compose.yaml.tmpl
   .env.tmpl                                   config.ini.tmpl
-  caddy.snippet.tmpl                          caddy.snippet.tmpl
-  config/packages/oneup_flysystem.yaml.tmpl
+  caddy.snippet.tmpl                          .env.tmpl
+  config/packages/oneup_flysystem.yaml.tmpl   caddy.snippet.tmpl
 ```
 
 **A template's path is its destination.** The layout under `templates/<kind>/`
@@ -726,6 +760,40 @@ object storage unusable**: the containers come up, but no bucket exists and no
 application key can reach one, so the failure an adopter meets is an
 application error with no obvious cause, not a message naming a missing step.
 `storage init` is that missing step.
+
+#### A second Garage site has to be joined by hand first
+
+**One Garage site needs nothing extra.** Run `paisans storage init --site
+<name> --execute` after the infrastructure stack is up and it does the whole
+job.
+
+**A second Garage site needs a `garage node connect` first, run by you.** The
+toolkit does not plan that join and nothing it renders performs one: there is
+no `bootstrap_peers` in the rendered `garage.toml`, and no Consul or Kubernetes
+discovery. The shared `rpc_secret` every site carries authenticates a peer; it
+does not find one. Two nodes brought up from rendered configuration sit alone
+indefinitely, each listing only itself in `garage status`.
+
+Until they are joined, `storage init` cannot converge on either site. With one
+node visible, `garage layout apply` is refused because the node count is below
+the declared `replication`, and `storage init` stops at the first failing step,
+so no application key, no bucket and no website grant is created anywhere.
+
+From one site, once both nodes are running:
+
+```sh
+# On the second site, read its node ID. This is the command shape
+# `storage init` prints for everything else it runs.
+ssh <site-b> docker compose -f /srv/infra/compose.yaml exec -T garage \
+    /garage node id -q
+
+# On the first site, join it. Pass the whole id@address that printed.
+ssh <site-a> docker compose -f /srv/infra/compose.yaml exec -T garage \
+    /garage node connect <id@address>
+```
+
+`garage status` on either node should then list both. Run `paisans storage init
+--site <name> --execute` for each site afterwards, in either order.
 
 ### Decryption happens on a workstation, not on a host
 

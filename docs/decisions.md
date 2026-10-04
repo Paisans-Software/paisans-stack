@@ -347,3 +347,176 @@ after provisioning plans no `key import`, no `bucket create` and no layout
 step. It is behind the `garage_integration` build tag, so the ordinary test
 suite needs no Docker, and it is where this knowledge is kept honest against
 whatever Garage ships next.
+
+## 2026-10-04: A public bucket is served by Garage's web endpoint, and the gateway rewrites rather than republishes
+
+### The S3 API has no anonymous mode at all
+
+Garage's S3 API refuses every unauthenticated request, with
+`403 Forbidden: Garage does not support anonymous access yet`, and there is no
+setting, policy or grant that changes it. That is not a gap to be configured
+around: a bucket policy is not the mechanism here, because the API has no
+anonymous path to apply one to.
+
+Garage's separate web endpoint is the only one that serves an object without a
+credential, so the toolkit renders it as `[s3_web]` in `garage.toml` and runs
+`garage bucket website --allow` on the buckets that need it. That endpoint
+resolves a bucket from the request's `Host` rather than from the path, which
+is what makes the gateway's job a rewrite rather than a proxy.
+
+This is why any of it exists: a federating server fetching an image is a
+machine with no account. It will not sign a request, and it will not follow a
+redirect to a passkey prompt. Outline's reads are different only because
+Outline presigns them for a person who is already signed in.
+
+### The gateway rewrites, because remote instances have cached Mbin's URLs
+
+The media hostname carries one route per public bucket. The bucket prefix is
+stripped from the path and `Host` is rewritten to the vhost form the web
+endpoint expects. The published URL does not change at all.
+
+Publishing the vhost form instead was the alternative and it was rejected.
+Mbin's `KBIN_STORAGE_URL` is baked into every media URL it has ever emitted,
+and remote instances have recorded those URLs; nothing can recall them. A
+change to the published form would break every image already federated, which
+makes the published URL a one-way door for the same reason the domain is. A
+rewrite at the gateway is reversible and costs one route per bucket.
+
+This narrows, rather than contradicts, the earlier decision that `Host` is
+forwarded unchanged. Everything that is not a public bucket still falls
+through to the S3 API with `Host` untouched, and that is still load bearing
+for exactly the reason given there: a SigV4 signature covers the host it was
+signed with, so rewriting the header on the fallback would invalidate every
+presigned URL Outline issues. The public bucket routes rewrite it because the
+requests they carry are not signed with anything.
+
+### Public is derived from the kind, and the declared field was rejected
+
+`kinds.ServesObjectsPublicly` answers which kinds need this, and there is no
+configuration key for it. A `public: true` field on an app was considered and
+rejected: it can be set wrong in both directions, and both are bad in ways an
+operator would not see. Set on Outline it would expose a private bucket to
+anyone who can guess a key, with nothing failing to say so. Left off Mbin it
+would silently break federated images, which looks like a remote instance's
+problem rather than a local setting.
+
+It is also derived from the kind rather than from "has a bucket", because a
+kind can keep objects in S3 and serve them through its own application route,
+never exposing the bucket. A future kind in that shape must not acquire a
+public route just for having a bucket.
+
+### The internal suffix resolves nowhere, on purpose
+
+`root_domain` under `[s3_web]` is `.web.garage.internal`. It is not a real
+name and there is no DNS record and no certificate for it anywhere. The web
+endpoint needs a `Host` suffix to resolve a bucket from, and the gateway is
+the only thing that ever sends one. A suffix under the community's own domain
+would have been a name someone could point at something, and a name that
+resolves is a name that can be reached; this one cannot be, from inside the
+mesh or outside it.
+
+### What keeps all of it honest
+
+`TestAnonymousFetchReadsMbinsMediaAndNotOutlines` in
+`internal/garage/integration_test.go`, behind the `garage_integration` build
+tag. It starts both of the fixture's Garage nodes from their own rendered
+`garage.toml`, a Caddy from the rendered `media.caddy` snippet and the
+rendered image pin, provisions them through the real `garage.Build` and
+`garage.Execute`, uploads an object into each bucket with the rendered
+credential and a hand signed SigV4 request, and then makes three fetches
+through the gateway with `Host` set to the media hostname:
+
+* Mbin's object with no credential of any kind returns `200` and the object's
+  bytes;
+* Outline's object with no credential is refused with `403`, and the absence
+  of the object's bytes is asserted alongside the status, because a `200`
+  carrying an error document would pass a status check;
+* Outline's object presigned returns `200` and the bytes, which is the
+  property the fallback route exists for and the one most likely to break now
+  that the routing has a branch.
+
+Two facts about the rendered configuration fell out of running it rather than
+reading it. The fixture declares replication 2, and `dxflrs/garage:v1.0.1`
+refuses to apply a layout whose node count is below the replication factor, so
+the rendered `garage.toml` cannot be provisioned on one node at all and the
+test runs two. The per node `Build` and `Execute` reflect that: the first
+site's layout apply is refused while only its own role is staged, the staged
+role survives the refusal, and the second site's pass applies both at once.
+Nothing in `garage.Build` stages both nodes before applying, and nothing in it
+joins a node to a cluster either. The test does that join itself, with `garage
+node connect`, and that is a step the toolkit never plans: nothing it renders
+carries `bootstrap_peers`, Consul discovery or Kubernetes discovery, and a
+shared `rpc_secret` authenticates a peer rather than finding one. Two nodes
+started from the fixture's own rendered `garage.toml` files, on the mesh
+subnet, with that shared secret and no `node connect`, each list only
+themselves in `garage status`.
+
+The consequence is operational rather than theoretical. **A multi site Garage
+deployment needs a manual `garage node connect` before `paisans storage init`
+can converge.** Without it each node is alone, so both sites' `layout apply`
+is refused for a node count below the replication factor, and `Execute` stops
+at the first failing step: no key, no bucket and no website grant is ever
+created. This is written down in `README.md`, in the `storage init` section,
+because a decision record is not where an operator looks for an instruction.
+Fixing the planner so it plans the join is deliberately out of scope here.
+
+## 2026-10-04: The `writefreely` kind now means the writefreely-wisp fork, not upstream
+
+### This is a breaking change for a public toolkit
+
+`writefreely` used to mean upstream WriteFreely, which has no Postgres driver
+and no S3 support: it kept its data in a SQLite file in its own data
+directory, and that was the whole reason the kind could only be pinned. The
+kind now renders the [writefreely-wisp](https://github.com/josephquigley/writefreely-wisp)
+fork instead, which adds both. Its `config.ini` carries `[database] type =
+postgres` and `[storage] type = s3`, so the same `paisans.yaml` that used
+to render a SQLite file now renders a Postgres connection and an S3 bucket,
+and the blog can join the cluster like any other app.
+
+Nobody using this toolkit asked for that, and there is no way to opt out of
+it short of pinning an older release of the toolkit itself: the `writefreely`
+name did not change meaning for a new deployment only, it changed meaning for
+every existing one the next time `paisans apply` runs. That makes it a
+breaking change, and because `paisans-stack` is public and handed to people
+we do not know, it is documented in the open, in `README.md`, in the section
+listing what each kind means, rather than left for an adopter to discover
+from a container that will not start.
+
+### A second kind for the fork was the rejected alternative
+
+Adding `writefreely-wisp` as its own kind, leaving `writefreely` alone, was
+considered. It was rejected because the two are not a stack and a variant of
+a stack in the way, say, Mbin and a possible future fork of it would be: the
+wisp fork is the only WriteFreely this toolkit can run correctly going
+forward, since upstream's image actively rejects the configuration an
+operator would otherwise want (Postgres and S3, instead of a SQLite file one
+node owns). Keeping both names would mean the toolkit ships a kind, `writefreely`,
+that is known to be the wrong choice for anyone who can use the other one,
+with no way for validation to say so. One name that means the better thing is
+simpler to maintain and to document than two names where one is a trap.
+
+### The image is an unreleased `develop` build, pinned by digest
+
+No tagged release of the fork carries Postgres or S3 support yet; both exist
+only on its `develop` branch. The catalogue pins
+`ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea`
+rather than a tag, because `develop` is a moving branch and a tag that tracked
+it would silently change what an existing deployment runs on its next
+`apply`. The digest was resolved against ghcr.io on 2026-10-04 with `docker
+manifest inspect`, which returned a multi architecture index covering
+linux/amd64 and linux/arm64, and confirmed by pulling the amd64 manifest and
+checking the binary with `strings` for the `s3_secret_access_key` ini tag and
+the Postgres `sslmode` field. The pin should move to a tagged release's
+digest once one exists, and the comment in `internal/kinds/kinds.go` says so.
+
+### The fork serves its own images, so its bucket stays private
+
+The fork's `imagestore.go` streams uploads through its own `/uploads/` route
+with `http.ServeContent`, from whichever store is configured, and never
+emits or presigns an S3 URL. That means nothing anonymous ever needs to reach
+the bucket directly, unlike Mbin's: `kinds.ServesObjectsPublicly` answers
+false for `writefreely`, so the blog's bucket gets no `garage bucket website
+--allow` and no route on the media hostname. The rendered `config.ini` says
+this in a comment, next to `[storage]`, because that is where the next
+person reading it will be standing and wondering why the blog is absent from
+the media routing everything else gets.

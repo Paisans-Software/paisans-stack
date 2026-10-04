@@ -80,8 +80,9 @@ apps:
   blog:
     kind: writefreely
     hostname: blog.example.org
-    # Pinned because it cannot be anything else: no Postgres, so a SQLite file
-    # per apps site would be two divergent blogs behind one hostname.
+    # Pinned as an ordinary choice, not a forced one: the writefreely-wisp
+    # fork this kind means supports Postgres and S3, so it could join the
+    # cluster instead.
     placement: { pinned: home-a }
   web:
     kind: element

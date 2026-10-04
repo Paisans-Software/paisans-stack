@@ -4,6 +4,8 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -199,7 +201,7 @@ func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
 		mode    uint32
 		carries string
 	}{
-		{"home-a/srv/blog/config.ini", 0o600, "type = sqlite3"},
+		{"home-a/srv/blog/config.ini", 0o600, "type = postgres"},
 		{"vm/srv/chat/homeserver.yaml", 0o600, "name: psycopg2"},
 		{"home-a/srv/talk/.env", 0o600, "DATABASE_URL="},
 		{"home-a/srv/talk/compose.yaml", 0o644, "name: paisans-talk"},
@@ -220,15 +222,96 @@ func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
 		}
 	}
 
-	// The blog has no Postgres anywhere: no service, no role, no connection
-	// string. A configuration pointing it at the cluster would be a lie.
-	for path, f := range files {
-		if !strings.HasPrefix(path, "home-a/srv/blog/") {
-			continue
+	// The blog is pinned, so it talks to the postgres container beside it,
+	// the same host every other pinned app in this deployment connects to its
+	// own sidecar on. The property worth asserting is that the two agree,
+	// not merely that a connection exists: a wrong host would still start the
+	// container and only fail at the first query.
+	configIni, ok := files["home-a/srv/blog/config.ini"]
+	if !ok {
+		t.Fatal("the blog's config.ini was not rendered")
+	}
+	if !strings.Contains(configIni.Content, "host = postgres") {
+		t.Errorf("home-a/srv/blog/config.ini does not point at the postgres container beside it:\n%s", configIni.Content)
+	}
+	composeYaml, ok := files["home-a/srv/blog/compose.yaml"]
+	if !ok {
+		t.Fatal("the blog's compose.yaml was not rendered")
+	}
+	if !strings.Contains(composeYaml.Content, "postgres:") {
+		t.Error("home-a/srv/blog/compose.yaml does not declare the postgres service config.ini connects to")
+	}
+}
+
+// The fork reads these keys and validates them at load rather than at the
+// first upload, so a wrong key name is a container that will not start.
+// Checked against config/config.go and config/storage.go on the fork's
+// develop branch.
+func TestTheBlogReadsPostgresAndS3(t *testing.T) {
+	files := map[string]render.File{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f
+	}
+	conf, ok := files["home-a/srv/blog/config.ini"]
+	if !ok {
+		t.Fatal("the blog's config.ini was not rendered")
+	}
+
+	// The endpoint is a fact of the fixture (garageEndpointHost picks the
+	// first Garage site by sorted name), not of this change, so it is read
+	// from the committed golden tree rather than guessed, the same way
+	// TestObjectStorageIsPublishedOnTheMediaHostname reads Mbin's.
+	golden, err := os.ReadFile(filepath.Join("testdata", "golden", "home-a", "srv", "talk", ".env"))
+	if err != nil {
+		t.Fatalf("reading the golden talk .env: %v", err)
+	}
+	endpoint := ""
+	for _, line := range strings.Split(string(golden), "\n") {
+		if strings.HasPrefix(line, "S3_ENDPOINT=") {
+			endpoint = strings.TrimPrefix(line, "S3_ENDPOINT=")
 		}
-		if strings.Contains(f.Content, "postgresql://") {
-			t.Errorf("%s hands WriteFreely a Postgres connection, which it has never supported:\n%s", path, f.Content)
+	}
+	if endpoint == "" {
+		t.Fatal("the golden tree has no S3_ENDPOINT to compare against")
+	}
+
+	for _, want := range []string{
+		"type = postgres",
+		"type = s3",
+		"s3_endpoint = " + endpoint,
+		"s3_bucket = blog-uploads",
+		"s3_access_key_id = ",
+		"s3_secret_access_key = ",
+		// Path style addressing, rendered rather than defaulted: Garage
+		// cannot serve bucket.endpoint/key, and a fork release that flipped
+		// its own default would otherwise break every image with nothing in
+		// the configuration to explain it.
+		"s3_virtual_host = false",
+		// The [storage] block above is inert without this. uploads.enabled
+		// defaults to false in the fork, and with it false POST
+		// /api/me/images is not routed, the /uploads/ route is gated off,
+		// and checkUploadsAtStartup never runs, so a wrong bucket or a
+		// refused key is not reported at boot either.
+		"[uploads]",
+		"enabled = true",
+		"max_size_mb = 10",
+		// Two settings the fork's registry rejects at the zero an absent key
+		// leaves behind, logging an ERROR on every boot until they are
+		// rendered.
+		"min_username_len = 3",
+	} {
+		if !strings.Contains(conf.Content, want) {
+			t.Errorf("config.ini is missing %q:\n%s", want, conf.Content)
 		}
+	}
+	if strings.Contains(conf.Content, "type = sqlite3") {
+		t.Error("the fork keeps its data in Postgres, so the SQLite section should be gone")
+	}
+	// uploads.dir names a path on this node and only the local image store
+	// reads it. Rendering it beside type = s3 would describe a directory
+	// nothing consults.
+	if strings.Contains(conf.Content, "dir = ") {
+		t.Errorf("uploads.dir is not read with an S3 store, so it should not be rendered:\n%s", conf.Content)
 	}
 }
 
@@ -1098,7 +1181,229 @@ func TestObjectStorageIsPublishedOnTheMediaHostname(t *testing.T) {
 	if !strings.Contains(snippet, "3900") {
 		t.Errorf("the media snippet should reach Garage on 3900, got:\n%s", snippet)
 	}
-	if strings.Contains(snippet, "header_up Host") {
-		t.Error("Host must be forwarded unchanged or Outline's presigned URLs stop verifying")
+	// Only a public bucket's own route rewrites Host, to reach the web
+	// endpoint's vhost. The fallback, which is what Outline's presigned
+	// reads take, must forward Host unchanged or its signatures stop
+	// verifying. TestOnlyAPublicBucketIsRewrittenToTheWebEndpoint covers the
+	// bucket route itself; this asserts the fallback never rewrites.
+	//
+	// Scoped to the fallback block rather than matched against a longer
+	// string: any `header_up Host` at all in that region is the bug, whatever
+	// value it carries.
+	if fallback := fallbackHandle(t, snippet); strings.Contains(fallback, "header_up Host") {
+		t.Errorf("the fallback must forward Host unchanged or Outline's presigned URLs stop verifying, got:\n%s", fallback)
 	}
+}
+
+// Garage's S3 API has no anonymous mode at all, so the only way a browser can
+// fetch an object is the s3_web endpoint. Its root_domain is a suffix nothing
+// resolves: the gateway is the only thing that ever sends a Host matching it,
+// and it never leaves the gateway, so there is no DNS record and no
+// certificate for an adopter to set up.
+func TestGarageServesAWebEndpointOnAnInternalSuffix(t *testing.T) {
+	files := map[string]string{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+	}
+	conf := files["home-a/srv/infra/garage/garage.toml"]
+	if !strings.Contains(conf, "[s3_web]") {
+		t.Errorf("no s3_web section, so nothing can read an object anonymously:\n%s", conf)
+	}
+	if !strings.Contains(conf, `root_domain = ".web.garage.internal"`) {
+		t.Errorf("the web root domain should be the internal suffix, got:\n%s", conf)
+	}
+	if !strings.Contains(conf, ":3902") {
+		t.Error("s3_web should bind 3902")
+	}
+	if strings.Contains(conf, "index =") {
+		t.Error("no index document: a prefix with no object must 404 rather than return something else")
+	}
+}
+
+// A public bucket's objects reach the web endpoint, which needs a vhost style
+// Host. Everything else stays on the S3 API with Host untouched, because that
+// is what makes Outline's presigned URLs verify.
+//
+// Caddy sorts same directive routes by path matcher length, longest first, so
+// this asserts matcher length rather than the order the lines happen to be
+// written in. The file order is not what decides it.
+func TestOnlyAPublicBucketIsRewrittenToTheWebEndpoint(t *testing.T) {
+	tree := build(t)
+	files := map[string]string{}
+	for _, f := range tree.Files {
+		files[f.Path] = f.Content
+	}
+	snippet := files["vm/srv/infra/caddy/snippets/media.caddy"]
+
+	// talk-uploads is Mbin's bucket in this fixture (app "talk", no
+	// s3_bucket override, so the default is the app name plus "-uploads").
+	if !strings.Contains(snippet, "handle /talk-uploads/*") {
+		t.Errorf("mbin's bucket should have its own route:\n%s", snippet)
+	}
+	if !strings.Contains(snippet, "uri strip_prefix /talk-uploads") {
+		t.Error("the bucket prefix must be stripped: the web endpoint takes the key as the path")
+	}
+	if !strings.Contains(snippet, "header_up Host talk-uploads.web.garage.internal") {
+		t.Error("the web endpoint resolves the bucket from Host, so Host must be rewritten")
+	}
+	if !strings.Contains(snippet, ":3902") {
+		t.Error("a public bucket's reads go to the web endpoint")
+	}
+
+	// Outline's bucket (docs-uploads, declared in the fixture) must not
+	// appear at all. Its attachments are private and its reads are
+	// presigned, so they belong on the S3 API with the fallback.
+	if strings.Contains(snippet, "docs-uploads") {
+		t.Errorf("outline's bucket must not be routed to the anonymous endpoint:\n%s", snippet)
+	}
+
+	// The blog's bucket (blog-uploads, the default for app "blog", no
+	// s3_bucket override in the fixture) must not appear either, and for a
+	// different reason than Outline's: the wisp fork streams its images
+	// through its own /uploads/ route and never addresses the object store
+	// from a browser at all, so there is no anonymous read to route here.
+	if strings.Contains(snippet, "blog-uploads") {
+		t.Errorf("the blog's bucket must not be routed to the anonymous endpoint:\n%s", snippet)
+	}
+
+	// The fallback keeps Host, which is the whole reason presigned URLs verify.
+	if !strings.Contains(snippet, ":3900") {
+		t.Error("the fallback should reach the S3 API")
+	}
+	if fallback := fallbackHandle(t, snippet); strings.Contains(fallback, "header_up Host") {
+		t.Errorf("the fallback must not rewrite Host, got:\n%s", fallback)
+	}
+
+	// Matcher length, not file order, is what Caddy sorts on. Prove the
+	// bucket route carries a path matcher and the fallback carries none,
+	// which is the property that makes Caddy put the bucket route first.
+	if !strings.Contains(snippet, "handle /talk-uploads/* {") {
+		t.Errorf("the bucket route should carry a path matcher:\n%s", snippet)
+	}
+	if !strings.Contains(snippet, "handle {\n\treverse_proxy") {
+		t.Errorf("the fallback route should carry no path matcher:\n%s", snippet)
+	}
+}
+
+// fallbackHandle returns the text of the media snippet's fallback `handle`
+// block: the one with no path matcher, which is what everything that is not a
+// public bucket takes.
+//
+// A test that wants to say "the fallback does not rewrite Host" has to look at
+// the fallback and nothing else, because the public bucket routes rewrite Host
+// legitimately and a search over the whole snippet would always match. Scoping
+// is what makes the assertion able to fail: an earlier version of it searched
+// the whole file for a longer string the template cannot produce, which made it
+// unfalsifiable and so no protection at all.
+func fallbackHandle(t *testing.T, snippet string) string {
+	t.Helper()
+	open := strings.Index(snippet, "\nhandle {\n")
+	if open < 0 {
+		t.Fatalf("the media snippet has no fallback handle block:\n%s", snippet)
+	}
+	// Brace counting from the block's own opening brace, so a nested block
+	// (the reverse_proxy body, when it has one) does not end the region early.
+	start := open + len("\nhandle ")
+	depth := 0
+	for i := start; i < len(snippet); i++ {
+		switch snippet[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return snippet[start : i+1]
+			}
+		}
+	}
+	t.Fatalf("unterminated fallback handle block:\n%s", snippet[start:])
+	return ""
+}
+
+// requiredComposeVar matches a `${VAR:?message}` reference, which is Compose's
+// way of saying the variable has no default. Compose aborts the entire `up`
+// when one is unset, so every such reference is a hard dependency on something
+// else in the same stack directory.
+var requiredComposeVar = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*):\?`)
+
+// A rendered compose file and the rendered `.env` beside it are two halves of
+// one thing, and only compose knows that. It reads `.env` from the project
+// directory for ${VAR} substitution whether or not a service declares
+// env_file, so a `${VAR:?...}` reference with no matching assignment is a
+// stack that cannot start at all: `docker compose up` aborts before creating
+// anything, naming the variable.
+//
+// This repository has lost a template to .gitignore twice, and the shape of
+// that loss is exactly this. `.env.secret.tmpl` matches the `.env.*` ignore
+// rule, so deleting one, or failing to commit it, is invisible: every other
+// test still passes, the golden tree regenerates happily without it, and
+// TestEveryKindShipsACommittedTemplateSet is satisfied by any one of several
+// configuration file suffixes, so a kind that ships a `config.ini.secret.tmpl`
+// passes with its `.env.secret.tmpl` gone.
+//
+// Checking the references rather than a per kind file list is what makes this
+// catch the class: a new kind, a new variable or a renamed template is covered
+// without anybody remembering to extend a list.
+func TestEveryRequiredComposeVariableIsSetInTheStacksEnv(t *testing.T) {
+	files := map[string]string{}
+	var paths []string
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+		paths = append(paths, f.Path)
+	}
+	sort.Strings(paths)
+
+	checked := 0
+	for _, path := range paths {
+		if filepath.Base(path) != "compose.yaml" {
+			continue
+		}
+		refs := requiredComposeVar.FindAllStringSubmatch(files[path], -1)
+		if len(refs) == 0 {
+			continue
+		}
+		envPath := filepath.ToSlash(filepath.Join(filepath.Dir(path), ".env"))
+		env, ok := files[envPath]
+		if !ok {
+			t.Errorf("%s requires %s but no %s is rendered, so `docker compose up` aborts and the stack never starts. A missing .env.secret.tmpl looks exactly like this: the repository ignores .env.*, so check that the template is committed.",
+				path, refNames(refs), envPath)
+			continue
+		}
+		for _, ref := range refs {
+			name := ref[1]
+			if !assignsEnvVar(env, name) {
+				t.Errorf("%s requires %s, which %s does not set. `docker compose up` aborts naming that variable, before creating anything.", path, name, envPath)
+			}
+			checked++
+		}
+	}
+
+	// A test that silently checked nothing would be the same failure as the
+	// one it is here to catch. The fixture renders a pinned blog and a pinned
+	// Synapse, so there is at least one reference to find.
+	if checked == 0 {
+		t.Fatal("no `${VAR:?...}` reference was found in any rendered compose file, so this test verified nothing")
+	}
+}
+
+// refNames lists the variable names in a match set, for one readable message.
+func refNames(refs [][]string) string {
+	var names []string
+	for _, ref := range refs {
+		names = append(names, ref[1])
+	}
+	return strings.Join(names, ", ")
+}
+
+// assignsEnvVar reports whether a rendered `.env` assigns name. Compose takes
+// the whole line, so an assignment is a line beginning with the name and an
+// equals sign; a commented line is not one, and the leading "#" makes that
+// fall out rather than needing a check.
+func assignsEnvVar(env, name string) bool {
+	for _, line := range strings.Split(env, "\n") {
+		if strings.HasPrefix(line, name+"=") {
+			return true
+		}
+	}
+	return false
 }

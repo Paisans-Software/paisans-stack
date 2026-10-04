@@ -1,14 +1,17 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
-# WriteFreely supports MySQL and SQLite and has never supported Postgres, so it
-# takes no part in the Postgres cluster whatever its placement says about the
-# rest of the stack. It runs on SQLite, in a file under {{ .DataPath }}, which
-# is what makes it a self contained stack rather than a second database engine
-# to operate: no Galera, no arbitrator, no second set of failover semantics for
-# one blog.
-#
-# Its availability is its site's, and its backups are the file. Nothing here
-# replicates.
+# This is the writefreely-wisp fork, not upstream WriteFreely. The fork keeps
+# its data in Postgres and its uploads in Garage, so it joins the same cluster
+# and the same object store as everything else instead of a SQLite file and a
+# local disk nothing else can reach.
+{{- if .App.Pinned }}
+# {{ .App.Name }} is pinned to {{ .App.Site }}: app, database and media
+# together. A half pinned app needs both its own location and the cluster site
+# to be reachable, which makes it less available than either alone.
+{{- else }}
+# {{ .App.Name }} has cluster placement: no Postgres service of its own, and a
+# connection to the local HAProxy on {{ .DBHost }}:{{ .DBPort }}.
+{{- end }}
 name: paisans-{{ .App.Name }}
 
 services:
@@ -24,3 +27,17 @@ services:
       # environment: `docker inspect` and /proc/<pid>/environ would show the
       # latter.
       - {{ .DataPath }}/config.ini:/data/config.ini:ro
+{{- if .App.Pinned }}
+    depends_on:
+      - postgres
+
+  postgres:
+    image: {{ .Image "postgres" }}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: {{ .DBName }}
+      POSTGRES_USER: {{ .DBUser }}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - {{ .DataPath }}/postgres:/var/lib/postgresql/data
+{{- end }}

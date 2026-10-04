@@ -349,6 +349,55 @@ func (p *planner) identityProviderURL() string {
 	return ""
 }
 
+// mediaBucket is one public bucket's route onto the gateway's media
+// hostname: its name, for the path prefix, and the internal vhost that
+// Garage's web endpoint resolves it from.
+type mediaBucket struct {
+	Bucket string
+	Vhost  string
+}
+
+// webEndpointSuffix is the internal suffix Garage's s3_web endpoint resolves
+// a bucket from, and that nothing on the mesh or off it otherwise resolves.
+// It must match the root_domain rendered into garage.toml.
+const webEndpointSuffix = ".web.garage.internal"
+
+// publicBuckets lists every bucket the gateway must route to Garage's web
+// endpoint rather than the S3 API: one entry per app that both uses object
+// storage and must serve its objects with no credential.
+//
+// It is built from kinds.ServesObjectsPublicly rather than from "has a
+// bucket", because a kind can keep its uploads in S3 while serving them
+// through its own application route, never exposing its bucket directly. A
+// future kind in that shape must not acquire a route here just because it
+// has one.
+//
+// The bucket name is read from the same appValues an app's own S3 settings
+// use, via p.values, so the route and the credential cannot drift apart.
+// cfg.AppNames() is sorted, so the result is deterministic.
+func (p *planner) publicBuckets() ([]mediaBucket, error) {
+	var out []mediaBucket
+	for _, name := range p.cfg.AppNames() {
+		app := p.cfg.Apps[name]
+		if !kinds.UsesObjectStorage(app.Kind) || !kinds.ServesObjectsPublicly(app.Kind) {
+			continue
+		}
+		planned, err := p.plannedFor(name, app)
+		if err != nil {
+			return nil, err
+		}
+		values, err := p.values(planned, app)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, mediaBucket{
+			Bucket: values.S3.Bucket,
+			Vhost:  values.S3.Bucket + webEndpointSuffix,
+		})
+	}
+	return out, nil
+}
+
 // quote renders a value into a double quoted YAML or INI string. Templates use
 // it wherever a secret lands in a structured file, since a generated password
 // can legitimately contain a character the format would otherwise read.

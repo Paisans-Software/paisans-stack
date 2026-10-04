@@ -17,13 +17,18 @@
       "mode": "0644"
     },
     {
+      "path": "srv/blog/.env",
+      "sha256": "e854784bc5466cf97ed3edd4b254baebc74a760999c98b0fcbd21c8cf7a94773",
+      "mode": "0600"
+    },
+    {
       "path": "srv/blog/compose.yaml",
-      "sha256": "760606ed8bd458d82cf252a49ffd669e1f1a14e1cb3bc06e257d4728c3928573",
+      "sha256": "9c2b36c16f2566edaaacf84a03dd81ab5b7126ab083f178c4ae9a59d0619fd9a",
       "mode": "0644"
     },
     {
       "path": "srv/blog/config.ini",
-      "sha256": "24bb5458e0c90aff00b05998edfb3cf1fa7a29b7dd6115fedee3319c27b7dea7",
+      "sha256": "79970ec91e98a71d4c522357f19145b66339220b74c29018fd2ca4186289313e",
       "mode": "0600"
     },
     {
@@ -53,7 +58,7 @@
     },
     {
       "path": "srv/infra/garage/garage.toml",
-      "sha256": "a89d562432889ea3e32d0cb2343a377dd9ca0545327b5ead3f59bc418a5f8ac0",
+      "sha256": "cba1cde1a7257a66a70314168c4591b0d84f1583443dc298991c4cd7d1ca8b31",
       "mode": "0600"
     },
     {

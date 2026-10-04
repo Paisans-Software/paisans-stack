@@ -52,10 +52,11 @@ apps:
     placement: cluster
     settings:
       s3_bucket: docs-uploads
-  blog:
-    kind: writefreely
-    hostname: blog.example.org
-    # WriteFreely has no Postgres, so there is no cluster for it to join.
+  gate:
+    kind: oauth2-proxy
+    hostname: gate.example.org
+    # oauth2-proxy keeps a session in a cookie rather than a database, so
+    # there is no cluster for it to join.
     placement: cluster
   auth:
     kind: pocket-id
