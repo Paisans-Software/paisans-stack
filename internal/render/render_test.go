@@ -1407,3 +1407,289 @@ func assignsEnvVar(env, name string) bool {
 	}
 	return false
 }
+
+// fixtureSecrets loads the secrets every test in this file renders against.
+func fixtureSecrets(t *testing.T) *config.Secrets {
+	t.Helper()
+	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatalf("loading the fixture secrets: %v", err)
+	}
+	return secrets
+}
+
+// planFiles indexes a plan's files by path.
+func planFiles(plan *render.Plan) map[string]string {
+	out := map[string]string{}
+	for _, f := range plan.Files {
+		out[f.Path] = f.Content
+	}
+	return out
+}
+
+// withConfig returns the fixture with one app's passthrough map replaced.
+func withConfig(t *testing.T, app string, keys map[string]any) *config.Config {
+	t.Helper()
+	cfg := fixture(t)
+	a, ok := cfg.Apps[app]
+	if !ok {
+		t.Fatalf("the fixture declares no app %q", app)
+	}
+	a.Config = keys
+	cfg.Apps[app] = a
+	return cfg
+}
+
+// A passthrough key reaches the file its kind actually reads, in that file's
+// syntax. One key per format, so the rendered output for each is visible in
+// the tree an operator receives.
+func TestAPassthroughKeyReachesTheRenderedFile(t *testing.T) {
+	files := planFiles(build(t))
+
+	env := files["home-a/srv/talk/.env"]
+	if !strings.Contains(env, "\nKBIN_META_TITLE=A place to talk\n") {
+		t.Errorf("mbin reads an environment:\n%s", env)
+	}
+
+	ini := files["home-a/srv/blog/config.ini"]
+	app := strings.Index(ini, "\n[app]\n")
+	if app < 0 {
+		t.Fatalf("the blog's config.ini has no [app] section:\n%s", ini)
+	}
+	appBlock := ini[app+1:]
+	if next := strings.Index(appBlock, "\n["); next >= 0 {
+		appBlock = appBlock[:next]
+	}
+	if !strings.Contains(appBlock, "\nmax_blogs = 3\n") {
+		t.Errorf("the blog's key belongs inside [app]:\n%s", ini)
+	}
+
+	home := files["vm/srv/chat/homeserver.yaml"]
+	if !strings.Contains(home, "\nrequire_auth_for_profile_requests: true\n") {
+		t.Errorf("synapse reads yaml:\n%s", home)
+	}
+
+	elem := files["home-b/srv/web/config.json"]
+	if !strings.Contains(elem, "\n  \"default_theme\": \"dark\"") {
+		t.Errorf("element reads json:\n%s", elem)
+	}
+}
+
+// passthroughFixtureKeys is every key deployment.yaml passes through, with the
+// one stack file each must reach. A clustered app renders on every apps site,
+// so the file is named relative to the stack and matched on every site.
+var passthroughFixtureKeys = []struct {
+	app, key, needle, file string
+}{
+	{"talk", "KBIN_META_TITLE", "KBIN_META_TITLE", ".env"},
+	{"blog", "app.max_blogs", "max_blogs", "config.ini"},
+	{"chat", "require_auth_for_profile_requests", "require_auth_for_profile_requests", "homeserver.yaml"},
+	{"web", "default_theme", "default_theme", "config.json"},
+}
+
+// A passthrough key reaches the kind's config file and no other: not
+// compose.yaml, not a Caddy snippet, not the second .env that the blog and the
+// homeserver render for their Postgres password, and not a manifest. The whole
+// written tree is searched rather than a list of places it might go wrong,
+// because the list is what a regression would extend.
+func TestAPassthroughKeyReachesNoOtherFile(t *testing.T) {
+	cfg := fixture(t)
+	dir := t.TempDir()
+	if err := render.Write(build(t), dir); err != nil {
+		t.Fatal(err)
+	}
+	tree := walk(t, dir)
+
+	for _, k := range passthroughFixtureKeys {
+		if _, ok := cfg.Apps[k.app].Config[k.key]; !ok {
+			t.Fatalf("the fixture no longer passes %s through on %s, so this test would check nothing", k.key, k.app)
+		}
+		var want []string
+		if cfg.Apps[k.app].Placement.Mode == config.PlacementPinned {
+			want = []string{cfg.Apps[k.app].Placement.Site + "/srv/" + k.app + "/" + k.file}
+		} else {
+			for _, site := range cfg.AppsSites() {
+				want = append(want, site+"/srv/"+k.app+"/"+k.file)
+			}
+		}
+		var got []string
+		for path, content := range tree {
+			if strings.Contains(content, k.needle) {
+				got = append(got, path)
+			}
+		}
+		sort.Strings(got)
+		sort.Strings(want)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s on %s should appear in exactly %v, but appears in %v", k.key, k.app, want, got)
+		}
+	}
+}
+
+// The collision cannot be caught by validate, which never renders, so Build
+// has to refuse it. Every command that would write the file goes through
+// Build, so refusing there refuses all of them.
+func TestBuildRefusesAKeyTheTemplateAlreadyWrote(t *testing.T) {
+	cfg := withConfig(t, "blog", map[string]any{"database.type": "mysql"})
+	_, err := render.Build(cfg, fixtureSecrets(t))
+	if err == nil {
+		t.Fatal("a key the template already writes must stop the build")
+	}
+	for _, want := range []string{
+		"config-key-already-rendered",
+		"apps.blog.config.database.type",
+		"config.ini",
+		"writefreely/config.ini.secret.tmpl",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should name %q, got: %v", want, err)
+		}
+	}
+}
+
+// Where a sanctioned settings input already controls the value, the refusal
+// sends the operator there, because that is the reviewable way to change it.
+func TestACollisionNamesTheSettingThatOwnsTheValue(t *testing.T) {
+	cfg := withConfig(t, "blog", map[string]any{"app.theme": "dark"})
+	_, err := render.Build(cfg, fixtureSecrets(t))
+	if err == nil {
+		t.Fatal("a key the template already writes must stop the build")
+	}
+	for _, want := range []string{"config-key-already-rendered", "apps.blog.config.app.theme", "apps.blog.settings.theme"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should name %q, got: %v", want, err)
+		}
+	}
+}
+
+// Compose gives `environment:` precedence over `env_file`, so an env key the
+// stack's compose.yaml already sets would land in .env and be silently
+// shadowed. The gate's members instance sets its group under environment:,
+// which is exactly where an operator reaching for this would collide.
+func TestAnEnvKeyComposeAlreadySetsIsRefused(t *testing.T) {
+	gate := planFiles(build(t))["home-a/srv/gate/compose.yaml"]
+	if !strings.Contains(gate, "OAUTH2_PROXY_ALLOWED_GROUPS:") {
+		t.Fatalf("the gate's compose.yaml no longer sets the group under environment:, so this test would check nothing:\n%s", gate)
+	}
+
+	cfg := withConfig(t, "gate", map[string]any{"OAUTH2_PROXY_ALLOWED_GROUPS": "everyone"})
+	_, err := render.Build(cfg, fixtureSecrets(t))
+	if err == nil {
+		t.Fatal("a key compose.yaml sets under environment: must stop the build, or the .env value is silently shadowed")
+	}
+	for _, want := range []string{"config-key-already-rendered", "apps.gate.config.OAUTH2_PROXY_ALLOWED_GROUPS", "compose.yaml", "apps.gate.settings.members_group"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should name %q, got: %v", want, err)
+		}
+	}
+
+	cfg = withConfig(t, "gate", map[string]any{"OAUTH2_PROXY_HTTP_ADDRESS": "0.0.0.0:9999"})
+	_, err = render.Build(cfg, fixtureSecrets(t))
+	if err == nil {
+		t.Fatal("a key compose.yaml sets under environment: must stop the build")
+	}
+	for _, want := range []string{"config-key-already-rendered", "compose.yaml", "oauth2-proxy/compose.yaml.tmpl"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should name %q, got: %v", want, err)
+		}
+	}
+}
+
+// Each entry in the table of settings that own a rendered key has to be true:
+// changing the setting changes the line that key is on. An entry that has gone
+// stale would send an operator to a setting that does nothing.
+func TestEverySettingThatOwnsAKeyReallyControlsIt(t *testing.T) {
+	cfg := fixture(t)
+	owners := render.SettingOwners()
+	if len(owners) == 0 {
+		t.Fatal("the table is empty, so this test checks nothing")
+	}
+	for _, o := range owners {
+		var app string
+		for _, name := range cfg.AppNames() {
+			if cfg.Apps[name].Kind == o.Kind {
+				app = name
+				break
+			}
+		}
+		if app == "" {
+			t.Errorf("the fixture declares no %s app, so the entry for %s cannot be checked", o.Kind, o.Key)
+			continue
+		}
+
+		line := func(value any) string {
+			c := fixture(t)
+			a := c.Apps[app]
+			settings := map[string]any{}
+			for k, v := range a.Settings {
+				settings[k] = v
+			}
+			settings[o.Setting] = value
+			a.Settings = settings
+			c.Apps[app] = a
+			plan, err := render.Build(c, fixtureSecrets(t))
+			if err != nil {
+				t.Fatalf("building with %s set: %v", o.Setting, err)
+			}
+			for _, f := range plan.Files {
+				if !strings.HasSuffix(f.Path, "/srv/"+app+"/"+o.File) {
+					continue
+				}
+				leaf := o.Key[strings.LastIndex(o.Key, ".")+1:]
+				for _, l := range strings.Split(f.Content, "\n") {
+					l = strings.TrimSpace(l)
+					if strings.HasPrefix(l, leaf+"=") || strings.HasPrefix(l, leaf+" =") ||
+						strings.HasPrefix(l, leaf+":") || strings.HasPrefix(l, `"`+leaf+`":`) {
+						return l
+					}
+				}
+				t.Fatalf("%s carries no line for %s", f.Path, o.Key)
+			}
+			t.Fatalf("no %s was rendered for %s", o.File, app)
+			return ""
+		}
+
+		changed := line("owner-check-a") != line("owner-check-b") || line(true) != line(false)
+		if !changed {
+			t.Errorf("%s says settings.%s owns %s in %s, but changing the setting does not change that line", o.Kind, o.Setting, o.Key, o.File)
+		}
+	}
+}
+
+// Every way compose can take a variable from the stack's own files has to be
+// seen, or the .env value a passthrough key adds is shadowed or interpolated
+// somewhere nobody looked.
+func TestComposeSetsSeesEveryWayComposeTakesAVariable(t *testing.T) {
+	const compose = `
+# KBIN_COMMENTED is only mentioned in a comment, and compose never reads one.
+services:
+  map:
+    environment:
+      MAP_FORM: "x"
+  list:
+    environment:
+      - LIST_FORM=y
+      - LIST_BARE
+  interp:
+    image: "postgres:${BRACED}"
+    command: ["run", "$PLAIN", "${DEFAULTED:-z}", "${REQUIRED:?set}", "$$ESCAPED"]
+`
+	for _, key := range []string{"MAP_FORM", "LIST_FORM", "LIST_BARE", "BRACED", "PLAIN", "DEFAULTED", "REQUIRED"} {
+		got, err := render.ComposeSets(compose, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got {
+			t.Errorf("%s is set or read by the compose file, but was not seen", key)
+		}
+	}
+	for _, key := range []string{"MAP", "LIST", "BRACE", "PLAI", "KBIN_COMMENTED", "ESCAPED", "MAP_FORM_X"} {
+		got, err := render.ComposeSets(compose, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got {
+			t.Errorf("%s is not set or read by the compose file, but was reported", key)
+		}
+	}
+}

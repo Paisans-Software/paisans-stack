@@ -55,6 +55,10 @@ apps:
     gate: members
     images:
       app: ghcr.io/example-org/mbin:v1.10.1-fork
+    # One passthrough key per format, so each merge is visible in the golden
+    # tree. Mbin reads its environment, so the key is a variable name.
+    config:
+      KBIN_META_TITLE: A place to talk
   docs:
     kind: outline
     hostname: docs.example.org
@@ -77,6 +81,12 @@ apps:
     gate: none
     images:
       postgres: postgres:17-alpine
+    # A yaml key in homeserver.yaml. Not url_preview_enabled: Synapse
+    # v1.160.0's synapse/config/repository.py raises a ConfigError for it
+    # unless url_preview_ip_range_blacklist is also set, and a list is not a
+    # value `config` can carry.
+    config:
+      require_auth_for_profile_requests: true
   blog:
     kind: writefreely
     hostname: blog.example.org
@@ -84,6 +94,11 @@ apps:
     # fork this kind means supports Postgres and S3, so it could join the
     # cluster instead.
     placement: { pinned: home-a }
+    # An ini key goes inside the section that is already there. max_blogs is
+    # in the fork's setting registry, so `writefreely settings get
+    # app.max_blogs` reports it back.
+    config:
+      app.max_blogs: 3
   web:
     kind: element
     hostname: web.example.org
@@ -92,6 +107,9 @@ apps:
     placement: { pinned: home-b }
     settings:
       homeserver: chat.example.org
+    # Not show_labs_settings, which the template already writes.
+    config:
+      default_theme: dark
   gate:
     kind: oauth2-proxy
     hostname: gate.example.org

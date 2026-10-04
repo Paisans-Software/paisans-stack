@@ -48,8 +48,8 @@ var formats = []struct {
 	golden string
 	key    string // a key that is valid for the format and absent from its golden
 }{
-	{"env", configmerge.Env, goldenEnv, "KBIN_META_TITLE"},
-	{"ini", configmerge.INI, goldenINI, "app.max_blogs"},
+	{"env", configmerge.Env, goldenEnv, "KBIN_META_DESCRIPTION"},
+	{"ini", configmerge.INI, goldenINI, "app.open_deletion"},
 	{"yaml", configmerge.YAML, goldenYAML, "url_preview_enabled"},
 	{"json", configmerge.JSON, goldenJSON, "show_labs_settings_extra"},
 }
@@ -106,14 +106,14 @@ func TestEnvSeesThroughExportAndIndentation(t *testing.T) {
 // The rendered file is left exactly as it was: the merge only appends.
 func TestEnvKeepsTheRenderedFileByteForByte(t *testing.T) {
 	rendered := readGolden(t, goldenEnv)
-	out, err := configmerge.Env(rendered, map[string]any{"KBIN_META_TITLE": "A place"})
+	out, err := configmerge.Env(rendered, map[string]any{"KBIN_META_DESCRIPTION": "A place"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(out, rendered) {
 		t.Errorf("the rendered file, comments and blank lines included, must be a prefix of the output:\n%s", out)
 	}
-	if !strings.HasSuffix(out, "KBIN_META_TITLE=A place\n") {
+	if !strings.HasSuffix(out, "KBIN_META_DESCRIPTION=A place\n") {
 		t.Errorf("the key belongs at the end, newline terminated:\n%s", out)
 	}
 	if _, err := configmerge.Env(rendered, map[string]any{"DATABASE_URL": "x"}); err == nil {
@@ -216,7 +216,7 @@ func TestINICreatesAMissingSection(t *testing.T) {
 func TestINIKeepsEveryLineOfTheRenderedFile(t *testing.T) {
 	rendered := readGolden(t, goldenINI)
 	out, err := configmerge.INI(rendered, map[string]any{
-		"app.max_blogs":      3,
+		"app.open_deletion":  true,
 		"app.editor":         "pad",
 		"uploads.host":       "x", // `host` is in [app] and [database], not [uploads]
 		"email.smtp_enabled": true,
@@ -226,39 +226,51 @@ func TestINIKeepsEveryLineOfTheRenderedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	added := map[string]bool{
-		iniLabel:               true,
-		"max_blogs = 3":        true,
-		"editor = pad":         true,
-		"host = x":             true,
-		"smtp_enabled = true":  true,
-		"domain = example.org": true,
-		"max_conns = 10":       true,
-		"[email]":              true,
-		"":                     true, // the blank line before a new section
-	}
-	var kept []string
-	for _, line := range strings.Split(out, "\n") {
-		if added[line] {
-			continue
-		}
-		kept = append(kept, line)
+	// Counted rather than a set, and matched in order: the rendered fixture
+	// already carries a passthrough block of its own, so a label line is in it
+	// before the merge, and removing every label would drop one the rendered
+	// file held. Each output line either is the next rendered line or is one
+	// the merge added.
+	added := map[string]int{
+		iniLabel:               4, // one per section the merge touched
+		"open_deletion = true": 1,
+		"editor = pad":         1,
+		"host = x":             1,
+		"smtp_enabled = true":  1,
+		"domain = example.org": 1,
+		"max_conns = 10":       1,
+		"[email]":              1,
 	}
 	var want []string
 	for _, line := range strings.Split(rendered, "\n") {
-		if line == "" {
-			continue
-		}
-		want = append(want, line)
-	}
-	var keptNonBlank []string
-	for _, line := range kept {
 		if line != "" {
-			keptNonBlank = append(keptNonBlank, line)
+			want = append(want, line)
 		}
 	}
-	if strings.Join(keptNonBlank, "\n") != strings.Join(want, "\n") {
-		t.Errorf("every line of the rendered file must survive, in order:\n%s", out)
+	next := 0
+lines:
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case line == "":
+			// blank lines are counted separately below
+		case next < len(want) && line == want[next]:
+			next++
+		case added[line] > 0:
+			added[line]--
+		default:
+			// One misalignment makes every later line look wrong too, so
+			// the first is the only one worth reporting.
+			t.Errorf("%q is neither the next rendered line nor one the merge adds", line)
+			break lines
+		}
+	}
+	if next != len(want) {
+		t.Errorf("every line of the rendered file must survive, in order; stopped at %q:\n%s", want[next], out)
+	}
+	for line, n := range added {
+		if n != 0 {
+			t.Errorf("%q was expected %d more time(s):\n%s", line, n, out)
+		}
 	}
 	if strings.Count(out, "\n\n") != strings.Count(rendered, "\n\n")+1 {
 		t.Errorf("the rendered file's blank lines must survive, plus one before the new section:\n%s", out)
@@ -269,10 +281,10 @@ func TestINIKeepsEveryLineOfTheRenderedFile(t *testing.T) {
 		}
 	}
 	app := sectionBody(out, "app")
-	if !strings.Contains(app, "\neditor = pad\nmax_blogs = 3\n") {
+	if !strings.Contains(app, "\neditor = pad\nopen_deletion = true\n") {
 		t.Errorf("[app] should carry both keys, sorted, together:\n%s", app)
 	}
-	if !strings.HasSuffix(strings.TrimRight(app, "\n"), "max_blogs = 3") {
+	if !strings.HasSuffix(strings.TrimRight(app, "\n"), "open_deletion = true") {
 		t.Errorf("the keys go at the end of [app], after what the template wrote:\n%s", app)
 	}
 	if !strings.Contains(sectionBody(out, "database"), "max_conns = 10") {
@@ -534,8 +546,11 @@ func TestJSONKeepsTheRealConfigsOrderAndIndent(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := strings.Replace(rendered,
-		"    \"UIFeature.passwordReset\": false\n  }\n}\n",
-		"    \"UIFeature.passwordReset\": false,\n    \"use_system_theme\": false\n  },\n  \"room_directory\": {\n    \"servers\": \"<example.org>\"\n  }\n}\n", 1)
+		"    \"UIFeature.passwordReset\": false\n  },\n  \"default_theme\": \"dark\"\n}\n",
+		"    \"UIFeature.passwordReset\": false,\n    \"use_system_theme\": false\n  },\n  \"default_theme\": \"dark\",\n  \"room_directory\": {\n    \"servers\": \"<example.org>\"\n  }\n}\n", 1)
+	if want == rendered {
+		t.Fatalf("the rendered config.json no longer ends the way this test expects, so it would compare nothing:\n%s", rendered)
+	}
 	if out != want {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}
@@ -601,6 +616,18 @@ func TestNoKeysIsByteIdentical(t *testing.T) {
 			if out != rendered {
 				t.Errorf("%s: no keys must leave the file byte identical", f.name)
 			}
+		}
+	}
+}
+
+// Each format's key in the table must be absent from its rendered file, or the
+// tests that use it pass on a Collision instead of on what they claim to
+// check. The fixture's own passthrough keys land in these same files, so a key
+// that was absent can stop being absent.
+func TestTheTableKeysAreAbsentFromTheirRenderedFiles(t *testing.T) {
+	for _, f := range formats {
+		if _, err := f.merge(readGolden(t, f.golden), map[string]any{f.key: "v"}); err != nil {
+			t.Errorf("%s: %s must merge cleanly into %s, got %v", f.name, f.key, f.golden, err)
 		}
 	}
 }
