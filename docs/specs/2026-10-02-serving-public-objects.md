@@ -2,6 +2,9 @@
 
 Status: approved in session on 2026-10-02, not implemented.
 
+The hostname shape below is superseded: see *Amendment, 2026-10-04: one media
+hostname per app* at the end.
+
 The toolkit provisions Garage, hands each application its own credentials and
 publishes a media hostname. Outline's objects are readable through it and
 Mbin's are not, because Garage's S3 API has no anonymous mode at all. This
@@ -240,3 +243,122 @@ The media hostname work above is untouched. Mbin remains the only kind whose
 objects are served anonymously, and the blog's bucket is private for a
 different reason than Outline's: Outline presigns because its documents are
 member only, and the blog never exposes its store at all.
+
+## Amendment, 2026-10-04: one media hostname per app
+
+Founder decision in session. It supersedes the single media hostname above,
+the per bucket routing under it, and this spec's rejection of a hostname per
+bucket.
+
+### What replaces it
+
+**Each app that stores objects serves them on a hostname of its own, a sibling
+of the app's.** The default is derived: the first label of the app's hostname,
+then `-media`, under `community.domain`. An app at `talk.example.org` serves its
+media at `talk-media.example.org`. An app can declare another under
+`hostnames.media`, which is a full hostname under the deployment's domain.
+`storage.media_hostname` is removed, along with the `media.caddy` snippet and
+its per path routes.
+
+The name is never a child of the app's host (`media.talk.example.org`), because
+a cookie the app scopes to its host would reach it, and never a name for the
+backend (`garage.`, `s3.`), because what answers it is exactly what is meant to
+be able to change. Validation refuses a name that is not a hostname, a declared
+name outside the domain, a name under any app hostname other than the domain
+itself, and a clash with any other hostname, derived or declared.
+
+### Why the earlier rejection no longer holds
+
+The single hostname was kept above because Mbin had already written URLs of
+that form and a federating instance that cached one keeps it. That premise was
+never true of this toolkit: it has never been released, there are no tags, and
+none of the media work is on `main`, so no deployment has published a URL in
+either shape. The cost of changing the shape is therefore nothing now and a
+migration later, which is the argument for changing it now.
+
+What a hostname per app buys is what a path cannot:
+
+* **It can be re-pointed one app at a time.** A hostname is the unit DNS moves.
+  One app's media can go to a CDN, another provider or another Garage with a
+  record change for that app and no other. A path under a shared hostname can
+  only move with every other app's.
+* **It isolates origins.** Two apps' user uploads on two hostnames are two
+  browser origins, so a file one app stored cannot script against another
+  app's media.
+
+The cost is one DNS record per app that stores objects, which the README now
+says beside the rule.
+
+### WriteFreely is now public
+
+The amendment above described the fork streaming images through its own
+`/uploads/` route. That is no longer the fork's design. writefreely-wisp#171
+(open on 2026-10-04, not yet merged) makes S3 storage direct only: with
+`[storage] type = s3` the fork requires `[storage] image_url_base`, an absolute
+`https://` URL with a host and no query, fragment, credentials or unclean
+path; it rewrites image URLs to that base at render time; and `/uploads/*` only
+answers with a redirect there. It never reads the bucket to serve an image.
+
+So `ServesObjectsPublicly` is true for `writefreely`, its bucket gets
+`garage bucket website --allow`, its media hostname goes to the web endpoint
+exactly as Mbin's does, and `config.ini` renders
+`image_url_base = https://<blog media host>` with no path, since the fork joins
+the object key on with a slash and the gateway resolves the bucket from the
+hostname.
+
+The pinned fork image predates #171. It does not read the key, keeps streaming
+images through `/uploads/` with its own credential, and so still works without
+using its media hostname; that was observed by booting the pinned image against
+the rendered `config.ini`. The pin has to move to a build containing #171 once
+it is merged.
+
+### Outline stays private, through the S3 API
+
+Outline's media hostname goes to Garage's S3 API on 3900 with `Host` forwarded
+unchanged, never to the web endpoint, so its presigned reads and uploads verify
+exactly as before. `AWS_S3_UPLOAD_BUCKET_URL` is `https://<outline media host>`,
+which Outline also uses as its S3 client's endpoint, and
+`AWS_S3_FORCE_PATH_STYLE` stays true. Path style is required rather than
+preferred: the media hostname is not under Garage's S3 root domain, so Garage
+reads the bucket from the path, and virtual host style would sign for a
+hostname nothing serves.
+
+One upstream behaviour became a refusal. Outline's `getPublicEndpoint`
+(`server/storage/files/S3Storage.ts`, read at v1.10.0) treats the bucket name
+appearing anywhere in that URL as virtual host addressing and stops putting it
+in the upload path. With a hostname per app, a bucket named after the app does
+appear in it, so that combination is refused as `outline-bucket-in-media-url`.
+
+### Media is public by link
+
+No media hostname is gated or restricted by address, including the media
+hostname of an app that is itself gated. ActivityPub servers hotlink the
+original URLs they were given, so a gate would break every federated image.
+Outline's attachments are protected by the signature on each URL, not by
+anything in front of the hostname.
+
+### Headers
+
+Every public media hostname sends `Content-Security-Policy: default-src 'none';
+style-src 'unsafe-inline'; sandbox` and `X-Content-Type-Options: nosniff`, set
+by the gateway after the upstream's headers. Mbin and the blog store uploads
+byte for byte, an SVG among them, and no S3 provider can store a response header
+on an object.
+
+Outline's media hostname sends nosniff only. Outline embeds PDF attachments in
+the page with `<embed>`, and a browser will not run its PDF viewer in a
+sandboxed document, so the policy would break PDF previews. Outline already
+stores every type outside a short inline list as `Content-Disposition:
+attachment`, and leaves SVG off that list because it can carry script. That the
+sandbox breaks the embed is reasoned from how browsers treat sandboxed PDFs, not
+observed in a browser here.
+
+### What was run
+
+`TestEachAppsMediaHostnameServesOnlyItsOwnBucket` replaces the earlier
+integration test. Against two real `dxflrs/garage:v1.0.1` nodes and a real
+Caddy running the rendered snippets: Mbin's and the blog's objects return 200
+anonymously on their own hostnames, with the path as the object key and both
+headers present; Outline's object is refused anonymously with 403 and returns
+200 presigned for its own hostname; and Outline's key asked for on Mbin's
+hostname does not return Outline's object.
