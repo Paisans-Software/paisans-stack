@@ -135,6 +135,8 @@ func Check(cfg *config.Config) Result {
 	c.gatedMatrixHostname()
 	c.homeserverMustBePinned()
 	c.objectStorageWithoutAMediaHostname()
+	c.configKeyIsNestedInAnEnvFile()
+	c.configKeyLooksLikeASecret()
 
 	c.evenVoters()
 	c.meshIsNotPrivate()
@@ -770,6 +772,58 @@ func (c *checker) hostnameRoles() {
 			c.refuse("unknown-hostname-role", fmt.Sprintf("apps.%s.hostnames.%s", name, role),
 				"names a hostname role %q, which the %s kind does not understand. A role selects the Caddy snippet that hostname gets, so an unknown one would import a file that does not exist and the gateway would fail to load at all. Roles for this kind: %s.",
 				role, app.Kind, strings.Join(kinds.HostnameRoles(app.Kind), ", "))
+		}
+	}
+}
+
+// configKeyIsNestedInAnEnvFile refuses a dotted key on a kind configured by
+// environment.
+//
+// Env has no nesting. In ini and yaml a dot is a path and means something, so
+// the same habit carried over here produces a variable called `a.b` that the
+// application never reads and the shell may not even accept. It is refused
+// rather than passed through because the likeliest reading is a typo for an
+// underscore, and a typo that renders is the worst outcome available.
+func (c *checker) configKeyIsNestedInAnEnvFile() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if kinds.ConfigFormat(app.Kind) != kinds.ConfigEnv {
+			continue
+		}
+		for _, key := range sortedKeys(app.Config) {
+			if !strings.Contains(key, ".") {
+				continue
+			}
+			c.refuse("config-key-is-nested-in-an-env-file", fmt.Sprintf("apps.%s.config.%s", name, key),
+				"is a dotted key, and %s is an env file. Env has no nesting, so a dot is a typo here rather than a path. Write the variable name the application reads, for example with underscores.",
+				kinds.ConfigFile(app.Kind))
+		}
+	}
+}
+
+// secretWords are the fragments of a key name that suggest a credential.
+var secretWords = []string{"password", "secret", "token", "apikey", "private_key"}
+
+// configKeyLooksLikeASecret refuses a key named like a credential.
+//
+// paisans.yaml is plaintext and meant to be read, committed and diffed. A
+// passthrough map is exactly where somebody pastes an API token at the end of
+// a long day. The check is by name and is deliberately narrow: it refuses the
+// one thing it can see, and says so, rather than claiming to be a policy.
+func (c *checker) configKeyLooksLikeASecret() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		for _, key := range sortedKeys(app.Config) {
+			lower := strings.ToLower(key)
+			for _, word := range secretWords {
+				if !strings.Contains(lower, word) {
+					continue
+				}
+				c.refuse("config-key-looks-like-a-secret", fmt.Sprintf("apps.%s.config.%s", name, key),
+					"is named like a credential (it contains %q). paisans.yaml is plaintext and meant to be committed, so a secret does not belong in it: put the value in secrets.enc.yaml. This check is by name and will not catch a credential named something else, so it is no substitute for looking.",
+					word)
+				break
+			}
 		}
 	}
 }

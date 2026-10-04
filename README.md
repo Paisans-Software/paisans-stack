@@ -463,6 +463,33 @@ will eventually run `docker compose pull` on a host, and the difference between
 what is declared and what is running is exactly the kind of drift that is
 invisible until a rebuild produces a different stack.
 
+### A config key is placed, not interpreted
+
+`settings` is what the toolkit reasons about. `config` is the other kind of
+key: one the toolkit has no opinion about, set per app, for the file that app's
+kind actually reads. The kinds do not share a format, so a key means something
+different per kind:
+
+| Format | Kinds | File | A key means |
+|---|---|---|---|
+| env | mbin, outline, pocket-id, oauth2-proxy | `.env` | the variable name |
+| ini | writefreely | `config.ini` | `section.key` |
+| yaml | synapse | `homeserver.yaml` | a nested path |
+| json | element | `config.json` | a nested path |
+
+Two mistakes are knowable from the file alone, so `paisans validate` refuses
+them:
+
+**A dotted key on an env file is refused as
+`config-key-is-nested-in-an-env-file`.** Env has no nesting, so a dot is a typo
+for an underscore rather than a path.
+
+**A key named like a credential is refused as `config-key-looks-like-a-secret`.**
+`paisans.yaml` is plaintext and meant to be committed; the value belongs in
+`secrets.enc.yaml`. The check is by name (`password`, `secret`, `token`,
+`apikey`, `private_key`) and will not catch a credential called something
+else. It refuses the one thing it can see and does not claim to be a policy.
+
 ### Three kinds of secret
 
 Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.

@@ -218,3 +218,45 @@ func ServiceNames(kind config.Kind) []string {
 	sort.Strings(out)
 	return out
 }
+
+// Format is the syntax of the file a kind reads its configuration from.
+type Format string
+
+const (
+	// ConfigNone is the zero value: a kind that renders no configuration file.
+	// Every kind today renders one, so nothing returns it yet; it is declared so
+	// that a kind added later without one has an honest answer to give.
+	ConfigNone Format = ""
+	ConfigEnv  Format = "env"
+	ConfigINI  Format = "ini"
+	ConfigYAML Format = "yaml"
+	ConfigJSON Format = "json"
+)
+
+// configFiles is where each kind's passthrough configuration lives. The file
+// names are the rendered names, relative to the stack, rather than the template
+// names: the renderer drops `.tmpl` and then `.secret`, so
+// writefreely/config.ini.secret.tmpl is `config.ini` on the host.
+//
+// Synapse and writefreely also render a `.env`, but only for their Postgres
+// container's password. The application reads homeserver.yaml and config.ini,
+// so those are where a key means anything.
+var configFiles = map[config.Kind]struct {
+	format Format
+	file   string
+}{
+	config.KindMbin:        {ConfigEnv, ".env"},
+	config.KindOutline:     {ConfigEnv, ".env"},
+	config.KindPocketID:    {ConfigEnv, ".env"},
+	config.KindOAuth2Proxy: {ConfigEnv, ".env"},
+	config.KindWriteFreely: {ConfigINI, "config.ini"},
+	config.KindSynapse:     {ConfigYAML, "homeserver.yaml"},
+	config.KindElement:     {ConfigJSON, "config.json"},
+}
+
+// ConfigFormat is the syntax of the file a kind reads its configuration from,
+// or ConfigNone when it has none.
+func ConfigFormat(kind config.Kind) Format { return configFiles[kind].format }
+
+// ConfigFile is the rendered path of that file, relative to the stack.
+func ConfigFile(kind config.Kind) string { return configFiles[kind].file }

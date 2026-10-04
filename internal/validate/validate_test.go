@@ -53,6 +53,8 @@ func TestRulesFire(t *testing.T) {
 		{"gated-matrix-hostname", "gated-matrix-hostname", validate.Refuse},
 		{"homeserver-must-be-pinned", "homeserver-must-be-pinned", validate.Refuse},
 		{"object-storage-without-a-media-hostname", "object-storage-without-a-media-hostname", validate.Refuse},
+		{"config-key-is-nested-in-an-env-file", "config-key-is-nested-in-an-env-file", validate.Refuse},
+		{"config-key-looks-like-a-secret", "config-key-looks-like-a-secret", validate.Refuse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {

@@ -210,6 +210,18 @@ type App struct {
 	Images   map[string]string `yaml:"images"`
 	Settings map[string]any    `yaml:"settings"`
 
+	// Config is passed through to the file this app's kind reads, in that file's
+	// own syntax, without the toolkit interpreting the key.
+	//
+	// It is not `settings`. A setting is an input the toolkit reasons about: it
+	// reads it, sometimes validates it, and decides things with it. A config key
+	// is one the toolkit has no opinion about and only places.
+	//
+	// A key the kind's template already writes is refused rather than overridden,
+	// because two sources of truth for one value is how a deployment ends up with
+	// a setting nobody can locate.
+	Config map[string]any `yaml:"config"`
+
 	// Hostnames are the additional names this app answers on, keyed by a role
 	// the kind understands. The primary hostname stays in Hostname; a role here
 	// selects a different Caddy snippet, because a second hostname usually
