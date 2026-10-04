@@ -465,17 +465,68 @@ invisible until a rebuild produces a different stack.
 
 ### A config key is placed, not interpreted
 
-`settings` is what the toolkit reasons about. `config` is the other kind of
-key: one the toolkit has no opinion about, set per app, for the file that app's
-kind actually reads. The kinds do not share a format, so a key means something
-different per kind:
+An app takes two maps that look alike and are not.
+
+**`settings` is input the toolkit reasons about.** A template asks for each key
+by name, and some are validated or acted on: `s3_bucket` is a setting because
+`validate` refuses one named `outline` and `storage init` creates it. A key no
+template asks for is silently ignored. That is the direction in which choosing
+wrong is silent, and the reason this section exists: an application option put
+under `settings` renders nothing and says nothing.
+
+**`config` is passthrough.** The toolkit does not interpret the key. It does not
+know whether the application has such an option, does not check the value's
+type, and decides nothing with it. It places the key, in that file's own syntax,
+in the file the app's kind renders, and has no other opinion about it. A typo
+renders cleanly and is the application's to ignore or refuse at boot.
+
+The kinds do not share a format, so a key means something different per kind:
 
 | Format | Kinds | File | A key means |
 |---|---|---|---|
 | env | mbin, outline, pocket-id, oauth2-proxy | `.env` | the variable name |
-| ini | writefreely | `config.ini` | `section.key` |
-| yaml | synapse | `homeserver.yaml` | a nested path |
-| json | element | `config.json` | a nested path |
+| ini | writefreely | `config.ini` | `section.key`, exactly one dot |
+| yaml | synapse | `homeserver.yaml` | a nested path, any depth |
+| json | element | `config.json` | a nested path, any depth |
+
+One of each:
+
+```yaml
+apps:
+  talk:
+    kind: mbin
+    config:
+      KBIN_META_TITLE: A place to talk          # env: a variable in .env
+  blog:
+    kind: writefreely
+    config:
+      app.max_blogs: 3                          # ini: max_blogs in [app]
+  chat:
+    kind: synapse
+    config:
+      require_auth_for_profile_requests: true   # yaml: a top level key
+  web:
+    kind: element
+    config:
+      default_theme: dark                       # json: a top level key
+```
+
+Values are scalars: a string, a number or a boolean. A list or a map is
+refused, because no format here has one way to write it that every application
+reads the same.
+
+**Where the key lands.** Env appends a labelled block to the rendered `.env`,
+quoting a value only where compose's `env_file` would otherwise rewrite it, so
+the application receives it byte for byte. Ini
+inserts the key into the section that is already there, after its last
+assignment, rather than repeating the section header; a section the template
+does not write is created at the end. Yaml appends a new top level key as its
+own block and leaves the rest of `homeserver.yaml` byte for byte as rendered.
+A key under a mapping the template already writes, such as
+`database.args.sslmode`, makes the file be re-emitted: comments survive, but the
+blank lines between top level keys do not. Json keeps the template's key order.
+In env, ini and an appended yaml block, a comment above the key says `config`
+put it there.
 
 Two mistakes are knowable from the file alone, so `paisans validate` refuses
 them:
@@ -489,6 +540,60 @@ for an underscore rather than a path.
 `secrets.enc.yaml`. The check is by name (`password`, `secret`, `token`,
 `apikey`, `private_key`) and will not catch a credential called something
 else. It refuses the one thing it can see and does not claim to be a policy.
+
+**A key the template already writes is refused when rendering, as
+`config-key-already-rendered`.** The message names the key and the file, and
+either the template that writes it or, when there is one, the `settings` key
+that is the sanctioned input for the same value. `config` adds; it never
+overrides. Two sources of truth for one value is how a deployment ends up with
+a setting nobody can locate, and an override would also route around the
+refusals in `validate` that exist because some values are not an operator's to
+change casually: `oidc_providers` back into a homeserver that is a resource
+server, or `type = sqlite3` into a blog that belongs in the cluster. To change a
+template owned value, use its `settings` key if it has one. If it has none, the
+answer is a pull request that makes it one, or a template change, and both are
+reviewable where a local override is not.
+
+For the env kinds the check reaches past `.env`. A variable the stack's
+`compose.yaml` sets under `environment:`, or interpolates as `${VAR}`, is
+refused too, because compose gives `environment:` precedence over `env_file`
+and the `.env` value would be dropped without a word.
+
+**Some keys cannot be written at all.**
+
+* A key whose own name contains a dot. In yaml and json a dot is always a path
+  separator, so Element's `setting_defaults` key `UIFeature.feedback` cannot be
+  expressed. A path that could mean an existing dotted key, such as anything
+  under `default_server_config.m.homeserver`, is refused as ambiguous rather
+  than guessed at.
+* An ini section whose name contains a dot. `[oauth.generic]` is unreachable,
+  because a key names exactly one section and one key. Every key in that
+  section is template owned anyway.
+* The ini section `DEFAULT`, which is the parser's name for the lines before
+  any header.
+* An ini value that WriteFreely's parser would read as something else: one
+  containing `;` or `#`, which it takes as a comment; one with leading or
+  trailing whitespace, which it trims; one that starts with a quote or a
+  backtick, which it strips; one ending in a backslash, which joins the next
+  line onto it; and one with a newline.
+
+**WriteFreely reads its settings from `config.ini` once.** The fork moves most
+of `[app]` and `[uploads]` into its database on the first start against an empty
+database, and from then on the database is in force. A key added to `config`
+after that first start is rendered, and the fork logs `config.ini disagrees
+with the database on app.max_blogs; the database value is in force` on every
+boot and ignores it. Change a running blog's setting with `writefreely settings
+set` inside the container. This is the fork's design, not the toolkit's, and it
+applies to the template's own keys in those sections in the same way.
+
+**What has been run, and what has not.** The ini insertion is proven against the
+software: `go test -tags writefreely_integration ./internal/render/` boots the
+pinned fork against the `config.ini` this toolkit renders, with a Postgres
+beside it, and reads the value back with `writefreely settings get`, along with
+the same file less that one line as a control. The yaml and json merges are
+proven against Go's parsers only. Nothing here runs Synapse or Element, so the
+tests show that the rendered file parses and carries the value at the path
+asked for, not that those applications accept it.
 
 ### Three kinds of secret
 

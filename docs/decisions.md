@@ -520,3 +520,154 @@ false for `writefreely`, so the blog's bucket gets no `garage bucket website
 this in a comment, next to `[storage]`, because that is where the next
 person reading it will be standing and wondering why the blog is absent from
 the media routing everything else gets.
+
+## 2026-10-04: A deployment can pass a config key through, and the toolkit places it without interpreting it
+
+The design is `docs/specs/2026-10-04-config-passthrough.md`. This records what
+was decided and what running it changed.
+
+### `settings` only reaches keys a template already reads
+
+Every value in `settings` works because some template asks for it by name. A
+key no template reads is silently ignored, so an adopter who wanted
+WriteFreely's `app.max_blogs` or one more variable in Mbin's environment had
+two options: fork the templates, or edit the rendered file on the host and have
+the next `apply` refuse the whole stack over a local modification. `config` is
+a second per app map for exactly that gap. The toolkit places each key in the
+file the kind renders, in that file's syntax, and has no opinion about it.
+`settings` keeps meaning what it meant.
+
+### The merge runs in Go after rendering, not as a trailing block in each template
+
+A block appended by each template was the alternative, and it fails three ways:
+it cannot nest a yaml path, it cannot put an ini key inside a section that
+already exists, and it cannot notice that the template already wrote the same
+key. All three matter, the last most, because noticing is what makes the
+collision refusal below possible. Env and ini are edited as lines rather than
+parsed and re-emitted, because a full round trip would reformat a file an
+operator reads.
+
+### Ini inserts into the existing section rather than repeating it
+
+Appending a second `[app]` at the end would have been simpler. Whether a
+repeated section merges with the first or shadows it is a property of the
+particular parser, and this project has been wrong about a format's behaviour
+more than once by reasoning instead of running. go-ini v1.67.0, the version the
+fork pins, does merge a repeated section, but inserting after the last
+assignment of the section that is already there needs no assumption about it
+at all, so the design does not lean on that. The key lands after the section's
+last assignment rather than before the next header, so the comment that
+introduces the next section stays with it.
+
+The values go-ini would misread are refused rather than escaped, each observed
+by loading the writer's own output with that library: `;` or `#` anywhere, edge
+whitespace, a leading quote or backtick, a newline, and a trailing backslash,
+which joins the next line onto the value and makes the key after it vanish.
+`DEFAULT` is refused as a section because go-ini merges it into the lines
+before any header. A section name with a dot, `[oauth.generic]`, cannot be
+reached, because a key names exactly one section and one key.
+
+### The ini insertion was run against the fork, and that found the fork's own limit
+
+`internal/render/writefreely_integration_test.go`, behind the
+`writefreely_integration` tag, boots the pinned fork image against the
+`config.ini` that `render.Build` produces from the fixture, with a Postgres
+reachable under the rendered `host` and carrying the rendered credentials, and
+asks `writefreely settings get app.max_blogs`. It reports `3`. The same file
+less only the inserted line reports `0`, which is what makes the first result
+evidence rather than a constant. No line of the rendered file was changed for
+the boot: the S3 endpoint is unreachable in the test and the fork logs that and
+starts without uploads, and it starts without reaching the identity provider.
+
+It has its own tag rather than `garage_integration` because it touches no
+Garage and its helpers belong beside the fixture in `internal/render`.
+
+The run also showed something the spec did not anticipate. The fork moves most
+of `[app]` and `[uploads]` into its database on the first start against an empty
+database, and after that the database is in force. Started again against an
+existing database with the key added, the fork logs `config.ini disagrees with
+the database on app.max_blogs; the database value is in force` and still
+reports `0`. The test asserts that as well, because the README states it and a
+fork release that changed it should fail here rather than leave the README
+wrong. A passthrough key for those sections therefore takes effect on a new
+blog only, and a running one is changed with `writefreely settings set`. That
+is the fork's design and applies to the template's own keys too; this toolkit
+does not try to reconcile the two.
+
+The rendered compose file mounts `config.ini` read only, so on every boot the
+fork also logs that it could not mark the file or strip the moved keys from it.
+That is noise the fork documents as harmless, and was left alone.
+
+### Yaml appends a new top level key, and re-emits only under an existing mapping
+
+`yaml.v3`'s node API keeps comments through a parse and re-emit, but not the
+blank lines between top level keys. So a key whose top level name is absent
+from the rendered `homeserver.yaml` is marshalled as its own block and appended,
+and the rendered text is left byte for byte as it was. Only a key under a
+mapping the template already writes, such as `database.args.sslmode`, makes the
+file be re-emitted. Measured on the golden `homeserver.yaml`, that drops six
+blank lines and nothing else: every comment, the indentation, the quoting and
+the flow sequences survive. Restoring the blank lines safely needs care around
+block scalars and the loss is cosmetic, so it was not attempted. The common
+Synapse keys an adopter reaches for are new top level names and take the byte
+identical path.
+
+A dot in yaml or json is always a path separator, so a new key whose own name
+contains one, such as Element's `setting_defaults` key `UIFeature.feedback`,
+cannot be expressed. A path that could mean an existing dotted key, such as one
+under `default_server_config.m.homeserver`, is refused as ambiguous rather than
+silently creating a nested `m` object beside it.
+
+### A collision is refused, not overridden
+
+`config-key-already-rendered` stops the build when the template already writes
+the key, and names the `settings` key that owns the value when there is one.
+Overriding was the alternative and was rejected for two reasons. Two sources of
+truth for one value is how a deployment ends up with a setting nobody can
+locate. And a passthrough that could override would route around every refusal
+`validate` makes because a value is not an operator's to change casually:
+`oidc_providers` back into a homeserver that is supposed to be a resource
+server, `type = sqlite3` into a blog that belongs in the cluster. The cost is
+real and stated in the README: a template owned default cannot be changed
+through `config`, only by a `settings` key or a template change, both of which
+are reviewable.
+
+For env kinds the check covers the stack's `compose.yaml` as well. Docker
+Compose v5.4.0 was run with the same variable in `env_file` and in
+`environment:`, in both map and list form, and `docker compose config` showed
+`environment:` winning and the `env_file` value dropped without a warning. So a
+variable `compose.yaml` sets under `environment:`, or interpolates as `${VAR}`,
+is refused too. The interpolation case over-refuses on purpose: the only
+references today are `${POSTGRES_PASSWORD:?...}`, which the credential check
+already refuses.
+
+### The secret check is by name, and says so
+
+`config-key-looks-like-a-secret` refuses a key containing `password`, `secret`,
+`token`, `apikey` or `private_key`, because `paisans.yaml` is plaintext and
+committed and a passthrough map is where a token gets pasted at the end of a
+long day. It will not catch a credential called anything else, and the message
+and the README both say that, the same way `acme-image-is-stock-caddy` refuses
+the one thing it can prove instead of claiming to be a policy.
+
+### The refusal for a kind with no config file was dropped
+
+The spec called for refusing `config` on a kind that renders no config file.
+Every kind in the catalogue renders one, so the refusal had nothing to refuse,
+and a rule no input can reach cannot be shown to fail. It
+was left out rather than kept for a kind that does not exist. A future kind
+without a config file has to add it back.
+
+### What is proven, and against what
+
+The ini merge is proven against the application that reads it, above. The env
+merge's quoting is proven against `docker compose config`. The yaml and json
+merges are proven against Go's own parsers only: the tests show the rendered
+file parses and carries the value at the requested path. Synapse reads
+`homeserver.yaml` with Python and Element reads `config.json` in a browser, and
+nothing here runs either. That is a known gap, not a claim. One instance of it
+was found by reading rather than running: Synapse 1.160.0's
+`synapse/config/repository.py` raises a `ConfigError` for `url_preview_enabled`
+unless a list valued `url_preview_ip_range_blacklist` is also set, and a list is
+not a value `config` can carry, which is why the fixture uses
+`require_auth_for_profile_requests` instead.

@@ -204,3 +204,12 @@ apps:
       # cannot reach it.
       site_name: Example Community
       oidc_display_name: Example
+    # Not settings. A settings key works only if a template asks for it by
+    # name, and one no template reads is ignored without a word. A config key
+    # is passed through as written: here, max_blogs inside config.ini's
+    # existing [app] section. The toolkit does not interpret it, and refuses
+    # one the template already writes, such as app.site_name, rather than let
+    # it override the setting above. The fork moves [app] into its database on
+    # its first start, so a key added later is ignored; see the README.
+    config:
+      app.max_blogs: 3
