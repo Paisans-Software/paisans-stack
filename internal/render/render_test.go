@@ -2100,3 +2100,23 @@ func TestMbinOAuthKeypairIsRenderedForEveryAppsSite(t *testing.T) {
 		}
 	}
 }
+
+// Spilo writes Patroni's configuration from its own variables, and a data site
+// given only Patroni's names has no DCS as far as Spilo can tell: it starts an
+// embedded etcd on 127.0.0.1:2379, which collides with the real one on a host
+// networked site, and Patroni follows the embedded one. That is what the first
+// real-host apply did. The scope, the DCS and the roles must be in Spilo's
+// vocabulary.
+func TestPatroniEnvSpeaksSpilosVocabulary(t *testing.T) {
+	env := planFiles(build(t))["home-a/srv/infra/patroni.env"]
+	for _, want := range []string{"\nSCOPE=", "\nETCD3_HOSTS=10.44.0.", "\nPGPASSWORD_SUPERUSER=", "\nPGPASSWORD_STANDBY=", "\nPGPASSWORD_ADMIN=", "\nSPILO_CONFIGURATION={bootstrap: {dcs: {synchronous_mode: "} {
+		if !strings.Contains(env, want) {
+			t.Errorf("patroni.env lacks %q, so Spilo would not see it:\n%s", strings.TrimSpace(want), env)
+		}
+	}
+	for _, gone := range []string{"PATRONI_ETCD3_HOSTS", "PATRONI_SCOPE", "PATRONI_SUPERUSER_PASSWORD", "\nSYNCHRONOUS_MODE="} {
+		if strings.Contains(env, gone) {
+			t.Errorf("patroni.env still carries %q, a name Spilo does not read:\n%s", strings.TrimSpace(gone), env)
+		}
+	}
+}
