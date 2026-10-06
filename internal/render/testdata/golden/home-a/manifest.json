@@ -8,12 +8,12 @@
     },
     {
       "path": "srv/auth/.env",
-      "sha256": "c3633ab929424a769e1d87dac04a376a198947627091371f9d6a1361f8556478",
+      "sha256": "b3cf80e404527ada23cc6fe08d146e327ea947fe58da6c3b76e50a9920e5b2b8",
       "mode": "0600"
     },
     {
       "path": "srv/auth/compose.yaml",
-      "sha256": "0b01f094b0c5ef48e257d8af7a28ab9e4a12a8bd445e567978c5627202d01b52",
+      "sha256": "223afa307233dfbc24f3013c7dfc59bb80227b51bb0fefef0abba8a4b202b7d8",
       "mode": "0644"
     },
     {
@@ -23,7 +23,7 @@
     },
     {
       "path": "srv/blog/compose.yaml",
-      "sha256": "9c2b36c16f2566edaaacf84a03dd81ab5b7126ab083f178c4ae9a59d0619fd9a",
+      "sha256": "516454900b9f9d7e84d5ef085d020f7c16c00442ee5f025e94f32b40b114846c",
       "mode": "0644"
     },
     {
@@ -33,12 +33,12 @@
     },
     {
       "path": "srv/docs/.env",
-      "sha256": "8d276634a5b4b6ab1852b666d559c0afbbd9885613990b8ae15d98648a6fcea8",
+      "sha256": "95b15b959cbfc9840262d0e7b4edbdfcb4d35eea079fdffa76b702299213e904",
       "mode": "0600"
     },
     {
       "path": "srv/docs/compose.yaml",
-      "sha256": "a16de4fcff31962c6c2a4c2bf5d77d1adcee2b600c20945d0200869d33396137",
+      "sha256": "2871db2588a20598f580bd9553278c595bd29015648c0e17d65797cd822e2d6f",
       "mode": "0644"
     },
     {
@@ -48,7 +48,7 @@
     },
     {
       "path": "srv/gate/compose.yaml",
-      "sha256": "013afea26c075f416fbe8881c47305e61726875be884460bc0a3c1dcb9fe66bf",
+      "sha256": "4d26da59e499b176ec05407444c48c1067adeb6c8a79bf7f7646d273d7f6f0a6",
       "mode": "0644"
     },
     {
@@ -63,7 +63,7 @@
     },
     {
       "path": "srv/infra/haproxy/haproxy.cfg",
-      "sha256": "60c7be2b671d4bb18703a12c33914a8226dce60be123bef5299f8002544e071e",
+      "sha256": "23eea0ef6c45d5fc220999a22382c5e9268eba1d0fddd4e1359d575beecd7540",
       "mode": "0644"
     },
     {
@@ -73,17 +73,22 @@
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "278108df04587125aeb66b7e71e62731ae1082c1ae3aa01b179ba21c9ae317ff",
+      "sha256": "d89bd1735f48f27ad4cc0be6e0ce9e9478088f262ea340ee1d4fc7e727009bf1",
       "mode": "0600"
     },
     {
       "path": "srv/talk/compose.yaml",
-      "sha256": "0df0cc43b70de788fc3b0207125bff37508a3cf31c7b925de0c5c510bb627393",
+      "sha256": "c075500f5c8edee90829a0741705590e6c49c202cc98b009c89687d139cadcec",
       "mode": "0644"
     },
     {
       "path": "srv/talk/config/packages/oneup_flysystem.yaml",
       "sha256": "9e676d3569b2fe39d5ce151f4dbfbbf065fbe020b1b194f547320a0a309d4efd",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/talk/valkey.conf",
+      "sha256": "b297524a011668e3be21f50075ada0b5bcc7229ba49dfed6cd13abf420045094",
       "mode": "0644"
     }
   ]

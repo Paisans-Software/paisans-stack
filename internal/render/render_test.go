@@ -110,9 +110,21 @@ func TestPlacementShapesTheStack(t *testing.T) {
 	if strings.Contains(clustered, "postgres:") {
 		t.Error("a clustered app was given a Postgres service of its own")
 	}
-	env := files["home-a/srv/talk/.env"]
-	if !strings.Contains(env, "@127.0.0.1:5000/") {
-		t.Errorf("a clustered app does not connect to the local proxy:\n%s", env)
+	// Each instance connects to the HAProxy on its own site, at that site's
+	// mesh address. Not 127.0.0.1: inside the app's bridge networked
+	// container, loopback is the container itself.
+	for site, address := range map[string]string{"home-a": "10.44.0.1", "home-b": "10.44.0.2"} {
+		env := files[site+"/srv/talk/.env"]
+		if !strings.Contains(env, "@"+address+":5000/") {
+			t.Errorf("the clustered app on %s does not connect to its own site's proxy at %s:\n%s", site, address, env)
+		}
+		if strings.Contains(env, "127.0.0.1") {
+			t.Errorf("the clustered app on %s names a loopback address, which inside its container is the container itself:\n%s", site, env)
+		}
+		proxy := files[site+"/srv/infra/haproxy/haproxy.cfg"]
+		if !strings.Contains(proxy, "bind "+address+":5000") {
+			t.Errorf("the HAProxy on %s does not listen on the mesh address its apps are given:\n%s", site, proxy)
+		}
 	}
 
 	pinned, ok := files["vm/srv/chat/compose.yaml"]
@@ -127,6 +139,50 @@ func TestPlacementShapesTheStack(t *testing.T) {
 	}
 	if !strings.Contains(pinned, "/srv/chat/postgres:/var/lib/postgresql/data") {
 		t.Error("a pinned stack does not use bind mounts under /srv")
+	}
+}
+
+// Every published port binds the mesh address of the site it is rendered for
+// and nothing else. Docker's own iptables rules bypass a host firewall such as
+// ufw, so "8080:8080" on a host with a public address is reachable from the
+// internet whatever the firewall says, and with no gate in front of it. The
+// gateway reaches every app over the mesh, so the mesh is the only interface
+// a port needs.
+func TestPublishedPortsBindTheMeshAddress(t *testing.T) {
+	cfg := fixture(t)
+	checked := 0
+	for _, f := range build(t).Files {
+		if !strings.HasSuffix(f.Path, "compose.yaml") {
+			continue
+		}
+		site := strings.SplitN(f.Path, "/", 2)[0]
+		address := cfg.Sites[site].Address
+		inPorts := false
+		for _, line := range strings.Split(f.Content, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "ports:" {
+				inPorts = true
+				continue
+			}
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if !strings.HasPrefix(trimmed, "- ") {
+				inPorts = false
+				continue
+			}
+			if !inPorts {
+				continue
+			}
+			mapping := strings.Trim(strings.TrimPrefix(trimmed, "- "), `"`)
+			if !strings.HasPrefix(mapping, address+":") || strings.Count(mapping, ":") != 2 {
+				t.Errorf("%s publishes %q, which is not bound to %s's mesh address %s", f.Path, mapping, site, address)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no published port was found, so this test verified nothing")
 	}
 }
 
@@ -1742,6 +1798,118 @@ services:
 		if got {
 			t.Errorf("%s is not set or read by the compose file, but was reported", key)
 		}
+	}
+}
+
+// Mbin is a stack, not a container. Upstream's compose.yaml runs the web
+// application beside messenger consumers, a broker behind an AMQP proxy and a
+// cache, and an app container on its own starts, migrates and then cannot
+// deliver a single federated activity. Every name checked here was read from
+// the paisans fork at tag v1.13.3+paisans.
+func TestMbinRendersItsWholeStack(t *testing.T) {
+	files := planFiles(build(t))
+	compose := files["home-a/srv/talk/compose.yaml"]
+	env := files["home-a/srv/talk/.env"]
+
+	for _, service := range []string{"  app:", "  messenger:", "  amqproxy:", "  rabbitmq:", "  valkey:"} {
+		if !strings.Contains(compose, "\n"+service+"\n") {
+			t.Errorf("the Mbin stack has no %s service:\n%s", strings.TrimSpace(service), compose)
+		}
+	}
+	if strings.Count(compose, "ports:") != 1 {
+		t.Errorf("only app may publish a port; the sidecars are reached over the project's own network:\n%s", compose)
+	}
+
+	// FrankenPHP listens plainly on the port the gateway routes to, and never
+	// asks for a certificate of its own: TLS ends at the gateway.
+	for _, want := range []string{`SERVER_NAME: ":8080"`, `CADDY_GLOBAL_OPTIONS: "auto_https off"`, `"10.44.0.1:8080:8080"`} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("the app service does not carry %s:\n%s", want, compose)
+		}
+	}
+	if strings.Contains(env, "SERVER_NAME=") {
+		t.Errorf("SERVER_NAME belongs to compose.yaml, where a hostname cannot replace the plain listener:\n%s", env)
+	}
+	snippet := files["vm/srv/infra/caddy/snippets/talk.caddy"]
+	if !strings.Contains(snippet, "10.44.0.1:8080") || !strings.Contains(snippet, "10.44.0.2:8080") {
+		t.Errorf("the gateway does not route to the port the app publishes:\n%s", snippet)
+	}
+
+	for _, want := range []string{
+		"\nMBIN_USER=1000:1000\n",
+		"\nAPP_SECRET=fixture-not-a-secret-talk-app\n",
+		"\nRABBITMQ_DEFAULT_USER=mbin\n",
+		"\nRABBITMQ_DEFAULT_PASS=fixture-not-a-secret-rabbitmq\n",
+		"\nMESSENGER_TRANSPORT_DSN=amqp://mbin:fixture-not-a-secret-rabbitmq@amqproxy:5673/%2f/messages\n",
+		"\nVALKEY_PASSWORD=fixture-not-a-secret-valkey\n",
+		"\nREDIS_DNS=redis://fixture-not-a-secret-valkey@valkey:6379\n",
+		"\nMERCURE_URL=http://app:8080/.well-known/mercure\n",
+		"\nMERCURE_PUBLIC_URL=https://talk.example.org/.well-known/mercure\n",
+		"\nMERCURE_PUBLISHER_JWT_KEY=fixture-not-a-secret-mercure\n",
+		"\nMERCURE_SUBSCRIBER_JWT_KEY=fixture-not-a-secret-mercure\n",
+		"\nOAUTH_PASSPHRASE=fixture-not-a-secret-talk-oauth-passphrase\n",
+		"\nOAUTH_ENCRYPTION_KEY=fixture-not-a-secret-talk-oauth-encryption\n",
+		"\nS3_VERSION=latest\n",
+		`CORS_ALLOW_ORIGIN='^https?://(talk\.example\.org|127\.0\.0\.1)(:[0-9]+)?$'`,
+		"@10.44.0.1:5000/talk?serverVersion=18&charset=utf8\n",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("the Mbin .env does not carry %q:\n%s", strings.TrimSpace(want), env)
+		}
+	}
+
+	if _, ok := files["home-a/srv/talk/valkey.conf"]; !ok {
+		t.Error("valkey.conf was not rendered, so the cache would run without upstream's memory limit and with snapshots on")
+	}
+	// The consumers store fetched remote media through the same filesystem
+	// binding as the web container, so they need the same shim.
+	messenger := compose[strings.Index(compose, "\n  messenger:\n"):]
+	messenger = messenger[:strings.Index(messenger, "\n  amqproxy:\n")]
+	if !strings.Contains(messenger, "oneup_flysystem.yaml:/app/config/packages/oneup_flysystem.yaml:ro") {
+		t.Errorf("the messenger consumers do not mount the S3 shim:\n%s", messenger)
+	}
+}
+
+// Pinned Mbin keeps its own database beside the rest of the stack, and the
+// application waits for it.
+func TestPinnedMbinRunsItsOwnDatabase(t *testing.T) {
+	cfg := fixture(t)
+	talk := cfg.Apps["talk"]
+	talk.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-b", Literal: "home-b"}
+	cfg.Apps["talk"] = talk
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+	compose := files["home-b/srv/talk/compose.yaml"]
+	env := files["home-b/srv/talk/.env"]
+	if !strings.Contains(compose, "\n  postgres:\n") {
+		t.Errorf("a pinned Mbin has no postgres service:\n%s", compose)
+	}
+	if strings.Count(compose, "      postgres:\n        condition: service_started") != 2 {
+		t.Errorf("app and messenger should both wait for the pinned database:\n%s", compose)
+	}
+	if !strings.Contains(env, "@postgres:5432/talk?serverVersion=18&charset=utf8\n") || !strings.Contains(env, "\nPOSTGRES_PASSWORD=") {
+		t.Errorf("a pinned Mbin does not connect to its own database:\n%s", env)
+	}
+	if !strings.Contains(compose, `"10.44.0.2:8080:8080"`) {
+		t.Errorf("a pinned Mbin does not publish on its own site's mesh address:\n%s", compose)
+	}
+}
+
+// Mbin's sign in comes back to the fork's verify route, and the .env says so,
+// because that comment is where an operator registering the client looks. It
+// used to say /oauth/oidc/verify while the value it was built from said
+// /oauth/callback, which no route in the fork serves.
+func TestMbinNamesTheCallbackItServes(t *testing.T) {
+	env := planFiles(build(t))["home-a/srv/talk/.env"]
+	want := kinds.MbinRedirectURI("talk.example.org")
+	if !strings.Contains(env, want) {
+		t.Errorf("the Mbin .env does not name %s as the callback to register:\n%s", want, env)
+	}
+	if strings.Contains(env, "/oauth/callback") {
+		t.Errorf("the Mbin .env names /oauth/callback, which the fork does not serve:\n%s", env)
 	}
 }
 

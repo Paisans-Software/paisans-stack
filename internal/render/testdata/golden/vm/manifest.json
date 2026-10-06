@@ -13,7 +13,7 @@
     },
     {
       "path": "srv/chat/compose.yaml",
-      "sha256": "a251f7aa01931514efd6af5e8783b31d49005807a9aadd6fa7aa540f4308d914",
+      "sha256": "c19ca63dec48f81928dabfecd62f0894e3b96e7e5ec77565f4beecb3b20da823",
       "mode": "0644"
     },
     {
@@ -83,7 +83,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/talk.caddy",
-      "sha256": "b7894b3b2bd77bfea32a8011b02e81ef50eb91a9e2da7474f9f2c2552350121a",
+      "sha256": "7fe39211c8e0eac65e4db5839dc3ccbc592d8bcbab2eb871c2c06e1220eec0e5",
       "mode": "0644"
     },
     {

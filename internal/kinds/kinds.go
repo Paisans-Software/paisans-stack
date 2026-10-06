@@ -60,7 +60,31 @@ var catalogue = map[config.Kind][]Service{
 		{Name: "app", Image: "ghcr.io/element-hq/element-web:v1.12.27", Purpose: "the web client"},
 	},
 	config.KindMbin: {
-		{Name: "app", Image: "ghcr.io/mbinorg/mbin:v1.10.1", Purpose: "the application"},
+		// The paisans fork, not upstream: it carries the generic OIDC
+		// provider this kind's .env configures, which upstream does not
+		// have. Released 2026-10-05 as 1.13.3-paisans. Checked against
+		// ghcr.io on 2026-10-06 by requesting the manifest for that exact tag
+		// with an anonymous pull token, which resolved (200, an OCI image
+		// index, sha256:42e65e245b1026e0384a3834b7e49721123115e5acc11a63b29cd4bdf6eb6ef4).
+		// The index carries linux/amd64 only, beside an attestation
+		// manifest, so an arm64 apps site cannot run it.
+		{Name: "app", Image: "ghcr.io/paisans-software/mbin:1.13.3-paisans", Purpose: "the application, and its messenger consumers"},
+		// The three sidecars upstream's compose.yaml runs beside it. The
+		// messenger consumers are not here: they run the application's own
+		// code, so they always take the app's image, and a key that let them
+		// diverge would only be a way to run two versions of one schema.
+		//
+		// Upstream names a floating tag for each; these are the releases
+		// those tags resolved to when checked against Docker Hub on
+		// 2026-10-06, by requesting the manifest for each tag and comparing
+		// digests. 3-management-alpine and 3.13.7-management-alpine returned
+		// the same OCI image index, as did trixie and 9.1.2-trixie, and
+		// latest and 3.2.0. RabbitMQ 3.13 is the last 3.x series and upstream
+		// still runs it; a move to 4.x is a broker upgrade to make
+		// deliberately, not a default to drift into.
+		{Name: "amqproxy", Image: "docker.io/cloudamqp/amqproxy:3.2.0", Purpose: "the AMQP connection pool in front of the broker"},
+		{Name: "rabbitmq", Image: "docker.io/library/rabbitmq:3.13.7-management-alpine", Purpose: "the message broker for federation and background work"},
+		{Name: "valkey", Image: "docker.io/valkey/valkey:9.1.2-trixie", Purpose: "the cache"},
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
 	config.KindOAuth2Proxy: {

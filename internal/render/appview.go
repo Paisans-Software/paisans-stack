@@ -58,15 +58,26 @@ type appValues struct {
 	// role can move without rewriting every application's configuration.
 	TrustedProxies string
 
-	// The database this app connects to. A clustered app is given the local
-	// HAProxy; a pinned app is given its own container. DSN is the same
-	// connection as a URL, for the applications that take one.
+	// MeshAddress is the mesh address of the site this instance runs on. A
+	// published port binds it and nothing else, and a clustered app reaches
+	// its local HAProxy at it. Empty when the gateway rebuilds the app for
+	// routing, which never publishes a port or opens a connection.
+	MeshAddress string
+
+	// The database this app connects to. A clustered app is given the
+	// HAProxy on its own site, at that site's mesh address; a pinned app is
+	// given its own container. DSN is the same connection as a URL, for the
+	// applications that take one.
 	DBHost     string
 	DBPort     int
 	DBName     string
 	DBUser     string
 	DBPassword string
 	DSN        string
+
+	// PostgresVersion is the cluster's major version, which every database in
+	// the deployment runs. Mbin's Doctrine wants it in its DSN.
+	PostgresVersion string
 
 	// S3 is object storage, which is Garage over the mesh.
 	S3 s3Values
@@ -194,26 +205,28 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		}
 	}
 
-	dbHost, dbPort := databaseHost, p.clusterPort()
+	dbHost, dbPort := p.clusteredDatabaseHost(planned.Site), p.clusterPort()
 	if planned.Pinned {
 		dbHost, dbPort = "postgres", postgresPort
 	}
 
 	v := appValues{
-		App:            planned,
-		Hostname:       planned.Hostname,
-		PublicURL:      "https://" + planned.Hostname,
-		Domain:         p.cfg.Community.Domain,
-		TrustedProxies: p.mesh,
-		DBHost:         dbHost,
-		DBPort:         dbPort,
-		DBName:         planned.DBName,
-		DBUser:         planned.DBUser,
-		DBPassword:     password,
-		DSN:            dsn(planned, password, dbHost, dbPort),
-		DataPath:       "/srv/" + planned.Name,
-		secrets:        p.secrets.Apps[planned.Name],
-		set:            app.Settings,
+		App:             planned,
+		Hostname:        planned.Hostname,
+		PublicURL:       "https://" + planned.Hostname,
+		Domain:          p.cfg.Community.Domain,
+		TrustedProxies:  p.mesh,
+		DBHost:          dbHost,
+		DBPort:          dbPort,
+		DBName:          planned.DBName,
+		DBUser:          planned.DBUser,
+		DBPassword:      password,
+		DSN:             dsn(planned, password, dbHost, dbPort),
+		PostgresVersion: p.postgresVersion(),
+		DataPath:        "/srv/" + planned.Name,
+		MeshAddress:     p.meshAddress(planned.Site),
+		secrets:         p.secrets.Apps[planned.Name],
+		set:             app.Settings,
 	}
 	v.ServerName = planned.Hostname
 	if delegated := app.Hostnames[kinds.WellknownRole]; delegated != "" {
@@ -222,12 +235,16 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	if planned.Kind == config.KindElement {
 		v.ServerName = p.homeserverServerName(v.Setting("homeserver", planned.Hostname))
 	}
+	var s3Endpoint string
+	if host := garageEndpointHost(p); host != "" {
+		s3Endpoint = fmt.Sprintf("http://%s:3900", host)
+	}
 	v.S3 = s3Values{
 		// Mbin writes to this address itself, server side, over the mesh.
 		// Outline never uses it: its uploads are a presigned POST the browser
 		// submits directly, so for Outline every upload and every read goes
 		// through PublicBase, not here.
-		Endpoint:       fmt.Sprintf("http://%s:3900", garageEndpointHost(p)),
+		Endpoint:       s3Endpoint,
 		AccessKeyID:    v.Secret("s3_access_key_id"),
 		SecretKey:      v.Secret("s3_secret_access_key"),
 		Bucket:         v.Setting("s3_bucket", planned.Name+"-uploads"),
@@ -310,8 +327,11 @@ func (p *planner) oidcFor(planned plannedApp) oidcValues {
 	// of it, which serves one callback path per upstream provider rather than
 	// the /oauth/callback every other kind uses.
 	redirect := "https://" + planned.Hostname + "/oauth/callback"
-	if planned.Kind == config.KindSynapse {
+	switch planned.Kind {
+	case config.KindSynapse:
 		redirect = kinds.MASRedirectURI(planned.Hostname, planned.Name)
+	case config.KindMbin:
+		redirect = kinds.MbinRedirectURI(planned.Hostname)
 	}
 	return oidcValues{
 		Present:      true,

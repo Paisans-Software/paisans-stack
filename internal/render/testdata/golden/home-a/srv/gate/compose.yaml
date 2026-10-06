@@ -32,8 +32,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says. The
+    # gateway, over the mesh, is the only thing that should reach it.
     ports:
-      - "4180:4180"
+      - "10.44.0.1:4180:4180"
     environment:
       OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4180"
       # /oauth2/auth answers for Caddy; nothing is proxied through this
@@ -50,8 +54,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says. The
+    # gateway, over the mesh, is the only thing that should reach it.
     ports:
-      - "4181:4181"
+      - "10.44.0.1:4181:4181"
     environment:
       OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4181"
       # The enforcement itself: who this instance answers 202 for. The name is

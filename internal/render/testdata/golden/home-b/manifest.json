@@ -8,22 +8,22 @@
     },
     {
       "path": "srv/auth/.env",
-      "sha256": "5c1c78c22870bfff6d3b92d2f8b71a510d70a214134b9e570e97f129ef2130eb",
+      "sha256": "97361a10aa2d022dd627b09adf8e37c8f2a37f7baf0c72dc89305057ea9ca268",
       "mode": "0600"
     },
     {
       "path": "srv/auth/compose.yaml",
-      "sha256": "0b01f094b0c5ef48e257d8af7a28ab9e4a12a8bd445e567978c5627202d01b52",
+      "sha256": "d653a1e95a4567c29cfc39ad363e6f7d296ba830d567e50e69c63147e4dff7a9",
       "mode": "0644"
     },
     {
       "path": "srv/docs/.env",
-      "sha256": "ee7b631d156680254d1d9d09f991276ab98f2e600d7c4d3a3e2814e173c633fe",
+      "sha256": "b43301198ae9f24789d743be2cf852f32febbba8d95d6076c71e7bdc43c4f59d",
       "mode": "0600"
     },
     {
       "path": "srv/docs/compose.yaml",
-      "sha256": "a16de4fcff31962c6c2a4c2bf5d77d1adcee2b600c20945d0200869d33396137",
+      "sha256": "cb021e390004a897d4039a8009d3f74c1da56f9af47cea2c5020cd5634d11bbf",
       "mode": "0644"
     },
     {
@@ -38,7 +38,7 @@
     },
     {
       "path": "srv/infra/haproxy/haproxy.cfg",
-      "sha256": "60c7be2b671d4bb18703a12c33914a8226dce60be123bef5299f8002544e071e",
+      "sha256": "b68cceb1c3dbd95b4b5d30dc199fe3fb52ace94bf653570b3fa69ec5290e5ac6",
       "mode": "0644"
     },
     {
@@ -48,12 +48,12 @@
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "cc7453b019b14d45d8ce44da9520db5ce52952f60fcb4a4b360a2258e1440665",
+      "sha256": "56df72b7c412fdfc18adf171581d08bdfafa0115f550557052a755090516bf7a",
       "mode": "0600"
     },
     {
       "path": "srv/talk/compose.yaml",
-      "sha256": "0df0cc43b70de788fc3b0207125bff37508a3cf31c7b925de0c5c510bb627393",
+      "sha256": "0a0b48a961fd54800e10d9321b52bdddeda2b2f73b476e171a4232efc8c1ca89",
       "mode": "0644"
     },
     {
@@ -62,8 +62,13 @@
       "mode": "0644"
     },
     {
+      "path": "srv/talk/valkey.conf",
+      "sha256": "b297524a011668e3be21f50075ada0b5bcc7229ba49dfed6cd13abf420045094",
+      "mode": "0644"
+    },
+    {
       "path": "srv/web/compose.yaml",
-      "sha256": "b0b89fe31df61e0357230da1c0572f3b4e306c2c7433b63e12912692123589cb",
+      "sha256": "58668f868e322850cf11f158610073ce845611457d867b9185ce7048fa8de24d",
       "mode": "0644"
     },
     {

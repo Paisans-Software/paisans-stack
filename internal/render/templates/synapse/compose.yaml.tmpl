@@ -19,8 +19,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says. The
+    # gateway, over the mesh, is the only thing that should reach it.
     ports:
-      - "{{ .App.Port }}:{{ .App.Port }}"
+      - "{{ .MeshAddress }}:{{ .App.Port }}:{{ .App.Port }}"
     volumes:
       - {{ .DataPath }}/data:/data
       # Synapse reads a file. The database password and the secret it shares
@@ -39,8 +43,12 @@ services:
     # mas.yaml on start unless told not to, and it is not told not to, so
     # bringing this stack up needs no second command.
     command: ["server", "--config", "/data/mas.yaml"]
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says. The
+    # gateway, over the mesh, is the only thing that should reach it.
     ports:
-      - "{{ .MASPort }}:{{ .MASPort }}"
+      - "{{ .MeshAddress }}:{{ .MASPort }}:{{ .MASPort }}"
     volumes:
       # 0600, and for a stronger reason than the homeserver's file: this one
       # carries the signing key, the encryption secret and the identity

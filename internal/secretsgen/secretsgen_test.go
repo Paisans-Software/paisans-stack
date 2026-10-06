@@ -137,7 +137,7 @@ func TestFillMatchesEachKindsNeeds(t *testing.T) {
 	if _, ok := secrets.Apps["blog"]["database_password"]; !ok {
 		t.Error("the wisp fork keeps its data in Postgres and needs a database password")
 	}
-	for _, key := range []string{"database_password", "mercure_jwt_secret", "rabbitmq_password", "valkey_password"} {
+	for _, key := range []string{"database_password", "mercure_jwt_secret", "rabbitmq_password", "valkey_password", "app_secret", "oauth_passphrase", "oauth_encryption_key"} {
 		if _, ok := secrets.Apps["talk"][key]; !ok {
 			t.Errorf("mbin is missing %s", key)
 		}
@@ -204,6 +204,32 @@ func TestAHomeserversOwedClientNamesItsRedirectURI(t *testing.T) {
 	// the URI to register is not.
 	if strings.Contains(why, "https://"+cfg.Apps["chat"].Hostname+"/oauth/callback") {
 		t.Errorf("the owed client offers the callback every other kind uses:\n%s", why)
+	}
+}
+
+// Mbin's client returns to the fork's verify route, and the fork always sends
+// a PKCE challenge, so both are said while the operator is minting the client
+// rather than after the first sign in fails.
+func TestAnMbinOwedClientNamesItsRedirectURIAndPKCE(t *testing.T) {
+	cfg := load(t)
+	secrets := &config.Secrets{}
+	filled, err := secretsgen.Fill(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var why string
+	for _, o := range filled.Owed {
+		if o.Name == "oidc_clients.talk" {
+			why = o.Why
+		}
+	}
+	if why == "" {
+		t.Fatal("the Mbin app's client was not reported as owed at all")
+	}
+	for _, want := range []string{kinds.MbinRedirectURI(cfg.Apps["talk"].Hostname), "PKCE"} {
+		if !strings.Contains(why, want) {
+			t.Errorf("the owed client does not name %q:\n%s", want, why)
+		}
 	}
 }
 
