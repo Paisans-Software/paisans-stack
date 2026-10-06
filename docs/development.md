@@ -68,10 +68,17 @@ opens the whole decrypted file in an editor.
 exists, is verified and is an administrator of one app, reading the password
 from stdin under the same rules as `secrets set`. It probes, prints `create
 user`, `verify`, `grant admin` or `present`, and changes nothing without
-`--execute`; an existing password changes only with `--reset-password`. Only
-Mbin implements it. See *`app admin create` makes an app's first
+`--execute`; an existing password changes only with `--reset-password`. Mbin
+and Pocket ID implement it. See *`app admin create` makes an app's first
 administrator* in `README.md` for why the password never reaches a command
 line.
+
+For `pocket-id` there is no password: the command creates the user as an
+administrator through Pocket ID's API and prints a one-time login link once,
+on `--execute`, valid fifteen minutes; `--login-link` issues a fresh one for an
+account that exists. It refuses a piped password rather than dropping it. It
+reads `apps.<app>.static_api_key` from the secrets file, so it takes
+`--secrets`, and it never uses sudo, because curl needs no root.
 
 `render` and `apply` refuse a gateway site when `external.acme_dns_token` is
 empty. `init` lists it as owed, but rendering without it produced a Caddy that
@@ -356,7 +363,9 @@ installed, on a workstation or anywhere else.
 | `internal/kinds` | what an application kind is: its compose services, and the image each runs by default |
 | `internal/render` | placement, templates, and the writer |
 | `internal/dns` | which public records a deployment needs, and creating the missing ones at the DNS provider |
-| `internal/apply` | the only package that reaches a host: what to push, what to restart, and the gates before either |
+| `internal/apply` | what to push to a host, what to restart, and the gates before either |
+| `internal/appadmin` | an app's first administrator: probe, plan, and the per kind commands or API calls |
+| `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin |
 | `internal/hostprep` | taking a blank host to what `apply` assumes; one profile per operating system, its shell under `profiles/<id>-<version>/` |
 | `internal/render/templates` | the infrastructure templates, plus one directory per kind |
 

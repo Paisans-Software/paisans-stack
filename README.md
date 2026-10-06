@@ -1714,8 +1714,8 @@ flag and its role array. The script runs as `MBIN_USER` through `gosu`, as the
 image's entrypoint runs the server, so nothing it writes under `var/` ends up
 owned by root.
 
-Admin creation is per kind, behind one small interface, and only Mbin
-implements it. Any other kind is refused by name, with the list of kinds that
+Admin creation is per kind, behind one small interface, and Mbin and Pocket ID
+implement it. Any other kind is refused by name, with the list of kinds that
 are implemented, before any host is reached.
 
 Two alternatives were rejected:
@@ -1731,6 +1731,68 @@ Two alternatives were rejected:
   image code that runs at every start and decides whether to act, which is a
   fork change for a one-time event, and it makes rotating that password a
   redeploy.
+
+#### Pocket ID's administrator gets a login link, not a password
+
+Pocket ID users sign in with passkeys, so there is no password to pipe in, and
+a new administrator cannot sign in at all until they have registered one. For
+a `pocket-id` app the command therefore creates the user as an administrator
+and issues a **one-time login link**:
+
+```sh
+paisans app admin create --app auth --username founder \
+    --email founder@example.org --first-name Fern     # shows what it would do
+paisans app admin create --app auth --username founder \
+    --email founder@example.org --first-name Fern --execute
+```
+
+The dry run prints the exact body a create would send, and the link step:
+
+```
+auth on home-a (pocket-id)
+  create user founder as an administrator: POST /api/users {"username":"founder","email":"founder@example.org","firstName":"Fern","lastName":"","displayName":"Fern","isAdmin":true}
+  issue one-time login link for founder: valid 15m0s and for one sign in, printed once and only with --execute
+```
+
+The link is Pocket ID's own mechanism: an admin issues a one-time access token
+for a user (`POST /api/users/:id/one-time-access-token`,
+`onetimeaccess/module.go:68` at `v2.14.0`), and `{APP_URL}/lc/{token}` signs
+that user in once, the same link the binary's `one-time-access-token`
+subcommand prints (`cmds/one_time_access_token.go:78`). The founder opens it
+and registers a passkey.
+
+**The link is a credential, and it is handled like one.** It is printed once,
+to the terminal running the command, only with `--execute`, with its expiry.
+It never appears in a plan line or an error and is never written to the
+secrets file. It lives fifteen minutes, Pocket ID's own default for an admin
+issued token (`onetimeaccess/handler.go:17`): long enough to open a link just
+printed, short enough that one left in scrollback is dead soon after. If it
+expires, `--login-link --execute` issues a fresh one for an account that
+exists; without `--login-link`, an existing administrator plans nothing. An
+existing account that is not an administrator plans `grant admin` only, and a
+disabled one is refused rather than re-enabled.
+
+**A password piped to a `pocket-id` run is refused**, not ignored. Ignoring it
+would let an operator reusing the Mbin incantation believe a password was set.
+`--reset-password` is refused for the same reason and points at
+`--login-link`. Stdin is not read at all when it is a terminal, so an
+interactive run never waits on it.
+
+The calls go through Pocket ID's REST API with its static API key; see *The
+toolkit administers Pocket ID through its static API key*. Three alternatives
+were rejected:
+
+* **The binary's `one-time-access-token` subcommand** in the container. It
+  takes the username on the command line, which is harmless, but it always
+  issues a one hour token (`cmds/one_time_access_token.go:68-78`), and the user
+  has to exist first, which only the API can arrange.
+* **Pocket ID's first-admin setup page** (`POST /api/signup/setup`,
+  `usersignup/module.go:87`). It is open to whoever reaches it first while no
+  user exists, which on a public hostname is a race with the internet, and it
+  is a browser step.
+* **Storing the link**, in the secrets file or anywhere else, so it could be
+  printed again. A stored link is a stored way to sign in as an administrator,
+  and issuing a new one is one command.
 
 ### The toolkit administers Pocket ID through its static API key
 
