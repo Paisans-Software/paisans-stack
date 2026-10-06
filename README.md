@@ -1067,6 +1067,58 @@ ordinary records are different code, and `dns init` refuses an unimplemented
 provider by name rather than pretending. Until one is implemented, create the
 records it would have created by hand, unproxied.
 
+### A data site's watchdog is declared, not assumed
+
+Patroni fences itself with `/dev/watchdog`: if it stops renewing the timer
+while it is leader, the machine reboots before another node's promotion can
+leave two primaries taking writes. The rendered Patroni runs with
+`PATRONI_WATCHDOG_MODE=required` and maps `/dev/watchdog` into its container,
+so on a data site without a device compose will not even create the container.
+
+Which device a host has is a property of the machine, not of the deployment: a
+board with an Intel TCO timer (`iTCO_wdt`), an AMD one (`sp5100_tco`), a server
+with a BMC (`ipmi_watchdog`), a VM with an emulated one (`i6300esb`), or a small
+cloud instance with nothing. So it is a per site key, read only where the site
+holds the data role:
+
+```yaml
+sites:
+  home-a:
+    roles: [data, apps]
+    address: 10.44.0.1
+    ssh: home-a.local
+    watchdog: auto   # auto | required | softdog | off; auto when absent
+```
+
+| Mode | What `host prepare` does | What is rendered |
+|------|---------------------------|------------------|
+| `auto` | uses the device the host has, whatever its driver; with none, loads and persists `softdog` and prints a warning | `required`, device mapped |
+| `required` | refuses unless a driver other than `softdog` is present | `required`, device mapped |
+| `softdog` | loads and persists `softdog`, without a warning | `required`, device mapped |
+| `off` | nothing | `PATRONI_WATCHDOG_MODE=off`, no device mapping |
+
+**`softdog` is a fallback, never the assumption.** It is a kernel timer, so it
+reboots a machine whose Patroni hung but not one whose kernel did, and a hung
+kernel is exactly the case where the node cannot fence itself any other way. A
+hardware or hypervisor watchdog is better wherever one exists. Assuming
+`softdog` everywhere would have been simpler to write and would have quietly
+downgraded every host that had a real one; `auto` takes the real one when it
+is there.
+
+**`off` is a warning, not a refusal** (`watchdog-off-on-data-site`). Some hosts
+genuinely cannot load any driver, and a single data site has nobody to split
+brain with. It is still risky once a second data site exists, so it has to be
+chosen rather than stumbled into. `off` also drops the device mapping from the
+infrastructure compose file: compose will not create a container whose device
+does not exist, so keeping the mapping would fail the exact host `off` is for.
+
+**Only one process can hold the device, and it has to be Patroni.** `host
+prepare` refuses a host where systemd's own runtime watchdog
+(`RuntimeWatchdogSec`) is set or a `watchdog` daemon is running, rather than
+leaving Patroni to fail to open the device at its first start. This is the
+host side of the one Patroni per data bearing host rule in *There is one HA
+cluster, and that is deliberate*.
+
 ### Decryption happens on a workstation, not on a host
 
 Rendering locally and pushing means no age key ever reaches a host. That
@@ -1126,6 +1178,113 @@ per site and never again; afterwards everything goes over the mesh addresses.
 not a name that only resolves inside one deployment's private mesh. A toolkit
 that quietly depended on one would work on the machines it was written for and
 fail on every fork.
+
+### `host prepare` takes a blank host to an apply-able state
+
+`apply` assumes a host that already has Docker with the compose plugin, the
+WireGuard tools, a firewall, and on a data site a `/dev/watchdog` for Patroni.
+**None of that is done by hand.** A step an operator performs from a wiki page
+is a step done differently on every host, and the first time it matters is a
+rebuild at the worst possible moment. So it is a command:
+
+```
+paisans host prepare --site home-a            # shows what it would do
+paisans host prepare --site home-a --execute  # does it
+```
+
+It reaches the host over the `ssh:` bootstrap route with the operator's own
+ssh, exactly as `apply` does. It probes read only, plans only what is missing,
+and changes nothing without `--execute`; a prepared host plans nothing, so
+re-running it after a failure resumes rather than restarts. It is not part of
+`apply` for the same reason `storage init` is not: installed packages, firewall
+rules and loaded kernel modules are host state that no rendered manifest
+describes, so they are probed rather than compared.
+
+#### Operating systems are profiles
+
+Everything that depends on the operating system lives in a **host profile**,
+chosen from `/etc/os-release` by `ID` and `VERSION_ID` together. A profile
+answers four questions (how to install the packages, how to enable services,
+how to load a kernel module now and at boot, how to drive the firewall), and
+its shell lives as templates in its own directory under
+`internal/hostprep/profiles/`. Adding Debian or Fedora is adding a directory
+and a registration, not editing the command.
+
+Only `ubuntu 24.04` ships. Matching on `ID` alone would be simpler and was
+rejected: Docker's apt source names the release codename, and a profile that
+accepted every Ubuntu would write one release's packages onto another. A host
+no profile matches is refused, naming what is supported:
+
+```
+debian 12 is not supported. Use one of the following:
+ubuntu 24.04
+```
+
+#### Docker comes from Docker's repository
+
+On Ubuntu, Docker Engine and the compose plugin are installed from Docker's own
+apt repository, as
+[Docker's install page](https://docs.docker.com/engine/install/ubuntu/)
+describes, not from Ubuntu's `docker.io`. Every host then runs the same engine
+from the same source whenever it was prepared. The packages that page lists as
+conflicting (`docker.io`, `docker-compose-v2`, `containerd`, `runc` and the
+rest) are **refused, not removed**: on a host already running containers from
+them, removing them stops those containers, and that is a decision for
+whoever started them. Every `apt-get` runs non-interactively.
+
+#### The firewall follows roles
+
+| Rule | Sites |
+|------|-------|
+| deny incoming, allow outgoing by default | every site |
+| 22/tcp | every site |
+| 51820/udp, WireGuard | every site |
+| everything arriving on `wg0` | every site |
+| 80/tcp, 443/tcp | sites with the gateway role |
+
+Nothing is listed per site. A site that gains the gateway role gains 80 and 443
+at its next prepare. Nothing is ever removed: a rule an operator added is not
+the toolkit's to delete, and a site that loses a role keeps its old rules until
+someone removes them deliberately.
+
+The mesh is let in whole, by interface, rather than port by port. etcd,
+Patroni, Garage and HAProxy all listen on the mesh address, and a new mesh
+service would otherwise be one more rule to remember on every site.
+
+**SSH is never shut out.** Every allow, SSH first, is in place before the
+default deny, and the firewall is enabled last with `ufw --force enable`, which
+does not stop to ask whether to disrupt existing connections.
+
+**Docker-published ports bypass the firewall.** Docker's install page says so
+in as many words: "When you expose container ports using Docker, these ports
+bypass your firewall rules." What ufw protects here is everything on the host network,
+which is etcd, Patroni, Garage, HAProxy and Caddy, all `network_mode: host`. A
+container that publishes a port is not covered by this table, which is why
+published ports are to be bound to the mesh address rather than to every
+interface. That binding is separate work and is not part of `host prepare`.
+
+#### The watchdog
+
+On a data site, `host prepare` gives Patroni the device the site's `watchdog`
+mode asks for; *A data site's watchdog is declared, not assumed* has the modes.
+It reports which driver it found, from `/sys/class/watchdog/*/identity`.
+
+On Ubuntu, `softdog` is persisted with a small systemd unit that runs
+`modprobe softdog` before Docker starts, not with a line in
+`/etc/modules-load.d`. That would be the obvious place and it does not work:
+Ubuntu's kernel package blacklists the watchdog drivers, `softdog` among them,
+and `systemd-modules-load` honours the blacklist
+([Launchpad bug 1535840](https://bugs.launchpad.net/bugs/1535840)),
+so the line would be skipped at every boot while looking correct. `modprobe`
+named on a command line does not apply the blacklist. This is the kind of
+difference a profile exists to hold: a distribution that does not blacklist
+`softdog` can use `modules-load.d`.
+
+**Provisional: none of this has run on a host yet.** The command is tested
+against a fake transport. The probe output it parses (`ufw show added`,
+`systemctl show -p RuntimeWatchdogUSec`, `dpkg-query`) is written from the
+tools' documented behaviour, not observed on Ubuntu 24.04, and the first real
+run should be read rather than trusted.
 
 ### Where WireGuard keys are generated
 

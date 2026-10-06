@@ -1,10 +1,9 @@
 // Command paisans renders, checks and applies a paisans deployment
 // declaration.
 //
-// Three of its four commands touch nothing outside the working directory.
-// `apply` is the exception and is the only code path here that reaches a
-// machine: it shows what it would do and changes nothing unless it is told to
-// with --execute.
+// validate, init and render touch nothing outside the working directory.
+// `host prepare`, `apply` and `storage init` reach a machine: each reads it to
+// show what it would do, and changes nothing unless told to with --execute.
 package main
 
 import (
@@ -22,6 +21,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/garage"
+	"github.com/paisans-software/paisans-stack/internal/hostprep"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/validate"
@@ -33,6 +33,8 @@ Usage:
   paisans validate [--config paisans.yaml]
   paisans init     [--config paisans.yaml] [--secrets secrets.enc.yaml]
   paisans render   [--config paisans.yaml] [--secrets secrets.enc.yaml] --out ./out
+  paisans host prepare --site <name> [--config paisans.yaml] [--ssh <destination>]
+               [--execute]
   paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                    [--ssh <destination>] [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
@@ -44,6 +46,9 @@ Commands:
   init       Generate the secrets this configuration needs, filling in only
              what is missing, and say what is still owed from elsewhere.
   render     Validate, then write per site artifacts to a local directory.
+  host       Take a blank host to the state apply assumes: Docker, the
+             WireGuard tools, a firewall, and a watchdog on a data site.
+             Installs only what is missing. Writes nothing without --execute.
   apply      Compare one site's rendered artifacts with what is on that host
              and show what would change. Writes nothing without --execute.
   storage    Provision object storage on a site: the cluster layout, each
@@ -54,10 +59,10 @@ Commands:
              never updates or deletes, and refuses if any record conflicts.
              Writes nothing without --execute.
 
-apply and storage init are the only commands that reach a host, and each does
-so only with --execute. dns init reaches no host, only the DNS provider's API,
-and changes it only with --execute. Everything else writes files locally and
-stops.
+host prepare, apply and storage init are the only commands that reach a host.
+Each reads it to plan, and changes it only with --execute. dns init reaches no
+host, only the DNS provider's API, and changes it only with --execute.
+Everything else writes files locally and stops.
 `
 
 func main() {
@@ -75,6 +80,12 @@ func main() {
 		err = runRender(os.Args[2:])
 	case "apply":
 		err = runApply(os.Args[2:])
+	case "host":
+		if len(os.Args) < 3 || os.Args[2] != "prepare" {
+			fmt.Fprintf(os.Stderr, "paisans: host takes one subcommand, prepare\n\n%s", usage)
+			os.Exit(2)
+		}
+		err = runHostPrepare(os.Args[3:])
 	case "storage":
 		if len(os.Args) < 3 || os.Args[2] != "init" {
 			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init\n\n%s", usage)
@@ -416,6 +427,64 @@ func runStorageInit(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "\nprovisioned %d step(s) on %s\n", len(plan.Steps), *site)
+	return nil
+}
+
+// runHostPrepare takes one site's host to the state apply assumes. It is
+// modelled on runStorageInit: probe read only, print, and change the host only
+// with --execute. It needs no secrets; nothing it installs is a credential.
+func runHostPrepare(args []string) error {
+	fs := flag.NewFlagSet("host prepare", flag.ExitOnError)
+	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
+	site := fs.String("site", "", "the site to prepare, by the name it has in the configuration")
+	destination := fs.String("ssh", "", "ssh destination (default: the site's declared ssh address)")
+	execute := fs.Bool("execute", false, "actually install and configure what is missing")
+	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since packages, the firewall and kernel modules are root's")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *site == "" {
+		return fmt.Errorf("host prepare: --site is required. A site at a time is deliberate, the same reason apply takes one")
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	result := validate.Check(cfg)
+	report(os.Stderr, *configPath, result)
+	if result.Refused() {
+		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+	}
+	declared, ok := cfg.Sites[*site]
+	if !ok {
+		return fmt.Errorf("host prepare: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
+	}
+	if *destination == "" {
+		*destination = declared.SSH
+	}
+	if *destination == "" {
+		return fmt.Errorf("host prepare: site %s has no ssh address and none was given with --ssh", *site)
+	}
+
+	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
+	plan, err := hostprep.Build(*site, cfg, transport)
+	if err != nil {
+		return err
+	}
+	plan.Print(os.Stdout)
+
+	if !*execute {
+		if len(plan.Steps) == 0 {
+			return nil
+		}
+		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		return nil
+	}
+	if err := hostprep.Execute(plan, transport); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "\nprepared %s: %d step(s) on %s\n", *site, len(plan.Steps), *destination)
 	return nil
 }
 

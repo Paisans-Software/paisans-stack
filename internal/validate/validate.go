@@ -146,6 +146,7 @@ func Check(cfg *config.Config) Result {
 	c.pocketIDFileBackend()
 	c.imageForAbsentPostgres()
 	c.publicAddress()
+	c.watchdogOffOnDataSite()
 
 	sort.SliceStable(c.findings, func(i, j int) bool {
 		if c.findings[i].Level != c.findings[j].Level {
@@ -867,6 +868,23 @@ func (c *checker) configKeySteersCompose() {
 					prefix, kinds.ConfigFile(app.Kind))
 				break
 			}
+		}
+	}
+}
+
+// watchdogOffOnDataSite warns that a data site's Patroni runs unfenced.
+//
+// It is a warning rather than a refusal because there are hosts with no device
+// and no way to load one (some container based VPS kernels), and a one node
+// cluster has nobody to split brain with. It is still risky: without a
+// watchdog, a Patroni that hangs while holding the leader key can keep
+// accepting writes after its lease expires and another node is promoted.
+func (c *checker) watchdogOffOnDataSite() {
+	for _, name := range c.cfg.SiteNames() {
+		site := c.cfg.Sites[name]
+		if site.Has(config.RoleData) && site.WatchdogMode() == config.WatchdogOff {
+			c.warn("watchdog-off-on-data-site", fmt.Sprintf("sites.%s.watchdog", name),
+				"is off on a site holding the data role. Patroni is rendered with PATRONI_WATCHDOG_MODE=off, so a Patroni that hangs while it is leader is not fenced and can keep taking writes after another node is promoted. Use auto unless this host genuinely cannot load any watchdog driver.")
 		}
 	}
 }
