@@ -136,6 +136,12 @@ type Plan struct {
 	// action will pull an image. Execute refuses before writing anything when
 	// it is short. See DiskCheck.
 	Disk *DiskCheck
+	// Prunes are the images on the host that this apply's stacks supersede,
+	// as Build saw them. Execute reads the host again after each stack is
+	// healthy, and removes only what no container uses by then.
+	Prunes []Prune
+	// KeepImages skips pruning for this run, as --keep-images does.
+	KeepImages bool
 	// images is what each stack of this site renders, from its compose file.
 	images map[string][]string
 	// Progress receives what Execute decided along the way that is not an
@@ -267,6 +273,13 @@ type options struct {
 	recreate   []string
 	minFree    int64
 	minFreeSet bool
+	keepImages bool
+}
+
+// KeepImages leaves superseded images on the host for this run, as
+// --keep-images does, for an operator who wants the old image to roll back to.
+func KeepImages() Option {
+	return func(o *options) { o.keepImages = true }
 }
 
 // MinFree sets the free space an apply needs on Docker's data root before it
@@ -459,6 +472,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	if o.minFreeSet {
 		need = o.minFree
 	}
+	out.KeepImages = o.keepImages
 	if err := out.probeImages(need, t); err != nil {
 		return nil, fmt.Errorf("%s: %w", site, err)
 	}
@@ -679,6 +693,11 @@ func Execute(plan *Plan, t Transport) error {
 		// here is resumed, and force-recreated, by the next apply.
 		if err := waitHealthy(plan, action.Stack, t); err != nil {
 			return err
+		}
+		// Only now, with the stack healthy on its new image, is the old one
+		// safe to lose. Before the gate it is the image a rollback would use.
+		if !plan.KeepImages {
+			pruneStack(plan, action.Stack, t)
 		}
 		// The stack is done, so it leaves the record. Left in, a later stack
 		// failing would have the next apply force-recreate this one too, an

@@ -50,6 +50,10 @@ type fakeHost struct {
 	free int64
 	// reclaimable is what `docker system df` prints.
 	reclaimable string
+	// images is what `docker image ls --format json` prints.
+	images string
+	// containers is what the containers' images probe prints: names and IDs.
+	containers string
 }
 
 func newHost() *fakeHost { return &fakeHost{files: map[string]string{}, leader: "home-a"} }
@@ -80,6 +84,12 @@ func (h *fakeHost) Run(command string) (string, error) {
 	}
 	if strings.HasPrefix(command, "df -B1 --output=avail ") {
 		return fmt.Sprintf("       Avail\n%d\n", h.free), nil
+	}
+	if strings.HasPrefix(command, "docker image ls ") {
+		return h.images, nil
+	}
+	if strings.HasPrefix(command, "docker ps -a ") {
+		return h.containers, nil
 	}
 	if strings.HasPrefix(command, "docker system df") {
 		return h.reclaimable, nil
@@ -1622,5 +1632,115 @@ func TestParseSize(t *testing.T) {
 		if _, err := apply.ParseSize(in); err == nil {
 			t.Errorf("ParseSize(%q) was accepted", in)
 		}
+	}
+}
+
+// fakeID is the ID the fake host gives an image, the same one its probe
+// reports for a present reference.
+func fakeID(ref string) string {
+	digest := sha256.Sum256([]byte(ref))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+// imageLine is one `docker image ls --format json` line.
+func imageLine(repo, tag, id string) string {
+	return fmt.Sprintf(`{"Containers":"N/A","Digest":"<none>","ID":%q,"Repository":%q,"Tag":%q,"Size":"1.4GB"}`, id, repo, tag) + "\n"
+}
+
+// supersededHost has the rendered Mbin image, an older one nothing uses, two
+// older ones a container still uses (one by name, one by ID only, as a
+// container whose tag moved on shows), and an image of another repository.
+func supersededHost() *fakeHost {
+	host := newHost()
+	const repo = "ghcr.io/example-org/mbin"
+	host.images = imageLine(repo, "v1.10.1-fork", fakeID(talkImage)) +
+		imageLine(repo, "v1.9.0", fakeID("old")) +
+		imageLine(repo, "v1.8.0", fakeID("named")) +
+		imageLine(repo, "<none>", fakeID("byid")) +
+		imageLine("example/unrelated", "1", fakeID("unrelated"))
+	host.containers = repo + ":v1.8.0\n" + talkImage + "\n" + fakeID("byid") + "\n"
+	return host
+}
+
+// Superseded images of a stack's own repositories are removed once that
+// stack is healthy, and only those no container uses. Another repository's
+// images are never touched.
+func TestSupersededImagesArePrunedAfterHealth(t *testing.T) {
+	host := supersededHost()
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planned []string
+	for _, prune := range p.Prunes {
+		if prune.Stack != "talk" {
+			t.Errorf("%s is planned under %s, want talk", prune.Ref, prune.Stack)
+		}
+		planned = append(planned, prune.Ref)
+	}
+	want := "ghcr.io/example-org/mbin:v1.9.0 ghcr.io/example-org/mbin:v1.8.0 ghcr.io/example-org/mbin@" + strings.TrimPrefix(fakeID("byid"), "sha256:")[:12]
+	if strings.Join(planned, " ") != want {
+		t.Errorf("the plan prunes %v, want %s", planned, want)
+	}
+
+	var progress strings.Builder
+	p.Progress = &progress
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	var removed []string
+	for _, command := range host.commands {
+		if strings.HasPrefix(command, "docker image rm ") {
+			removed = append(removed, command)
+		}
+	}
+	if len(removed) != 1 || !strings.Contains(removed[0], fakeID("old")) {
+		t.Fatalf("removed %v, want only the unused v1.9.0", removed)
+	}
+	if rm, gate := host.indexOf("docker image rm "), host.indexOf("/srv/talk/compose.yaml ps --all"); gate < 0 || rm < gate {
+		t.Error("an image was removed before its stack passed the health gate")
+	}
+	if !strings.Contains(progress.String(), "pruned    ghcr.io/example-org/mbin:v1.9.0") {
+		t.Errorf("the prune was not reported:\n%s", progress.String())
+	}
+}
+
+// --keep-images leaves every image in place and plans no prune.
+func TestKeepImagesPrunesNothing(t *testing.T) {
+	host := supersededHost()
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.KeepImages())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Prunes) != 0 {
+		t.Errorf("--keep-images still plans %v", p.Prunes)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if host.ran("docker image rm") || host.ran("docker image ls") {
+		t.Error("--keep-images still listed or removed images")
+	}
+}
+
+// A removal that fails is a warning: the stack is already healthy, and an
+// image left behind costs disk, not service.
+func TestAFailedPruneIsAWarning(t *testing.T) {
+	host := supersededHost()
+	host.fail = "docker image rm"
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress strings.Builder
+	p.Progress = &progress
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatalf("a failed prune failed the apply: %v", err)
+	}
+	if !strings.Contains(progress.String(), "warning   talk: could not remove ghcr.io/example-org/mbin:v1.9.0") {
+		t.Errorf("the failed prune was not reported:\n%s", progress.String())
+	}
+	if _, owed := host.files["/srv/.paisans-pending.json"]; owed {
+		t.Error("a failed prune left the apply owing work")
 	}
 }

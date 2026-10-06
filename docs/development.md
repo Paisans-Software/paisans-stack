@@ -174,6 +174,18 @@ The default is 3 GiB, `apply --min-free <size>` overrides it for one run, and
 the refusal quotes `docker system df`. README.md "`apply` checks free space
 before it pulls" has the rejected alternatives.
 
+**A healthy stack's superseded images are pruned.** After the health gate,
+`Execute` lists images (`docker image ls --no-trunc --format json`), reprobes
+the rendered images' IDs and what every container uses (`docker ps -a` names
+plus `docker container inspect` IDs), and runs `docker image rm <id>` for each
+image from that stack's repositories that no stack of the site renders and no
+container uses. A failed removal goes to `Progress` as a warning. `Build` lists
+the same candidates, without the container filter, as `Plan.Prunes`, printed
+as `prune` lines. `apply --keep-images` skips both. IDs are compared by
+prefix with `sha256:` stripped, since Docker prints them full or 12
+characters short. README.md "`apply` prunes the images it superseded" has the
+rejected alternatives (`docker image prune -a`, keeping N versions).
+
 **Files are recorded as soon as they land.** The manifest is written right
 after the files, and again at the end, not only on success. A manifest written
 only on success made every file of a failed first apply look like somebody

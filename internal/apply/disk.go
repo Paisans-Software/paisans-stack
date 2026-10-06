@@ -215,7 +215,13 @@ func diskRefusal(plan *Plan) error {
 	if len(d.Reclaimable) > 0 {
 		fmt.Fprintf(&b, "\n\nWhat `docker system df` says could be reclaimed:\n  %s", strings.Join(d.Reclaimable, "\n  "))
 	}
-	fmt.Fprintf(&b, "\n\nFree space on the host (images no container uses are the usual place: `docker image ls`, then `docker image rm <id>`), or lower the threshold for this run with --min-free <size> (Eg: 2G) if the pull is known to fit.")
+	if len(plan.Prunes) > 0 {
+		fmt.Fprintf(&b, "\n\nImages this apply would prune once their stack is healthy, removable now by hand with `docker image rm <id>` if no container uses them:")
+		for _, p := range plan.Prunes {
+			fmt.Fprintf(&b, "\n  %s (%s)", p.Ref, shortID(p.ID))
+		}
+	}
+	fmt.Fprintf(&b, "\n\nAn apply prunes the images it superseded after each stack comes up healthy, unless --keep-images was given, so an earlier --keep-images run is one place space went. Free space on the host, or lower the threshold for this run with --min-free <size> (Eg: 2G) if the pull is known to fit.")
 	return fmt.Errorf("%s", b.String())
 }
 
@@ -266,9 +272,35 @@ func (p *Plan) probeImages(need int64, t Transport) error {
 			}
 		}
 	}
+	if !p.KeepImages {
+		if err := p.probePrunes(ids, t); err != nil {
+			return err
+		}
+	}
 	if len(pulls) == 0 {
 		return nil
 	}
 	p.Disk, err = probeDisk(need, pulls, t)
 	return err
+}
+
+// probePrunes lists, for the plan, the images on the host that the acted on
+// stacks supersede. Containers are not consulted here: the old image is still
+// in use by the container the action is about to replace, which is exactly
+// the image worth showing. Execute applies that filter after the action.
+func (p *Plan) probePrunes(ids map[string]string, t Transport) error {
+	out, err := t.Run(imageList)
+	if err != nil {
+		return fmt.Errorf("listing the host's images: %w", err)
+	}
+	listed, err := parseImages(out)
+	if err != nil {
+		return err
+	}
+	var stacks []string
+	for _, action := range p.Actions {
+		stacks = append(stacks, action.Stack)
+	}
+	p.Prunes = superseded(stacks, p.images, ids, listed, nil)
+	return nil
 }
