@@ -96,12 +96,12 @@ Signed-By: /etc/apt/keyrings/docker.asc
 // preparedHost is what a fresh host looks like after prepare ran on it with a
 // hardware watchdog present, for a site with the given rules.
 func preparedHost(gateway bool) *fakeHost {
-	firewall := "ufw present\nstatus active\nrule allow 22/tcp\nrule allow 51820/udp\nrule allow in on wg0\n"
+	firewall := "ufw present\nstatus active\n" + owned("allow 22/tcp", "allow 51820/udp", "allow in on wg0")
 	if !gateway {
-		firewall += "rule allow in on br-+ to 10.44.0.1 port 5000 proto tcp\nrule allow in on br-+ to 10.44.0.1 port 3900 proto tcp\nrule allow in on br-+ to 10.44.0.2 port 5000 proto tcp\nrule allow in on br-+ to 10.44.0.2 port 3900 proto tcp\n"
+		firewall += owned("allow in on br-+ to 10.44.0.1 port 5000 proto tcp", "allow in on br-+ to 10.44.0.1 port 3900 proto tcp")
 	}
 	if gateway {
-		firewall += "rule allow 80/tcp\nrule allow 443/tcp\n"
+		firewall += owned("allow 80/tcp", "allow 443/tcp")
 	}
 	return &fakeHost{
 		files: map[string]string{
@@ -117,6 +117,16 @@ func preparedHost(gateway bool) *fakeHost {
 			probeFirewall: firewall,
 		},
 	}
+}
+
+// owned is how `ufw show added` prints rules host prepare added, as probe
+// lines. The comment's text after the tag is not compared, so any will do.
+func owned(specs ...string) string {
+	var out string
+	for _, spec := range specs {
+		out += "rule " + spec + " comment 'paisans: test'\n"
+	}
+	return out
 }
 
 func fixture(t *testing.T) *config.Config {
@@ -355,7 +365,7 @@ func TestAFreshGatewaySiteDiffersFromADataSite(t *testing.T) {
 // Only the missing rule is planned on a firewall that is already up.
 func TestOnlyMissingFirewallRulesArePlanned(t *testing.T) {
 	host := preparedHost(false)
-	host.responses[probeFirewall] = "ufw present\nstatus active\nrule allow 22/tcp\nrule allow in on wg0\nrule allow in on br-+ to 10.44.0.1 port 5000 proto tcp\nrule allow in on br-+ to 10.44.0.1 port 3900 proto tcp\nrule allow in on br-+ to 10.44.0.2 port 5000 proto tcp\nrule allow in on br-+ to 10.44.0.2 port 3900 proto tcp\n"
+	host.responses[probeFirewall] = "ufw present\nstatus active\n" + owned("allow 22/tcp", "allow in on wg0", "allow in on br-+ to 10.44.0.1 port 5000 proto tcp", "allow in on br-+ to 10.44.0.1 port 3900 proto tcp")
 	plan, err := hostprep.Build("home-a", fixture(t), host)
 	if err != nil {
 		t.Fatal(err)
@@ -497,5 +507,220 @@ func TestContainerRulesReachOnlyWhatAppsUse(t *testing.T) {
 	}
 	if rules := hostprep.ContainerRules(cfg, "vm"); len(rules) != 0 {
 		t.Errorf("a gateway only site was given container rules: %v", rules)
+	}
+}
+
+func commands(plan *hostprep.Plan) []string {
+	var out []string
+	for _, s := range plan.Steps {
+		out = append(out, s.Command)
+	}
+	return out
+}
+
+func indexOf(cmds []string, cmd string) int {
+	for i, c := range cmds {
+		if c == cmd {
+			return i
+		}
+	}
+	return -1
+}
+
+// Every rule a fresh host is given carries the comment that marks it as host
+// prepare's, in the syntax ufw 0.36.2 accepts and prints back.
+func TestAFreshHostAddsCommentedRules(t *testing.T) {
+	plan, err := hostprep.Build("home-a", fixture(t), freshHost())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := commands(plan)
+	for _, want := range []string{
+		"ufw allow 22/tcp comment 'paisans: ssh, the bootstrap route'",
+		"ufw allow 51820/udp comment 'paisans: WireGuard, the mesh'",
+		"ufw allow in on wg0 comment 'paisans: the mesh: etcd, Patroni, Garage, HAProxy'",
+		"ufw allow in on br-+ to 10.44.0.1 port 5000 proto tcp comment 'paisans: app containers to the local database proxy'",
+	} {
+		if indexOf(cmds, want) < 0 {
+			t.Errorf("missing %q in:\n%s", want, strings.Join(cmds, "\n"))
+		}
+	}
+	for _, c := range cmds {
+		if strings.HasPrefix(c, "ufw allow") && !strings.Contains(c, " comment 'paisans: ") {
+			t.Errorf("an allow without the ownership comment: %s", c)
+		}
+	}
+}
+
+// A site that loses the gateway role loses 80 and 443 on its next prepare,
+// after the firewall's default policy and enabling, and nothing else goes.
+func TestAStaleOwnedRuleIsRemovedLast(t *testing.T) {
+	cfg := fixture(t)
+	vm := cfg.Sites["vm"]
+	vm.Roles = []config.Role{config.RoleWitness}
+	cfg.Sites["vm"] = vm
+	host := preparedHost(true)
+	host.files["/etc/default/ufw"] = "DEFAULT_INPUT_POLICY=\"ACCEPT\"\nDEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n"
+	plan, err := hostprep.Build("vm", cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("\n%s", printed(plan))
+	cmds := commands(plan)
+	want := []string{
+		"ufw default deny incoming",
+		"ufw delete allow 80/tcp comment 'paisans: test'",
+		"ufw delete allow 443/tcp comment 'paisans: test'",
+	}
+	if strings.Join(cmds, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got:\n%s\nwant:\n%s", strings.Join(cmds, "\n"), strings.Join(want, "\n"))
+	}
+	for _, s := range plan.Steps[1:] {
+		if s.Label != "remove" {
+			t.Errorf("a removal is labelled %q: %s", s.Label, s.Describe)
+		}
+	}
+	if !strings.Contains(printed(plan), "  remove    firewall: delete `ufw allow 80/tcp comment 'paisans: test'`") {
+		t.Errorf("the plan does not show the removal as remove:\n%s", printed(plan))
+	}
+}
+
+// Rules host prepare did not add are never removed or changed. One that bears
+// on a derived rule is listed; one that does not is not mentioned at all.
+func TestAForeignRuleIsNeverTouched(t *testing.T) {
+	cfg := fixture(t)
+	vm := cfg.Sites["vm"]
+	vm.Roles = []config.Role{config.RoleWitness}
+	cfg.Sites["vm"] = vm
+	host := preparedHost(false)
+	host.responses[probeFirewall] = "ufw present\nstatus active\n" +
+		owned("allow 22/tcp", "allow 51820/udp", "allow in on wg0") +
+		"rule allow 80/tcp\n" + // uncommented, and no longer derived
+		"rule allow 8080/tcp comment 'grafana'\n" + // commented, someone else's
+		"rule allow from 192.0.2.7 to any port 22 proto tcp comment 'office'\n" + // bears on SSH
+		"rule allow in on wg0 to any port 9100 proto tcp\n" // bears on the mesh
+	plan, err := hostprep.Build("vm", cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := printed(plan)
+	t.Logf("\n%s", out)
+	if len(plan.Steps) != 0 {
+		t.Fatalf("a foreign rule was planned for:\n%s", out)
+	}
+	for _, want := range []string{
+		"present (not paisans) firewall: `ufw allow from 192.0.2.7 to any port 22 proto tcp comment 'office'` (bears on 22/tcp)",
+		"present (not paisans) firewall: `ufw allow in on wg0 to any port 9100 proto tcp` (bears on all inbound on wg0)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	for _, unmentioned := range []string{"80/tcp", "8080"} {
+		if strings.Contains(out, unmentioned) {
+			t.Errorf("%s bears on no derived rule and was mentioned:\n%s", unmentioned, out)
+		}
+	}
+}
+
+// A rule someone else commented, matching a derived rule exactly, satisfies
+// it. Adding ours would make ufw rewrite theirs in place.
+func TestAForeignCommentedMatchIsLeftAlone(t *testing.T) {
+	host := preparedHost(true)
+	host.responses[probeFirewall] = "ufw present\nstatus active\n" +
+		owned("allow 22/tcp", "allow 51820/udp", "allow in on wg0", "allow 443/tcp") +
+		"rule allow 80/tcp comment 'acme http-01'\n"
+	plan, err := hostprep.Build("vm", fixture(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Steps) != 0 {
+		t.Fatalf("planned over a foreign rule:\n%s", printed(plan))
+	}
+	if !strings.Contains(printed(plan), "present (not paisans) firewall: 80/tcp allowed by `ufw allow 80/tcp comment 'acme http-01'`") {
+		t.Errorf("got:\n%s", printed(plan))
+	}
+}
+
+// A different action on the same traffic is someone else's decision. It is
+// warned about and left alone, and a deny on SSH is refused outright, since
+// enabling the firewall over it would lock the operator out.
+func TestAForeignActionIsWarnedOrRefused(t *testing.T) {
+	host := preparedHost(true)
+	host.responses[probeFirewall] = "ufw present\nstatus active\n" +
+		owned("allow 51820/udp", "allow in on wg0", "allow 80/tcp") +
+		"rule limit 22/tcp\nrule deny 443/tcp\n"
+	plan, err := hostprep.Build("vm", fixture(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Steps) != 0 || len(plan.Warnings) != 2 {
+		t.Fatalf("got:\n%s", printed(plan))
+	}
+
+	host.responses[probeFirewall] = "ufw present\nstatus inactive\nrule deny 22/tcp\n"
+	if _, err := hostprep.Build("vm", fixture(t), host); err == nil || !strings.Contains(err.Error(), "blocks SSH") {
+		t.Fatalf("a deny on SSH was not refused: %v", err)
+	}
+}
+
+// A host prepared before rules carried a comment has every rule, uncommented.
+// Each is reported present and adopted with one command, which ufw applies as
+// an in place rewrite. No delete follows: ufw would let a delete without a
+// comment remove the commented rule just adopted.
+func TestALegacyRuleIsAdoptedWithoutAGap(t *testing.T) {
+	host := preparedHost(false)
+	host.responses[probeFirewall] = "ufw present\nstatus active\nrule allow 22/tcp\nrule allow 51820/udp\nrule allow in on wg0\nrule allow in on br-+ to 10.44.0.1 port 5000 proto tcp\nrule allow in on br-+ to 10.44.0.1 port 3900 proto tcp\n"
+	plan, err := hostprep.Build("home-a", fixture(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := printed(plan)
+	t.Logf("\n%s", out)
+	if len(plan.Steps) != 5 {
+		t.Fatalf("want five adoptions, got:\n%s", out)
+	}
+	for _, s := range plan.Steps {
+		if s.Label != "adopt" || !strings.HasPrefix(s.Command, "ufw allow ") || !strings.Contains(s.Command, " comment 'paisans: ") {
+			t.Errorf("not an adoption: %s %q", s.Label, s.Command)
+		}
+	}
+	if !strings.Contains(out, "  adopt     firewall: mark `ufw allow 22/tcp` as host prepare's") ||
+		!strings.Contains(out, "present   firewall: 22/tcp allowed, by a rule without the paisans comment") {
+		t.Errorf("got:\n%s", out)
+	}
+
+	// Once adopted, the host plans nothing.
+	host.responses[probeFirewall] = "ufw present\nstatus active\n"
+	for _, c := range commands(plan) {
+		host.responses[probeFirewall] += "rule " + strings.TrimPrefix(c, "ufw ") + "\n"
+	}
+	again, err := hostprep.Build("home-a", fixture(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Steps) != 0 {
+		t.Errorf("an adopted host planned again:\n%s", printed(again))
+	}
+}
+
+// SSH is never removed, even when host prepare added it and nothing derives it
+// any more: with incoming denied, that removal drops the next connection.
+func TestSSHIsNeverRemoved(t *testing.T) {
+	host := preparedHost(false)
+	host.responses[probeFirewall] = "ufw present\nstatus active\n" +
+		owned("allow 22/tcp", "allow 51820/udp", "allow in on wg0", "allow in on br-+ to 10.44.0.1 port 5000 proto tcp", "allow in on br-+ to 10.44.0.1 port 3900 proto tcp") +
+		owned("allow 22", "allow from 192.0.2.0/24 to any port 22 proto tcp")
+	plan, err := hostprep.Build("home-a", fixture(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range commands(plan) {
+		if strings.HasPrefix(c, "ufw delete") {
+			t.Errorf("planned %q", c)
+		}
+	}
+	if !strings.Contains(printed(plan), "host prepare never removes an SSH allow") {
+		t.Errorf("got:\n%s", printed(plan))
 	}
 }

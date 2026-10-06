@@ -61,6 +61,10 @@ type Step struct {
 	File *File
 	// Command, when set, runs after File is written.
 	Command string
+	// Label is the word the plan prints before Describe. Empty is "change";
+	// the firewall also uses "adopt" and "remove", so a step that deletes
+	// something never reads like one that adds it.
+	Label string
 }
 
 // Section is what one part of the preparation found: the steps still needed
@@ -68,6 +72,9 @@ type Step struct {
 type Section struct {
 	Steps   []Step
 	Present []string
+	// Foreign is what was found that this package did not create and will not
+	// touch, listed only where it bears on something this package manages.
+	Foreign []string
 	// Warnings are printed whether or not anything is planned, because a
 	// prepared host that runs on softdog is still running on softdog.
 	Warnings []string
@@ -76,6 +83,7 @@ type Section struct {
 func (s *Section) add(other Section) {
 	s.Steps = append(s.Steps, other.Steps...)
 	s.Present = append(s.Present, other.Present...)
+	s.Foreign = append(s.Foreign, other.Foreign...)
 	s.Warnings = append(s.Warnings, other.Warnings...)
 }
 
@@ -139,7 +147,9 @@ type Profile interface {
 	WatchdogModule(t Transport, module string, loaded bool) (Section, error)
 	// Firewall plans the given inbound rules, a default deny for everything
 	// else, and enabling the firewall. The SSH rule must be in place before
-	// the firewall is enabled, and enabling must not prompt.
+	// the firewall is enabled, and enabling must not prompt. Rules it added
+	// earlier that are no longer given are removed, last; rules it did not
+	// add are never removed or changed.
 	Firewall(t Transport, rules []Rule) (Section, error)
 }
 
@@ -234,10 +244,17 @@ func Build(site string, cfg *config.Config, t Transport) (*Plan, error) {
 func (p *Plan) Print(w io.Writer) {
 	fmt.Fprintf(w, "%s (%s)\n", p.Site, p.Profile)
 	for _, step := range p.Steps {
-		fmt.Fprintf(w, "  %-9s %s\n", "change", step.Describe)
+		label := step.Label
+		if label == "" {
+			label = "change"
+		}
+		fmt.Fprintf(w, "  %-9s %s\n", label, step.Describe)
 	}
 	for _, present := range p.Present {
 		fmt.Fprintf(w, "  %-9s %s\n", "present", present)
+	}
+	for _, foreign := range p.Foreign {
+		fmt.Fprintf(w, "  %-9s %s\n", "present (not paisans)", foreign)
 	}
 	for _, warning := range p.Warnings {
 		fmt.Fprintf(w, "  %-9s %s\n", "WARNING", warning)

@@ -248,24 +248,14 @@ func (u ubuntu) WatchdogModule(t Transport, module string, loaded bool) (Section
 	return out, nil
 }
 
-// ufwArgs is the ufw command for a rule, without the leading `ufw`. It is also
-// how `ufw show added` prints the rule back, which is what makes the probe a
-// string comparison.
-func ufwArgs(r Rule) string {
-	if r.Interface != "" && r.To != "" {
-		return fmt.Sprintf("allow in on %s to %s port %d proto %s", r.Interface, r.To, r.Port, r.Proto)
-	}
-	if r.Interface != "" {
-		return "allow in on " + r.Interface
-	}
-	return fmt.Sprintf("allow %d/%s", r.Port, r.Proto)
-}
-
 // Firewall drives ufw. The order of the steps is the safety property: every
-// allow, SSH first, then the default policy, then enabling, so there is no
-// moment at which the firewall is on and SSH is not allowed. `--force` is what
-// stops `ufw enable` asking whether to disrupt existing connections, a prompt
-// that would hang a non-interactive run.
+// allow and adoption, SSH first, then the default policy, then enabling, so
+// there is no moment at which the firewall is on and SSH is not allowed; and
+// removals last, so a rule is only taken away once everything it might have
+// stood in for is in place. `--force` is what stops `ufw enable` asking
+// whether to disrupt existing connections, a prompt that would hang a
+// non-interactive run. Which rules are added, adopted, removed or left alone
+// is planRules, in ufw.go.
 func (u ubuntu) Firewall(t Transport, rules []Rule) (Section, error) {
 	var out Section
 	script, err := snippet(u.tmpl("firewall-probe.sh.tmpl"), nil)
@@ -277,7 +267,7 @@ func (u ubuntu) Firewall(t Transport, rules []Rule) (Section, error) {
 		return out, err
 	}
 	var present, active bool
-	added := map[string]bool{}
+	var added []addedRule
 	for _, line := range strings.Split(probe, "\n") {
 		key, rest, _ := strings.Cut(strings.TrimSpace(line), " ")
 		switch key {
@@ -286,18 +276,17 @@ func (u ubuntu) Firewall(t Transport, rules []Rule) (Section, error) {
 		case "status":
 			active = rest == "active"
 		case "rule":
-			added[strings.TrimSpace(rest)] = true
+			if a, ok := parseAdded(rest); ok {
+				added = append(added, a)
+			}
 		}
 	}
 
-	for _, r := range rules {
-		args := ufwArgs(r)
-		if added[args] {
-			out.Present = append(out.Present, fmt.Sprintf("firewall: %s allowed", r))
-			continue
-		}
-		out.Steps = append(out.Steps, Step{Describe: fmt.Sprintf("firewall: allow %s (%s)", r, r.Why), Command: "ufw " + args})
+	planned, removals, err := planRules(rules, added)
+	if err != nil {
+		return out, err
 	}
+	out.add(planned)
 
 	input, output := "", ""
 	if present {
@@ -325,5 +314,6 @@ func (u ubuntu) Firewall(t Transport, rules []Rule) (Section, error) {
 	} else {
 		out.Steps = append(out.Steps, Step{Describe: "firewall: enable ufw", Command: "ufw --force enable"})
 	}
+	out.Steps = append(out.Steps, removals...)
 	return out, nil
 }

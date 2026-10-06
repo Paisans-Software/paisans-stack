@@ -41,8 +41,12 @@ const wireguardPort = 51820
 
 // Rules derives a site's inbound rules from its roles. Nothing is listed per
 // site: a site that gains the gateway role gains 80 and 443 on its next
-// prepare, and one that loses it keeps them until removed by hand, since this
-// package plans only what is missing and never deletes a rule.
+// prepare, and one that loses it has them removed by the same prepare, since
+// the profile removes a rule it added once nothing derives it any more. SSH is
+// the exception and is never removed; see the profile's Firewall.
+//
+// Why is written into the host's firewall as part of the rule's ownership
+// comment, so it must not contain a single quote: ufw refuses one in a comment.
 func Rules(site config.Site) []Rule {
 	rules := []Rule{
 		// First, and on every site: the firewall is enabled after it, and an
@@ -89,10 +93,10 @@ func ContainerRules(cfg *config.Config, name string) []Rule {
 	if port == 0 {
 		port = 5000
 	}
-	rules := []Rule{{Interface: containerBridges, To: site.Address, Port: port, Proto: "tcp", Why: "apps' containers to the local database proxy"}}
+	rules := []Rule{{Interface: containerBridges, To: site.Address, Port: port, Proto: "tcp", Why: "app containers to the local database proxy"}}
 	for _, garage := range cfg.Storage.Garage.Sites {
 		if garage == name {
-			rules = append(rules, Rule{Interface: containerBridges, To: site.Address, Port: garageS3Port, Proto: "tcp", Why: "apps' containers to object storage"})
+			rules = append(rules, Rule{Interface: containerBridges, To: site.Address, Port: garageS3Port, Proto: "tcp", Why: "app containers to object storage"})
 		}
 	}
 	return rules
