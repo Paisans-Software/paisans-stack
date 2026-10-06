@@ -306,9 +306,27 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 		}
 	}
 
-	for _, stack := range sortedKeys(stacks) {
+	resumed, err := readPending(t)
+	if err != nil {
+		return nil, err
+	}
+	resumedStacks := map[string]bool{}
+	for _, action := range resumed.Actions {
+		if !stacks[action.Stack] {
+			resumedStacks[action.Stack] = true
+		}
+		stacks[action.Stack] = true
+		if action.Recreate {
+			envChanged[action.Stack] = true
+		}
+	}
+
+	for _, stack := range stackOrder(stacks) {
 		action := Action{Stack: stack}
-		if envChanged[stack] {
+		if resumedStacks[stack] {
+			action.Recreate = envChanged[stack]
+			action.Reason = "a previous apply wrote this stack's files and stopped before acting on them, so the action it owed is taken now"
+		} else if envChanged[stack] {
 			action.Recreate = true
 			action.Reason = "an environment or compose file changed, and Compose passes environment at start, so a running container cannot be told about a new value"
 		} else {
@@ -319,8 +337,8 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
 
-	out.GatewayReload = isGateway && routingChanged
-	out.GatewayChanging = isGateway && (routingChanged || gatewayComposeChanged)
+	out.GatewayReload = isGateway && (routingChanged || resumed.GatewayReload)
+	out.GatewayChanging = isGateway && (routingChanged || gatewayComposeChanged || resumed.GatewayChanging)
 	if out.GatewayChanging {
 		out.ACMEModule = acmeModule
 	}
@@ -397,6 +415,18 @@ func Execute(plan *Plan, t Transport) error {
 		return fmt.Errorf(
 			"%s: %d file(s) were edited on the host and would be overwritten:\n  %s\nRendered files are build artifacts and nothing edits them in place, so a difference here is a change somebody made on the machine. Copy what is wanted into the configuration, or delete the file on the host, then apply again",
 			plan.Site, len(conflicts), strings.Join(names, "\n  "))
+	}
+
+	// Record what this apply owes before writing anything. The manifest is
+	// written last, so a stop between here and there leaves files on the host
+	// that already match the render: without this record the next apply would
+	// see nothing to do, and an app stack held back by a failed gate would
+	// stay down until something unrelated changed it.
+	owes := len(plan.Actions) > 0 || plan.GatewayChanging
+	if owes {
+		if err := writePending(plan, t); err != nil {
+			return err
+		}
 	}
 
 	writes := plan.Writes()
@@ -493,7 +523,77 @@ func Execute(plan *Plan, t Transport) error {
 		}
 	}
 
-	return writeManifest(plan, t)
+	if err := writeManifest(plan, t); err != nil {
+		return err
+	}
+	if owes {
+		if _, err := t.Run("rm -f " + shellQuote(pendingPath)); err != nil {
+			return fmt.Errorf("%s: everything was applied, but the record of owed actions could not be removed, so the next apply will repeat them: %w", plan.Site, err)
+		}
+	}
+	return nil
+}
+
+// pendingPath records what an apply has written but not yet acted on. It
+// exists only between the start of an Execute and its successful end.
+const pendingPath = "/srv/.paisans-pending.json"
+
+// pending is what one apply owes the host. It holds no file content and no
+// credential, only stack names and which gates to run.
+type pending struct {
+	Version         int             `json:"version"`
+	Actions         []pendingAction `json:"actions"`
+	GatewayChanging bool            `json:"gateway_changing,omitempty"`
+	GatewayReload   bool            `json:"gateway_reload,omitempty"`
+}
+
+type pendingAction struct {
+	Stack    string `json:"stack"`
+	Recreate bool   `json:"recreate,omitempty"`
+}
+
+func readPending(t Transport) (pending, error) {
+	content, found, err := t.ReadFile(pendingPath)
+	if err != nil || !found {
+		return pending{}, err
+	}
+	var p pending
+	if err := json.Unmarshal([]byte(content), &p); err != nil {
+		return pending{}, fmt.Errorf("%s is not readable: %w\nIt records actions a stopped apply still owes. Delete it and every stack will be acted on only when its files next change", pendingPath, err)
+	}
+	return p, nil
+}
+
+func writePending(plan *Plan, t Transport) error {
+	p := pending{Version: 1, GatewayChanging: plan.GatewayChanging, GatewayReload: plan.GatewayReload}
+	for _, action := range plan.Actions {
+		p.Actions = append(p.Actions, pendingAction{Stack: action.Stack, Recreate: action.Recreate})
+	}
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	return t.WriteFile(pendingPath, string(data)+"\n", 0o600)
+}
+
+// infraStack is the site's own infrastructure: etcd, Patroni, HAProxy, Garage
+// and the gateway. Every app stack depends on it.
+const infraStack = "infra"
+
+// stackOrder puts the infrastructure stack first and the rest in sorted
+// order. Sorting alone put "blog" and "docs" ahead of "infra", which started
+// applications before the database and proxy they connect to.
+func stackOrder(stacks map[string]bool) []string {
+	var out []string
+	if stacks[infraStack] {
+		out = append(out, infraStack)
+	}
+	for _, stack := range sortedKeys(stacks) {
+		if stack != infraStack {
+			out = append(out, stack)
+		}
+	}
+	return out
 }
 
 // readManifest returns what the last apply recorded, keyed by path relative to

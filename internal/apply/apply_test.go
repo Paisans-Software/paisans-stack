@@ -31,9 +31,20 @@ type fakeHost struct {
 	// wgUp is whether wg0 exists. Starting or restarting the unit brings it
 	// up, the way systemd would.
 	wgUp bool
+	// inputs is what each RunInput call sent on stdin, in order, beside its
+	// command in commands.
+	inputs []string
+	// leader is the Patroni member /cluster reports as leader, empty for a
+	// cluster with none yet. newHost makes it home-a.
+	leader string
 }
 
-func newHost() *fakeHost { return &fakeHost{files: map[string]string{}} }
+func newHost() *fakeHost { return &fakeHost{files: map[string]string{}, leader: "home-a"} }
+
+func (h *fakeHost) RunInput(command, stdin string) (string, error) {
+	h.inputs = append(h.inputs, stdin)
+	return h.Run(command)
+}
 
 func (h *fakeHost) Describe() string { return "fake" }
 
@@ -41,6 +52,16 @@ func (h *fakeHost) Run(command string) (string, error) {
 	h.commands = append(h.commands, command)
 	if h.fail != "" && strings.Contains(command, h.fail) {
 		return "refused by the fake host", fmt.Errorf("exit status 1")
+	}
+	if strings.Contains(command, ":8008/cluster") {
+		if h.leader == "" {
+			return `{"members":[{"name":"home-a","role":"replica","state":"starting"}]}`, nil
+		}
+		return fmt.Sprintf(`{"members":[{"name":%q,"role":"leader","state":"running"},{"name":"other","role":"replica","state":"streaming"}],"scope":"fixture"}`, h.leader), nil
+	}
+	if strings.HasPrefix(command, "rm -f ") {
+		delete(h.files, strings.Trim(strings.TrimPrefix(command, "rm -f "), "'"))
+		return "", nil
 	}
 	if strings.Contains(command, "ip link show wg0") {
 		if h.wgUp {
@@ -683,5 +704,74 @@ func TestAMeshThatWillNotStartStopsTheApply(t *testing.T) {
 	}
 	if _, ok := host.files["/srv/.paisans-manifest.json"]; ok {
 		t.Error("a failed apply recorded a manifest")
+	}
+}
+
+// The infrastructure stack is acted on before any app stack. Sorted order
+// alone put "blog" and "docs" ahead of "infra", starting applications before
+// the proxy and database they connect to.
+func TestInfrastructureMovesBeforeApps(t *testing.T) {
+	host := newHost()
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Actions) == 0 || p.Actions[0].Stack != "infra" {
+		t.Fatalf("the first action is not the infrastructure stack: %v", p.Actions)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	infra := host.indexOf("/srv/infra/compose.yaml up -d")
+	for _, app := range []string{"blog", "docs", "talk"} {
+		if i := host.indexOf("/srv/" + app + "/compose.yaml up -d"); i < infra {
+			t.Errorf("%s was started before the infrastructure stack", app)
+		}
+	}
+}
+
+// An apply that stopped after writing resumes. The files already match the
+// render, so without a record of what was owed the next apply would see
+// nothing to do, and a stack held back by a failed gate would stay down.
+func TestAStoppedApplyResumes(t *testing.T) {
+	host := newHost()
+	host.fail = "/srv/talk/compose.yaml up -d"
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err == nil {
+		t.Fatal("the failing action did not stop the apply")
+	}
+
+	host.fail = ""
+	host.commands = nil
+	again, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Writes()) != 0 {
+		t.Fatalf("the files were written the first time, yet %d would be written again", len(again.Writes()))
+	}
+	owed := map[string]bool{}
+	for _, action := range again.Actions {
+		owed[action.Stack] = action.Recreate
+	}
+	if recreate, ok := owed["talk"]; !ok || !recreate {
+		t.Fatalf("the stopped stack is not owed a recreate: %v", again.Actions)
+	}
+	if err := apply.Execute(again, host); err != nil {
+		t.Fatal(err)
+	}
+	if !host.ran("/srv/talk/compose.yaml up -d") {
+		t.Error("the resumed apply did not start the stack the first one stopped at")
+	}
+
+	third, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(third.Actions) != 0 {
+		t.Errorf("a completed apply still owes %v", third.Actions)
 	}
 }
