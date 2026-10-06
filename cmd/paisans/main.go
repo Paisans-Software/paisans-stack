@@ -310,7 +310,7 @@ func runApply(args []string) error {
 	printPlan(plan)
 
 	if !*execute {
-		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 {
+		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone {
 			return nil
 		}
 		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
@@ -425,6 +425,9 @@ func printPlan(plan *apply.Plan) {
 	}
 	if unchanged > 0 {
 		fmt.Fprintf(os.Stdout, "  %-9s %d file(s)\n", "unchanged", unchanged)
+	}
+	if plan.WireGuard != apply.WireGuardNone {
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "mesh", plan.WireGuard.Describe())
 	}
 	for _, action := range plan.Actions {
 		verb := "restart"

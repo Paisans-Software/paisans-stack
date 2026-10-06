@@ -1076,6 +1076,40 @@ reconfigured and no address changes.
 Same principle as running the cluster at one node: build the final shape
 immediately, then grow it.
 
+### `apply` brings `wg0` up before anything binds to it
+
+Step 4 is `apply`'s job, and it runs after the files are written and before any
+container is started, checked or restarted. A stack started first fails to bind
+its mesh address, and Docker restarts it in a loop rather than reporting it, so
+the apply would claim success over a site where nothing listens.
+
+What it runs depends on what changed, and the narrower action wins here as it
+does for stacks:
+
+| `wg0.conf` | Interface | Action |
+|------------|-----------|--------|
+| new | any | `systemctl enable --now wg-quick@wg0` |
+| unchanged | down | the same, so a rebooted or hand stopped site recovers on the next apply |
+| unchanged | up | nothing |
+| changed peers | up | `wg syncconf` from `wg-quick strip`, in place |
+| changed `Address`, `MTU`, `PostUp` or another wg-quick only line | up | `systemctl restart wg-quick@wg0` |
+
+**A peer change is synced rather than restarted.** Restarting is simpler and
+always correct, but it takes the interface down, and on a data site that
+partitions etcd and Patroni for as long as it is down; with election timeouts
+measured in seconds, adding a site could start a failover on every existing one.
+`wg syncconf` changes peers without touching the interface. It cannot apply the
+lines wg-quick handles itself, because `wg-quick strip` removes them before `wg`
+sees the file, so a change to one of those is the one case that restarts.
+Nor does it add routes, which wg-quick does at start for each peer's
+`AllowedIPs`; that is safe here only because every peer's `AllowedIPs` sits
+inside the mesh subnet, which the interface's own `Address` already routes
+(wireguard-tools, `src/wg-quick/linux.bash`).
+
+"Up" is read from the kernel (`ip link show wg0`), not from the unit. An
+interface brought up by hand serves every service just as well, and starting the
+unit on top of it would fail on an interface that already exists.
+
 ### `site add` — the gateway and witness
 
 The straightforward case, because the VM has a stable address and is the one

@@ -83,6 +83,15 @@ restart at most, and the container keeps its identity. Only a changed `.env` or
 running container cannot be told about a new value. A recreate is an outage,
 however brief, so it is not the default action for every change.
 
+**`wg0` is up before any container moves.** Every service binds the site's
+mesh address, so the mesh comes up right after the files are written and before
+the gateway checks and stack actions below. A first apply enables and starts
+`wg-quick@wg0`; a peer change is handed over with `wg syncconf` so the mesh
+stays up; a change to a line only wg-quick applies restarts it; and an
+unchanged file on a host whose interface is down starts it. A failure stops the
+apply there. `README.md` has the table under "`apply` brings `wg0` up before
+anything binds to it".
+
 **The assembled gateway configuration is validated before any reload, and a
 failure stops the reload.** It is built from per app snippets, so a wrong
 snippet is a wrong configuration for every hostname at once. The cost of that

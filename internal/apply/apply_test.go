@@ -28,6 +28,9 @@ type fakeHost struct {
 	// host has none, which is the ordinary case on a first apply and the one
 	// that used to make apply impossible to complete.
 	running bool
+	// wgUp is whether wg0 exists. Starting or restarting the unit brings it
+	// up, the way systemd would.
+	wgUp bool
 }
 
 func newHost() *fakeHost { return &fakeHost{files: map[string]string{}} }
@@ -38,6 +41,16 @@ func (h *fakeHost) Run(command string) (string, error) {
 	h.commands = append(h.commands, command)
 	if h.fail != "" && strings.Contains(command, h.fail) {
 		return "refused by the fake host", fmt.Errorf("exit status 1")
+	}
+	if strings.Contains(command, "ip link show wg0") {
+		if h.wgUp {
+			return "up\n", nil
+		}
+		return "down\n", nil
+	}
+	if strings.Contains(command, "enable --now wg-quick@wg0") || strings.Contains(command, "restart wg-quick@wg0") {
+		h.wgUp = true
+		return "", nil
 	}
 	if strings.Contains(command, "ps --status running") {
 		if h.running {
@@ -179,12 +192,14 @@ func TestAnEditOnTheHostIsRefused(t *testing.T) {
 	}
 
 	host.files["/srv/talk/.env"] += "\nSOMEONE_EDITED_THIS=1\n"
-	host.commands = nil
 
 	p, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Build may probe, which reads and changes nothing. What is under test is
+	// that a refused Execute runs nothing at all.
+	host.commands = nil
 	conflicts := p.Conflicts()
 	if len(conflicts) != 1 || conflicts[0].Path != "/srv/talk/.env" {
 		t.Fatalf("expected one conflict on the edited file, got %v", conflicts)
@@ -515,4 +530,158 @@ func adopt(t *testing.T, host *fakeHost, paths ...string) {
 		t.Fatal(err)
 	}
 	host.files["/srv/.paisans-manifest.json"] = string(data)
+}
+
+// indexOf returns where the first command containing substring ran, or -1.
+func (h *fakeHost) indexOf(substring string) int {
+	for i, command := range h.commands {
+		if strings.Contains(command, substring) {
+			return i
+		}
+	}
+	return -1
+}
+
+// firstCompose is where the first Docker Compose command ran, or -1.
+func (h *fakeHost) firstCompose() int { return h.indexOf("docker compose") }
+
+// applied runs a first apply of the fixture on site, so that a test about a
+// later apply starts from a host that has everything and records it.
+func applied(t *testing.T, site string) *fakeHost {
+	t.Helper()
+	host := newHost()
+	first, err := apply.Build(site, plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+	host.commands = nil
+	return host
+}
+
+// Every service binds the site's mesh address, so on a first apply wg0 has to
+// be up before anything is started or checked. It used to be written and
+// never started at all, which left every container failing to bind.
+func TestAFirstApplyBringsUpTheMeshFirst(t *testing.T) {
+	for _, site := range []string{"home-a", "vm"} {
+		host := newHost()
+		p, err := apply.Build(site, plan(t), acmeModule(t), host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.WireGuard != apply.WireGuardStart {
+			t.Fatalf("%s: a first apply plans %v for wg0, want a start", site, p.WireGuard)
+		}
+		if err := apply.Execute(p, host); err != nil {
+			t.Fatal(err)
+		}
+		start := host.indexOf("systemctl enable --now wg-quick@wg0")
+		if start < 0 {
+			t.Fatalf("%s: wg0 was written and never started", site)
+		}
+		if compose := host.firstCompose(); compose >= 0 && compose < start {
+			t.Errorf("%s: %q ran before wg0 was up", site, host.commands[compose])
+		}
+	}
+}
+
+// A dry run may ask whether wg0 is up, and must do nothing else to it.
+func TestPlanningOnlyProbesTheMesh(t *testing.T) {
+	host := applied(t, "home-a")
+	host.wgUp = false
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.WireGuard != apply.WireGuardStart {
+		t.Errorf("an unchanged wg0.conf on a host whose wg0 is down plans %v, want a start", p.WireGuard)
+	}
+	for _, command := range host.commands {
+		if !strings.Contains(command, "ip link show wg0") {
+			t.Errorf("building a plan ran %q, which is more than a probe", command)
+		}
+	}
+}
+
+// An unchanged file with the interface up is nothing to do: the second apply
+// of the same thing runs nothing.
+func TestAnUpMeshWithAnUnchangedFileIsLeftAlone(t *testing.T) {
+	host := applied(t, "home-a")
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.WireGuard != apply.WireGuardNone {
+		t.Errorf("an up wg0 with an unchanged file plans %v", p.WireGuard)
+	}
+}
+
+// A peer change is applied in place. Restarting the interface would partition
+// etcd and Patroni for as long as it is down, which on a data site can be long
+// enough to start an election.
+func TestAPeerChangeIsSyncedNotRestarted(t *testing.T) {
+	host := applied(t, "home-a")
+	host.files["/etc/wireguard/wg0.conf"] = strings.Replace(
+		host.files["/etc/wireguard/wg0.conf"], "PersistentKeepalive = 25", "PersistentKeepalive = 30", 1)
+	adopt(t, host, "/etc/wireguard/wg0.conf")
+
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.WireGuard != apply.WireGuardSync {
+		t.Fatalf("a peer change plans %v, want a sync", p.WireGuard)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if !host.ran("wg syncconf wg0") {
+		t.Error("the new peers were never handed to wg0")
+	}
+	if host.ran("restart wg-quick@wg0") {
+		t.Error("a peer change took the mesh down")
+	}
+}
+
+// An address is applied by wg-quick, not by wg, so syncconf would silently
+// leave the old one in place. That change needs a restart.
+func TestAnAddressChangeRestartsTheMesh(t *testing.T) {
+	host := applied(t, "home-a")
+	host.files["/etc/wireguard/wg0.conf"] = strings.Replace(
+		host.files["/etc/wireguard/wg0.conf"], "Address = 10.44.0.1/24", "Address = 10.44.0.9/24", 1)
+	adopt(t, host, "/etc/wireguard/wg0.conf")
+
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.WireGuard != apply.WireGuardRestart {
+		t.Fatalf("an address change plans %v, want a restart", p.WireGuard)
+	}
+}
+
+// A mesh that will not come up stops the apply before any container moves,
+// since every one of them would fail to bind.
+func TestAMeshThatWillNotStartStopsTheApply(t *testing.T) {
+	host := newHost()
+	host.fail = "wg-quick@wg0"
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = apply.Execute(p, host)
+	if err == nil {
+		t.Fatal("an apply carried on with wg0 down")
+	}
+	if !strings.Contains(err.Error(), "wg0") {
+		t.Errorf("the error does not name the interface:\n%v", err)
+	}
+	if host.firstCompose() >= 0 {
+		t.Errorf("a container was touched with the mesh down: %v", host.commands)
+	}
+	if _, ok := host.files["/srv/.paisans-manifest.json"]; ok {
+		t.Error("a failed apply recorded a manifest")
+	}
 }

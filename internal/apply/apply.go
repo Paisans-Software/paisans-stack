@@ -99,6 +99,61 @@ type Plan struct {
 	// ACMEModule is the Caddy DNS module this deployment's gateway must have,
 	// as `caddy list-modules` prints it. Empty when this site runs no gateway.
 	ACMEModule string
+	// WireGuard is what wg0 needs before any stack moves. Every service binds
+	// the site's mesh address, so a stack started before the interface exists
+	// fails to bind, and a container that cannot bind is restarted in a loop
+	// by Docker rather than reported to the apply.
+	WireGuard WireGuardStep
+}
+
+// WireGuardStep is the one thing an apply does to wg0.
+type WireGuardStep int
+
+const (
+	// WireGuardNone means the interface is up and its file did not change.
+	WireGuardNone WireGuardStep = iota
+	// WireGuardStart enables the unit and starts it: a first apply, or an
+	// interface found down.
+	WireGuardStart
+	// WireGuardSync hands the running interface its new peers without taking
+	// it down, which is the ordinary update: a site joined or left.
+	WireGuardSync
+	// WireGuardRestart takes the interface down and up again. Only a change to
+	// a line that wg-quick itself applies needs it, because `wg syncconf`
+	// never sees those lines.
+	WireGuardRestart
+)
+
+// Command is what the step runs on the host, empty for WireGuardNone.
+func (w WireGuardStep) Command() string {
+	switch w {
+	case WireGuardStart:
+		return "systemctl enable --now " + wireguardUnit
+	case WireGuardSync:
+		// Through a temporary file rather than a pipe. /bin/sh has no
+		// pipefail, so a `wg-quick strip` that failed would hand syncconf an
+		// empty configuration, and syncconf removes every peer it is not
+		// given: one failed command would cut this site off the mesh.
+		return "set -e; f=$(mktemp); trap 'rm -f \"$f\"' EXIT; wg-quick strip wg0 > \"$f\"; wg syncconf wg0 \"$f\""
+	case WireGuardRestart:
+		return "systemctl restart " + wireguardUnit
+	default:
+		return ""
+	}
+}
+
+// Describe says what the step does, for a plan.
+func (w WireGuardStep) Describe() string {
+	switch w {
+	case WireGuardStart:
+		return "start wg0 and enable it at boot, before any stack moves"
+	case WireGuardSync:
+		return "give wg0 its new peers in place, without taking the mesh down"
+	case WireGuardRestart:
+		return "restart wg0, because a line only wg-quick applies changed"
+	default:
+		return ""
+	}
 }
 
 // Conflicts returns the files somebody edited on the host.
@@ -146,6 +201,20 @@ const (
 	gatewayCompose   = "srv/infra/compose.yaml"
 )
 
+// wireguardConfig is the mesh interface's file, relative to a site's root, and
+// wireguardUnit the systemd unit wg-quick ships to bring it up from it.
+const (
+	wireguardConfig = "etc/wireguard/wg0.conf"
+	wireguardUnit   = "wg-quick@wg0"
+)
+
+// wireguardProbe asks whether wg0 exists. It reads the kernel rather than the
+// unit, because an interface somebody brought up with a bare `wg-quick up` is
+// up for every service binding to it, and `systemctl enable --now` on top of
+// it would fail on an interface that already exists. It prints rather than
+// exits non zero, so that "down" cannot be confused with ssh failing.
+const wireguardProbe = "if ip link show wg0 >/dev/null 2>&1; then echo up; else echo down; fi"
+
 // Build decides what one site's apply would do, without doing any of it.
 //
 // The order matters and is the whole design. Every file is compared against
@@ -169,6 +238,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 	// signal, regardless of whether it changed: an image only apply changes no
 	// routing file at all.
 	var isGateway, routingChanged, gatewayComposeChanged bool
+	// The mesh file's fate, and what was on the host before, which decides
+	// whether its change can be applied in place.
+	var wireguard *Change
+	var wireguardBefore string
 	for _, file := range plan.Files {
 		if !strings.HasPrefix(file.Path, prefix) {
 			continue
@@ -210,6 +283,12 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 			change.Kind = Update
 		}
 
+		if rel == wireguardConfig {
+			copied := change
+			wireguard = &copied
+			wireguardBefore = current
+		}
+
 		out.Changes = append(out.Changes, change)
 		if change.Kind == Create || change.Kind == Update {
 			if change.Stack != "" {
@@ -246,7 +325,65 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 		out.ACMEModule = acmeModule
 	}
 
+	if wireguard != nil {
+		step, err := wireguardStep(*wireguard, wireguardBefore, t)
+		if err != nil {
+			return nil, err
+		}
+		out.WireGuard = step
+	}
+
 	return out, nil
+}
+
+// wireguardStep decides what wg0 needs. Reading the host here is a probe and
+// changes nothing, so a dry run can show it.
+func wireguardStep(change Change, before string, t Transport) (WireGuardStep, error) {
+	switch change.Kind {
+	case Create:
+		return WireGuardStart, nil
+	case Conflict:
+		// Execute refuses before any step runs.
+		return WireGuardNone, nil
+	}
+	out, err := t.Run(wireguardProbe)
+	if err != nil {
+		return WireGuardNone, fmt.Errorf("asking whether wg0 is up: %w", err)
+	}
+	if strings.TrimSpace(out) != "up" {
+		return WireGuardStart, nil
+	}
+	if change.Kind == Unchanged {
+		return WireGuardNone, nil
+	}
+	if wgQuickLines(before) != wgQuickLines(change.content) {
+		return WireGuardRestart, nil
+	}
+	return WireGuardSync, nil
+}
+
+// wgQuickOnly are the [Interface] keys wg-quick applies itself and `wg-quick
+// strip` removes, so `wg syncconf` never sees a change to one
+// (wireguard-tools, src/wg-quick/linux.bash, parse_options).
+var wgQuickOnly = map[string]bool{
+	"address": true, "dns": true, "mtu": true, "table": true, "saveconfig": true,
+	"preup": true, "postup": true, "predown": true, "postdown": true,
+}
+
+// wgQuickLines returns the wg-quick only lines of a configuration, in order,
+// as one comparable string.
+func wgQuickLines(content string) string {
+	var out []string
+	for _, line := range strings.Split(content, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		if wgQuickOnly[strings.ToLower(strings.TrimSpace(key))] {
+			out = append(out, strings.ToLower(strings.TrimSpace(key))+"="+strings.TrimSpace(value))
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // Execute carries out a plan. It refuses outright if anything conflicts,
@@ -266,6 +403,16 @@ func Execute(plan *Plan, t Transport) error {
 	for _, change := range writes {
 		if err := t.WriteFile(change.Path, change.content, change.Mode); err != nil {
 			return err
+		}
+	}
+
+	// The mesh comes up before anything that binds to it. It runs before the
+	// gateway gates as well, which need no mesh themselves, so that the one
+	// rule is simple: no container is started or checked on a site whose
+	// interface is down.
+	if command := plan.WireGuard.Command(); command != "" {
+		if out, err := t.Run(command); err != nil {
+			return fmt.Errorf("%s: bringing up wg0, so nothing that binds the mesh address was started:\n%s", plan.Site, out)
 		}
 	}
 
