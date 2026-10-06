@@ -248,6 +248,76 @@ func (u ubuntu) WatchdogModule(t Transport, module string, loaded bool) (Section
 	return out, nil
 }
 
+// watchdogRules is the udev rule that keeps the watchdog openable by the
+// Patroni container across reboots and module reloads.
+const watchdogRules = "/etc/udev/rules.d/60-paisans-watchdog.rules"
+
+// WatchdogAccess makes every watchdog node mode 0660, group unchanged (root),
+// with a udev rule for every later add event and a chmod for the nodes that
+// exist now.
+//
+// Docker's device mapping reproduces the host node's mode inside the
+// container, and the kernel creates it 0600 root:root, so a Patroni that does
+// not run as root cannot open it. Spilo runs Patroni as postgres, whose
+// supplementary groups include root; group read and write is what that user
+// needs, and nothing ties the host to the image's uid.
+//
+// The rule is applied now with chmod rather than `udevadm trigger`. The
+// numbered nodes are in the watchdog subsystem but the legacy /dev/watchdog is
+// a misc device (drivers/watchdog/watchdog_dev.c registers it with
+// misc_register), so a trigger has to match both; chmod on the nodes that
+// exist is exact and idempotent. The rule covers the boot, where the module
+// unit's modprobe raises the add event that the rule answers.
+func (u ubuntu) WatchdogAccess(t Transport) (Section, error) {
+	var out Section
+	rules, err := snippet(u.tmpl("watchdog-access.rules.tmpl"), nil)
+	if err != nil {
+		return out, err
+	}
+	current, found, err := t.ReadFile(watchdogRules)
+	if err != nil {
+		return out, err
+	}
+	probe, err := snippet(u.tmpl("watchdog-access-probe.sh.tmpl"), nil)
+	if err != nil {
+		return out, err
+	}
+	modes, err := t.Run(probe)
+	if err != nil {
+		return out, err
+	}
+	var wrong []string
+	for _, line := range strings.Split(modes, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[0] != "mode" {
+			continue
+		}
+		if fields[2] != "660" {
+			wrong = append(wrong, fmt.Sprintf("%s is %s", fields[1], fields[2]))
+		}
+	}
+	apply, err := snippet(u.tmpl("watchdog-access.sh.tmpl"), nil)
+	if err != nil {
+		return out, err
+	}
+	switch {
+	case !found || current != rules:
+		out.Steps = append(out.Steps, Step{
+			Describe: "watchdog: let Patroni's container open the device, mode 0660 group root (" + watchdogRules + ")",
+			File:     &File{Path: watchdogRules, Content: rules, Mode: 0o644},
+			Command:  apply,
+		})
+	case len(wrong) > 0:
+		out.Steps = append(out.Steps, Step{
+			Describe: "watchdog: set the device to mode 0660 now (" + strings.Join(wrong, ", ") + ")",
+			Command:  apply,
+		})
+	default:
+		out.Present = append(out.Present, "watchdog: device mode 0660 group root, kept by "+watchdogRules)
+	}
+	return out, nil
+}
+
 // ufwArgs is the ufw command for a rule, without the leading `ufw`. It is also
 // how `ufw show added` prints the rule back, which is what makes the probe a
 // string comparison.

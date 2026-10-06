@@ -58,7 +58,21 @@ const (
 	probeDocker   = "is-enabled docker"
 	probeUnit     = "is-enabled paisans-watchdog.service"
 	probeFirewall = "ufw show added"
+	probeAccess   = "stat -c %a"
 )
+
+// watchdogRulesPath and watchdogRules are the udev rule prepare writes, pinned
+// here so a change to its content is a change to a test.
+const watchdogRulesPath = "/etc/udev/rules.d/60-paisans-watchdog.rules"
+
+const watchdogRules = `# Written by paisans host prepare. Lets the Patroni container open the
+# watchdog, which Docker's device mapping gives it with the host's mode.
+#
+# Group rather than owner: the image's uid is the image's business, and Spilo
+# runs Patroni as a user whose supplementary groups include root (gid 0). The
+# group stays root; only the group's permission bits change.
+KERNEL=="watchdog*", MODE="0660"
+`
 
 const ubuntu2404 = `PRETTY_NAME="Ubuntu 24.04.1 LTS"
 NAME="Ubuntu"
@@ -105,6 +119,7 @@ func preparedHost(gateway bool) *fakeHost {
 			"/etc/os-release":                        ubuntu2404,
 			"/etc/default/ufw":                       "IPV6=yes\nDEFAULT_INPUT_POLICY=\"DROP\"\nDEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n",
 			"/etc/apt/sources.list.d/docker.sources": dockerSources,
+			watchdogRulesPath:                        watchdogRules,
 		},
 		responses: map[string]string{
 			probePackages: "compose present\npkg docker-ce install ok installed\npkg wireguard-tools install ok installed\npkg ufw install ok installed\nkeyring present\narch amd64\n",
@@ -112,6 +127,7 @@ func preparedHost(gateway bool) *fakeHost {
 			probeDocker:   "enabled enabled\nactive active\n",
 			probeUnit:     "enabled \nactive \n",
 			probeFirewall: firewall,
+			probeAccess:   "mode /dev/watchdog 660\nmode /dev/watchdog0 660\n",
 		},
 	}
 }
@@ -193,6 +209,7 @@ func TestAFreshDataSitePlansEveryStep(t *testing.T) {
 		"service: enable and start docker",
 		"watchdog: load softdog now",
 		"watchdog: load softdog at every boot (paisans-watchdog.service)",
+		"watchdog: let Patroni's container open the device, mode 0660 group root",
 		"firewall: allow 22/tcp",
 		"firewall: allow 51820/udp",
 		"firewall: allow all inbound on wg0",
@@ -281,8 +298,11 @@ func TestExecuteRunsEveryStepInOrder(t *testing.T) {
 	if err := hostprep.Execute(plan, host); err != nil {
 		t.Fatal(err)
 	}
-	if len(host.written) != 2 {
-		t.Errorf("want the apt source and the unit written, got %v", host.written)
+	if len(host.written) != 3 {
+		t.Errorf("want the apt source, the unit and the udev rule written, got %v", host.written)
+	}
+	if got := host.files[watchdogRulesPath]; got != watchdogRules {
+		t.Errorf("the udev rule is:\n%s", got)
 	}
 	if last := host.ran[len(host.ran)-1]; last != "ufw --force enable" {
 		t.Errorf("enabling the firewall is the last thing run, got %q", last)
@@ -478,4 +498,108 @@ func TestARemovedPackageIsNotInstalled(t *testing.T) {
 	if got := describes(plan); got != "packages: install wireguard-tools" {
 		t.Errorf("got:\n%s", got)
 	}
+}
+
+// The kernel creates the watchdog 0600 root:root and Docker's device mapping
+// keeps that mode, so a Patroni running as a non root user cannot open it.
+// Every mode that maps the device plans the udev rule and the chmod; the
+// access step runs after the module step, so the device exists by then.
+func TestWatchdogAccessIsPlannedWhereTheDeviceIsMapped(t *testing.T) {
+	t.Run("fresh data site", func(t *testing.T) {
+		plan, err := hostprep.Build("home-a", fixture(t), freshHost())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var module, access = -1, -1
+		for i, s := range plan.Steps {
+			if strings.Contains(s.Command, "modprobe softdog") {
+				module = i
+			}
+			if s.File != nil && s.File.Path == watchdogRulesPath {
+				access = i
+				if s.File.Content != watchdogRules {
+					t.Errorf("the udev rule is:\n%s", s.File.Content)
+				}
+				if !strings.Contains(s.Command, "udevadm control --reload") || !strings.Contains(s.Command, `chmod 0660 "$d"`) {
+					t.Errorf("the rule is not applied now:\n%s", s.Command)
+				}
+			}
+		}
+		if access < 0 || module < 0 || access < module {
+			t.Fatalf("want the access step after the module step, got module %d access %d:\n%s", module, access, describes(plan))
+		}
+	})
+
+	t.Run("prepared data site", func(t *testing.T) {
+		plan, err := hostprep.Build("home-a", fixture(t), preparedHost(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := describes(plan); got != "" {
+			t.Fatalf("want nothing planned, got:\n%s", got)
+		}
+		if !strings.Contains(strings.Join(plan.Present, "\n"), "watchdog: device mode 0660 group root") {
+			t.Errorf("the access was not reported present:\n%s", printed(plan))
+		}
+	})
+
+	t.Run("rule present, device mode wrong", func(t *testing.T) {
+		host := preparedHost(false)
+		host.responses[probeAccess] = "mode /dev/watchdog 600\nmode /dev/watchdog0 660\n"
+		plan, err := hostprep.Build("home-a", fixture(t), host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Steps) != 1 || plan.Steps[0].File != nil || !strings.Contains(plan.Steps[0].Describe, "/dev/watchdog is 600") {
+			t.Fatalf("want one chmod step naming the device, got:\n%s", describes(plan))
+		}
+	})
+
+	t.Run("rule edited on the host", func(t *testing.T) {
+		host := preparedHost(false)
+		host.files[watchdogRulesPath] = `KERNEL=="watchdog*", MODE="0666"` + "\n"
+		plan, err := hostprep.Build("home-a", fixture(t), host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Steps) != 1 || plan.Steps[0].File == nil || plan.Steps[0].File.Path != watchdogRulesPath {
+			t.Fatalf("want the rule rewritten, got:\n%s", describes(plan))
+		}
+	})
+
+	t.Run("gateway site", func(t *testing.T) {
+		host := freshHost()
+		plan, err := hostprep.Build("vm", fixture(t), host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range plan.Steps {
+			if s.File != nil && s.File.Path == watchdogRulesPath {
+				t.Fatalf("a site with no data role was given the udev rule:\n%s", describes(plan))
+			}
+		}
+		for _, c := range host.ran {
+			if strings.Contains(c, probeAccess) {
+				t.Error("the device mode was probed on a site with no data role")
+			}
+		}
+	})
+
+	t.Run("watchdog off", func(t *testing.T) {
+		host := freshHost()
+		plan, err := hostprep.Build("home-a", withWatchdog(t, "home-a", config.WatchdogOff), host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range plan.Steps {
+			if strings.Contains(s.Describe, "watchdog") {
+				t.Fatalf("off planned a watchdog step:\n%s", describes(plan))
+			}
+		}
+		for _, c := range host.ran {
+			if strings.Contains(c, probeAccess) {
+				t.Error("off probed the device mode")
+			}
+		}
+	})
 }
