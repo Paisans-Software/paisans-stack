@@ -1063,3 +1063,34 @@ func TestANoopApplyBootstrapsNothing(t *testing.T) {
 		t.Error("an apply with nothing to do still plans database work")
 	}
 }
+
+// An env_file reaches its container when Compose creates it, so a changed
+// patroni.env or caddy.env needs the container replaced. A restart kept the
+// old values, and caddy.env, sitting beside the Caddyfile, was read as
+// routing and answered with a reload that cannot see a rotated DNS token.
+func TestAnEnvFileChangeRecreates(t *testing.T) {
+	for _, tc := range []struct{ site, path string }{
+		{"home-a", "/srv/infra/patroni.env"},
+		{"vm", "/srv/infra/caddy/caddy.env"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			host := applied(t, tc.site)
+			host.files[tc.path] = "DRIFTED=1\n"
+			adopt(t, host, tc.path)
+
+			p, err := apply.Build(tc.site, plan(t), acmeModule(t), host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(p.Actions) != 1 || p.Actions[0].Stack != "infra" || !p.Actions[0].Recreate {
+				t.Fatalf("a changed %s plans %+v, want the infra stack recreated", tc.path, p.Actions)
+			}
+			if p.GatewayReload {
+				t.Error("an environment change planned a reload, which rereads the Caddyfile and not the environment")
+			}
+			if tc.site == "vm" && !p.GatewayChanging {
+				t.Error("the gateway is about to be replaced and its gates would not run")
+			}
+		})
+	}
+}

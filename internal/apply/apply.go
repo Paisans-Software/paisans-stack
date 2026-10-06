@@ -315,7 +315,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 			if isRouting(rel) {
 				routingChanged = true
 			}
-			if rel == gatewayCompose {
+			// The compose file moves the image; an environment file under
+			// infra moves what the replaced container starts with. Both
+			// replace the gateway, so both need the gates.
+			if rel == gatewayCompose || (change.Stack == infraStack && isEnvironment(rel)) {
 				gatewayComposeChanged = true
 			}
 		}
@@ -683,15 +686,25 @@ func stackOf(rel string) string {
 
 // isEnvironment reports whether a change to this file needs the container
 // replaced rather than restarted.
+//
+// Any `*.env` counts, not only a file named `.env`: patroni.env and
+// caddy/caddy.env reach their containers through `env_file`, which Compose
+// reads when it creates a container, so a restart keeps the old values. Every
+// env_file the templates render ends in .env, which is what makes the suffix
+// a sufficient test; parsing each compose file for its env_file list was the
+// alternative, and it answers the same question with a YAML parser in the
+// path of every apply.
 func isEnvironment(rel string) bool {
 	base := rel[strings.LastIndex(rel, "/")+1:]
-	return base == ".env" || base == "compose.yaml"
+	return strings.HasSuffix(base, ".env") || base == "compose.yaml"
 }
 
 // isRouting reports whether a file is part of the assembled gateway
-// configuration.
+// configuration. An environment file beside the Caddyfile is not: a reload
+// rereads the Caddyfile and never the container's environment, so treating
+// caddy.env as routing reloaded a Caddy that still held the old DNS token.
 func isRouting(rel string) bool {
-	return strings.Contains(rel, "/caddy/")
+	return strings.Contains(rel, "/caddy/") && !isEnvironment(rel)
 }
 
 func sum(content string) string {

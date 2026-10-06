@@ -99,9 +99,13 @@ else's too, and is a conflict rather than something to adopt, which is the case
 on any host that was set up by hand before the toolkit existed.
 
 **The narrower action wins.** A changed bind mounted configuration file needs a
-restart at most, and the container keeps its identity. Only a changed `.env` or
-`compose.yaml` needs `up -d`, because Compose passes environment at start and a
-running container cannot be told about a new value. A recreate is an outage,
+restart at most, and the container keeps its identity. Only a changed `.env`, any
+other `*.env` handed over as an `env_file` (`patroni.env`, `caddy/caddy.env`),
+or `compose.yaml` needs `up -d`, because Compose passes environment at start and
+a running container cannot be told about a new value. `caddy.env` is not a
+routing file even though it sits beside the Caddyfile: a reload rereads the
+Caddyfile and never the environment, so a rotated DNS token arrives only by
+recreating the gateway, behind the same gates as an image change. A recreate is an outage,
 however brief, so it is not the default action for every change.
 
 **`wg0` is up before any container moves.** Every service binds the site's
