@@ -13,14 +13,16 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 
 ## Run
 
-Four commands exist so far. Three touch nothing outside the working directory.
-`apply` is the exception and is the only code path here that reaches a machine.
+validate, init and render touch nothing outside the working directory.
+`host prepare`, `apply` and `storage init` reach a machine, and each changes it
+only with `--execute`.
 
 ```
 paisans validate --config examples/paisans.example.yaml
 paisans init     --config examples/paisans.example.yaml
 paisans render   --config examples/paisans.example.yaml \
                  --secrets secrets.enc.yaml --out ./out
+paisans host prepare --site home-a        # shows what a blank host lacks
 paisans apply    --site home-a            # shows what would change
 paisans apply    --site home-a --execute  # does it
 ```
@@ -194,6 +196,7 @@ installed, on a workstation or anywhere else.
 | `internal/kinds` | what an application kind is: its compose services, and the image each runs by default |
 | `internal/render` | placement, templates, and the writer |
 | `internal/apply` | the only package that reaches a host: what to push, what to restart, and the gates before either |
+| `internal/hostprep` | taking a blank host to what `apply` assumes; one profile per operating system, its shell under `profiles/<id>-<version>/` |
 | `internal/render/templates` | the infrastructure templates, plus one directory per kind |
 
 Templating is `text/template` from the standard library. No template engine is

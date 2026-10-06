@@ -1088,6 +1088,113 @@ not a name that only resolves inside one deployment's private mesh. A toolkit
 that quietly depended on one would work on the machines it was written for and
 fail on every fork.
 
+### `host prepare` takes a blank host to an apply-able state
+
+`apply` assumes a host that already has Docker with the compose plugin, the
+WireGuard tools, a firewall, and on a data site a `/dev/watchdog` for Patroni.
+**None of that is done by hand.** A step an operator performs from a wiki page
+is a step done differently on every host, and the first time it matters is a
+rebuild at the worst possible moment. So it is a command:
+
+```
+paisans host prepare --site home-a            # shows what it would do
+paisans host prepare --site home-a --execute  # does it
+```
+
+It reaches the host over the `ssh:` bootstrap route with the operator's own
+ssh, exactly as `apply` does. It probes read only, plans only what is missing,
+and changes nothing without `--execute`; a prepared host plans nothing, so
+re-running it after a failure resumes rather than restarts. It is not part of
+`apply` for the same reason `storage init` is not: installed packages, firewall
+rules and loaded kernel modules are host state that no rendered manifest
+describes, so they are probed rather than compared.
+
+#### Operating systems are profiles
+
+Everything that depends on the operating system lives in a **host profile**,
+chosen from `/etc/os-release` by `ID` and `VERSION_ID` together. A profile
+answers four questions (how to install the packages, how to enable services,
+how to load a kernel module now and at boot, how to drive the firewall), and
+its shell lives as templates in its own directory under
+`internal/hostprep/profiles/`. Adding Debian or Fedora is adding a directory
+and a registration, not editing the command.
+
+Only `ubuntu 24.04` ships. Matching on `ID` alone would be simpler and was
+rejected: Docker's apt source names the release codename, and a profile that
+accepted every Ubuntu would write one release's packages onto another. A host
+no profile matches is refused, naming what is supported:
+
+```
+debian 12 is not supported. Use one of the following:
+ubuntu 24.04
+```
+
+#### Docker comes from Docker's repository
+
+On Ubuntu, Docker Engine and the compose plugin are installed from Docker's own
+apt repository, as
+[Docker's install page](https://docs.docker.com/engine/install/ubuntu/)
+describes, not from Ubuntu's `docker.io`. Every host then runs the same engine
+from the same source whenever it was prepared. The packages that page lists as
+conflicting (`docker.io`, `docker-compose-v2`, `containerd`, `runc` and the
+rest) are **refused, not removed**: on a host already running containers from
+them, removing them stops those containers, and that is a decision for
+whoever started them. Every `apt-get` runs non-interactively.
+
+#### The firewall follows roles
+
+| Rule | Sites |
+|------|-------|
+| deny incoming, allow outgoing by default | every site |
+| 22/tcp | every site |
+| 51820/udp, WireGuard | every site |
+| everything arriving on `wg0` | every site |
+| 80/tcp, 443/tcp | sites with the gateway role |
+
+Nothing is listed per site. A site that gains the gateway role gains 80 and 443
+at its next prepare. Nothing is ever removed: a rule an operator added is not
+the toolkit's to delete, and a site that loses a role keeps its old rules until
+someone removes them deliberately.
+
+The mesh is let in whole, by interface, rather than port by port. etcd,
+Patroni, Garage and HAProxy all listen on the mesh address, and a new mesh
+service would otherwise be one more rule to remember on every site.
+
+**SSH is never shut out.** Every allow, SSH first, is in place before the
+default deny, and the firewall is enabled last with `ufw --force enable`, which
+does not stop to ask whether to disrupt existing connections.
+
+**Docker-published ports bypass the firewall.** Docker's install page says so
+in as many words: "When you expose container ports using Docker, these ports
+bypass your firewall rules." What ufw protects here is everything on the host network,
+which is etcd, Patroni, Garage, HAProxy and Caddy, all `network_mode: host`. A
+container that publishes a port is not covered by this table, which is why
+published ports are to be bound to the mesh address rather than to every
+interface. That binding is separate work and is not part of `host prepare`.
+
+#### The watchdog
+
+On a data site, `host prepare` gives Patroni the device the site's `watchdog`
+mode asks for; *A data site's watchdog is declared, not assumed* has the modes.
+It reports which driver it found, from `/sys/class/watchdog/*/identity`.
+
+On Ubuntu, `softdog` is persisted with a small systemd unit that runs
+`modprobe softdog` before Docker starts, not with a line in
+`/etc/modules-load.d`. That would be the obvious place and it does not work:
+Ubuntu's kernel package blacklists the watchdog drivers, `softdog` among them,
+and `systemd-modules-load` honours the blacklist
+([Launchpad bug 1535840](https://bugs.launchpad.net/bugs/1535840)),
+so the line would be skipped at every boot while looking correct. `modprobe`
+named on a command line does not apply the blacklist. This is the kind of
+difference a profile exists to hold: a distribution that does not blacklist
+`softdog` can use `modules-load.d`.
+
+**Provisional: none of this has run on a host yet.** The command is tested
+against a fake transport. The probe output it parses (`ufw show added`,
+`systemctl show -p RuntimeWatchdogUSec`, `dpkg-query`) is written from the
+tools' documented behaviour, not observed on Ubuntu 24.04, and the first real
+run should be read rather than trusted.
+
 ### Where WireGuard keys are generated
 
 On the workstation, not on the host — which is the opposite of the usual advice,
