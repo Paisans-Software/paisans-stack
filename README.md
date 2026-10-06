@@ -1771,9 +1771,14 @@ and registers a passkey.
 **The link is a credential, and it is handled like one.** It is printed once,
 to the terminal running the command, only with `--execute`, with its expiry.
 It never appears in a plan line or an error and is never written to the
-secrets file. It lives fifteen minutes, Pocket ID's own default for an admin
-issued token (`onetimeaccess/handler.go:17`): long enough to open a link just
-printed, short enough that one left in scrollback is dead soon after. If it
+secrets file. It lives twenty minutes: long enough to open a link just
+printed, short enough that one left in scrollback is dead soon after. Not
+Pocket ID's own fifteen minute default for an admin issued token
+(`onetimeaccess/handler.go:17`), because a TTL of fifteen minutes or less gets
+a 6 character code (`onetimeaccess/service.go:271-274` at `v2.14.0`), which the
+login page accepts only when unauthenticated email login is enabled; on a host
+without it the page waits for 12 characters and the link is unusable. Over
+fifteen minutes gets the 12 character code. If it
 expires, `--login-link --execute` issues a fresh one for an account that
 exists; without `--login-link`, an existing administrator plans nothing. An
 existing account that is not an administrator plans `grant admin` only, and a

@@ -76,7 +76,7 @@ line.
 
 For `pocket-id` there is no password: the command creates the user as an
 administrator, with its email marked verified, through Pocket ID's API and prints a one-time login link once,
-on `--execute`, valid fifteen minutes; `--login-link` issues a fresh one for an
+on `--execute`, valid twenty minutes; `--login-link` issues a fresh one for an
 account that exists. It refuses a piped password rather than dropping it. It
 reads `apps.<app>.static_api_key` from the secrets file, so it takes
 `--secrets`, and it never uses sudo, because curl needs no root.
