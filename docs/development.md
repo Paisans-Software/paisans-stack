@@ -246,9 +246,9 @@ inherited, per the language decision in `docs/decisions.md`.
 `internal/render/templates/<kind>/` is a set, and every file in it is rendered.
 Two conventions make a set need no code of its own.
 
-**A template's path is its destination.** `templates/mbin/config/packages/
-oneup_flysystem.yaml.tmpl` lands at
-`/srv/<stack>/config/packages/oneup_flysystem.yaml`, so where a file goes is
+**A template's path is its destination.** `templates/synapse/initdb.d/
+01-mas-database.sql.tmpl` lands at
+`/srv/<stack>/initdb.d/01-mas-database.sql`, so where a file goes is
 read off the tree rather than held in a mapping somewhere else. Adding a file
 to a set is adding a file.
 

@@ -264,7 +264,7 @@ func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
 		{"home-a/srv/talk/.env", 0o600, "DATABASE_URL="},
 		{"home-a/srv/talk/compose.yaml", 0o644, "name: paisans-talk"},
 		// A template's path is its destination, nested directories included.
-		{"home-a/srv/talk/config/packages/oneup_flysystem.yaml", 0o644, "kbin.s3_adapter"},
+		{"vm/srv/chat/initdb.d/01-mas-database.sql", 0o644, "CREATE DATABASE"},
 	}
 	for _, tc := range cases {
 		f, ok := files[tc.path]
@@ -1918,12 +1918,21 @@ func TestMbinRendersItsWholeStack(t *testing.T) {
 	if _, ok := files["home-a/srv/talk/valkey.conf"]; !ok {
 		t.Error("valkey.conf was not rendered, so the cache would run without upstream's memory limit and with snapshots on")
 	}
-	// The consumers store fetched remote media through the same filesystem
-	// binding as the web container, so they need the same shim.
-	messenger := compose[strings.Index(compose, "\n  messenger:\n"):]
-	messenger = messenger[:strings.Index(messenger, "\n  amqproxy:\n")]
-	if !strings.Contains(messenger, "oneup_flysystem.yaml:/app/config/packages/oneup_flysystem.yaml:ro") {
-		t.Errorf("the messenger consumers do not mount the S3 shim:\n%s", messenger)
+	// The fork's docker/docker-entrypoint.sh (tag v1.13.3+paisans) runs
+	// `sed -i` on these three files at every start of app and messenger, under
+	// `set -e`. A bind mount over any of them makes that sed fail and the
+	// container exit, so the S3 switch is left to the entrypoint, which makes
+	// it whenever S3_KEY is set.
+	for _, edited := range []string{"liip_imagine.yaml", "monolog.yaml", "oneup_flysystem.yaml"} {
+		if strings.Contains(compose, ":/app/config/packages/"+edited) {
+			t.Errorf("compose.yaml mounts over config/packages/%s, which the image's entrypoint edits in place:\n%s", edited, compose)
+		}
+	}
+	if _, ok := files["home-a/srv/talk/config/packages/oneup_flysystem.yaml"]; ok {
+		t.Error("the oneup_flysystem.yaml shim is rendered again; the image's entrypoint switches the adapter itself")
+	}
+	if !strings.Contains(env, "\nS3_KEY=") {
+		t.Errorf("the Mbin .env does not set S3_KEY, so the entrypoint would leave uploads on local disk:\n%s", env)
 	}
 }
 

@@ -68,9 +68,11 @@ services:
       # site issues fails on another.
       - /srv/talk/oauth:/app/config/oauth2:ro
       - /srv/talk/php_logs:/app/var/log
-      # Upstream binds uploads to the local adapter. The shim switches it to
-      # S3; see the comment at the top of that file.
-      - /srv/talk/config/packages/oneup_flysystem.yaml:/app/config/packages/oneup_flysystem.yaml:ro
+      # Nothing is mounted over config/packages/. The image's entrypoint edits
+      # three files there in place at every start (liip_imagine.yaml,
+      # monolog.yaml, and oneup_flysystem.yaml, which it switches to the S3
+      # adapter because S3_KEY is set in .env), and `sed -i` over a bind mount
+      # fails and stops the container.
     depends_on:
       amqproxy:
         condition: service_started
@@ -95,7 +97,6 @@ services:
     volumes:
       - /srv/talk/media:/app/public/media
       - /srv/talk/messenger_logs:/app/var/log
-      - /srv/talk/config/packages/oneup_flysystem.yaml:/app/config/packages/oneup_flysystem.yaml:ro
     depends_on:
       amqproxy:
         condition: service_started

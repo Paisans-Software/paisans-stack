@@ -80,7 +80,7 @@ toolkit should not overstate it:
 
 | Stack | S3 support | Notes |
 |-------|-----------|-------|
-| Mbin | full | `S3_KEY`/`S3_SECRET`/`S3_BUCKET`/`S3_REGION`/`S3_ENDPOINT`, plus switching `public_uploads_filesystem` to the S3 adapter in `config/packages/oneup_flysystem.yaml`. Upstream strongly advises a media reverse proxy so URLs stay stable across provider changes |
+| Mbin | full | `S3_KEY`/`S3_SECRET`/`S3_BUCKET`/`S3_REGION`/`S3_ENDPOINT`. The Docker image's entrypoint then switches `public_uploads_filesystem` to the S3 adapter itself; only a bare metal or VM install edits `config/packages/oneup_flysystem.yaml` by hand. Upstream strongly advises a media reverse proxy so URLs stay stable across provider changes |
 | Outline | full | `FILE_STORAGE=s3` with the `AWS_*` variables; non-AWS endpoints need `AWS_S3_FORCE_PATH_STYLE=true`. Known upstream bug: the bucket must not be named `outline` |
 | Synapse | partial | `synapse-s3-storage-provider` is a *storage provider* that supplements the media store. **A local media directory is still required.** `store_synchronous: True` writes to S3 immediately; the bucket prefix cannot be changed once media exists |
 | Pocket ID | full, plus better | `FILE_BACKEND` takes `filesystem` (default), `s3`, or **`database`**. See the note below — `database` is the recommendation |
@@ -738,8 +738,7 @@ templates/mbin/                             templates/writefreely/
   compose.yaml.tmpl                           compose.yaml.tmpl
   .env.tmpl                                   config.ini.tmpl
   caddy.snippet.tmpl                          .env.tmpl
-  config/packages/oneup_flysystem.yaml.tmpl   caddy.snippet.tmpl
-  valkey.conf.tmpl
+  valkey.conf.tmpl                            caddy.snippet.tmpl
 ```
 
 **A template's path is its destination.** The layout under `templates/<kind>/`
@@ -783,9 +782,10 @@ application, so it lives beside that application's other templates and arrives
 and leaves with it.
 
 **Its shims.** Where upstream ships a file the deployment has to override, the
-override is a template like any other. Rule 3 already names one, and it is small
-enough to show. Mbin's `config/packages/oneup_flysystem.yaml` defines both a
-local adapter and an S3 adapter, and binds uploads to the local one:
+override is a template like any other. Rule 3 names the first candidate, and it
+turned out to be the cautionary case. Mbin's
+`config/packages/oneup_flysystem.yaml` defines both a local adapter and an S3
+adapter, and binds uploads to the local one:
 
 ```yaml
   filesystems:
@@ -794,15 +794,22 @@ local adapter and an S3 adapter, and binds uploads to the local one:
       #adapter: kbin.s3_adapter
 ```
 
-Rule 3 puts media in Garage from the first install, so the rendered override is
-that file with the adapter switched to `kbin.s3_adapter`
-([Mbin's S3 documentation](https://docs.joinmbin.org/admin/optional-features/s3_storage/)).
-The `S3_*` variables in `.env` supply the endpoint and credentials; this file is
-what decides whether they are used at all, which is why setting the variables
-alone appears to work and silently keeps writing to local disk. It renders to
-`/srv/talk/config/packages/oneup_flysystem.yaml` and is bind-mounted over the
-copy in the image. Entrypoint wrappers, module configuration and other
-dropped-in override files work the same way.
+On a bare metal or VM install, setting the `S3_*` variables alone appears to
+work and silently keeps writing to local disk, and the fix is editing this file.
+[Mbin's S3 documentation](https://docs.joinmbin.org/admin/optional-features/s3_storage/)
+says that edit is "only needed on bare metal/VM, not Docker", because the Docker
+image's entrypoint makes it: with `APP_ENV=prod` (the image's default) and
+`S3_KEY` set, it runs `sed -i` on that file at every start, switching the
+adapter to `kbin.s3_adapter`. On the image this toolkit runs, the variables in
+`.env` are the whole switch, and the toolkit renders no override.
+
+A rendered copy bind-mounted over the file was the first design, and it is worse
+than none: `sed -i` cannot replace a bind-mounted file, the entrypoint runs
+under `set -e`, and the container exits before it serves anything. So **before
+shimming a file, read the image's entrypoint.** A file it edits in place cannot
+be mounted over, and a file it edits is usually one the image already handles.
+Entrypoint wrappers, module configuration and other dropped-in override files
+that the image leaves alone are templates like any other.
 
 **A shim is a rendered, readable file in the template directory, never a private
 image build.** Baking one into an image moves it somewhere an operator cannot
