@@ -11,7 +11,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says. The
+    # gateway, over the mesh, is the only thing that should reach it.
     ports:
-      - "1411:1411"
+      - "10.44.0.1:1411:1411"
     volumes:
       - /srv/auth/data:/app/data

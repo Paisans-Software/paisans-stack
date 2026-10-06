@@ -1,7 +1,7 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
 # docs has cluster placement: no Postgres service of its own, and a
-# connection to the local HAProxy on 127.0.0.1:5000.
+# connection to the local HAProxy on 10.44.0.2:5000.
 name: paisans-docs
 
 services:
@@ -10,7 +10,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says. The
+    # gateway, over the mesh, is the only thing that should reach it.
     ports:
-      - "3000:3000"
+      - "10.44.0.2:3000:3000"
     volumes:
       - /srv/docs/data:/data

@@ -210,6 +210,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 
 	if site.NeedsProxy {
 		cfg, err := p.renderTemplate("haproxy.cfg.tmpl", map[string]any{
+			"Address":        site.Address,
 			"ClusterPort":    p.clusterPort(),
 			"ClusterMembers": p.clusterMembers(),
 			"PostgresPort":   postgresPort,

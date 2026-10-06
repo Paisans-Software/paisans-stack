@@ -110,9 +110,21 @@ func TestPlacementShapesTheStack(t *testing.T) {
 	if strings.Contains(clustered, "postgres:") {
 		t.Error("a clustered app was given a Postgres service of its own")
 	}
-	env := files["home-a/srv/talk/.env"]
-	if !strings.Contains(env, "@127.0.0.1:5000/") {
-		t.Errorf("a clustered app does not connect to the local proxy:\n%s", env)
+	// Each instance connects to the HAProxy on its own site, at that site's
+	// mesh address. Not 127.0.0.1: inside the app's bridge networked
+	// container, loopback is the container itself.
+	for site, address := range map[string]string{"home-a": "10.44.0.1", "home-b": "10.44.0.2"} {
+		env := files[site+"/srv/talk/.env"]
+		if !strings.Contains(env, "@"+address+":5000/") {
+			t.Errorf("the clustered app on %s does not connect to its own site's proxy at %s:\n%s", site, address, env)
+		}
+		if strings.Contains(env, "127.0.0.1") {
+			t.Errorf("the clustered app on %s names a loopback address, which inside its container is the container itself:\n%s", site, env)
+		}
+		proxy := files[site+"/srv/infra/haproxy/haproxy.cfg"]
+		if !strings.Contains(proxy, "bind "+address+":5000") {
+			t.Errorf("the HAProxy on %s does not listen on the mesh address its apps are given:\n%s", site, proxy)
+		}
 	}
 
 	pinned, ok := files["vm/srv/chat/compose.yaml"]
@@ -127,6 +139,50 @@ func TestPlacementShapesTheStack(t *testing.T) {
 	}
 	if !strings.Contains(pinned, "/srv/chat/postgres:/var/lib/postgresql/data") {
 		t.Error("a pinned stack does not use bind mounts under /srv")
+	}
+}
+
+// Every published port binds the mesh address of the site it is rendered for
+// and nothing else. Docker's own iptables rules bypass a host firewall such as
+// ufw, so "8080:8080" on a host with a public address is reachable from the
+// internet whatever the firewall says, and with no gate in front of it. The
+// gateway reaches every app over the mesh, so the mesh is the only interface
+// a port needs.
+func TestPublishedPortsBindTheMeshAddress(t *testing.T) {
+	cfg := fixture(t)
+	checked := 0
+	for _, f := range build(t).Files {
+		if !strings.HasSuffix(f.Path, "compose.yaml") {
+			continue
+		}
+		site := strings.SplitN(f.Path, "/", 2)[0]
+		address := cfg.Sites[site].Address
+		inPorts := false
+		for _, line := range strings.Split(f.Content, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "ports:" {
+				inPorts = true
+				continue
+			}
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if !strings.HasPrefix(trimmed, "- ") {
+				inPorts = false
+				continue
+			}
+			if !inPorts {
+				continue
+			}
+			mapping := strings.Trim(strings.TrimPrefix(trimmed, "- "), `"`)
+			if !strings.HasPrefix(mapping, address+":") || strings.Count(mapping, ":") != 2 {
+				t.Errorf("%s publishes %q, which is not bound to %s's mesh address %s", f.Path, mapping, site, address)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no published port was found, so this test verified nothing")
 	}
 }
 

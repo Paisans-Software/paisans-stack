@@ -41,10 +41,24 @@ an upgrade path that cannot corrupt anything.
 
 ### Rule 2: applications always talk to a local HAProxy
 
-Every stack with `cluster` placement connects to `127.0.0.1:5000` from the first
-install, where a local HAProxy holds a backend list that initially has one entry.
-Adding a site grows that list. No application configuration changes, ever. This
-one indirection is what makes a second site an operation rather than a project.
+Every stack with `cluster` placement connects to the HAProxy on its own site,
+at that site's mesh address and port 5000 (Eg: `10.44.0.1:5000` on `home-a`),
+from the first install. That HAProxy holds a backend list that initially has one
+entry. Adding a site grows that list. No application configuration changes,
+ever: an instance is only ever given its own site's address, and that address
+does not move when another site joins. This one indirection is what makes a
+second site an operation rather than a project.
+
+The address is the mesh one rather than `127.0.0.1` because every application
+runs in a bridge networked compose container, and inside one of those the
+loopback address is the container itself, so a DSN naming it reaches nothing.
+Host networking for the apps would fix that and cost the isolation of each
+stack's own sidecars, and two kinds listening on the same port would collide.
+The Docker bridge gateway would work only if HAProxy bound an address that
+differs per compose network and does not exist until Docker creates it. The
+mesh address exists as soon as `wg0` is up, before anything else starts, and
+is already declared in the configuration. HAProxy still listens on loopback as
+well, for a tool run on the host.
 
 Pinned stacks talk to their own database directly and are not affected — see
 rule 5.
@@ -209,7 +223,7 @@ install is every app pinned to the only site, which is why this costs a new
 adopter nothing.
 
 `cluster` is the opt-in variant: drop the stack's own `postgres` service, point
-it at `127.0.0.1:5000`, put its media in Garage. Two compose profiles per app,
+it at its own site's HAProxy (rule 2), put its media in Garage. Two compose profiles per app,
 and the toolkit picks one.
 
 Pinned is not restricted to a cloud VM — pinning to a home is equally valid. The
@@ -889,17 +903,27 @@ edited include.
 port is not behind it.** The gate renders as `forward_auth` inside the
 gateway's Caddy site block, so it covers requests that arrive through the
 gateway's hostname. It does not cover the port the app's own compose file
-publishes: `talk` above is `gate: members`, and its stack publishes
-`8080:8080`, so anyone who can open that port on the apps host reaches Mbin
-with no gate in front of it at all. The same is true of every gated app.
+publishes: `talk` above is `gate: members`, and its stack publishes port 8080,
+so anything that can open that port reaches Mbin with no gate in front of it at
+all. The same is true of every gated app.
 
-That is a real limit, not a subtlety, and the toolkit does not close it for
-you. What keeps it from being an open door today is that the apps hosts are
-expected to be on a private network rather than addressable from the internet,
-which is a property of the deployment and not of anything in this file. **An
-operator who needs the port itself protected has to do it at the host or the
-network** with a firewall rule, a bind address, or a network the host does not
-route, and should not read `gate: members` as having done it.
+**So every published port binds the site's mesh address and nothing else**
+(Eg: `"10.44.0.1:8080:8080"`, never `"8080:8080"`). The gateway reaches every
+app over the mesh, so the mesh is the only interface a port needs, and the
+members of the mesh are the hosts this deployment already trusts. Leaving the
+port on every interface and relying on a host firewall instead was the
+previous position, and it was rejected: Docker writes its own iptables rules
+for a published port, ahead of the host's, so a port published on all
+interfaces of a host with a public address is reachable from the internet
+whatever ufw says. A firewall the container runtime routes around is not a
+control, and a cloud VM holding the apps role is exactly that host.
+
+What remains the operator's is the mesh itself. A port on the mesh address is
+reachable from every mesh peer, so a compromised peer reaches the app ungated.
+`gate: members` is not protection against that, and nothing in this file
+claims it is. It also means `wg0` has to be up before the app stacks start,
+because Docker cannot publish on an address the host does not have yet; that
+is the ordering that step 4 under *`init`, one site, no mesh* already requires.
 
 **Leaving `gate` out of an app's stanza means the same thing as `gate: none`:
 ungated, reachable by anyone who can resolve the hostname.** That default has
@@ -1066,7 +1090,8 @@ paisans init --domain example.org --site home-a --ssh home-a.local
 4. **Bring up `wg0` with this site's address and an empty peer list.**
 5. Spilo as a cluster of one, etcd as a single member, HAProxy with one backend,
    Garage single-node.
-6. Apps start, pointed at `127.0.0.1:5000`.
+6. Apps start, pointed at this site's own HAProxy on its mesh address, port
+   5000.
 
 Step 4 is the one that is easy to skip and expensive to add later. A `wg0` with
 zero peers still provides `10.44.0.1`, and every service binds to it from the
@@ -1280,8 +1305,8 @@ redirects, and for anything checking addresses during a session, broken logins.
 **Set trusted proxies to the mesh subnet from the first install.** Then any node
 in the mesh can front the apps and the gateway role becomes genuinely portable.
 
-Same principle as apps connecting to `127.0.0.1:5000` rather than a named
-database host: an application should not know what is on the other side of an
+Same principle as apps connecting to their own site's HAProxy rather than a
+named database host: an application should not know what is on the other side of an
 indirection.
 
 ### What travels with the role

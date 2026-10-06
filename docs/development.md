@@ -320,9 +320,14 @@ use them are a job for `apply`.
 * **A pinned stack uses bind mounts under `/srv/<stack>/`**, never named
   volumes, so relocating it is one `tar`. A test walks every rendered compose
   file to confirm it.
-* **A clustered app has no Postgres service of its own** and connects to
-  `127.0.0.1:5000`. A pinned app gets its own container: an app that is pinned
-  must be pinned all the way down.
+* **A clustered app has no Postgres service of its own** and connects to the
+  HAProxy on its own site, at that site's mesh address and the cluster port
+  (Eg: `10.44.0.1:5000`), never `127.0.0.1`, which inside the app's container
+  is the container itself. A pinned app gets its own container: an app that is
+  pinned must be pinned all the way down.
+* **A published port binds the site's mesh address**, never every interface,
+  because Docker's iptables rules bypass a host firewall. A test walks every
+  rendered compose file to confirm it.
 * **Nothing rendered carries a floating image tag.** `latest` is refused in an
   operator's configuration, so a default that floated would be the toolkit
   refusing what it writes itself. A test walks every rendered compose file.
