@@ -222,8 +222,15 @@ func api(f *fakeIDP) *pocketid.Client {
 	return &pocketid.Client{Transport: f, BaseURL: "http://10.44.0.1:1411", APIKey: testKey}
 }
 
+// bare is the launch URL the toolkit set before kinds named a path, and
+// connect is Mbin's default now.
+const (
+	bare    = "https://talk.example.org"
+	connect = "https://talk.example.org/oauth/oidc/connect"
+)
+
 func talk() Desired {
-	return Desired{App: "talk", CallbackURL: "https://talk.example.org/oauth/oidc/verify", LaunchURL: "https://talk.example.org", PKCE: true, AdminGroup: "admins", AdminUser: "founder"}
+	return Desired{App: "talk", CallbackURL: "https://talk.example.org/oauth/oidc/verify", LaunchURL: connect, ToolkitLaunchURLs: []string{bare, connect}, PKCE: true, AdminGroup: "admins", AdminUser: "founder"}
 }
 
 func secretSource(values ...string) func() (string, error) {
@@ -269,7 +276,7 @@ func TestAFreshPlanShowsEverythingAndChangesNothing(t *testing.T) {
 	if fmt.Sprint(kinds(p)) != fmt.Sprint(want) {
 		t.Fatalf("planned %v, want %v", kinds(p), want)
 	}
-	if !strings.Contains(p.Steps[1].Line, `{"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false,"launchURL":"https://talk.example.org"}`) {
+	if !strings.Contains(p.Steps[1].Line, `{"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false,"launchURL":"https://talk.example.org/oauth/oidc/connect"}`) {
 		t.Errorf("the client line does not show the body: %s", p.Steps[1].Line)
 	}
 	if len(f.mutations) != 0 {
@@ -436,7 +443,7 @@ func TestAClientWithoutALaunchURLGetsOne(t *testing.T) {
 	if fmt.Sprint(kinds(p)) != fmt.Sprint([]StepKind{SetLaunchURL}) {
 		t.Fatalf("planned %v", kinds(p))
 	}
-	want := `set launch URL for client talk: PUT /api/oidc/clients/c-1 with launchURL "https://talk.example.org" and every other field sent back as it is now`
+	want := `set launch URL for client talk: PUT /api/oidc/clients/c-1 with launchURL "https://talk.example.org/oauth/oidc/connect" and every other field sent back as it is now`
 	if p.Steps[0].Line != want {
 		t.Errorf("line %q", p.Steps[0].Line)
 	}
@@ -451,7 +458,7 @@ func TestAClientWithoutALaunchURLGetsOne(t *testing.T) {
 	if err := json.Unmarshal([]byte(f.updates[0]), &sent); err != nil {
 		t.Fatal(err)
 	}
-	if sent["launchURL"] != "https://talk.example.org" || sent["isGroupRestricted"] != true || sent["pkceEnabled"] != true || sent["isPublic"] != false || sent["name"] != "talk" {
+	if sent["launchURL"] != connect || sent["isGroupRestricted"] != true || sent["pkceEnabled"] != true || sent["isPublic"] != false || sent["name"] != "talk" {
 		t.Errorf("sent %v", sent)
 	}
 	if _, ok := sent["logoUrl"]; ok {
@@ -491,7 +498,75 @@ func TestACustomisedLaunchURLIsLeftAlone(t *testing.T) {
 	if len(p.Steps) != 0 {
 		t.Fatalf("planned %v", kinds(p))
 	}
-	if !strings.Contains(strings.Join(p.Present, "\n"), "launch URL https://talk.example.org/magazines, not https://talk.example.org; left as it is") {
+	if !strings.Contains(strings.Join(p.Present, "\n"), "launch URL https://talk.example.org/magazines, not https://talk.example.org/oauth/oidc/connect; left as it is") {
 		t.Errorf("present %v", p.Present)
+	}
+	if len(p.Warnings) != 0 {
+		t.Errorf("warned with no sso_dashboard_link set: %v", p.Warnings)
+	}
+}
+
+// A client holding the bare host, which is what this toolkit sent before
+// Mbin's tile pointed at the connect route, is moved to the connect route,
+// and a second run plans nothing.
+func TestAClientOnTheOldDefaultMovesToTheConnectRoute(t *testing.T) {
+	f := withFounder(newFake())
+	rec := &memRecorder{}
+	if err := Execute(plan(t, f, talk(), Recorded{}), api(f), rec, secretSource("bare-secret-not-real-0001")); err != nil {
+		t.Fatal(err)
+	}
+	old := bare
+	f.clients[0].LaunchURL = &old
+	p := plan(t, f, talk(), rec.rec)
+	if fmt.Sprint(kinds(p)) != fmt.Sprint([]StepKind{SetLaunchURL}) {
+		t.Fatalf("planned %v", kinds(p))
+	}
+	if !strings.Contains(p.Steps[0].Line, `with launchURL "https://talk.example.org/oauth/oidc/connect"`) {
+		t.Errorf("line %q", p.Steps[0].Line)
+	}
+	if err := Execute(p, api(f), rec, func() (string, error) { return "", errors.New("must not generate") }); err != nil {
+		t.Fatal(err)
+	}
+	if got := *f.clients[0].LaunchURL; got != connect {
+		t.Errorf("launch URL is %s", got)
+	}
+	again := plan(t, f, talk(), rec.rec)
+	if len(again.Steps) != 0 {
+		t.Errorf("a second run plans %v", kinds(again))
+	}
+	if !strings.Contains(strings.Join(again.Present, "\n"), "present client talk launch URL "+connect) {
+		t.Errorf("present %v", again.Present)
+	}
+}
+
+// An operator's sso_dashboard_link moves a client off a toolkit default, but
+// a value the toolkit did not set is still left alone, with a warning naming
+// both values, because the configuration and the client now disagree.
+func TestAChosenLinkNeverOverwritesACustomValue(t *testing.T) {
+	f := withFounder(newFake())
+	rec := &memRecorder{}
+	if err := Execute(plan(t, f, talk(), Recorded{}), api(f), rec, secretSource("chosen-secret-not-real-0001")); err != nil {
+		t.Fatal(err)
+	}
+	d := talk()
+	d.LaunchURL, d.LaunchURLChosen = "https://talk.example.org/magazines", true
+	p := plan(t, f, d, rec.rec)
+	if fmt.Sprint(kinds(p)) != fmt.Sprint([]StepKind{SetLaunchURL}) {
+		t.Fatalf("from the toolkit's default, planned %v", kinds(p))
+	}
+
+	custom := "https://talk.example.org/m/meta"
+	f.clients[0].LaunchURL = &custom
+	p = plan(t, f, d, rec.rec)
+	if len(p.Steps) != 0 {
+		t.Fatalf("over a custom value, planned %v", kinds(p))
+	}
+	if len(p.Warnings) != 1 {
+		t.Fatalf("warnings %v", p.Warnings)
+	}
+	for _, want := range []string{"sso_dashboard_link", "https://talk.example.org/magazines", custom, "will not overwrite"} {
+		if !strings.Contains(p.Warnings[0], want) {
+			t.Errorf("warning lacks %q: %s", want, p.Warnings[0])
+		}
 	}
 }

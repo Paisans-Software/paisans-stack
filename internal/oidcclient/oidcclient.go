@@ -33,10 +33,20 @@ type Desired struct {
 	// its key under oidc_clients in the secrets file.
 	App         string
 	CallbackURL string
-	// LaunchURL is the app's own address, which lists the client on Pocket
-	// ID's dashboard. Empty plans nothing for it.
+	// LaunchURL is what the app's tile on Pocket ID's dashboard opens, and a
+	// client without one is not listed there. Empty plans nothing for it.
 	LaunchURL string
-	PKCE      bool
+	// ToolkitLaunchURLs are the launch URLs this toolkit has set by default
+	// (kinds.ToolkitLaunchURLs). An existing client holding one of them, or
+	// none, is moved to LaunchURL. Any other value is the operator's and is
+	// never overwritten.
+	ToolkitLaunchURLs []string
+	// LaunchURLChosen is whether the operator set LaunchURL through the app's
+	// sso_dashboard_link, rather than taking the kind's default. A custom
+	// value that differs from a chosen one is warned about, since the
+	// operator evidently wants the tile to go somewhere it does not.
+	LaunchURLChosen bool
+	PKCE            bool
 	// AdminGroup is the group whose members the app makes administrators, and
 	// MemberGroup the group a member must be in to sign in at all. Each is
 	// empty when the app's configuration names none. A member group also
@@ -126,7 +136,8 @@ const (
 	// live but the ID beside it is missing.
 	RecordClientID
 	AddUserToGroup
-	// SetLaunchURL gives an existing client the launch URL it lacks.
+	// SetLaunchURL gives an existing client the launch URL it lacks, or moves
+	// it off a value the toolkit set by default.
 	SetLaunchURL
 )
 
@@ -144,6 +155,9 @@ type Plan struct {
 	State    State
 	Present  []string
 	Steps    []Step
+	// Warnings are things the operator should know and the plan does not
+	// change. They do not stop the run.
+	Warnings []string
 }
 
 // Build decides the steps. It is a pure function of the probe and the
@@ -155,10 +169,12 @@ type Plan struct {
 // field (dto/oidc_dto.go:41-60), and a client somebody shaped by hand is not
 // this command's to reshape.
 //
-// The launch URL is the one exception, and only when it is empty: an empty
-// one is a client this command made before it set one, not a choice, and it
-// keeps the app off members' dashboards. A launch URL set to something else
-// may be deliberate and is left alone.
+// The launch URL is the one exception, and only when the toolkit put the
+// current value there: empty, which is a client made before this command set
+// one, or one of the toolkit's own earlier defaults (Desired.ToolkitLaunchURLs).
+// Neither is a choice anybody made. A launch URL set to anything else may be
+// deliberate and is left alone, with a warning when the operator has chosen a
+// different one in the configuration.
 func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 	p := &Plan{Desired: d, Recorded: rec, State: s}
 	if d.AdminUser != "" && d.AdminGroup == "" {
@@ -189,13 +205,20 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 		body, _ := json.Marshal(d.newClient())
 		p.Steps = append(p.Steps, Step{Kind: CreateClient, Line: fmt.Sprintf("create client %s: POST /api/oidc/clients %s", d.App, body)})
 	} else if d.LaunchURL != "" {
+		current := ""
+		if client.LaunchURL != nil {
+			current = *client.LaunchURL
+		}
 		switch {
-		case client.LaunchURL == nil || *client.LaunchURL == "":
-			p.Steps = append(p.Steps, Step{Kind: SetLaunchURL, Line: fmt.Sprintf("set launch URL for client %s: PUT /api/oidc/clients/%s with launchURL %q and every other field sent back as it is now", d.App, client.ID, d.LaunchURL)})
-		case *client.LaunchURL == d.LaunchURL:
+		case current == d.LaunchURL:
 			p.Present = append(p.Present, fmt.Sprintf("present client %s launch URL %s", d.App, d.LaunchURL))
+		case current == "" || d.setByToolkit(current):
+			p.Steps = append(p.Steps, Step{Kind: SetLaunchURL, Line: fmt.Sprintf("set launch URL for client %s: PUT /api/oidc/clients/%s with launchURL %q and every other field sent back as it is now", d.App, client.ID, d.LaunchURL)})
 		default:
-			p.Present = append(p.Present, fmt.Sprintf("present client %s launch URL %s, not %s; left as it is, since it may have been set deliberately", d.App, *client.LaunchURL, d.LaunchURL))
+			p.Present = append(p.Present, fmt.Sprintf("present client %s launch URL %s, not %s; left as it is, since it may have been set deliberately", d.App, current, d.LaunchURL))
+			if d.LaunchURLChosen {
+				p.Warnings = append(p.Warnings, fmt.Sprintf("apps.%s.settings.sso_dashboard_link gives launch URL %s, but client %s has %s, which this toolkit did not set and will not overwrite. To use the setting, clear the client's launch URL in Pocket ID's admin UI and re-run; to keep the client's, remove the setting or make it match", d.App, d.LaunchURL, d.App, current))
+			}
 		}
 	}
 
@@ -244,6 +267,17 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 		}
 	}
 	return p, nil
+}
+
+// setByToolkit reports whether a launch URL is one this toolkit sets by
+// default, and so is not an operator's choice.
+func (d Desired) setByToolkit(launchURL string) bool {
+	for _, u := range d.ToolkitLaunchURLs {
+		if u == launchURL {
+			return true
+		}
+	}
+	return false
 }
 
 // newClient is exactly what a create sends, and what the plan prints. A

@@ -19,6 +19,9 @@ type idpFake struct {
 	mutated     bool
 	client      *pocketid.OIDCClient
 	prefixes    []string
+	// launch is the launch URL a create must send. Empty means Mbin's
+	// default, the fork's connect route.
+	launch string
 }
 
 func (f *idpFake) Describe() string { return f.destination }
@@ -51,7 +54,10 @@ func (f *idpFake) RunInput(command, stdin string) (string, error) {
 		return reply(201, map[string]string{})
 	case strings.Contains(stdin, "/api/oidc/clients\""):
 		f.mutated = true
-		launch := "https://talk.example.org"
+		launch := f.launch
+		if launch == "" {
+			launch = "https://talk.example.org/oauth/oidc/connect"
+		}
 		if !strings.Contains(stdin, `\"launchURL\":\"`+launch+`\"`) {
 			return reply(400, map[string]string{"error": "no launch URL"})
 		}
@@ -99,7 +105,7 @@ func TestOIDCClientCreateDryRunWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"talk's client at auth on home-a (pocket-id)", "create client talk: POST /api/oidc/clients", `"pkceEnabled":true`, `"launchURL":"https://talk.example.org"`, "create client secret for talk", "Nothing was changed"} {
+	for _, want := range []string{"talk's client at auth on home-a (pocket-id)", "create client talk: POST /api/oidc/clients", `"pkceEnabled":true`, `"launchURL":"https://talk.example.org/oauth/oidc/connect"`, "create client secret for talk", "Nothing was changed"} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("output lacks %q:\n%s", want, printed)
 		}
@@ -165,5 +171,34 @@ func TestOIDCClientCreateRefusesAKindItDoesNotKnow(t *testing.T) {
 	}
 	if len(fake.commands) != 0 {
 		t.Error("a host was reached")
+	}
+}
+
+// sso_dashboard_link replaces the kind's path, and the host stays the app's.
+func TestOIDCClientCreateUsesTheDashboardLinkSetting(t *testing.T) {
+	raw, err := os.ReadFile(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := "    hostname: talk.example.org\n"
+	if !strings.Contains(string(raw), host) {
+		t.Fatal("the fixture no longer declares talk's hostname as expected")
+	}
+	edited := strings.Replace(string(raw), host, host+"    settings:\n      sso_dashboard_link: /magazines\n", 1)
+	cfg := filepath.Join(t.TempDir(), "paisans.yaml")
+	if err := os.WriteFile(cfg, []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := withIDPFake(t)
+	fake.launch = "https://talk.example.org/magazines"
+	path := tempSecrets(t)
+	printed := captureStdout(t, func() {
+		err = runOIDCClientCreate([]string{"--config", cfg, "--secrets", path, "--app", "talk", "--execute"})
+	})
+	if err != nil {
+		t.Fatalf("%v\n%s", err, printed)
+	}
+	if !strings.Contains(printed, `"launchURL":"https://talk.example.org/magazines"`) {
+		t.Errorf("output lacks the setting's launch URL:\n%s", printed)
 	}
 }

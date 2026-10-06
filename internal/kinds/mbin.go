@@ -17,6 +17,13 @@ func MbinRedirectURI(hostname string) string {
 	return "https://" + hostname + "/oauth/oidc/verify"
 }
 
+// MbinDashboardPath is where the identity provider's dashboard tile for an
+// Mbin app sends a member. The bare host lands them signed out, with a log in
+// button still to press; this route, oauth_oidc_connect in
+// config/mbin_routes/security.yaml at tag v1.13.3+paisans, starts the OIDC
+// flow, so picking the tile signs the member in.
+const MbinDashboardPath = "/oauth/oidc/connect"
+
 // OIDCClientSpec is what an app's client at the identity provider has to look
 // like for the app to sign anyone in. `paisans oidc client create` creates a
 // client to it and refuses an existing one that differs.
@@ -24,7 +31,9 @@ type OIDCClientSpec struct {
 	// CallbackURL is the one redirect URI the client must allow.
 	CallbackURL string
 	// LaunchURL is where Pocket ID's dashboard sends a member who picks the
-	// app, the app's own address. A client without one is not listed there.
+	// app: the app's own address plus the kind's DashboardPath. A client
+	// without one is not listed there. An app's sso_dashboard_link setting
+	// replaces the path; see LaunchURL.
 	LaunchURL string
 	// PKCE is whether the app always sends a code challenge, in which case a
 	// client with PKCE off refuses every sign in.
@@ -50,7 +59,7 @@ func OIDCClient(kind config.Kind, hostname string) (OIDCClientSpec, bool) {
 	case config.KindMbin:
 		return OIDCClientSpec{
 			CallbackURL:    MbinRedirectURI(hostname),
-			LaunchURL:      "https://" + hostname,
+			LaunchURL:      LaunchURL(kind, hostname, ""),
 			PKCE:           true,
 			AdminGroupKey:  "OAUTH_OIDC_ADMIN_GROUP",
 			MemberGroupKey: "OAUTH_OIDC_MEMBER_GROUP",

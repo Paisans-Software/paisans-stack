@@ -31,6 +31,7 @@ func TestRulesFire(t *testing.T) {
 		{"undeclared-site", "undeclared-site", validate.Refuse},
 		{"invalid-placement", "invalid-placement", validate.Refuse},
 		{"outline-bucket-named-outline", "outline-bucket-named-outline", validate.Refuse},
+		{"sso-dashboard-link-not-a-path", "sso-dashboard-link-not-a-path", validate.Refuse},
 		{"cluster-site-without-data-role", "cluster-site-without-data-role", validate.Refuse},
 		{"cluster-app-without-apps-site", "cluster-app-without-apps-site", validate.Refuse},
 		{"garage-replication-exceeds-sites", "garage-replication-exceeds-sites", validate.Refuse},

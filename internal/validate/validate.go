@@ -119,6 +119,7 @@ func Check(cfg *config.Config) Result {
 	c.undeclaredSites()
 	c.placementShape()
 	c.outlineBucketName()
+	c.dashboardLinkIsAPath()
 	c.clusterSiteWithoutData()
 	c.clusterAppWithoutAppsSite()
 	c.garageReplicationExceedsSites()
@@ -368,6 +369,22 @@ func (c *checker) outlineBucketName() {
 		if bucket == "outline" {
 			c.refuse("outline-bucket-named-outline", fmt.Sprintf("apps.%s.settings.s3_bucket", name),
 				"is \"outline\". Upstream Outline cannot use a bucket of that name. Choose another, for example %s-uploads.", name)
+		}
+	}
+}
+
+// dashboardLinkIsAPath refuses a sso_dashboard_link that is not a path on
+// the app's own hostname. `oidc client create` sends it to the identity
+// provider as part of a launch URL, so a malformed one is caught here, before
+// any client is planned, rather than at the provider.
+func (c *checker) dashboardLinkIsAPath() {
+	for _, name := range c.cfg.AppNames() {
+		v, ok := c.cfg.Apps[name].Settings[kinds.DashboardLinkSetting]
+		if !ok {
+			continue
+		}
+		if err := kinds.CheckDashboardLink(v); err != nil {
+			c.refuse("sso-dashboard-link-not-a-path", fmt.Sprintf("apps.%s.settings.%s", name, kinds.DashboardLinkSetting), "%s", err.Error())
 		}
 	}
 }

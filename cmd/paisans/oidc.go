@@ -117,14 +117,20 @@ func runOIDCClientCreate(args []string) error {
 	}
 
 	desired := oidcclient.Desired{
-		App:          *appName,
-		CallbackURL:  spec.CallbackURL,
-		LaunchURL:    spec.LaunchURL,
-		PKCE:         spec.PKCE,
-		AdminGroup:   configString(app, spec.AdminGroupKey),
-		MemberGroup:  configString(app, spec.MemberGroupKey),
-		AdminUser:    *adminUser,
-		RotateSecret: *rotate,
+		App:               *appName,
+		CallbackURL:       spec.CallbackURL,
+		LaunchURL:         spec.LaunchURL,
+		ToolkitLaunchURLs: kinds.ToolkitLaunchURLs(app.Kind, app.Hostname),
+		PKCE:              spec.PKCE,
+		AdminGroup:        configString(app, spec.AdminGroupKey),
+		MemberGroup:       configString(app, spec.MemberGroupKey),
+		AdminUser:         *adminUser,
+		RotateSecret:      *rotate,
+	}
+	// validate.Check above has refused a malformed one already.
+	if link, ok := app.Settings[kinds.DashboardLinkSetting].(string); ok {
+		desired.LaunchURL = kinds.LaunchURL(app.Kind, app.Hostname, link)
+		desired.LaunchURLChosen = true
 	}
 	// Refused before the host is reached, since no probe could change it.
 	if desired.AdminUser != "" && desired.AdminGroup == "" {
@@ -150,6 +156,9 @@ func runOIDCClientCreate(args []string) error {
 	}
 	for _, step := range plan.Steps {
 		fmt.Fprintf(os.Stdout, "  %s\n", step.Line)
+	}
+	for _, w := range plan.Warnings {
+		fmt.Fprintf(os.Stderr, "paisans: warning: %s\n", w)
 	}
 	if len(plan.Steps) == 0 {
 		return nil
