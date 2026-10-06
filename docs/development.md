@@ -304,6 +304,22 @@ their `~/.ssh/config` with its jump hosts and per host users, their
 `known_hosts`. An embedded client would have to reimplement that or, far worse,
 invite a toolkit specific way to hand it a private key.
 
+What the toolkit adds to the operator's ssh comes from the site's `ssh`
+section, and is pinned by a test of the exact argument list
+(`internal/apply/transport_test.go`):
+
+```
+ssh -p 22 -o IdentitiesOnly=yes -i /tmp/paisans-ssh-XXXX/key-1.pub -i /tmp/paisans-ssh-XXXX/key-2.pub ubuntu@203.0.113.10 <command>
+```
+
+The `-i` files are the listed **public** keys, written per invocation into a
+0700 directory and removed after. With `IdentitiesOnly`, ssh offers exactly
+those and signs with whichever one's private half is in the operator's agent;
+README's *How the operator's ssh uses them* cites ssh(1) and ssh_config(5) for
+it. `paisans.yaml` never names a private key, because it is shared by every
+admin and a private key is one admin's. `--ssh <destination>` replaces the
+section whole and is passed verbatim, as it was before the section existed.
+
 File contents go to the host over stdin rather than in a command line, because a
 rendered file carries credentials and a command line is visible in `ps` to every
 user on the host. Each write lands in a temporary file that is then moved, so a
@@ -539,6 +555,15 @@ before.
   reason a file configured application is the better case. A test asserts it
   against the fixture's placeholder credentials.
 * **Output is deterministic.** Sort before you iterate a map.
+* **host prepare removes only authorized keys it added**, as recorded in
+  `/etc/paisans/authorized_keys.<user>.owned`, and never rewrites a key's
+  comment to mark it. Removals run last, and a plan that would leave the user
+  with none of the listed keys is refused. Tests in
+  `internal/hostprep/hostprep_test.go` cover add, adopt, forget, remove, a
+  restricted key and that refusal.
+* **The SSH allow follows `ssh.port` and is never removed**, including the
+  allow for a port the site used before. A test moves the port and asserts the
+  old allow is kept and noted.
 
 ## What is not here yet
 
