@@ -976,6 +976,58 @@ ssh <site-a> docker compose -f /srv/infra/compose.yaml exec -T garage \
 `garage status` on either node should then list both. Run `paisans storage init
 --site <name> --execute` for each site afterwards, in either order.
 
+### A data site's watchdog is declared, not assumed
+
+Patroni fences itself with `/dev/watchdog`: if it stops renewing the timer
+while it is leader, the machine reboots before another node's promotion can
+leave two primaries taking writes. The rendered Patroni runs with
+`PATRONI_WATCHDOG_MODE=required` and maps `/dev/watchdog` into its container,
+so on a data site without a device compose will not even create the container.
+
+Which device a host has is a property of the machine, not of the deployment: a
+board with an Intel TCO timer (`iTCO_wdt`), an AMD one (`sp5100_tco`), a server
+with a BMC (`ipmi_watchdog`), a VM with an emulated one (`i6300esb`), or a small
+cloud instance with nothing. So it is a per site key, read only where the site
+holds the data role:
+
+```yaml
+sites:
+  home-a:
+    roles: [data, apps]
+    address: 10.44.0.1
+    ssh: home-a.local
+    watchdog: auto   # auto | required | softdog | off; auto when absent
+```
+
+| Mode | What `host prepare` does | What is rendered |
+|------|---------------------------|------------------|
+| `auto` | uses the device the host has, whatever its driver; with none, loads and persists `softdog` and prints a warning | `required`, device mapped |
+| `required` | refuses unless a driver other than `softdog` is present | `required`, device mapped |
+| `softdog` | loads and persists `softdog`, without a warning | `required`, device mapped |
+| `off` | nothing | `PATRONI_WATCHDOG_MODE=off`, no device mapping |
+
+**`softdog` is a fallback, never the assumption.** It is a kernel timer, so it
+reboots a machine whose Patroni hung but not one whose kernel did, and a hung
+kernel is exactly the case where the node cannot fence itself any other way. A
+hardware or hypervisor watchdog is better wherever one exists. Assuming
+`softdog` everywhere would have been simpler to write and would have quietly
+downgraded every host that had a real one; `auto` takes the real one when it
+is there.
+
+**`off` is a warning, not a refusal** (`watchdog-off-on-data-site`). Some hosts
+genuinely cannot load any driver, and a single data site has nobody to split
+brain with. It is still risky once a second data site exists, so it has to be
+chosen rather than stumbled into. `off` also drops the device mapping from the
+infrastructure compose file: compose will not create a container whose device
+does not exist, so keeping the mapping would fail the exact host `off` is for.
+
+**Only one process can hold the device, and it has to be Patroni.** `host
+prepare` refuses a host where systemd's own runtime watchdog
+(`RuntimeWatchdogSec`) is set or a `watchdog` daemon is running, rather than
+leaving Patroni to fail to open the device at its first start. This is the
+host side of the one Patroni per data bearing host rule in *There is one HA
+cluster, and that is deliberate*.
+
 ### Decryption happens on a workstation, not on a host
 
 Rendering locally and pushing means no age key ever reaches a host. That

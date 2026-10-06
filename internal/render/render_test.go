@@ -1744,3 +1744,34 @@ services:
 		}
 	}
 }
+
+// watchdog: off is the one mode that changes what is rendered. Patroni is told
+// not to want a device, and the compose file stops mapping one: compose refuses
+// to create a container whose device does not exist, so leaving the mapping in
+// would fail the very host that has no watchdog. Every other mode renders as
+// the golden tree does, required and mapped, and only the site that declared
+// off changes.
+func TestWatchdogOffRendersPatroniWithoutTheDevice(t *testing.T) {
+	cfg := fixture(t)
+	site := cfg.Sites["home-b"]
+	site.Watchdog = config.WatchdogOff
+	cfg.Sites["home-b"] = site
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+
+	if env := files["home-b/srv/infra/patroni.env"]; !strings.Contains(env, "PATRONI_WATCHDOG_MODE=off\n") {
+		t.Errorf("home-b declared watchdog off and its patroni.env says otherwise:\n%s", env)
+	}
+	if compose := files["home-b/srv/infra/compose.yaml"]; strings.Contains(compose, "/dev/watchdog") {
+		t.Errorf("home-b declared watchdog off and its compose still maps the device:\n%s", compose)
+	}
+	if env := files["home-a/srv/infra/patroni.env"]; !strings.Contains(env, "PATRONI_WATCHDOG_MODE=required\n") {
+		t.Errorf("home-a did not declare off and lost its watchdog:\n%s", env)
+	}
+	if compose := files["home-a/srv/infra/compose.yaml"]; !strings.Contains(compose, "- /dev/watchdog:/dev/watchdog") {
+		t.Errorf("home-a did not declare off and lost its device mapping:\n%s", compose)
+	}
+}

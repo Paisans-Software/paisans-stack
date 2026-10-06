@@ -97,6 +97,9 @@ type siteView struct {
 	IsGarage   bool
 	Apps       []plannedApp
 	NeedsProxy bool
+	// WatchdogOff renders Patroni without fencing and drops the device
+	// mapping, which compose would otherwise refuse to start without.
+	WatchdogOff bool
 }
 
 type planner struct {
@@ -126,6 +129,8 @@ func Build(cfg *config.Config, secrets *config.Secrets) (*Plan, error) {
 			IsWitness: site.Has(config.RoleWitness),
 			IsEtcd:    contains(cfg.Etcd.Members, name),
 			IsGarage:  contains(cfg.Storage.Garage.Sites, name),
+
+			WatchdogOff: site.WatchdogMode() == config.WatchdogOff,
 		}
 	}
 

@@ -217,3 +217,33 @@ func TestExampleLoads(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A site that says nothing about its watchdog gets auto, which uses whatever
+// device the host has. Making every operator write the default out would put a
+// line in every site block that nobody reads.
+func TestWatchdogDefaultsToAuto(t *testing.T) {
+	cfg, err := config.Load(write(t, minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Sites["home-a"].WatchdogMode(); got != config.WatchdogAuto {
+		t.Fatalf("an undeclared watchdog is %q, want auto", got)
+	}
+}
+
+// A misspelt mode is refused at load rather than read as auto, because auto
+// on a host with no device loads a module the operator may have meant to
+// rule out.
+func TestUnknownWatchdogModeIsRefused(t *testing.T) {
+	body := strings.Replace(minimal, "    ssh: home-a.local\n", "    ssh: home-a.local\n    watchdog: hardware\n", 1)
+	_, err := config.Load(write(t, body))
+	if err == nil || !strings.Contains(err.Error(), "sites.home-a.watchdog") {
+		t.Fatalf("an unknown watchdog mode loaded: %v", err)
+	}
+	for _, mode := range []string{"auto", "required", "softdog", "off"} {
+		body := strings.Replace(minimal, "    ssh: home-a.local\n", "    ssh: home-a.local\n    watchdog: "+mode+"\n", 1)
+		if _, err := config.Load(write(t, body)); err != nil {
+			t.Errorf("watchdog %s was refused: %v", mode, err)
+		}
+	}
+}

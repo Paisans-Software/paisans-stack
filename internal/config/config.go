@@ -140,6 +140,43 @@ type Site struct {
 	Address  string `yaml:"address"`
 	Endpoint string `yaml:"endpoint"`
 	SSH      string `yaml:"ssh"`
+	// Watchdog is how `host prepare` gives Patroni a /dev/watchdog on this
+	// site. It only matters where the site holds the data role. Empty means
+	// auto; read it through WatchdogMode rather than directly.
+	Watchdog WatchdogMode `yaml:"watchdog"`
+}
+
+// WatchdogMode is how a data site's watchdog device is provided.
+//
+// It is declared per site because the answer is a property of the machine: a
+// board with an iTCO timer, a VM with an emulated i6300esb, and a small cloud
+// instance with nothing at all each want a different one, and the toolkit
+// cannot tell which from the configuration alone.
+type WatchdogMode string
+
+const (
+	// WatchdogAuto uses whatever device the host already has, whatever its
+	// driver, and falls back to loading softdog with a warning.
+	WatchdogAuto WatchdogMode = "auto"
+	// WatchdogRequired refuses a host whose only watchdog is softdog, or
+	// which has none.
+	WatchdogRequired WatchdogMode = "required"
+	// WatchdogSoftdog loads and persists softdog because the operator chose
+	// it, so no warning is printed.
+	WatchdogSoftdog WatchdogMode = "softdog"
+	// WatchdogOff leaves the host alone and renders Patroni without a
+	// watchdog at all.
+	WatchdogOff WatchdogMode = "off"
+)
+
+var knownWatchdogModes = map[WatchdogMode]bool{WatchdogAuto: true, WatchdogRequired: true, WatchdogSoftdog: true, WatchdogOff: true}
+
+// WatchdogMode returns the site's declared mode, auto when none is declared.
+func (s Site) WatchdogMode() WatchdogMode {
+	if s.Watchdog == "" {
+		return WatchdogAuto
+	}
+	return s.Watchdog
 }
 
 // Has reports whether the site declares a role.
@@ -432,6 +469,9 @@ func (c *Config) structural() error {
 			add("sites.%s.address: required. Every site needs a mesh address, and it never changes.", name)
 		} else if !isIPv4(site.Address) {
 			add("sites.%s.address: %q is not an IPv4 address. Use the site's WireGuard address, for example 10.44.0.1.", name, site.Address)
+		}
+		if site.Watchdog != "" && !knownWatchdogModes[site.Watchdog] {
+			add("sites.%s.watchdog: unknown mode %q. Valid modes are auto, required, softdog and off.", name, site.Watchdog)
 		}
 		if site.SSH == "" {
 			add("sites.%s.ssh: required. It is the bootstrap route, used once before the mesh exists, so it must be an address you can already reach.", name)

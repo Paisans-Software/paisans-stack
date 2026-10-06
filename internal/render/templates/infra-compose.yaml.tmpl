@@ -38,10 +38,12 @@ services:
       - patroni.env
     volumes:
       - /srv/infra/postgres:/home/postgres/pgdata
+{{- if not .Site.WatchdogOff }}
     # Fencing needs the watchdog, and there is exactly one Patroni per data
     # bearing host, so there is exactly one claimant for the device.
     devices:
       - /dev/watchdog:/dev/watchdog
+{{- end }}
 {{- end }}
 {{- if .Site.NeedsProxy }}
   haproxy:
