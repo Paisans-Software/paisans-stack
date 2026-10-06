@@ -40,6 +40,11 @@ var appPort = map[config.Kind]int{
 	config.KindWriteFreely: 8080,
 }
 
+// AppPort is the port a kind listens on, which is also the port it publishes
+// on its site's mesh address. A command that calls an application's own API
+// from its host needs it, and reading it here keeps one number in one place.
+func AppPort(kind config.Kind) int { return appPort[kind] }
+
 // gateMembersPort is the oauth2-proxy kind's second instance, one port above
 // the primary. It is a literal here, not appPort[config.KindOAuth2Proxy]+1:
 // the kind ships exactly two fixed ports, both declared explicitly in

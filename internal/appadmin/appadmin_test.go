@@ -113,7 +113,7 @@ func TestPresentAdminPlansNothingAndExecutesNothing(t *testing.T) {
 	if got := plan.Lines(); !reflect.DeepEqual(got, []string{"present founder"}) {
 		t.Errorf("lines %v", got)
 	}
-	if err := Execute(plan, f); err != nil {
+	if _, err := Execute(plan, f); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.calls) != 1 {
@@ -129,7 +129,7 @@ func TestExecuteCreateKeepsThePasswordOnStdin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Execute(plan, f); err != nil {
+	if _, err := Execute(plan, f); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.calls) != 3 {
@@ -153,7 +153,7 @@ func TestExecuteNeverResetsAnExistingPasswordUnasked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Execute(plan, f); err != nil {
+	if _, err := Execute(plan, f); err != nil {
 		t.Fatal(err)
 	}
 	run := decodePayload(t, f.calls[1].stdin)
@@ -168,7 +168,7 @@ func TestExecuteFailureRedactsThePassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = Execute(plan, f)
+	_, err = Execute(plan, f)
 	if err == nil {
 		t.Fatal("a failed run reported success")
 	}
@@ -181,14 +181,14 @@ func TestExecuteRefusesWhenTheResultIsNotAnAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Execute(plan, f); err == nil || !strings.Contains(err.Error(), "admin=false") {
+	if _, err := Execute(plan, f); err == nil || !strings.Contains(err.Error(), "admin=false") {
 		t.Errorf("got %v, want a refusal naming the missing admin role", err)
 	}
 }
 
 func TestUnsupportedKind(t *testing.T) {
 	_, err := Build(config.KindOutline, &fakeTransport{}, request())
-	if err == nil || err.Error() != "outline admin creation is not implemented yet. Implemented kinds: mbin" {
+	if err == nil || err.Error() != "outline admin creation is not implemented yet. Implemented kinds: mbin, pocket-id" {
 		t.Errorf("got %v", err)
 	}
 }

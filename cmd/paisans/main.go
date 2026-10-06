@@ -45,6 +45,9 @@ Usage:
   paisans app admin create --app <name> --username <u> --email <e> [--site <name>]
                [--config paisans.yaml] [--ssh <destination>] [--reset-password]
                [--execute] < password
+  paisans app admin create --app <pocket-id app> --username <u> [--email <e>]
+               [--first-name <f>] [--last-name <l>] [--login-link]
+               [--secrets secrets.enc.yaml] [--site <name>] [--execute]
 
 Commands:
   validate   Load the configuration and report every problem found.
@@ -69,7 +72,9 @@ Commands:
   app        admin create: make sure a user exists, is verified and is an
              administrator of one app, reading the password from stdin.
              Never changes an existing password without --reset-password.
-             Writes nothing without --execute. Mbin only, so far.
+             For pocket-id there is no password: a created account gets a
+             one-time login link, printed once, to register a passkey with.
+             Writes nothing without --execute. Mbin and pocket-id, so far.
 
 host prepare, apply, storage init and app admin create are the only commands
 that reach a host.
