@@ -765,18 +765,23 @@ func TestAStoppedApplyResumes(t *testing.T) {
 	if len(again.Writes()) != 0 {
 		t.Fatalf("the files were written the first time, yet %d would be written again", len(again.Writes()))
 	}
-	owed := map[string]bool{}
+	owed := map[string]apply.Action{}
 	for _, action := range again.Actions {
-		owed[action.Stack] = action.Recreate
+		owed[action.Stack] = action
 	}
-	if recreate, ok := owed["talk"]; !ok || !recreate {
-		t.Fatalf("the stopped stack is not owed a recreate: %v", again.Actions)
+	if action, ok := owed["talk"]; !ok || !action.Recreate || !action.Force {
+		t.Fatalf("the stopped stack is not owed a forced recreate: %+v", again.Actions)
+	}
+	// infra finished before talk failed, so it left the record. Owing it
+	// again would force-recreate a stack that was fine.
+	if _, ok := owed["infra"]; ok {
+		t.Errorf("a stack that finished is still owed: %+v", again.Actions)
 	}
 	if err := apply.Execute(again, host); err != nil {
 		t.Fatal(err)
 	}
-	if !host.ran("/srv/talk/compose.yaml up -d") {
-		t.Error("the resumed apply did not start the stack the first one stopped at")
+	if !host.ran("/srv/talk/compose.yaml up -d --force-recreate") {
+		t.Error("the resumed apply did not force-recreate the stack the first one stopped at")
 	}
 
 	third, err := apply.Build("home-a", plan(t), acmeModule(t), host)
@@ -1169,7 +1174,7 @@ func TestOverwriteReplacesOnlyTheNamedConflict(t *testing.T) {
 	host.files["/srv/infra/patroni.env"] = "edited on the host\n"
 	host.files["/srv/infra/haproxy/haproxy.cfg"] = "also edited\n"
 
-	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, "/srv/infra/patroni.env")
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/infra/patroni.env"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1193,7 +1198,7 @@ func TestOverwriteReplacesOnlyTheNamedConflict(t *testing.T) {
 		t.Error("a refused apply still wrote the overwritten file")
 	}
 
-	p, err = apply.Build("home-a", plan(t), acmeModule(t), host, "/srv/infra/patroni.env", "/srv/infra/haproxy/haproxy.cfg")
+	p, err = apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/infra/patroni.env", "/srv/infra/haproxy/haproxy.cfg"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1215,8 +1220,91 @@ func TestOverwriteReplacesOnlyTheNamedConflict(t *testing.T) {
 // A path that is not a conflict is refused, so a typo cannot pass for consent.
 func TestOverwriteRefusesAPathThatIsNoConflict(t *testing.T) {
 	host := newHost()
-	_, err := apply.Build("home-a", plan(t), acmeModule(t), host, "/srv/infra/patroni.evn")
+	_, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/infra/patroni.evn"))
 	if err == nil || !strings.Contains(err.Error(), "names no conflicting file") {
 		t.Fatalf("a mistyped --overwrite was accepted: %v", err)
+	}
+}
+
+// A resumed stack is force-recreated even when its files did not change. On a
+// real host an `up -d` failed part way and left Mbin's app container created
+// with no network; the resumed plain `up -d` saw an unchanged configuration
+// and started that container as it was.
+func TestAResumedStackIsForceRecreated(t *testing.T) {
+	host := applied(t, "home-a")
+	host.files["/srv/.paisans-pending.json"] = `{"version":1,"actions":[{"stack":"talk","recreate":true}]}`
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Actions) != 1 || p.Actions[0].Stack != "talk" || !p.Actions[0].Force {
+		t.Fatalf("an owed stack plans %+v, want talk force-recreated", p.Actions)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if !host.ran("docker compose -f /srv/talk/compose.yaml up -d --force-recreate") {
+		t.Errorf("the owed stack was not force-recreated: %v", host.commands)
+	}
+}
+
+// An ordinary change is never forced: that would replace every container of
+// a stack on every apply.
+func TestAnOrdinaryChangeIsNotForced(t *testing.T) {
+	host := newHost()
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range p.Actions {
+		if action.Force {
+			t.Errorf("a first apply forces %s", action.Stack)
+		}
+	}
+}
+
+// --recreate plans a named stack although nothing changed, keeps the
+// infrastructure first, and still creates databases before an app starts.
+func TestRecreateForcesANamedStack(t *testing.T) {
+	host := applied(t, "home-a")
+	cfg, secrets := fixture(t)
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Recreate("talk", "infra"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Actions) != 2 || p.Actions[0].Stack != "infra" || p.Actions[1].Stack != "talk" {
+		t.Fatalf("--recreate talk infra plans %+v, want infra then talk", p.Actions)
+	}
+	for _, action := range p.Actions {
+		if !action.Force {
+			t.Errorf("%s was named and is not forced", action.Stack)
+		}
+	}
+	b, err := apply.Databases(cfg, secrets, "home-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.WithDatabases(b)
+	noWait(t)
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	infra := host.indexOf("/srv/infra/compose.yaml up -d --force-recreate")
+	psql := host.indexOf("psql")
+	talk := host.indexOf("/srv/talk/compose.yaml up -d --force-recreate")
+	if infra < 0 || psql < 0 || talk < 0 || !(infra < psql && psql < talk) {
+		t.Errorf("want infra, then the databases, then talk: %v", host.commands)
+	}
+	if host.ran("/srv/docs/compose.yaml") {
+		t.Error("a stack nobody named was acted on")
+	}
+}
+
+// A stack this site does not render is refused, so a typo is not a no-op.
+func TestRecreateRefusesAnUnknownStack(t *testing.T) {
+	host := newHost()
+	_, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Recreate("tlak"))
+	if err == nil || !strings.Contains(err.Error(), "names no stack this site renders") {
+		t.Fatalf("an unknown --recreate was accepted: %v", err)
 	}
 }
