@@ -17,8 +17,20 @@ import (
 // apply needs to read.
 type emptyHost struct{}
 
-func (emptyHost) Describe() string                        { return "home-a.local" }
-func (emptyHost) Run(string) (string, error)              { return "down\n", nil }
+func (emptyHost) Describe() string { return "home-a.local" }
+func (emptyHost) Run(command string) (string, error) {
+	// Every image is present, so the plan carries no disk check; apply's
+	// own tests cover that.
+	if list, ok := strings.CutPrefix(command, "for r in "); ok {
+		list, _, _ = strings.Cut(list, "; do")
+		var out strings.Builder
+		for _, ref := range strings.Fields(list) {
+			out.WriteString("present sha256:0123456789abcdef " + strings.Trim(ref, "'") + "\n")
+		}
+		return out.String(), nil
+	}
+	return "down\n", nil
+}
 func (emptyHost) RunInput(string, string) (string, error) { return "", nil }
 func (emptyHost) ReadFile(string) (string, bool, error)   { return "", false, nil }
 func (emptyHost) WriteFile(string, string, uint32) error  { return nil }

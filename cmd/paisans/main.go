@@ -37,7 +37,7 @@ Usage:
                [--execute]
   paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                    [--ssh <destination>] [--overwrite <path>]... [--recreate <stack>]...
-                   [--execute]
+                   [--min-free <size>] [--keep-images] [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
@@ -293,9 +293,15 @@ func runApply(args []string) error {
 	fs.Var(&overwrite, "overwrite", "replace this conflicting file although it differs from the last apply's record (repeatable)")
 	var recreate pathList
 	fs.Var(&recreate, "recreate", "replace every container of this stack with `up -d --force-recreate`, even if nothing changed (repeatable)")
+	minFree := fs.String("min-free", "3G", "free space Docker's data root must have before a stack pulls an image, Eg: 2G")
+	keepImages := fs.Bool("keep-images", false, "leave the images this apply supersedes on the host, Eg: to keep one to roll back to")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	needFree, err := apply.ParseSize(*minFree)
+	if err != nil {
+		return fmt.Errorf("apply: --min-free: %w", err)
 	}
 	if *site == "" {
 		return fmt.Errorf("apply: --site is required. A site at a time is deliberate: a staged change that half succeeds across three machines is worse than one that failed on one")
@@ -347,7 +353,11 @@ func runApply(args []string) error {
 	}
 
 	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
-	plan, err := apply.Build(*site, rendered, acme.Module(cfg.ACME.Provider), transport, apply.Overwrite(overwrite...), apply.Recreate(recreate...))
+	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree)}
+	if *keepImages {
+		options = append(options, apply.KeepImages())
+	}
+	plan, err := apply.Build(*site, rendered, acme.Module(cfg.ACME.Provider), transport, options...)
 	if err != nil {
 		return err
 	}
@@ -523,6 +533,9 @@ func printGaragePlan(plan *garage.Plan) {
 
 func printPlan(plan *apply.Plan) {
 	fmt.Fprintf(os.Stdout, "%s (%s)\n", plan.Site, plan.Transport)
+	if plan.Disk != nil {
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "check", plan.Disk.Describe())
+	}
 	var unchanged int
 	for _, change := range plan.Changes {
 		if change.Kind == apply.Unchanged {
@@ -556,6 +569,11 @@ func printPlan(plan *apply.Plan) {
 		}
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n      %s\n", verb, stack, action.Reason)
 		fmt.Fprintf(os.Stdout, "  %-9s %s: every container running, and healthy where it has a healthcheck, before anything after it moves\n", "check", action.Stack)
+		for _, prune := range plan.Prunes {
+			if prune.Stack == action.Stack {
+				fmt.Fprintf(os.Stdout, "  %-9s %s, superseded, once %s is healthy and if no container still uses it\n", "prune", prune.Ref, action.Stack)
+			}
+		}
 	}
 	if !bootstrapped {
 		printBootstrap(plan.Bootstrap)

@@ -132,6 +132,18 @@ type Plan struct {
 	// It runs after the infrastructure stack and before any app stack, and a
 	// failure stops the apply there. See WithDatabases.
 	Bootstrap *Bootstrap
+	// Disk is the free space check on Docker's data root, nil when no stack
+	// action will pull an image. Execute refuses before writing anything when
+	// it is short. See DiskCheck.
+	Disk *DiskCheck
+	// Prunes are the images on the host that this apply's stacks supersede,
+	// as Build saw them. Execute reads the host again after each stack is
+	// healthy, and removes only what no container uses by then.
+	Prunes []Prune
+	// KeepImages skips pruning for this run, as --keep-images does.
+	KeepImages bool
+	// images is what each stack of this site renders, from its compose file.
+	images map[string][]string
 	// Progress receives what Execute decided along the way that is not an
 	// error, such as a replica leaving the database work to the leader. Nil
 	// discards it.
@@ -257,8 +269,23 @@ const wireguardProbe = "if ip link show wg0 >/dev/null 2>&1; then echo up; else 
 type Option func(*options)
 
 type options struct {
-	overwrite []string
-	recreate  []string
+	overwrite  []string
+	recreate   []string
+	minFree    int64
+	minFreeSet bool
+	keepImages bool
+}
+
+// KeepImages leaves superseded images on the host for this run, as
+// --keep-images does, for an operator who wants the old image to roll back to.
+func KeepImages() Option {
+	return func(o *options) { o.keepImages = true }
+}
+
+// MinFree sets the free space an apply needs on Docker's data root before it
+// pulls an image, as --min-free does. The default is DefaultMinFree.
+func MinFree(bytes int64) Option {
+	return func(o *options) { o.minFree, o.minFreeSet = bytes, true }
 }
 
 // Overwrite names conflicting files that may be replaced anyway, one path
@@ -441,6 +468,15 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
 
+	need := DefaultMinFree
+	if o.minFreeSet {
+		need = o.minFree
+	}
+	out.KeepImages = o.keepImages
+	if err := out.probeImages(need, t); err != nil {
+		return nil, fmt.Errorf("%s: %w", site, err)
+	}
+
 	out.GatewayReload = isGateway && (routingChanged || resumed.GatewayReload)
 	out.GatewayChanging = isGateway && (routingChanged || gatewayComposeChanged || resumed.GatewayChanging)
 	if out.GatewayChanging {
@@ -519,6 +555,14 @@ func Execute(plan *Plan, t Transport) error {
 		return fmt.Errorf(
 			"%s: %d file(s) were edited on the host and would be overwritten:\n  %s\nRendered files are build artifacts and nothing edits them in place, so a difference here is a change somebody made on the machine. Copy what is wanted into the configuration and apply again, or, once you have looked at a file and want the rendered one, name it with --overwrite <path>",
 			plan.Site, len(conflicts), strings.Join(names, "\n  "))
+	}
+
+	// A pull that fills the disk fails part way through a stack's action,
+	// with the old containers stopped and the new image half written, and it
+	// takes the database and every log down with it. Refusing here, before the
+	// first write, leaves the host exactly as it was.
+	if plan.Disk.Short() {
+		return diskRefusal(plan)
 	}
 
 	// Record what this apply owes before writing anything. Files that land
@@ -649,6 +693,11 @@ func Execute(plan *Plan, t Transport) error {
 		// here is resumed, and force-recreated, by the next apply.
 		if err := waitHealthy(plan, action.Stack, t); err != nil {
 			return err
+		}
+		// Only now, with the stack healthy on its new image, is the old one
+		// safe to lose. Before the gate it is the image a rollback would use.
+		if !plan.KeepImages {
+			pruneStack(plan, action.Stack, t)
 		}
 		// The stack is done, so it leaves the record. Left in, a later stack
 		// failing would have the next apply force-recreate this one too, an

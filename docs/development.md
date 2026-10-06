@@ -161,6 +161,31 @@ still gates the database bootstrap. `ps` output is read in both shapes Compose
 has printed: one JSON object per line (current, `cmd/formatter/container.go`)
 and one JSON array (older v2 releases, `cmd/formatter/formatter.go`).
 
+**A pull onto a nearly full disk is refused before anything is written.** On
+the first real host (10 GB root disk) the deployed stacks left 1.8 GB free,
+and an Mbin upgrade pulls a 1.4 GB image beside the old one. `Build` probes
+every rendered image with `docker image inspect` in one loop that prints
+`present <id> <ref>` or `absent <ref>` per image; an output missing any image
+is an error rather than "present", so a garbled probe cannot skip the check.
+When a recreated stack names an absent image, `Build` reads Docker's data root
+and its free space, and `Plan.Disk` carries the numbers; the dry run prints
+them as `check disk:`, and `Execute` refuses first, before the pending record.
+The default is 3 GiB, `apply --min-free <size>` overrides it for one run, and
+the refusal quotes `docker system df`. README.md "`apply` checks free space
+before it pulls" has the rejected alternatives.
+
+**A healthy stack's superseded images are pruned.** After the health gate,
+`Execute` lists images (`docker image ls --no-trunc --format json`), reprobes
+the rendered images' IDs and what every container uses (`docker ps -a` names
+plus `docker container inspect` IDs), and runs `docker image rm <id>` for each
+image from that stack's repositories that no stack of the site renders and no
+container uses. A failed removal goes to `Progress` as a warning. `Build` lists
+the same candidates, without the container filter, as `Plan.Prunes`, printed
+as `prune` lines. `apply --keep-images` skips both. IDs are compared by
+prefix with `sha256:` stripped, since Docker prints them full or 12
+characters short. README.md "`apply` prunes the images it superseded" has the
+rejected alternatives (`docker image prune -a`, keeping N versions).
+
 **Files are recorded as soon as they land.** The manifest is written right
 after the files, and again at the end, not only on success. A manifest written
 only on success made every file of a failed first apply look like somebody
