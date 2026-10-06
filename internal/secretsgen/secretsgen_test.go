@@ -234,7 +234,7 @@ func TestAnMbinOwedClientNamesItsRedirectURIAndPKCE(t *testing.T) {
 	if why == "" {
 		t.Fatal("the Mbin app's client was not reported as owed at all")
 	}
-	for _, want := range []string{kinds.MbinRedirectURI(cfg.Apps["talk"].Hostname), "PKCE"} {
+	for _, want := range []string{kinds.MbinRedirectURI(cfg.Apps["talk"].Hostname), "PKCE", "paisans oidc client create --app talk"} {
 		if !strings.Contains(why, want) {
 			t.Errorf("the owed client does not name %q:\n%s", want, why)
 		}

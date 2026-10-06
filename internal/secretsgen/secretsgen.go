@@ -488,13 +488,15 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 				", which is the authentication service's callback for this upstream provider and not the /oauth/callback every other kind uses"
 		}
 		if cfg.Apps[name].Kind == config.KindMbin {
-			// The same reasoning as the homeserver's above. PKCE is named
-			// because the fork's OidcClient extends KnpU's OAuth2PKCEClient
-			// and always sends a code challenge (src/Security/Oidc/OidcClient.php
-			// at tag v1.13.3+paisans), so a client with PKCE off at the
-			// provider refuses every sign in.
-			why += ". Register its redirect URI as " + kinds.MbinRedirectURI(cfg.Apps[name].Hostname) +
-				", and enable PKCE on it: Mbin always sends a code challenge"
+			// The toolkit creates this one itself, so the instruction is the
+			// command. The redirect URI and PKCE are still named, because they
+			// are what the command creates and what an operator checking an
+			// existing client needs to see: the fork's OidcClient extends
+			// KnpU's OAuth2PKCEClient and always sends a code challenge
+			// (src/Security/Oidc/OidcClient.php:18 at tag v1.13.3+paisans).
+			why = "created at the identity provider by `paisans oidc client create --app " + name +
+				"`, which records the client ID and secret here itself. It shows each Pocket ID mutation and changes nothing until it is re-run with --execute, and that re-run is the human approval. The client's redirect URI is " +
+				kinds.MbinRedirectURI(cfg.Apps[name].Hostname) + ", with PKCE enabled: Mbin always sends a code challenge"
 		}
 		out = append(out, Owed{Name: "oidc_clients." + name, Why: why})
 	}
@@ -634,6 +636,14 @@ func wireGuardPrivateKey() (string, error) {
 	raw[31] |= 64
 	return base64.StdEncoding.EncodeToString(raw), nil
 }
+
+// ClientSecret is a new OIDC client secret, in the same shape as every other
+// generated password: 43 characters of unpadded base64url, which is printable
+// ASCII and well over the 16 characters Pocket ID requires of a supplied
+// secret (dto/oidc_dto.go:80 at tag v2.14.0). It is generated here rather
+// than by the identity provider so that it can be recorded before the
+// provider is sent it.
+func ClientSecret() (string, error) { return password() }
 
 // OwedNames is the names Fill would report as owed, without generating
 // anything. `secrets set` uses it to accept exactly the keys an operator has
