@@ -112,7 +112,7 @@ func TestFillCoversWhatWasAddedLater(t *testing.T) {
 	cfg.Sites["home-c"] = config.Site{
 		Roles:   []config.Role{config.RoleData, config.RoleApps},
 		Address: "10.44.0.4",
-		SSH:     "home-c.local",
+		SSH:     config.SSH{Host: "home-c.local", User: "ubuntu"},
 	}
 	filled, err := secretsgen.Fill(cfg, secrets)
 	if err != nil {

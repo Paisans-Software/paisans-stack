@@ -1175,7 +1175,10 @@ sites:
   home-a:
     roles: [data, apps]
     address: 10.44.0.1
-    ssh: home-a.local
+    ssh:
+      host: home-a.local
+      user: ubuntu
+      public_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
     watchdog: auto   # auto | required | softdog | off; auto when absent
 ```
 
@@ -1259,14 +1262,122 @@ other than the repo they decrypt.
 WireGuard mesh those files create does not exist yet. First contact with any host
 has to happen over a path that is not the tunnel.
 
-That is what `ssh:` in a site block is: the **bootstrap route**. A LAN address, a
-public hostname, whatever the operator can actually reach on day one. Used once
-per site and never again; afterwards everything goes over the mesh addresses.
+That is what the `ssh` section of a site is: the **bootstrap route**, and the
+record of who may use it. Its host is a LAN address, a public hostname,
+whatever the operator can actually reach on day one.
 
 **It must be a real address the operator already has.** Not an overlay network,
 not a name that only resolves inside one deployment's private mesh. A toolkit
 that quietly depended on one would work on the machines it was written for and
 fail on every fork.
+
+### Every site has an `ssh` section
+
+Every site, the gateway included, declares one:
+
+```yaml
+sites:
+  vm:
+    roles: [gateway, witness]
+    address: 10.44.0.3
+    public_address: 203.0.113.10
+    ssh:
+      host: 203.0.113.10   # optional: defaults to public_address
+      user: ubuntu         # required, and must already exist on the host
+      port: 22             # optional: empty or 0 means 22
+      public_key: |        # required: one or more keys, one per line
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB bob@example.org
+```
+
+| Key | Required | Refused when |
+|-----|----------|--------------|
+| `host` | only without `public_address` | neither a hostname nor an IP address (so `user@host` is refused: the user has its own key) |
+| `user` | yes | not a lowercase letter or underscore followed by lowercase letters, digits, underscores or hyphens, 32 characters at most |
+| `port` | no | outside 1 to 65535 |
+| `public_key` | yes | a line that is not an OpenSSH public key; a line with options (`from=`, `command=`, `restrict`); the same key twice, by fingerprint |
+
+`host` defaults to `public_address` because on most sites they are the same
+address written twice. The user name is held to a conservative form because it
+goes into commands and a file name on the host. Blank lines in `public_key` are
+ignored. Options are refused rather than carried: a line `host prepare` writes
+and later compares has to mean the same thing everywhere, and a restricted key
+is added to `authorized_keys` by hand, where `host prepare` leaves it alone.
+
+The section replaced a single string, `ssh: home-a.local`. That form is now
+refused, and the refusal prints the section to write with the old host filled
+in. Keeping it as a shorthand was rejected (founder decision): two ways to write
+a site's access is one more thing to read twice, and the string has nowhere to
+put the keys.
+
+#### Public keys, not a path to a private key
+
+`paisans.yaml` is one file that every admin of the deployment shares and
+commits. A private key is one admin's, on one admin's machine, at a path that is
+different on everybody's. So the file lists **public** keys, every admin's,
+which are safe to share and which are the same everywhere, and it never names a
+private key or where one lives. The toolkit never reads a private key at all.
+
+The same list is the record of who may log in: `host prepare` makes those keys
+the login user's authorized keys (see *host prepare manages the login user's
+authorized keys*). Adding an admin is adding their `.pub` line and preparing
+again; removing one is deleting it and preparing again.
+
+#### How the operator's ssh uses them
+
+Every command that reaches a site runs the operator's own `ssh` (see *Why ssh
+is shelled out to and sops is not* in `docs/development.md`) as:
+
+```
+ssh -p <port> -o IdentitiesOnly=yes -i <key-1.pub> -i <key-2.pub> <user>@<host> <command>
+```
+
+Each listed key is written to a file of its own, 0600, in a fresh 0700
+temporary directory that is removed when the command returns. `-i` names a
+**public** key file on purpose. OpenSSH documents exactly this: ssh(1) on `-i`
+and ssh_config(5) on `IdentityFile` say a public key file may be given "to use
+the corresponding private key that is loaded in ssh-agent(1) when the private
+key file is not present locally", and ssh_config(5) adds that `IdentityFile`
+"may be used in conjunction with `IdentitiesOnly` to select which identities in
+an agent are offered during authentication" (OpenSSH 9.9p2's pages). So each
+admin's ssh offers the listed keys, finds whichever one's private half is in
+that admin's agent, and signs with it there.
+
+`IdentitiesOnly=yes` is what makes it a selection. Without it ssh also offers
+every other key the agent holds, first, and a server that allows a handful of
+attempts can refuse the operator before it reaches the right one. Several `-i`
+are tried in order, so the toolkit does not need to know which admin is running
+it.
+
+What this asks of an operator: **the private key must be in their agent**
+(`ssh-add -l` lists it), or named by an `IdentityFile` in their own
+`~/.ssh/config`, which `IdentitiesOnly` still honours. On macOS the agent is
+the one launchd starts on demand (`com.openssh.ssh-agent`, its socket in
+`SSH_AUTH_SOCK`). The Keychain holds passphrases, not keys:
+`ssh-add --apple-use-keychain` stores a key's passphrase there, and
+`ssh-add --apple-load-keychain` adds keys to the agent using the stored ones
+(ssh-add(1) on macOS), which is how a key gets back into the agent after a
+login without typing anything. An agent that keeps keys elsewhere (a
+hardware token's, a password manager's) works the same way, since all ssh sees
+is the agent.
+
+Everything else in `~/.ssh/config` still applies (`ProxyJump`, `known_hosts`,
+`ServerAliveInterval`), except where the command line already says: `-p` and
+the `user@` win over that file's `Port` and `User`, since ssh_config(5) takes
+"the first obtained value" and command line options come first. `BatchMode` is
+not set, so a first connection can still ask the operator to accept a host key;
+refusing that would push them to turn host key checking off instead.
+
+#### `--ssh` replaces the whole section
+
+Every command that reaches a host takes `--ssh <destination>`, the escape hatch
+for a route the section cannot describe. When it is given, it is passed to ssh
+verbatim, exactly as before the section existed, and the section's user, host,
+port and keys are **not** used for the connection. It replaces all of them
+rather than one, so what is used is always either everything the file says or
+exactly what the operator typed, never a blend. `host prepare` still manages
+the section's user's authorized keys under `--ssh`, because those come from the
+file, not from the connection.
 
 ### `host prepare` takes a blank host to an apply-able state
 
@@ -1281,7 +1392,7 @@ paisans host prepare --site home-a            # shows what it would do
 paisans host prepare --site home-a --execute  # does it
 ```
 
-It reaches the host over the `ssh:` bootstrap route with the operator's own
+It reaches the host through the site's `ssh` section with the operator's own
 ssh, exactly as `apply` does. It probes read only, plans only what is missing,
 and changes nothing without `--execute`; a prepared host plans nothing, so
 re-running it after a failure resumes rather than restarts. It is not part of
@@ -1326,7 +1437,7 @@ whoever started them. Every `apt-get` runs non-interactively.
 | Rule | Sites |
 |------|-------|
 | deny incoming, allow outgoing by default | every site |
-| 22/tcp | every site |
+| the site's `ssh.port`, 22 unless declared | every site |
 | 51820/udp, WireGuard | every site |
 | everything arriving on `wg0` | every site |
 | 80/tcp, 443/tcp | sites with the gateway role |
@@ -1379,7 +1490,22 @@ operator's and stays until removed by hand.
 **SSH is never removed**, not even an allow `host prepare` added itself. With
 incoming denied by default, that deletion drops the next connection, every
 later prepare and apply arrives over it, and recovering takes a console. A
-stale SSH allow costs almost nothing; a wrong removal costs the host.
+stale SSH allow costs almost nothing; a wrong removal costs the host. A `deny`
+or `reject` on the SSH port is refused, whatever the port is.
+
+**Moving `ssh.port` adds the new allow and keeps the old one.** `host prepare`
+does not change the port sshd listens on, and it cannot tell whether sshd
+already listens on the new one; if it does not, the old allow is the only way
+back in. The old allow is recognised by its comment (`paisans: ssh, the
+bootstrap route`) and the plan says so:
+
+```
+  change    firewall: allow 2222/tcp (ssh, the bootstrap route)
+  present   firewall: `ufw allow 22/tcp comment 'paisans: ssh, the bootstrap route'` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow. Delete it yourself once SSH on 2222 works
+```
+
+Removing it once the new one is in was rejected: it saves one open port and
+risks a lockout that takes a console to undo.
 
 Removals run after every addition, the default policy and enabling, so a rule
 is only taken away once everything that replaces it is in place.
@@ -1399,6 +1525,57 @@ which is etcd, Patroni, Garage, HAProxy and Caddy, all `network_mode: host`. A
 container that publishes a port is not covered by this table, which is why
 published ports are to be bound to the mesh address rather than to every
 interface. That binding is separate work and is not part of `host prepare`.
+
+#### host prepare manages the login user's authorized keys
+
+`host prepare` makes every key in `ssh.public_key` an authorized key of
+`ssh.user`, in `~<user>/.ssh/authorized_keys`. When the directory or the file
+is missing it is created, 0700 and 0600, owned by the user. A user that does
+not exist is refused: creating users is out of scope.
+
+`authorized_keys` is shared with whoever else manages the host. cloud-init puts
+the provider's key there, and an operator may add a restricted key by hand. So
+`host prepare` adds only listed keys, and removes only keys **it added
+itself**. What it added is recorded in a sidecar,
+`/etc/paisans/authorized_keys.<user>.owned`, root's and 0600, one fingerprint
+and comment per line. Keys are compared by fingerprint, so a key whose comment
+was changed is still the same key.
+
+| `authorized_keys` holds | Sidecar | Listed | The plan says | What happens |
+|-------------------------|---------|--------|---------------|--------------|
+| nothing for the key | | yes | `add` | appended verbatim, recorded |
+| the key | yes | yes | `present` | nothing |
+| the key | no | yes | `adopt` | recorded, not added a second time |
+| the key, only with options | | yes | `present (not paisans)` | nothing; adding the plain key would undo the restriction |
+| the key | yes | no | `remove` | that exact line deleted, last of all |
+| nothing for the key | yes | no | `change` (forget) | dropped from the sidecar |
+| any other key | no | no | not mentioned | nothing, ever |
+
+```
+home-a (ubuntu 24.04)
+  adopt     ssh: key SHA256:kmYcvdi2GkPeWxB6XLjrZB8JHsy2Hm8luHMFp9GMvqk (alice@example.org) is already authorized for ubuntu; record it as host prepare's
+  add       ssh: authorize key SHA256:RXm/ruZ0eTzRXKwi1AQEDynB0VgHQ2ac9KPSFdf/YnA (bob@example.org) for ubuntu
+  remove    ssh: remove key SHA256:baqJQcVDEweKmw1OiZxGooCG2MGxYtwsQQzzOstxmiA (carol@example.org) from /home/ubuntu/.ssh/authorized_keys, which host prepare added and ssh.public_key no longer lists
+```
+
+**Ownership lives in the sidecar, not in the key's comment.** Appending a
+marker to the comment of every line host prepare writes, and adopting a
+cloud-init key by rewriting its comment, would need no second file. It was
+rejected because the comment is how an operator recognises a key
+(`alice@laptop`), and rewriting it changes what they see in the one place they
+look. The sidecar keeps `authorized_keys` exactly as the keys were pasted. Each
+step rewrites the sidecar along with its change, so a stopped run resumes: a
+key in the file and not the sidecar is adopted again, and a sidecar entry whose
+key someone already deleted is forgotten, so a copy they add by hand later is
+never taken for host prepare's.
+
+**Nothing is removed until everything is in place.** Removals run after every
+addition and after the firewall, and a removal goes through a temporary file
+given the original's owner and mode and renamed over it, so sshd never reads a
+half written file. A plan that would leave the user with none of the listed
+keys is refused. The key the current connection used is not removed either, by
+construction: the transport offers only listed keys, so the session's key is a
+listed one, unless `--ssh` or the operator's own `IdentityFile` chose another.
 
 #### The watchdog
 

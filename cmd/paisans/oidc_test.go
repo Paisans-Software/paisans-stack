@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
 )
@@ -71,8 +72,8 @@ func withIDPFake(t *testing.T) *idpFake {
 	t.Helper()
 	fake := &idpFake{}
 	saved := oidcTransport
-	oidcTransport = func(destination string) pocketid.Transport {
-		fake.destination = destination
+	oidcTransport = func(tr apply.SSHTransport) pocketid.Transport {
+		fake.destination = tr.Describe()
 		return fake
 	}
 	t.Cleanup(func() { oidcTransport = saved })
@@ -116,7 +117,7 @@ func TestOIDCClientCreateDryRunWritesNothing(t *testing.T) {
 	if after, _ := os.ReadFile(path); string(after) != string(before) {
 		t.Error("a dry run wrote the secrets file")
 	}
-	if fake.destination != "home-a.local" {
+	if fake.destination != "ubuntu@home-a.local" {
 		t.Errorf("reached %q", fake.destination)
 	}
 }

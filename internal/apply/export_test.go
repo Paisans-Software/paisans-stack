@@ -29,3 +29,13 @@ func ParseContainers(out string) (int, error) {
 	list, err := parseContainers(out)
 	return len(list), err
 }
+
+// SSHCommand exposes the built command and its cleanup, so a test can see
+// the key files exist while the command would run and are gone after.
+func SSHCommand(t SSHTransport, command string) ([]string, func(), error) {
+	cmd, cleanup, err := t.ssh(command)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cmd.Args, cleanup, nil
+}

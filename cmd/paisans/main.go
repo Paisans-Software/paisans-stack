@@ -311,7 +311,7 @@ func runApply(args []string) error {
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	site := fs.String("site", "", "the site to apply, by the name it has in the configuration")
-	destination := fs.String("ssh", "", "ssh destination (default: the site's declared ssh address)")
+	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	execute := fs.Bool("execute", false, "actually write files and restart services")
 	var overwrite pathList
 	fs.Var(&overwrite, "overwrite", "replace this conflicting file although it differs from the last apply's record (repeatable)")
@@ -344,12 +344,6 @@ func runApply(args []string) error {
 	if !ok {
 		return fmt.Errorf("apply: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
 	}
-	if *destination == "" {
-		*destination = declared.SSH
-	}
-	if *destination == "" {
-		return fmt.Errorf("apply: site %s has no ssh address and none was given with --ssh", *site)
-	}
 
 	if *secretsPath == "" {
 		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
@@ -376,7 +370,7 @@ func runApply(args []string) error {
 		return err
 	}
 
-	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
+	transport := siteTransport(declared, *destination, *sudo)
 	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree)}
 	if *keepImages {
 		options = append(options, apply.KeepImages())
@@ -419,7 +413,7 @@ func runStorageInit(args []string) error {
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	site := fs.String("site", "", "the site to provision, by the name it has in the configuration")
-	destination := fs.String("ssh", "", "ssh destination (default: the site's declared ssh address)")
+	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	execute := fs.Bool("execute", false, "actually create what is missing")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
 	if err := fs.Parse(args); err != nil {
@@ -442,12 +436,6 @@ func runStorageInit(args []string) error {
 	if !ok {
 		return fmt.Errorf("storage init: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
 	}
-	if *destination == "" {
-		*destination = declared.SSH
-	}
-	if *destination == "" {
-		return fmt.Errorf("storage init: site %s has no ssh address and none was given with --ssh", *site)
-	}
 
 	if *secretsPath == "" {
 		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
@@ -466,7 +454,7 @@ func runStorageInit(args []string) error {
 		return err
 	}
 
-	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
+	transport := siteTransport(declared, *destination, *sudo)
 	plan, err := garage.Build(*site, cfg, secrets, transport)
 	if err != nil {
 		return err
@@ -494,7 +482,7 @@ func runHostPrepare(args []string) error {
 	fs := flag.NewFlagSet("host prepare", flag.ExitOnError)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	site := fs.String("site", "", "the site to prepare, by the name it has in the configuration")
-	destination := fs.String("ssh", "", "ssh destination (default: the site's declared ssh address)")
+	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	execute := fs.Bool("execute", false, "actually install and configure what is missing")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since packages, the firewall and kernel modules are root's")
 	if err := fs.Parse(args); err != nil {
@@ -517,14 +505,8 @@ func runHostPrepare(args []string) error {
 	if !ok {
 		return fmt.Errorf("host prepare: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
 	}
-	if *destination == "" {
-		*destination = declared.SSH
-	}
-	if *destination == "" {
-		return fmt.Errorf("host prepare: site %s has no ssh address and none was given with --ssh", *site)
-	}
 
-	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
+	transport := siteTransport(declared, *destination, *sudo)
 	plan, err := hostprep.Build(*site, cfg, transport)
 	if err != nil {
 		return err
@@ -541,7 +523,7 @@ func runHostPrepare(args []string) error {
 	if err := hostprep.Execute(plan, transport); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\nprepared %s: %d step(s) on %s\n", *site, len(plan.Steps), *destination)
+	fmt.Fprintf(os.Stdout, "\nprepared %s: %d step(s) on %s\n", *site, len(plan.Steps), transport.Describe())
 	return nil
 }
 
@@ -717,4 +699,21 @@ func (l *pathList) String() string { return strings.Join(*l, ",") }
 func (l *pathList) Set(value string) error {
 	*l = append(*l, value)
 	return nil
+}
+
+// siteTransport is how a command reaches a site: its ssh section, or the
+// --ssh override verbatim. The override replaces the whole section rather
+// than one part of it, so what is used is always either everything the file
+// says or exactly what the operator typed, never a blend of the two.
+func siteTransport(site config.Site, override string, sudo bool) apply.SSHTransport {
+	if override != "" {
+		return apply.SSHTransport{Destination: override, Sudo: sudo}
+	}
+	// validate has already refused a bad key, so problems are empty here.
+	keys, _ := site.SSH.Keys()
+	lines := make([]string, len(keys))
+	for i, k := range keys {
+		lines[i] = k.Line
+	}
+	return apply.SSHTransport{User: site.SSH.User, Host: site.SSHHost(), Port: site.SSH.PortOrDefault(), PublicKeys: lines, Sudo: sudo}
 }

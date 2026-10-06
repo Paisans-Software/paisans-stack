@@ -139,7 +139,9 @@ type Site struct {
 	Roles    []Role `yaml:"roles"`
 	Address  string `yaml:"address"`
 	Endpoint string `yaml:"endpoint"`
-	SSH      string `yaml:"ssh"`
+	// SSH is how the toolkit reaches the site and who may log in to it. See
+	// the SSH type.
+	SSH SSH `yaml:"ssh"`
 
 	// PublicAddress is the IPv4 address the internet reaches this site on. It
 	// is optional, and only `paisans dns` reads it: it is the content of the A
@@ -484,9 +486,7 @@ func (c *Config) structural() error {
 		if site.Watchdog != "" && !knownWatchdogModes[site.Watchdog] {
 			add("sites.%s.watchdog: unknown mode %q. Valid modes are auto, required, softdog and off.", name, site.Watchdog)
 		}
-		if site.SSH == "" {
-			add("sites.%s.ssh: required. It is the bootstrap route, used once before the mesh exists, so it must be an address you can already reach.", name)
-		}
+		problems = append(problems, sshProblems(name, site)...)
 	}
 	for _, name := range c.AppNames() {
 		app := c.Apps[name]

@@ -18,9 +18,7 @@ import (
 
 // oidcTransport is how `oidc client create` reaches the identity provider's
 // host. Tests replace it. It never uses sudo: curl needs no root.
-var oidcTransport = func(destination string) pocketid.Transport {
-	return apply.SSHTransport{Destination: destination}
-}
+var oidcTransport = func(t apply.SSHTransport) pocketid.Transport { return t }
 
 // runOIDC dispatches `paisans oidc <subcommand>`.
 func runOIDC(args []string) error {
@@ -46,7 +44,7 @@ func runOIDCClientCreate(args []string) error {
 	adminUser := fs.String("admin-user", "", "a Pocket ID username to add to the app's admin group")
 	rotate := fs.Bool("rotate-secret", false, "add a new secret even when the recorded one is live; the old one stays valid until deleted")
 	site := fs.String("site", "", "the site whose Pocket ID to call (default: its pinned site, or the first apps site)")
-	destination := fs.String("ssh", "", "ssh destination (default: the site's declared ssh address)")
+	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	execute := fs.Bool("execute", false, "actually create and record")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -87,12 +85,6 @@ func runOIDCClientCreate(args []string) error {
 	where, err := adminSite(cfg, idp, *site)
 	if err != nil {
 		return err
-	}
-	if *destination == "" {
-		*destination = cfg.Sites[where].SSH
-	}
-	if *destination == "" {
-		return fmt.Errorf("oidc client create: site %s has no ssh address and none was given with --ssh", where)
 	}
 
 	if *secretsPath == "" {
@@ -140,7 +132,7 @@ func runOIDCClientCreate(args []string) error {
 		ClientID:     secrets.OIDCClients[*appName].ClientID,
 		ClientSecret: secrets.OIDCClients[*appName].ClientSecret,
 	}
-	api := &pocketid.Client{Transport: oidcTransport(*destination), BaseURL: pocketIDBase(cfg, where), APIKey: key}
+	api := &pocketid.Client{Transport: oidcTransport(siteTransport(cfg.Sites[where], *destination, false)), BaseURL: pocketIDBase(cfg, where), APIKey: key}
 
 	state, err := oidcclient.Probe(api, desired)
 	if err != nil {

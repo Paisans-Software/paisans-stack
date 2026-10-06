@@ -142,13 +142,16 @@ func overlaps(a addedRule, r Rule) bool {
 	return false
 }
 
-// sshRule is the one rule never removed. See planRules.
-var sshRule = Rule{Port: 22, Proto: "tcp"}
-
 // planRules compares the rules a site derives with what ufw holds. It returns
 // the additions, which go before the default policy and enabling, and the
 // removals, which go after everything else.
 func planRules(rules []Rule, added []addedRule) (out Section, removals []Step, err error) {
+	var ssh *Rule
+	for i := range rules {
+		if rules[i].SSH {
+			ssh = &rules[i]
+		}
+	}
 	derived := map[string]bool{}
 	byKey := map[string]addedRule{}
 	for _, a := range added {
@@ -186,7 +189,7 @@ func planRules(rules []Rule, added []addedRule) (out Section, removals []Step, e
 			})
 		case a.action == action:
 			out.Foreign = append(out.Foreign, fmt.Sprintf("firewall: %s allowed by `ufw %s`", r, a.line))
-		case r.Interface == "" && r.Port == sshRule.Port && r.Proto == sshRule.Proto:
+		case r.SSH:
 			if strings.HasPrefix(a.action, "deny") || strings.HasPrefix(a.action, "reject") {
 				// Refused, not warned: enabling the firewall with this in
 				// place shuts out the connection prepare runs over.
@@ -221,8 +224,21 @@ func planRules(rules []Rule, added []addedRule) (out Section, removals []Step, e
 		// default, removing it drops the next connection, and recovering
 		// takes a console. A stale SSH allow costs almost nothing; a wrong
 		// removal costs the host.
-		if overlaps(a, sshRule) {
+		if ssh != nil && overlaps(a, *ssh) {
 			out.Present = append(out.Present, fmt.Sprintf("firewall: `ufw %s` kept; host prepare never removes an SSH allow", a.line))
+			continue
+		}
+		// The same holds for the allow an earlier ssh.port was given, which
+		// is recognised by its comment. Moving the port adds the new allow
+		// and leaves the old one: host prepare cannot know that sshd already
+		// listens on the new port, and if it does not, the old allow is the
+		// only way back in. The operator deletes it once the new port works.
+		if a.comment == ownerTag+" "+sshWhy {
+			note := fmt.Sprintf("firewall: `ufw %s` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow", a.line)
+			if ssh != nil {
+				note += fmt.Sprintf(". Delete it yourself once SSH on %d works", ssh.Port)
+			}
+			out.Present = append(out.Present, note)
 			continue
 		}
 		removals = append(removals, Step{

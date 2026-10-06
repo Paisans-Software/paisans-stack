@@ -28,7 +28,11 @@ sites:
   home-a:
     roles: [data, apps]
     address: 10.44.0.1
-    ssh: home-a.local
+    ssh:
+      host: home-a.local
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 etcd:
   members: [home-a]
 apps:
@@ -53,7 +57,11 @@ sites:
   home-a:
     roles: [data, apps, gateway]
     address: 10.44.0.1
-    ssh: home-a.local
+    ssh:
+      host: home-a.local
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 etcd:
   members: [home-a]
 apps:
@@ -235,15 +243,121 @@ func TestWatchdogDefaultsToAuto(t *testing.T) {
 // on a host with no device loads a module the operator may have meant to
 // rule out.
 func TestUnknownWatchdogModeIsRefused(t *testing.T) {
-	body := strings.Replace(minimal, "    ssh: home-a.local\n", "    ssh: home-a.local\n    watchdog: hardware\n", 1)
+	body := strings.Replace(minimal, "    address: 10.44.0.1\n", "    address: 10.44.0.1\n    watchdog: hardware\n", 1)
 	_, err := config.Load(write(t, body))
 	if err == nil || !strings.Contains(err.Error(), "sites.home-a.watchdog") {
 		t.Fatalf("an unknown watchdog mode loaded: %v", err)
 	}
 	for _, mode := range []string{"auto", "required", "softdog", "off"} {
-		body := strings.Replace(minimal, "    ssh: home-a.local\n", "    ssh: home-a.local\n    watchdog: "+mode+"\n", 1)
+		body := strings.Replace(minimal, "    address: 10.44.0.1\n", "    address: 10.44.0.1\n    watchdog: "+mode+"\n", 1)
 		if _, err := config.Load(write(t, body)); err != nil {
 			t.Errorf("watchdog %s was refused: %v", mode, err)
+		}
+	}
+}
+
+// Obviously fake keys: ed25519 keys of all zero, all one and all two bytes.
+const (
+	fakeKeyA = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org"
+	fakeKeyB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB bob@example.org"
+)
+
+// withSSH replaces minimal's ssh section with the given one, indented as a
+// site key.
+func withSSH(section string) string {
+	start := strings.Index(minimal, "    ssh:\n")
+	end := strings.Index(minimal, "etcd:\n")
+	return minimal[:start] + section + minimal[end:]
+}
+
+func loadErr(t *testing.T, body string) string {
+	t.Helper()
+	_, err := config.Load(write(t, body))
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func TestSSHSectionLoads(t *testing.T) {
+	body := withSSH("    ssh:\n      host: 203.0.113.10\n      user: ubuntu\n      port: 2222\n      public_key: |\n        " + fakeKeyA + "\n\n        " + fakeKeyB + "\n")
+	cfg, err := config.Load(write(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := cfg.Sites["home-a"]
+	if site.SSHHost() != "203.0.113.10" || site.SSH.User != "ubuntu" || site.SSH.PortOrDefault() != 2222 {
+		t.Fatalf("section read as %+v", site.SSH)
+	}
+	keys, problems := site.SSH.Keys()
+	if len(problems) > 0 || len(keys) != 2 {
+		t.Fatalf("keys %v, problems %v", keys, problems)
+	}
+	if keys[0].Line != fakeKeyA || keys[0].Comment != "alice@example.org" || !strings.HasPrefix(keys[0].Fingerprint, "SHA256:") {
+		t.Errorf("first key read as %+v", keys[0])
+	}
+}
+
+func TestSSHDefaultsPortAndHost(t *testing.T) {
+	body := withSSH("    public_address: 203.0.113.20\n    ssh:\n      user: ubuntu\n      public_key: " + fakeKeyA + "\n")
+	cfg, err := config.Load(write(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := cfg.Sites["home-a"]
+	if site.SSHHost() != "203.0.113.20" {
+		t.Errorf("host defaulted to %q, want the public address", site.SSHHost())
+	}
+	if site.SSH.PortOrDefault() != 22 {
+		t.Errorf("port defaulted to %d, want 22", site.SSH.PortOrDefault())
+	}
+}
+
+// The old destination string is refused, and the refusal shows the section
+// that replaces it, with the host carried over.
+func TestSSHStringFormIsRefusedWithTheSection(t *testing.T) {
+	msg := loadErr(t, withSSH("    ssh: ubuntu@home-a.local\n"))
+	for _, want := range []string{"sites.home-a.ssh", "old destination form", "host: home-a.local", "user:", "public_key: |"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refusal lacks %q:\n%s", want, msg)
+		}
+	}
+}
+
+func TestSSHSectionRefusals(t *testing.T) {
+	key := "      public_key: " + fakeKeyA + "\n"
+	cases := []struct {
+		name, section, want string
+	}{
+		{"missing", "", "sites.home-a.ssh: required"},
+		{"no user", "    ssh:\n      host: home-a.local\n" + key, "ssh.user: required"},
+		{"bad user", "    ssh:\n      host: home-a.local\n      user: \"bob; rm\"\n" + key, "is not a user name"},
+		{"port too high", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      port: 70000\n" + key, "ssh.port: 70000 is not a port"},
+		{"negative port", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      port: -1\n" + key, "ssh.port: -1 is not a port"},
+		{"no host or public address", "    ssh:\n      user: ubuntu\n" + key, "ssh.host: required"},
+		{"user in host", "    ssh:\n      host: ubuntu@home-a.local\n      user: ubuntu\n" + key, "neither a hostname nor an IP address"},
+		{"no key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n", "ssh.public_key: required"},
+		{"not a key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_key: ssh-ed25519 not-base64\n", "line 1 is not an OpenSSH public key"},
+		{"private key path", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_key: ~/.ssh/id_ed25519\n", "not an OpenSSH public key"},
+		{"options", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_key: from=\"203.0.113.0/24\" " + fakeKeyA + "\n", "carries options"},
+		{"duplicate", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_key: |\n        " + fakeKeyA + "\n        " + strings.Replace(fakeKeyA, "alice", "alice-laptop", 1) + "\n", "line 2 is the same key as line 1"},
+		{"unknown key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_keys: " + fakeKeyA + "\n", "field public_keys not found"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			msg := loadErr(t, withSSH(c.section))
+			if !strings.Contains(msg, c.want) {
+				t.Errorf("want %q in the refusal, got:\n%s", c.want, msg)
+			}
+		})
+	}
+}
+
+func TestSSHHostAcceptsHostnamesAndAddresses(t *testing.T) {
+	for _, host := range []string{"home-a.local", "vm.example.org", "203.0.113.10", "2001:db8::10", "home-a"} {
+		body := withSSH("    ssh:\n      host: \"" + host + "\"\n      user: ubuntu\n      public_key: " + fakeKeyA + "\n")
+		if msg := loadErr(t, body); msg != "" {
+			t.Errorf("host %s refused: %s", host, msg)
 		}
 	}
 }

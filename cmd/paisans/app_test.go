@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/appadmin"
+	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 )
 
@@ -37,8 +38,8 @@ func withAdminFake(t *testing.T, probe string) *adminFake {
 	t.Helper()
 	fake := &adminFake{probe: probe}
 	saved := adminTransport
-	adminTransport = func(destination string, _ bool) appadmin.Transport {
-		fake.destination = destination
+	adminTransport = func(tr apply.SSHTransport) appadmin.Transport {
+		fake.destination = tr.Describe()
 		return fake
 	}
 	t.Cleanup(func() { adminTransport = saved })
@@ -66,8 +67,8 @@ func TestAppAdminCreateDryRunPlansAndChangesNothing(t *testing.T) {
 	if fake.mutated {
 		t.Error("a dry run ran a mutating script")
 	}
-	if fake.destination != "home-a.local" {
-		t.Errorf("reached %q, want the first apps site's ssh address", fake.destination)
+	if fake.destination != "ubuntu@home-a.local" {
+		t.Errorf("reached %q, want the first apps site's ssh section", fake.destination)
 	}
 	if strings.Contains(printed, adminPassword) {
 		t.Error("the output carries the password")
@@ -155,9 +156,9 @@ func withPIDFake(t *testing.T) *pidFake {
 	t.Helper()
 	fake := &pidFake{}
 	saved := adminTransport
-	adminTransport = func(destination string, sudo bool) appadmin.Transport {
-		fake.destination = destination
-		fake.sudo = sudo
+	adminTransport = func(tr apply.SSHTransport) appadmin.Transport {
+		fake.destination = tr.Describe()
+		fake.sudo = tr.Sudo
 		return fake
 	}
 	t.Cleanup(func() { adminTransport = saved })

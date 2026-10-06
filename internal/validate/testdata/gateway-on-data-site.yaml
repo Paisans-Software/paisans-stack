@@ -16,16 +16,28 @@ sites:
   home-a:
     roles: [data, apps, gateway]
     address: 10.44.0.1
-    ssh: home-a.local
+    ssh:
+      host: home-a.local
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
   home-b:
     roles: [data, apps]
     address: 10.44.0.2
-    ssh: home-b.local
+    ssh:
+      host: home-b.local
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
   vm:
     roles: [gateway, witness]
     address: 10.44.0.3
     endpoint: vm.example.org:51820
-    ssh: vm.example.org
+    ssh:
+      host: vm.example.org
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 
 cluster:
   sites: [home-a, home-b]
