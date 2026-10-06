@@ -97,6 +97,9 @@ Signed-By: /etc/apt/keyrings/docker.asc
 // hardware watchdog present, for a site with the given rules.
 func preparedHost(gateway bool) *fakeHost {
 	firewall := "ufw present\nstatus active\nrule allow 22/tcp\nrule allow 51820/udp\nrule allow in on wg0\n"
+	if !gateway {
+		firewall += "rule allow in on br-+ to 10.44.0.1 port 5000 proto tcp\nrule allow in on br-+ to 10.44.0.1 port 3900 proto tcp\nrule allow in on br-+ to 10.44.0.2 port 5000 proto tcp\nrule allow in on br-+ to 10.44.0.2 port 3900 proto tcp\n"
+	}
 	if gateway {
 		firewall += "rule allow 80/tcp\nrule allow 443/tcp\n"
 	}
@@ -352,7 +355,7 @@ func TestAFreshGatewaySiteDiffersFromADataSite(t *testing.T) {
 // Only the missing rule is planned on a firewall that is already up.
 func TestOnlyMissingFirewallRulesArePlanned(t *testing.T) {
 	host := preparedHost(false)
-	host.responses[probeFirewall] = "ufw present\nstatus active\nrule allow 22/tcp\nrule allow in on wg0\n"
+	host.responses[probeFirewall] = "ufw present\nstatus active\nrule allow 22/tcp\nrule allow in on wg0\nrule allow in on br-+ to 10.44.0.1 port 5000 proto tcp\nrule allow in on br-+ to 10.44.0.1 port 3900 proto tcp\nrule allow in on br-+ to 10.44.0.2 port 5000 proto tcp\nrule allow in on br-+ to 10.44.0.2 port 3900 proto tcp\n"
 	plan, err := hostprep.Build("home-a", fixture(t), host)
 	if err != nil {
 		t.Fatal(err)
@@ -477,5 +480,22 @@ func TestARemovedPackageIsNotInstalled(t *testing.T) {
 	}
 	if got := describes(plan); got != "packages: install wireguard-tools" {
 		t.Errorf("got:\n%s", got)
+	}
+}
+
+// An apps site lets its containers reach the database proxy and, where Garage
+// runs, object storage on its own mesh address, over the compose bridges and
+// nothing wider. A gateway only site runs no app containers and gets neither.
+func TestContainerRulesReachOnlyWhatAppsUse(t *testing.T) {
+	cfg := fixture(t)
+	var got []string
+	for _, r := range hostprep.ContainerRules(cfg, "home-a") {
+		got = append(got, r.String())
+	}
+	if want := "5000/tcp on br-+ to 10.44.0.1,3900/tcp on br-+ to 10.44.0.1"; strings.Join(got, ",") != want {
+		t.Errorf("home-a: got %s, want %s", strings.Join(got, ","), want)
+	}
+	if rules := hostprep.ContainerRules(cfg, "vm"); len(rules) != 0 {
+		t.Errorf("a gateway only site was given container rules: %v", rules)
 	}
 }

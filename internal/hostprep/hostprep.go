@@ -218,7 +218,7 @@ func Build(site string, cfg *config.Config, t Transport) (*Plan, error) {
 	}
 	plan.add(watchdog)
 
-	firewall, err := profile.Firewall(t, Rules(declared))
+	firewall, err := profile.Firewall(t, append(Rules(declared), ContainerRules(cfg, site)...))
 	if err != nil {
 		return nil, fmt.Errorf("firewall on %s: %w", t.Describe(), err)
 	}

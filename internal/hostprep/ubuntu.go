@@ -252,6 +252,9 @@ func (u ubuntu) WatchdogModule(t Transport, module string, loaded bool) (Section
 // how `ufw show added` prints the rule back, which is what makes the probe a
 // string comparison.
 func ufwArgs(r Rule) string {
+	if r.Interface != "" && r.To != "" {
+		return fmt.Sprintf("allow in on %s to %s port %d proto %s", r.Interface, r.To, r.Port, r.Proto)
+	}
 	if r.Interface != "" {
 		return "allow in on " + r.Interface
 	}
