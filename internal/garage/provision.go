@@ -14,6 +14,7 @@ package garage
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -290,19 +291,39 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 			plan.Present = append(plan.Present, fmt.Sprintf("bucket: %s already exists", bucket))
 		}
 
-		// bucket allow is idempotent, Garage accepts it whether or not the
-		// grant already exists, so it is always planned rather than checked
-		// first.
-		plan.Steps = append(plan.Steps, Step{
-			Describe: fmt.Sprintf("grant %s's key read/write/owner on its bucket", name),
-			Command:  fmt.Sprintf("%s bucket allow --read --write --owner %s --key %s", garageCmd, bucket, keyID),
-		})
+		// Grant and website access are read off `bucket info` and planned
+		// only when missing. They used to be planned on every run, because
+		// no real `bucket info` output had been seen to parse; it has now
+		// (dxflrs/garage:v1.0.1, `bucket info talk-uploads` on a provisioned
+		// node), and it prints `Website access: true` and an `Authorized
+		// keys:` section with one `RWO  <key ID>  <key name>` row per key.
+		// Both commands are sets, so replanning them was harmless, but a
+		// plan that always has steps never says "nothing to do". Output that
+		// does not parse plans both, and says so: running a set twice costs
+		// nothing, while skipping a grant that is missing leaves the app
+		// unable to write.
+		var info bucketInfo
+		if !bucketAbsent {
+			info = parseBucketInfo(bucketOut)
+		}
+		unread := ""
+		if !bucketAbsent && !info.parsed {
+			unread = ", planned because `bucket info` could not be read"
+		}
+
+		if info.parsed && info.grants(keyID, name) {
+			plan.Present = append(plan.Present, fmt.Sprintf("grant: %s's key already has read/write/owner on %s", name, bucket))
+		} else {
+			plan.Steps = append(plan.Steps, Step{
+				Describe: fmt.Sprintf("grant %s's key read/write/owner on its bucket%s", name, unread),
+				Command:  fmt.Sprintf("%s bucket allow --read --write --owner %s --key %s", garageCmd, bucket, keyID),
+			})
+		}
 
 		if kinds.ServesObjectsPublicly(app.Kind) {
 			// Website access is what lets a request with no credential read
-			// this bucket. It is planned unconditionally, like the grant
-			// above, because it is a set rather than a create: established by
-			// running `garage bucket website --allow` twice against a real
+			// this bucket. `garage bucket website --allow` is a set rather
+			// than a create: established by running it twice against a real
 			// dxflrs/garage:v1.0.1 container, which printed the identical
 			// "Website access allowed for <bucket>" and exited 0 both times.
 			//
@@ -311,14 +332,79 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 			// a review, and a provisioner that guessed a human meant to
 			// withdraw public access would be guessing about the one thing in
 			// this package that cannot be undone quietly.
-			plan.Steps = append(plan.Steps, Step{
-				Describe: fmt.Sprintf("allow website access on %s's bucket", name),
-				Command:  fmt.Sprintf("%s bucket website --allow %s", garageCmd, bucket),
-			})
+			if info.parsed && info.website {
+				plan.Present = append(plan.Present, fmt.Sprintf("website: %s already allows website access", bucket))
+			} else {
+				plan.Steps = append(plan.Steps, Step{
+					Describe: fmt.Sprintf("allow website access on %s's bucket%s", name, unread),
+					Command:  fmt.Sprintf("%s bucket website --allow %s", garageCmd, bucket),
+				})
+			}
 		}
 	}
 
 	return plan, nil
+}
+
+// bucketInfo is what `garage bucket info` says about website access and
+// grants.
+type bucketInfo struct {
+	// parsed is set only when both the website line and the authorized keys
+	// section were found. Anything less is read as "unknown", not "absent".
+	parsed  bool
+	website bool
+	// keys are the authorized keys' rows: permissions, key ID, key name.
+	keys [][3]string
+}
+
+// grants reports whether the key, by ID or by the name it was imported
+// under, holds all of read, write and owner.
+func (b bucketInfo) grants(keyID, name string) bool {
+	for _, row := range b.keys {
+		if row[1] != keyID && row[2] != name {
+			continue
+		}
+		if strings.Contains(row[0], "R") && strings.Contains(row[0], "W") && strings.Contains(row[0], "O") {
+			return true
+		}
+	}
+	return false
+}
+
+// ansi matches the colour codes Garage's log lines carry.
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
+// parseBucketInfo reads `garage bucket info` as dxflrs/garage:v1.0.1 prints
+// it. The combined output can open with log lines (the RPC client's
+// "Connection established", ANSI coloured), so only a line that itself starts
+// with a field name counts, and the authorized keys are the indented rows
+// directly under their heading, ending at the first blank or unindented line.
+func parseBucketInfo(out string) bucketInfo {
+	var info bucketInfo
+	var sawWebsite, sawKeys, inKeys bool
+	for _, raw := range strings.Split(ansi.ReplaceAllString(out, ""), "\n") {
+		line := strings.TrimRight(raw, "\r ")
+		if inKeys {
+			if strings.TrimSpace(line) == "" || (line[0] != ' ' && line[0] != '\t') {
+				inKeys = false
+			} else {
+				fields := strings.Fields(line)
+				var row [3]string
+				copy(row[:], fields)
+				info.keys = append(info.keys, row)
+				continue
+			}
+		}
+		switch {
+		case strings.HasPrefix(line, "Website access:"):
+			sawWebsite = true
+			info.website = strings.TrimSpace(strings.TrimPrefix(line, "Website access:")) == "true"
+		case strings.HasPrefix(line, "Authorized keys:"):
+			sawKeys, inKeys = true, true
+		}
+	}
+	info.parsed = sawWebsite && sawKeys
+	return info
 }
 
 // secretString reads one string secret for an app, empty when unset. It
