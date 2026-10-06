@@ -43,7 +43,7 @@
     },
     {
       "path": "srv/infra/patroni.env",
-      "sha256": "f6ebefd47683ccaafc8f1a05a763015d475e69d52a72c293a52b34aefa839cdb",
+      "sha256": "8a7bf5a399549846ead0821deb319c1e8d2add34e2611f417b6968dcd03bb733",
       "mode": "0600"
     },
     {

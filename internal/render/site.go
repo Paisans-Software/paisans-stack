@@ -199,6 +199,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"Scope":             p.scope(),
 			"EtcdClientHosts":   p.etcdClientHosts(),
 			"PatroniAPIPort":    patroniAPIPort,
+			"BgMonPort":         bgMonPort,
 			"PostgresPort":      postgresPort,
 			"SuperuserPassword": p.secrets.Cluster.SuperuserPassword,
 			"StandbyPassword":   p.secrets.Cluster.StandbyPassword,

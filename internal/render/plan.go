@@ -61,6 +61,12 @@ const masPort = 8009
 // find the primary. It is fixed by Spilo.
 const patroniAPIPort = 8008
 
+// bgMonPort is where Spilo's bg_mon extension serves its monitoring page.
+// bg_mon defaults to 8080, the most common application port there is, and on
+// the first real host it took 8080 on a data site before Mbin could publish
+// there. It is moved beside the Patroni API instead of moving every app.
+const bgMonPort = 8009
+
 // postgresPort is the cluster's real Postgres port. Applications never use it:
 // they connect to the local HAProxy instead, from the first install, so that
 // adding a site changes a backend list rather than application configuration.

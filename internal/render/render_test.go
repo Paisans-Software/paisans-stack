@@ -2000,13 +2000,13 @@ func TestWatchdogOffRendersPatroniWithoutTheDevice(t *testing.T) {
 	}
 	files := planFiles(plan)
 
-	if env := files["home-b/srv/infra/patroni.env"]; !strings.Contains(env, "PATRONI_WATCHDOG_MODE=off\n") {
+	if env := files["home-b/srv/infra/patroni.env"]; !strings.Contains(env, "watchdog: {mode: 'off'}") {
 		t.Errorf("home-b declared watchdog off and its patroni.env says otherwise:\n%s", env)
 	}
 	if compose := files["home-b/srv/infra/compose.yaml"]; strings.Contains(compose, "/dev/watchdog") {
 		t.Errorf("home-b declared watchdog off and its compose still maps the device:\n%s", compose)
 	}
-	if env := files["home-a/srv/infra/patroni.env"]; !strings.Contains(env, "PATRONI_WATCHDOG_MODE=required\n") {
+	if env := files["home-a/srv/infra/patroni.env"]; !strings.Contains(env, "watchdog: {mode: required}") {
 		t.Errorf("home-a did not declare off and lost its watchdog:\n%s", env)
 	}
 	if compose := files["home-a/srv/infra/compose.yaml"]; !strings.Contains(compose, "- /dev/watchdog:/dev/watchdog") {
@@ -2101,22 +2101,59 @@ func TestMbinOAuthKeypairIsRenderedForEveryAppsSite(t *testing.T) {
 	}
 }
 
-// Spilo writes Patroni's configuration from its own variables, and a data site
-// given only Patroni's names has no DCS as far as Spilo can tell: it starts an
-// embedded etcd on 127.0.0.1:2379, which collides with the real one on a host
-// networked site, and Patroni follows the embedded one. That is what the first
-// real-host apply did. The scope, the DCS and the roles must be in Spilo's
-// vocabulary.
+// Spilo writes Patroni's configuration from its own variables, and it starts
+// Patroni with almost no environment, so a PATRONI_* variable never arrives.
+// The first real host ran with an embedded etcd, its hostname as member name,
+// every listener on every interface and no watchdog, all because of that. What
+// must arrive goes in Spilo's variables or in SPILO_CONFIGURATION.
 func TestPatroniEnvSpeaksSpilosVocabulary(t *testing.T) {
 	env := planFiles(build(t))["home-a/srv/infra/patroni.env"]
-	for _, want := range []string{"\nSCOPE=", "\nETCD3_HOSTS=10.44.0.", "\nPGPASSWORD_SUPERUSER=", "\nPGPASSWORD_STANDBY=", "\nPGPASSWORD_ADMIN=", "\nSPILO_CONFIGURATION={bootstrap: {dcs: {synchronous_mode: "} {
+	if strings.Contains(env, "\nPATRONI_") {
+		t.Errorf("patroni.env carries PATRONI_* variables, which Spilo unsets before Patroni starts:\n%s", env)
+	}
+	for _, want := range []string{"\nSCOPE=", "\nETCD3_HOSTS=10.44.0.", "\nPGPASSWORD_SUPERUSER=", "\nPGPASSWORD_STANDBY=", "\nPGPASSWORD_ADMIN="} {
 		if !strings.Contains(env, want) {
-			t.Errorf("patroni.env lacks %q, so Spilo would not see it:\n%s", strings.TrimSpace(want), env)
+			t.Errorf("patroni.env lacks %q:\n%s", strings.TrimSpace(want), env)
 		}
 	}
-	for _, gone := range []string{"PATRONI_ETCD3_HOSTS", "PATRONI_SCOPE", "PATRONI_SUPERUSER_PASSWORD", "\nSYNCHRONOUS_MODE="} {
-		if strings.Contains(env, gone) {
-			t.Errorf("patroni.env still carries %q, a name Spilo does not read:\n%s", strings.TrimSpace(gone), env)
+	var line string
+	for _, l := range strings.Split(env, "\n") {
+		if strings.HasPrefix(l, "SPILO_CONFIGURATION=") {
+			line = strings.TrimPrefix(l, "SPILO_CONFIGURATION=")
 		}
+	}
+	var doc struct {
+		Name    string `yaml:"name"`
+		RestAPI struct {
+			Listen string `yaml:"listen"`
+		} `yaml:"restapi"`
+		PostgreSQL struct {
+			Listen     string         `yaml:"listen"`
+			Parameters map[string]any `yaml:"parameters"`
+		} `yaml:"postgresql"`
+		Watchdog struct {
+			Mode string `yaml:"mode"`
+		} `yaml:"watchdog"`
+		Bootstrap struct {
+			DCS map[string]any `yaml:"dcs"`
+		} `yaml:"bootstrap"`
+	}
+	if err := yaml.Unmarshal([]byte(line), &doc); err != nil {
+		t.Fatalf("SPILO_CONFIGURATION is not YAML: %v\n%s", err, line)
+	}
+	if doc.Name != "home-a" {
+		t.Errorf("the member name is %q, not the site's name, so apply cannot find the leader", doc.Name)
+	}
+	if doc.RestAPI.Listen != "10.44.0.1:8008" || doc.PostgreSQL.Listen != "10.44.0.1,127.0.0.1:5432" {
+		t.Errorf("listeners are not pinned to the mesh: %+v", doc)
+	}
+	if doc.PostgreSQL.Parameters["bg_mon.port"] != 8009 {
+		t.Errorf("bg_mon is left on 8080, where applications publish: %v", doc.PostgreSQL.Parameters)
+	}
+	if doc.Watchdog.Mode != "required" {
+		t.Errorf("watchdog mode is %q", doc.Watchdog.Mode)
+	}
+	if doc.Bootstrap.DCS["synchronous_mode"] != true {
+		t.Errorf("synchronous_mode did not reach the bootstrap DCS: %v", doc.Bootstrap.DCS)
 	}
 }
