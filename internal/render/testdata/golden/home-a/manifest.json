@@ -73,12 +73,22 @@
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "71995141e503f2488722797f9468ee432130eca81fac8b3338425282ebcecc3d",
+      "sha256": "5a33cac8468df9a6a27dab149f1f5ae386ce79b76c056e67956c60d22168aba5",
       "mode": "0600"
     },
     {
       "path": "srv/talk/compose.yaml",
-      "sha256": "0d6dd86f10d9ead83106fe83cdfd2a70d7a02a652abf93a63f97422587ccaa77",
+      "sha256": "03efb6c9693c7190d5ba5624a66c3e1b6db9d9becc5c834f7f0af20a01f6cf64",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/talk/oauth/private.pem",
+      "sha256": "411b0aaba0a0e761d2de5af24c296ea49e3955c64c03880ccb2199de1c2ca751",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/talk/oauth/public.pem",
+      "sha256": "03d2b40509c8d0c7b462e0ed95feefd687a9075145fa35f66c03bbc9015bb6c9",
       "mode": "0644"
     },
     {

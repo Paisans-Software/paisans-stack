@@ -1,6 +1,9 @@
 package render_test
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"flag"
 	"os"
 	"path"
@@ -14,6 +17,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 	"gopkg.in/yaml.v3"
 )
@@ -2007,5 +2011,92 @@ func TestWatchdogOffRendersPatroniWithoutTheDevice(t *testing.T) {
 	}
 	if compose := files["home-a/srv/infra/compose.yaml"]; !strings.Contains(compose, "- /dev/watchdog:/dev/watchdog") {
 		t.Errorf("home-a did not declare off and lost its device mapping:\n%s", compose)
+	}
+}
+
+// Mbin's OAuth2 keypair reaches every site that runs Mbin, as two files in the
+// directory compose.yaml mounts at /app/config/oauth2, which is where the
+// .env's OAUTH_PRIVATE_KEY and OAUTH_PUBLIC_KEY point.
+//
+// Both are 0644, the one private key this toolkit renders world readable, and
+// that is deliberate. apply writes every file as root, and Mbin reads the key
+// as uid 1000 after the entrypoint drops to it, so a 0600 key is a key Mbin
+// cannot open. What makes 0644 acceptable is that the key is encrypted with
+// OAUTH_PASSPHRASE, which is only in the 0600 .env, so the test opens it with
+// exactly that value.
+func TestMbinOAuthKeypairIsRenderedForEveryAppsSite(t *testing.T) {
+	plan := build(t)
+	files := map[string]render.File{}
+	for _, f := range plan.Files {
+		files[f.Path] = f
+	}
+
+	var privates []string
+	for path := range files {
+		if !strings.HasSuffix(path, "/srv/talk/compose.yaml") {
+			continue
+		}
+		dir := strings.TrimSuffix(path, "compose.yaml")
+		compose := files[path].Content
+		for _, service := range []string{"app", "messenger"} {
+			block := compose[strings.Index(compose, "\n  "+service+":\n"):]
+			block = block[:strings.Index(block[1:], "\n  amqproxy:\n")+1]
+			if service == "app" {
+				block = block[:strings.Index(block, "\n  messenger:\n")]
+			}
+			if !strings.Contains(block, "/srv/talk/oauth:/app/config/oauth2:ro") {
+				t.Errorf("%s: %s does not mount the keypair read only at /app/config/oauth2", path, service)
+			}
+		}
+
+		private, okPrivate := files[dir+"oauth/private.pem"]
+		public, okPublic := files[dir+"oauth/public.pem"]
+		if !okPrivate || !okPublic {
+			t.Errorf("%s has no rendered oauth/private.pem and oauth/public.pem beside it", path)
+			continue
+		}
+		for _, f := range []render.File{private, public} {
+			if f.Mode != 0o644 {
+				t.Errorf("%s is %04o; uid 1000 in the container cannot read a root owned file unless it is 0644", f.Path, f.Mode)
+			}
+		}
+
+		env := files[dir+".env"].Content
+		var passphrase string
+		for _, line := range strings.Split(env, "\n") {
+			if v, ok := strings.CutPrefix(line, "OAUTH_PASSPHRASE="); ok {
+				passphrase = v
+			}
+		}
+		if !strings.Contains(private.Content, "Proc-Type: 4,ENCRYPTED") {
+			t.Errorf("%s is 0644 and not encrypted", private.Path)
+		}
+		key, err := secretsgen.OpenOAuthPrivateKey(private.Content, passphrase)
+		if err != nil {
+			t.Errorf("%s does not open with the rendered OAUTH_PASSPHRASE: %v", private.Path, err)
+			continue
+		}
+		block, _ := pem.Decode([]byte(public.Content))
+		if block == nil {
+			t.Errorf("%s is not PEM", public.Path)
+			continue
+		}
+		parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			t.Errorf("%s does not parse: %v", public.Path, err)
+			continue
+		}
+		if pub, ok := parsed.(*rsa.PublicKey); !ok || !pub.Equal(&key.PublicKey) {
+			t.Errorf("%s is not the public half of %s", public.Path, private.Path)
+		}
+		privates = append(privates, private.Content)
+	}
+	if len(privates) < 2 {
+		t.Fatalf("the fixture's clustered Mbin rendered a keypair on %d sites; this test needs at least two to check they agree", len(privates))
+	}
+	for _, p := range privates[1:] {
+		if p != privates[0] {
+			t.Error("two apps sites rendered different private keys, so a token one issues fails on the other")
+		}
 	}
 }

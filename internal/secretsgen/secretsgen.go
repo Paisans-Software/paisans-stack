@@ -164,6 +164,9 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 			entries = map[string]any{}
 		}
 		for _, key := range appSecretKeys(app) {
+			if key == oauthPrivateKey || key == oauthPublicKey {
+				continue // a pair, derived from the passphrase; see below
+			}
 			if existing, ok := entries[key].(string); ok && existing != "" {
 				note(false, "apps."+name+"."+key)
 				continue
@@ -174,6 +177,11 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 			}
 			entries[key] = value
 			note(true, "apps."+name+"."+key)
+		}
+		if app.Kind == config.KindMbin {
+			if err := fillOAuthKeypair(name, entries, note); err != nil {
+				return result, err
+			}
 		}
 		secrets.Apps[name] = entries
 	}
@@ -202,7 +210,8 @@ func appSecretKeys(app config.App) []string {
 		// placeholders in, so leaving one unset runs on a value anyone can
 		// read in upstream's repository.
 		keys = append(keys, "mercure_jwt_secret", "rabbitmq_password", "valkey_password",
-			"app_secret", "oauth_passphrase", "oauth_encryption_key")
+			"app_secret", "oauth_passphrase", "oauth_encryption_key",
+			oauthPrivateKey, oauthPublicKey)
 	}
 	if app.Kind == config.KindOAuth2Proxy {
 		keys = append(keys, "cookie_secret")
@@ -290,6 +299,138 @@ func rsaPrivateKeyPEM() (string, error) {
 		return "", fmt.Errorf("encoding the RSA signing key: %w", err)
 	}
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})), nil
+}
+
+// Mbin's OAuth2 server keypair, which signs the tokens it issues to API
+// clients and mobile apps. The image does not generate one and upstream's
+// install documents an operator running openssl by hand
+// (docs/02-admin/01-installation/02-docker.md, "Configure OAuth2 keys", at
+// tag v1.13.3+paisans). Generating it here means no host step, and keeping it
+// in the secrets file means every apps site under cluster placement renders
+// the same pair, so a token one site issues verifies on another.
+const (
+	oauthPrivateKey = "oauth_private_key"
+	oauthPublicKey  = "oauth_public_key"
+)
+
+// fillOAuthKeypair generates Mbin's keypair when the private key is unset.
+//
+// The private key is never replaced: every token Mbin has issued is signed by
+// it, so a new one logs out every API client and app at once. The public key
+// is derived, so a missing one is filled from the private key rather than
+// counted as a reason to make a new pair. Deriving it means opening the
+// private key, and one the passphrase beside it cannot open is refused rather
+// than regenerated, because Mbin would refuse it too, on the host.
+func fillOAuthKeypair(app string, entries map[string]any, note func(bool, string)) error {
+	passphrase, _ := entries["oauth_passphrase"].(string)
+	if passphrase == "" {
+		return fmt.Errorf("apps.%s.oauth_passphrase is empty, and the OAuth2 private key is encrypted with it", app)
+	}
+	privateName := "apps." + app + "." + oauthPrivateKey
+	publicName := "apps." + app + "." + oauthPublicKey
+
+	existing, _ := entries[oauthPrivateKey].(string)
+	if existing == "" {
+		private, public, err := oauthKeypairPEM(passphrase)
+		if err != nil {
+			return err
+		}
+		entries[oauthPrivateKey] = private
+		entries[oauthPublicKey] = public
+		note(true, privateName)
+		note(true, publicName)
+		return nil
+	}
+	note(false, privateName)
+	if current, _ := entries[oauthPublicKey].(string); current != "" {
+		note(false, publicName)
+		return nil
+	}
+
+	key, err := OpenOAuthPrivateKey(existing, passphrase)
+	if err != nil {
+		return fmt.Errorf("oauth-key-does-not-open: %s cannot be opened with apps.%s.oauth_passphrase, so its public half cannot be derived and Mbin could not sign a token with it either: %w", privateName, app, err)
+	}
+	public, err := publicKeyPEM(&key.PublicKey)
+	if err != nil {
+		return err
+	}
+	entries[oauthPublicKey] = public
+	note(true, publicName)
+	return nil
+}
+
+// oauthKeypairPEM is a 4096 bit RSA key, encrypted with the passphrase, and
+// its public half. Both choices are upstream's: its documented command is
+// `openssl genrsa -des3 -out ./storage/oauth/private.pem 4096`, and its
+// docker/setup.sh runs the same with -passout set to OAUTH_PASSPHRASE.
+//
+// The encryption is the traditional PEM form (Proc-Type and DEK-Info headers)
+// with AES-256-CBC, which OpenSSL, and so PHP's openssl_pkey_get_private that
+// league/oauth2-server calls with OAUTH_PASSPHRASE, reads. Go deprecates
+// writing it because decrypting it can be a padding oracle when an attacker
+// can submit ciphertexts to it; nothing here does. Encrypted PKCS#8 would need
+// a dependency outside the standard library for no difference to Mbin.
+//
+// It is encrypted, rather than left plain with an unused passphrase, because
+// it is rendered 0644: README, "Three kinds of secret", says why.
+func oauthKeypairPEM(passphrase string) (string, string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 4096)
+	if err != nil {
+		return "", "", fmt.Errorf("generating Mbin's OAuth2 key: %w", err)
+	}
+	//nolint:staticcheck // see above for why the deprecated form is the right one
+	block, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY",
+		x509.MarshalPKCS1PrivateKey(key), []byte(passphrase), x509.PEMCipherAES256)
+	if err != nil {
+		return "", "", fmt.Errorf("encrypting Mbin's OAuth2 key: %w", err)
+	}
+	public, err := publicKeyPEM(&key.PublicKey)
+	if err != nil {
+		return "", "", err
+	}
+	return string(pem.EncodeToMemory(block)), public, nil
+}
+
+// OpenOAuthPrivateKey decrypts and parses an OAuth2 private key the way Mbin
+// will, so a key that would fail there fails here first. An unencrypted key
+// is accepted, as OpenSSL accepts one with a passphrase supplied.
+func OpenOAuthPrivateKey(privatePEM, passphrase string) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(privatePEM))
+	if block == nil {
+		return nil, fmt.Errorf("not PEM")
+	}
+	der := block.Bytes
+	//nolint:staticcheck // reading the form oauthKeypairPEM writes
+	if x509.IsEncryptedPEMBlock(block) {
+		var err error
+		//nolint:staticcheck // reading the form oauthKeypairPEM writes
+		der, err = x509.DecryptPEMBlock(block, []byte(passphrase))
+		if err != nil {
+			return nil, err
+		}
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return key, nil
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(der)
+	if err != nil {
+		return nil, err
+	}
+	key, ok := parsed.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("not an RSA key")
+	}
+	return key, nil
+}
+
+// publicKeyPEM is the SubjectPublicKeyInfo form `openssl rsa -pubout` writes.
+func publicKeyPEM(key *rsa.PublicKey) (string, error) {
+	der, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		return "", fmt.Errorf("encoding Mbin's OAuth2 public key: %w", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), nil
 }
 
 // owed lists what this package will not invent, with the reason, so that an

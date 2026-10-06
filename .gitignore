@@ -16,6 +16,9 @@
 !internal/render/templates/**/.env*.tmpl
 *.key
 *.pem
+# Except the golden tree's, which are rendered from the throwaway pair in
+# internal/render/testdata/secrets.fixture.yaml and protect nothing.
+!internal/render/testdata/golden/**/*.pem
 secrets/
 
 # A real deployment's config names real hosts. The toolkit repo ships only

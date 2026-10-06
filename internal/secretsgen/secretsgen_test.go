@@ -1,7 +1,10 @@
 package secretsgen_test
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -363,5 +366,87 @@ func TestGarageKeyIsMalformed(t *testing.T) {
 				t.Errorf("the error should name the field %s, got: %v", tc.want, err)
 			}
 		})
+	}
+}
+
+// Mbin's OAuth2 keypair is generated at init so that no operator runs openssl
+// on a host, and it is the one generated secret whose replacement is visible
+// to members: every API client and app holds a token it signed. So: generated
+// once, never again, encrypted with the passphrase Mbin is given, and the two
+// halves are one key.
+func TestMbinOAuthKeypairIsGeneratedOnceAndOpens(t *testing.T) {
+	cfg := load(t)
+	secrets := &config.Secrets{}
+	if _, err := secretsgen.Fill(cfg, secrets); err != nil {
+		t.Fatal(err)
+	}
+	talk := secrets.Apps["talk"]
+	private, _ := talk["oauth_private_key"].(string)
+	public, _ := talk["oauth_public_key"].(string)
+	passphrase, _ := talk["oauth_passphrase"].(string)
+
+	if !strings.Contains(private, "Proc-Type: 4,ENCRYPTED") {
+		t.Errorf("the private key is not encrypted, and it is rendered 0644:\n%s", strings.SplitN(private, "\n", 4)[:3])
+	}
+	key, err := secretsgen.OpenOAuthPrivateKey(private, passphrase)
+	if err != nil {
+		t.Fatalf("the private key does not open with oauth_passphrase: %v", err)
+	}
+	if key.N.BitLen() != 4096 {
+		t.Errorf("the key is %d bits; upstream documents 4096", key.N.BitLen())
+	}
+	if _, err := secretsgen.OpenOAuthPrivateKey(private, "not-the-passphrase"); err == nil {
+		t.Error("the private key opened with the wrong passphrase")
+	}
+	block, _ := pem.Decode([]byte(public))
+	if block == nil || block.Type != "PUBLIC KEY" {
+		t.Fatalf("the public key is not a PEM PUBLIC KEY:\n%s", public)
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub, ok := parsed.(*rsa.PublicKey); !ok || !pub.Equal(&key.PublicKey) {
+		t.Error("the public key is not the private key's public half")
+	}
+
+	second, err := secretsgen.Fill(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range second.Generated {
+		if strings.Contains(name, "oauth_") {
+			t.Errorf("a second pass generated %s", name)
+		}
+	}
+	if secrets.Apps["talk"]["oauth_private_key"] != private || secrets.Apps["talk"]["oauth_public_key"] != public {
+		t.Error("a second pass replaced the keypair, which signs out every API client and app")
+	}
+
+	// A public key missing beside a kept private key is derived from it, not
+	// a reason for a new pair.
+	delete(secrets.Apps["talk"], "oauth_public_key")
+	third, err := secretsgen.Fill(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secrets.Apps["talk"]["oauth_private_key"] != private {
+		t.Error("a missing public key caused the private key to be replaced")
+	}
+	if secrets.Apps["talk"]["oauth_public_key"] != public {
+		t.Error("the derived public key differs from the one generated with the pair")
+	}
+	if len(third.Generated) != 1 || third.Generated[0] != "apps.talk.oauth_public_key" {
+		t.Errorf("expected only the public key to be derived, got %v", third.Generated)
+	}
+
+	// And a private key the passphrase cannot open is refused, not replaced.
+	delete(secrets.Apps["talk"], "oauth_public_key")
+	secrets.Apps["talk"]["oauth_passphrase"] = "changed-by-hand"
+	if _, err := secretsgen.Fill(cfg, secrets); err == nil || !strings.Contains(err.Error(), "oauth-key-does-not-open") {
+		t.Errorf("a private key the passphrase cannot open was not refused: %v", err)
+	}
+	if secrets.Apps["talk"]["oauth_private_key"] != private {
+		t.Error("a private key the passphrase cannot open was replaced")
 	}
 }

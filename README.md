@@ -664,9 +664,32 @@ Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.
 
 | Kind | Examples | Origin |
 |------|----------|--------|
-| **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys, Mercure JWT, RabbitMQ and Valkey passwords | created at `init`, never typed or seen |
+| **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys, Mercure JWT, RabbitMQ and Valkey passwords, Mbin's OAuth2 server keypair | created at `init`, never typed or seen |
 | **Pasted** | Cloudflare API token, SMTP credentials | issued elsewhere, supplied by a human |
 | **Captured** | OIDC client secrets | minted by a running service, then recorded |
+
+**Mbin's OAuth2 keypair is generated, not placed.** Mbin signs the tokens it
+issues to API clients and apps with an RSA key that its image does not create;
+upstream's Docker install has the operator run `openssl genrsa -des3 ... 4096`
+on the host (`docs/02-admin/01-installation/02-docker.md` in the Mbin
+repository). `init` generates the same thing instead: 4096 bits, the private
+half encrypted with the app's `oauth_passphrase`, both halves kept in the
+secrets file and rendered to `/srv/<app>/oauth/`. A host step is what the
+toolkit exists to remove, and keeping the pair in the secrets file is what
+gives every apps site under cluster placement the same one, so a token one
+site issues verifies on another. Like every generated secret it is never
+replaced, and here that is visible to members: a new key signs out every API
+client at once.
+
+**It is also the one private key rendered 0644, on purpose.** `apply` writes
+every file as root, and Mbin reads the key as uid 1000 after its entrypoint
+drops privileges, so a 0600 key is a key Mbin cannot open. The key is
+encrypted, and the passphrase that opens it is only in the 0600 `.env`, so a
+host user who can read `private.pem` holds ciphertext. The alternatives were
+worse: `apply` chowning the file to 1000 couples the generic writer to one
+image's runtime user; running the container as root defeats the entrypoint's
+own privilege drop; and an unencrypted key at 0644 is a plaintext signing key
+for anyone on the host.
 
 The captured case matters. An identity provider mints a client secret and the
 app needs the identical value; recording it here makes it reproducible instead
@@ -739,6 +762,8 @@ templates/mbin/                             templates/writefreely/
   .env.tmpl                                   config.ini.tmpl
   caddy.snippet.tmpl                          .env.tmpl
   valkey.conf.tmpl                            caddy.snippet.tmpl
+  oauth/private.pem.tmpl
+  oauth/public.pem.tmpl
 ```
 
 **A template's path is its destination.** The layout under `templates/<kind>/`
