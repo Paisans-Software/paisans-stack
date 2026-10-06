@@ -1323,18 +1323,66 @@ whoever started them. Every `apt-get` runs non-interactively.
 | 51820/udp, WireGuard | every site |
 | everything arriving on `wg0` | every site |
 | 80/tcp, 443/tcp | sites with the gateway role |
+| `br-+` to the site's mesh address, cluster port and Garage's S3 port | sites with the apps role |
 
 Nothing is listed per site. A site that gains the gateway role gains 80 and 443
-at its next prepare. Nothing is ever removed: a rule an operator added is not
-the toolkit's to delete, and a site that loses a role keeps its old rules until
-someone removes them deliberately.
+at its next prepare, and one that loses it loses them at its next prepare.
+
+#### host prepare owns its rules, and only its rules
+
+Every rule `host prepare` adds carries a ufw comment, `paisans: <why>`, and
+that comment is the whole of ownership. A later prepare compares what the site
+derives with what `ufw show added` prints, and decides per rule:
+
+| ufw holds | The plan says | What happens |
+|-----------|---------------|--------------|
+| nothing matching | `change` | added, with the comment |
+| the rule, with the comment | `present` | nothing |
+| the rule, with no comment | `present`, then `adopt` | re-added with the comment |
+| the rule, with someone else's comment | `present (not paisans)` | nothing; it satisfies the rule |
+| the same traffic, another action (`limit`, `deny`) | `WARNING` | nothing; a `deny` or `reject` on SSH is refused |
+| a commented rule nothing derives any more | `remove` | deleted, last |
+| any uncommented or foreign rule | `present (not paisans)` if it bears on a derived rule | nothing, ever |
+
+The alternative was the previous rule, that nothing is ever removed. It is
+safe, and it leaves a site that lost the gateway role serving 80 and 443 until
+someone notices, which for a firewall is the wrong way round. Removing anything
+not derived would be simpler still, and would delete the rule an operator added
+for their monitoring agent. The comment separates the two without a state file
+that could drift from the host.
+
+Rules are matched the way ufw matches them, on everything except action and
+comment. That is not a choice: ufw keeps one rule per match and **adding a rule
+that differs only in comment or action replaces the existing one in place**
+(ufw 0.36.2, the version Ubuntu 24.04 ships: `UFWRule.match` in `common.py`,
+`set_rule` in `backend_iptables.py`). So adding ours over a rule someone else
+commented would rewrite their comment, and adding an allow over their `limit`
+would loosen it. Both are left alone.
+
+The same behaviour makes adoption one command. A host prepared before rules
+carried a comment holds exactly the derived rules, uncommented. Re-adding each
+with the comment rewrites it in place, so there is no moment without the rule
+and nothing to delete afterwards. Deleting the uncommented copy as a second
+step was considered and rejected: ufw lets a delete that names no comment
+remove a rule that has one, so it would remove the rule just adopted, and for
+SSH, lock the host out. An uncommented rule that no longer matches anything
+derived (a role lost before the upgrade) is indistinguishable from an
+operator's and stays until removed by hand.
+
+**SSH is never removed**, not even an allow `host prepare` added itself. With
+incoming denied by default, that deletion drops the next connection, every
+later prepare and apply arrives over it, and recovering takes a console. A
+stale SSH allow costs almost nothing; a wrong removal costs the host.
+
+Removals run after every addition, the default policy and enabling, so a rule
+is only taken away once everything that replaces it is in place.
 
 The mesh is let in whole, by interface, rather than port by port. etcd,
 Patroni, Garage and HAProxy all listen on the mesh address, and a new mesh
 service would otherwise be one more rule to remember on every site.
 
 **SSH is never shut out.** Every allow, SSH first, is in place before the
-default deny, and the firewall is enabled last with `ufw --force enable`, which
+default deny, and the firewall is enabled with `ufw --force enable`, which
 does not stop to ask whether to disrupt existing connections.
 
 **Docker-published ports bypass the firewall.** Docker's install page says so
@@ -1362,11 +1410,11 @@ named on a command line does not apply the blacklist. This is the kind of
 difference a profile exists to hold: a distribution that does not blacklist
 `softdog` can use `modules-load.d`.
 
-**Provisional: none of this has run on a host yet.** The command is tested
-against a fake transport. The probe output it parses (`ufw show added`,
-`systemctl show -p RuntimeWatchdogUSec`, `dpkg-query`) is written from the
-tools' documented behaviour, not observed on Ubuntu 24.04, and the first real
-run should be read rather than trusted.
+**Provisional: little of this has run on a host yet.** The command is tested
+against a fake transport. `ufw show added` was observed on Ubuntu 24.04 for
+uncommented rules; the commented form, adoption and removal are written from
+ufw's source, not observed, as are `systemctl show -p RuntimeWatchdogUSec` and
+`dpkg-query`. The first real run of each should be read rather than trusted.
 
 ### Where WireGuard keys are generated
 
