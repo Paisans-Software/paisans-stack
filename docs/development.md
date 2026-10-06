@@ -14,8 +14,8 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 ## Run
 
 validate, init and render touch nothing outside the working directory.
-`host prepare`, `apply`, `storage init` and `app admin create` reach a machine,
-and each changes it only with `--execute`. `dns init` reaches no machine, only
+`host prepare`, `apply`, `storage init`, `app admin create` and `oidc client
+create` reach a machine, and each changes it only with `--execute`. `dns init` reaches no machine, only
 the DNS provider's API, and changes it only with `--execute`.
 
 ```
@@ -48,9 +48,10 @@ bearing:
   configuration later, and the second run of an unchanged deployment writes
   nothing at all.
 * **It generates only what it can.** A DNS token is issued by a provider and an
-  OIDC client secret is minted by a running identity provider, where creating
-  one is a mutation a human approves. Both are reported as owed, with the reason,
-  rather than invented or left silent.
+  OIDC client lives at a running identity provider, where creating one is a
+  mutation a human approves. Both are reported as owed, with the reason,
+  rather than invented or left silent. An owed Mbin client names the command
+  that creates it, `oidc client create`.
 * **Without an age recipient it writes plaintext and says so loudly.** Refusing
   would leave an operator holding generated secrets that went nowhere, and a
   first look at the tool must not require a key.
@@ -79,6 +80,16 @@ on `--execute`, valid fifteen minutes; `--login-link` issues a fresh one for an
 account that exists. It refuses a piped password rather than dropping it. It
 reads `apps.<app>.static_api_key` from the secrets file, so it takes
 `--secrets`, and it never uses sudo, because curl needs no root.
+
+`oidc client create --app <name>` creates an app's client at the deployment's
+Pocket ID, with the groups the app's `config` names, and records its ID and
+secret under `oidc_clients.<app>`. Every step is printed with what it sends and
+nothing changes without `--execute`. The secret is generated on the
+workstation and written to the secrets file before Pocket ID is sent it, and is
+never printed. `--admin-user` adds a Pocket ID user to the app's admin group,
+and `--rotate-secret` adds a new secret, leaving the old one valid. Only Mbin's
+client is known so far (`kinds.OIDCClient`). See *`oidc client create` makes an
+app's client at Pocket ID* in `README.md`.
 
 `render` and `apply` refuse a gateway site when `external.acme_dns_token` is
 empty. `init` lists it as owed, but rendering without it produced a Caddy that
@@ -366,6 +377,7 @@ installed, on a workstation or anywhere else.
 | `internal/apply` | what to push to a host, what to restart, and the gates before either |
 | `internal/appadmin` | an app's first administrator: probe, plan, and the per kind commands or API calls |
 | `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin |
+| `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
 | `internal/hostprep` | taking a blank host to what `apply` assumes; one profile per operating system, its shell under `profiles/<id>-<version>/` |
 | `internal/render/templates` | the infrastructure templates, plus one directory per kind |
 

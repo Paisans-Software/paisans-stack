@@ -666,7 +666,7 @@ Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.
 |------|----------|--------|
 | **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys, Mercure JWT, RabbitMQ and Valkey passwords, Mbin's OAuth2 server keypair | created at `init`, never typed or seen |
 | **Pasted** | Cloudflare API token, SMTP credentials | issued elsewhere, supplied by a human |
-| **Captured** | OIDC client secrets | minted by a running service, then recorded |
+| **Captured** | OIDC client secrets | belong to a running service; recorded here, by `oidc client create` for Pocket ID |
 
 **Mbin's OAuth2 keypair is generated, not placed.** Mbin signs the tokens it
 issues to API clients and apps with an RSA key that its image does not create;
@@ -691,11 +691,15 @@ image's runtime user; running the container as root defeats the entrypoint's
 own privilege drop; and an unencrypted key at 0644 is a plaintext signing key
 for anyone on the host.
 
-The captured case matters. An identity provider mints a client secret and the
+The captured case matters. An identity provider holds a client secret and the
 app needs the identical value; recording it here makes it reproducible instead
-of existing on exactly one host. But minting one is a privileged mutation that
-belongs to a human — the toolkit records the value after the fact and must not
-automate the approval away.
+of existing on exactly one host. Creating one is a privileged mutation that
+belongs to a human, and the toolkit does not automate that approval away: `oidc
+client create` prints every mutation and changes nothing until the operator
+re-runs it with `--execute`. For Pocket ID the value is not even captured. The
+toolkit generates it, records it here, and then hands it to Pocket ID, which
+accepts a caller supplied secret; see *`oidc client create` makes an app's
+client at Pocket ID*.
 
 **Pasted and captured secrets go in through a pipe.** `paisans secrets set
 <dotted.key>` reads the value from stdin, writes it into `secrets.enc.yaml`
@@ -1834,6 +1838,89 @@ Three alternatives were rejected:
   holds the age key to the secrets file.
 * **A user API key minted in the UI.** It expires, it belongs to a person who
   might leave, and minting it is the clicking this exists to remove.
+
+### `oidc client create` makes an app's client at Pocket ID
+
+An app that signs members in through Pocket ID needs a client there, and the
+app needs that client's ID and secret. The toolkit creates the client and
+records both in the secrets file, where `render` already reads them
+(`oidc_clients.<app>.client_id` and `.client_secret`), so the next `apply`
+renders the app's sign in settings with nothing else to do:
+
+```sh
+paisans oidc client create --app talk --admin-user founder            # shows what it would do
+paisans oidc client create --app talk --admin-user founder --execute  # does it
+paisans apply --site home-a --execute                                 # renders OAUTH_OIDC_*
+```
+
+For an app whose configuration sets `OAUTH_OIDC_ADMIN_GROUP: admins`, the dry
+run against an empty Pocket ID prints:
+
+```
+talk's client at auth on home-a (pocket-id)
+  create group admins: POST /api/user-groups {"friendlyName":"admins","name":"admins"}
+  create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false}
+  create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
+  add founder to group admins: PUT /api/users/<user id>/user-groups with the groups founder is in now, plus admins
+
+Nothing was changed. Re-run with --execute to apply this.
+```
+
+**Each line is a Pocket ID mutation, and printing it is what makes approving
+it possible.** Client, group and user changes at the identity provider need a
+human's approval every time. The command cannot know whether it has one, so it
+never assumes it: the dry run is the request, and the operator's `--execute`
+is the approval of exactly what was printed. The same probe runs again on
+`--execute`, so what executes is what a fresh probe plans.
+
+The client is the app kind's, not a choice made at the command line. For Mbin
+that is the paisans fork's verify route as the only callback, PKCE on because
+the fork always sends a code challenge, and a confidential client. The groups
+are the app's own: the fork reads `OAUTH_OIDC_ADMIN_GROUP` and
+`OAUTH_OIDC_MEMBER_GROUP` from the `groups` claim, which Pocket ID fills with
+group names (`oidc/claims_service.go:157-162`), so the command reads the same
+two keys from the app's `config` and creates whichever group is missing. A
+member group also restricts the client to the member and admin groups, so a
+refused member is stopped at Pocket ID before the app sees them.
+`--admin-user` adds a Pocket ID user, made with `app admin create`, to the
+admin group.
+
+**The secret is never printed and never captured.** Pocket ID accepts a client
+secret the caller supplies (`dto/oidc_dto.go:77-83` at `v2.14.0`), so the
+toolkit generates it on the workstation, writes it into the secrets file,
+re-encrypted to the recipients in `.sops.yaml`, and only then sends it. The
+order is the point. A run interrupted between the two leaves a recorded secret
+that Pocket ID does not hold; the next run sees that, because Pocket ID keeps
+each secret's first four characters (`model/oidc.go:43`), and sends the
+recorded one. The other order would leave a live secret at Pocket ID that is
+recorded nowhere. If the secrets file cannot be written, Pocket ID is sent
+nothing.
+
+**It is idempotent from the probe.** An existing client with the right
+callback, PKCE and restriction is `present`, and its secret is left alone
+unless `--rotate-secret` is given. A rotation adds a secret and leaves the old
+one valid, because Pocket ID allows several (`controller/oidc_controller.go:292`),
+so the app keeps signing people in until `apply` renders the new one. A client
+that differs from what the app needs is refused, with what differs, rather than
+reshaped: updating a client rewrites every field, and a client somebody shaped
+by hand is not this command's to change. After `--execute` it probes again and
+fails unless a fresh plan is empty.
+
+Four alternatives were rejected:
+
+* **Creating the client in Pocket ID's UI and pasting the secret into `secrets
+  set`.** It is the step this replaces: a browser on the admin UI, a secret
+  shown on screen and copied by hand, and a callback URL typed from memory.
+  `secrets set` still accepts the key for a client made elsewhere.
+* **Letting Pocket ID generate the secret and capturing it from the
+  response.** The value would exist only at Pocket ID until the write that
+  follows succeeded, and an interruption there leaves a live secret nobody has.
+* **Flags for the group names.** The name has to agree with the app's own
+  setting, and a flag is a second place to type it that can disagree. Reading
+  the app's `config` is the one place a passthrough key is read rather than
+  only placed, and this is why.
+* **Updating a client that differs.** It would quietly undo whatever made it
+  differ, which might have been deliberate.
 
 ### `site add` — the gateway and witness
 
