@@ -1732,6 +1732,47 @@ Two alternatives were rejected:
   fork change for a one-time event, and it makes rotating that password a
   redeploy.
 
+### The toolkit administers Pocket ID through its static API key
+
+Pocket ID is the one application whose first administrator and whose clients
+this toolkit creates for itself, and every one of those is a call to its REST
+API. What makes the calls possible without a browser is `STATIC_API_KEY`
+(`backend/internal/common/env_config.go:59` at tag `v2.14.0`, at least 16
+characters at `:182-184`): a request whose `X-API-Key` header equals it
+authenticates as a synthetic administrator that Pocket ID creates on first use
+and deletes at startup once the variable is unset
+(`apikey/service.go:31-36`, `:156-163`, `:221-259`;
+`middleware/api_key_auth.go:38`). `init` generates it as
+`apps.<app>.static_api_key`, the `.env` renders it, and `render` refuses a
+Pocket ID app without it, as it refuses one without its `ENCRYPTION_KEY`.
+
+A call goes from the workstation over the operator's own ssh to the site the
+app runs on, where `curl` calls the port Pocket ID publishes on the mesh
+address. The command line is one constant, `curl --silent --show-error
+--globoff --config -`; the URL, the key and any request body are a curl
+configuration on stdin. A command line is in the process table, readable by
+every user on the host, for as long as it runs; stdin is not. `curl` runs on
+the host because the image has none (`docker/Dockerfile-prebuilt` is Alpine
+plus `su-exec`), and the host has it from `host prepare`.
+
+The key is a standing admin credential on every apps site that runs Pocket ID,
+which is worth stating plainly. It adds nothing to what root on that host
+already holds: the same `.env` carries the database connection string and the
+encryption key, and either is all of Pocket ID. It is reachable only over the
+mesh, because the port is bound to the mesh address and nowhere else.
+
+Three alternatives were rejected:
+
+* **Clicking through the admin UI.** It is a step on a host nobody can repeat
+  or review, and it cannot run before the first administrator exists, which is
+  the problem being solved.
+* **A key file on the host for an operator's own `curl`.** That is a second
+  long lived copy of an admin credential, outside the rendered set `apply` owns
+  and checks, readable by whoever can read that file rather than by whoever
+  holds the age key to the secrets file.
+* **A user API key minted in the UI.** It expires, it belongs to a person who
+  might leave, and minting it is the clicking this exists to remove.
+
 ### `site add` — the gateway and witness
 
 The straightforward case, because the VM has a stable address and is the one
