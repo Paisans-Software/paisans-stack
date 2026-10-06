@@ -28,7 +28,7 @@ services:
     volumes:
       - /srv/infra/etcd:/var/lib/etcd
   caddy:
-    image: ghcr.io/paisans-software/caddy:2.11.6@sha256:ab053ca6172cdd3723701fff652f3ecd75572e03447e07a55d08464143e81147
+    image: ghcr.io/paisans-software/caddy:2.11.7@sha256:b401d1cb18074026a535a1facc5f6d9d35bc62fdff480f3b1fd91042c8e48186
     restart: unless-stopped
     network_mode: host
     # Relative to this file, so the path names the caddy/ directory the token
