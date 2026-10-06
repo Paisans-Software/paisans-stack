@@ -207,6 +207,32 @@ func TestAHomeserversOwedClientNamesItsRedirectURI(t *testing.T) {
 	}
 }
 
+// Mbin's client returns to the fork's verify route, and the fork always sends
+// a PKCE challenge, so both are said while the operator is minting the client
+// rather than after the first sign in fails.
+func TestAnMbinOwedClientNamesItsRedirectURIAndPKCE(t *testing.T) {
+	cfg := load(t)
+	secrets := &config.Secrets{}
+	filled, err := secretsgen.Fill(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var why string
+	for _, o := range filled.Owed {
+		if o.Name == "oidc_clients.talk" {
+			why = o.Why
+		}
+	}
+	if why == "" {
+		t.Fatal("the Mbin app's client was not reported as owed at all")
+	}
+	for _, want := range []string{kinds.MbinRedirectURI(cfg.Apps["talk"].Hostname), "PKCE"} {
+		if !strings.Contains(why, want) {
+			t.Errorf("the owed client does not name %q:\n%s", want, why)
+		}
+	}
+}
+
 // Garage refuses anything else, and it refuses it at provisioning time on a
 // host rather than here, which is the worst place to discover a format.
 // Established by running dxflrs/garage:v1.0.1: "The specified key ID is not a

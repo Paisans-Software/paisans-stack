@@ -327,8 +327,11 @@ func (p *planner) oidcFor(planned plannedApp) oidcValues {
 	// of it, which serves one callback path per upstream provider rather than
 	// the /oauth/callback every other kind uses.
 	redirect := "https://" + planned.Hostname + "/oauth/callback"
-	if planned.Kind == config.KindSynapse {
+	switch planned.Kind {
+	case config.KindSynapse:
 		redirect = kinds.MASRedirectURI(planned.Hostname, planned.Name)
+	case config.KindMbin:
+		redirect = kinds.MbinRedirectURI(planned.Hostname)
 	}
 	return oidcValues{
 		Present:      true,

@@ -1897,3 +1897,18 @@ func TestPinnedMbinRunsItsOwnDatabase(t *testing.T) {
 		t.Errorf("a pinned Mbin does not publish on its own site's mesh address:\n%s", compose)
 	}
 }
+
+// Mbin's sign in comes back to the fork's verify route, and the .env says so,
+// because that comment is where an operator registering the client looks. It
+// used to say /oauth/oidc/verify while the value it was built from said
+// /oauth/callback, which no route in the fork serves.
+func TestMbinNamesTheCallbackItServes(t *testing.T) {
+	env := planFiles(build(t))["home-a/srv/talk/.env"]
+	want := kinds.MbinRedirectURI("talk.example.org")
+	if !strings.Contains(env, want) {
+		t.Errorf("the Mbin .env does not name %s as the callback to register:\n%s", want, env)
+	}
+	if strings.Contains(env, "/oauth/callback") {
+		t.Errorf("the Mbin .env names /oauth/callback, which the fork does not serve:\n%s", env)
+	}
+}

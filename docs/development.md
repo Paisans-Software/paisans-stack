@@ -260,8 +260,10 @@ set is checked against upstream before it is written, and the check is recorded
 in a comment where it is not obvious. Some of it is counter intuitive and does
 not survive being recalled: WriteFreely's `[oauth.generic]` endpoints are paths
 appended to `host` rather than URLs, upstream Mbin ships named OAuth providers
-and no generic OIDC one, and Spilo publishes a separate image repository per
-Postgres major version whose tags do not run in step.
+and no generic OIDC one (which is why the mbin kind's default image is the
+paisans fork, which adds one, and its callback is `/oauth/oidc/verify`), and
+Spilo publishes a separate image repository per Postgres major version whose
+tags do not run in step.
 
 ## Certificates use DNS-01, everywhere
 

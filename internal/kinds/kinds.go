@@ -60,7 +60,15 @@ var catalogue = map[config.Kind][]Service{
 		{Name: "app", Image: "ghcr.io/element-hq/element-web:v1.12.27", Purpose: "the web client"},
 	},
 	config.KindMbin: {
-		{Name: "app", Image: "ghcr.io/mbinorg/mbin:v1.10.1", Purpose: "the application, and its messenger consumers"},
+		// The paisans fork, not upstream: it carries the generic OIDC
+		// provider this kind's .env configures, which upstream does not
+		// have. Released 2026-10-05 as 1.13.3-paisans. Checked against
+		// ghcr.io on 2026-10-06 by requesting the manifest for that exact tag
+		// with an anonymous pull token, which resolved (200, an OCI image
+		// index, sha256:42e65e245b1026e0384a3834b7e49721123115e5acc11a63b29cd4bdf6eb6ef4).
+		// The index carries linux/amd64 only, beside an attestation
+		// manifest, so an arm64 apps site cannot run it.
+		{Name: "app", Image: "ghcr.io/paisans-software/mbin:1.13.3-paisans", Purpose: "the application, and its messenger consumers"},
 		// The three sidecars upstream's compose.yaml runs beside it. The
 		// messenger consumers are not here: they run the application's own
 		// code, so they always take the app's image, and a key that let them

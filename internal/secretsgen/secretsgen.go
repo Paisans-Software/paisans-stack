@@ -331,6 +331,15 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 				kinds.MASRedirectURI(cfg.Apps[name].Hostname, name) +
 				", which is the authentication service's callback for this upstream provider and not the /oauth/callback every other kind uses"
 		}
+		if cfg.Apps[name].Kind == config.KindMbin {
+			// The same reasoning as the homeserver's above. PKCE is named
+			// because the fork's OidcClient extends KnpU's OAuth2PKCEClient
+			// and always sends a code challenge (src/Security/Oidc/OidcClient.php
+			// at tag v1.13.3+paisans), so a client with PKCE off at the
+			// provider refuses every sign in.
+			why += ". Register its redirect URI as " + kinds.MbinRedirectURI(cfg.Apps[name].Hostname) +
+				", and enable PKCE on it: Mbin always sends a code challenge"
+		}
 		out = append(out, Owed{Name: "oidc_clients." + name, Why: why})
 	}
 	return out
