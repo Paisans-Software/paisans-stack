@@ -73,17 +73,22 @@
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "d89bd1735f48f27ad4cc0be6e0ce9e9478088f262ea340ee1d4fc7e727009bf1",
+      "sha256": "5a33cac8468df9a6a27dab149f1f5ae386ce79b76c056e67956c60d22168aba5",
       "mode": "0600"
     },
     {
       "path": "srv/talk/compose.yaml",
-      "sha256": "c075500f5c8edee90829a0741705590e6c49c202cc98b009c89687d139cadcec",
+      "sha256": "03efb6c9693c7190d5ba5624a66c3e1b6db9d9becc5c834f7f0af20a01f6cf64",
       "mode": "0644"
     },
     {
-      "path": "srv/talk/config/packages/oneup_flysystem.yaml",
-      "sha256": "9e676d3569b2fe39d5ce151f4dbfbbf065fbe020b1b194f547320a0a309d4efd",
+      "path": "srv/talk/oauth/private.pem",
+      "sha256": "411b0aaba0a0e761d2de5af24c296ea49e3955c64c03880ccb2199de1c2ca751",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/talk/oauth/public.pem",
+      "sha256": "03d2b40509c8d0c7b462e0ed95feefd687a9075145fa35f66c03bbc9015bb6c9",
       "mode": "0644"
     },
     {

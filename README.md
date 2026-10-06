@@ -80,7 +80,7 @@ toolkit should not overstate it:
 
 | Stack | S3 support | Notes |
 |-------|-----------|-------|
-| Mbin | full | `S3_KEY`/`S3_SECRET`/`S3_BUCKET`/`S3_REGION`/`S3_ENDPOINT`, plus switching `public_uploads_filesystem` to the S3 adapter in `config/packages/oneup_flysystem.yaml`. Upstream strongly advises a media reverse proxy so URLs stay stable across provider changes |
+| Mbin | full | `S3_KEY`/`S3_SECRET`/`S3_BUCKET`/`S3_REGION`/`S3_ENDPOINT`. The Docker image's entrypoint then switches `public_uploads_filesystem` to the S3 adapter itself; only a bare metal or VM install edits `config/packages/oneup_flysystem.yaml` by hand. Upstream strongly advises a media reverse proxy so URLs stay stable across provider changes |
 | Outline | full | `FILE_STORAGE=s3` with the `AWS_*` variables; non-AWS endpoints need `AWS_S3_FORCE_PATH_STYLE=true`. Known upstream bug: the bucket must not be named `outline` |
 | Synapse | partial | `synapse-s3-storage-provider` is a *storage provider* that supplements the media store. **A local media directory is still required.** `store_synchronous: True` writes to S3 immediately; the bucket prefix cannot be changed once media exists |
 | Pocket ID | full, plus better | `FILE_BACKEND` takes `filesystem` (default), `s3`, or **`database`**. See the note below — `database` is the recommendation |
@@ -664,9 +664,32 @@ Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.
 
 | Kind | Examples | Origin |
 |------|----------|--------|
-| **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys, Mercure JWT, RabbitMQ and Valkey passwords | created at `init`, never typed or seen |
+| **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys, Mercure JWT, RabbitMQ and Valkey passwords, Mbin's OAuth2 server keypair | created at `init`, never typed or seen |
 | **Pasted** | Cloudflare API token, SMTP credentials | issued elsewhere, supplied by a human |
 | **Captured** | OIDC client secrets | minted by a running service, then recorded |
+
+**Mbin's OAuth2 keypair is generated, not placed.** Mbin signs the tokens it
+issues to API clients and apps with an RSA key that its image does not create;
+upstream's Docker install has the operator run `openssl genrsa -des3 ... 4096`
+on the host (`docs/02-admin/01-installation/02-docker.md` in the Mbin
+repository). `init` generates the same thing instead: 4096 bits, the private
+half encrypted with the app's `oauth_passphrase`, both halves kept in the
+secrets file and rendered to `/srv/<app>/oauth/`. A host step is what the
+toolkit exists to remove, and keeping the pair in the secrets file is what
+gives every apps site under cluster placement the same one, so a token one
+site issues verifies on another. Like every generated secret it is never
+replaced, and here that is visible to members: a new key signs out every API
+client at once.
+
+**It is also the one private key rendered 0644, on purpose.** `apply` writes
+every file as root, and Mbin reads the key as uid 1000 after its entrypoint
+drops privileges, so a 0600 key is a key Mbin cannot open. The key is
+encrypted, and the passphrase that opens it is only in the 0600 `.env`, so a
+host user who can read `private.pem` holds ciphertext. The alternatives were
+worse: `apply` chowning the file to 1000 couples the generic writer to one
+image's runtime user; running the container as root defeats the entrypoint's
+own privilege drop; and an unencrypted key at 0644 is a plaintext signing key
+for anyone on the host.
 
 The captured case matters. An identity provider mints a client secret and the
 app needs the identical value; recording it here makes it reproducible instead
@@ -738,8 +761,9 @@ templates/mbin/                             templates/writefreely/
   compose.yaml.tmpl                           compose.yaml.tmpl
   .env.tmpl                                   config.ini.tmpl
   caddy.snippet.tmpl                          .env.tmpl
-  config/packages/oneup_flysystem.yaml.tmpl   caddy.snippet.tmpl
-  valkey.conf.tmpl
+  valkey.conf.tmpl                            caddy.snippet.tmpl
+  oauth/private.pem.tmpl
+  oauth/public.pem.tmpl
 ```
 
 **A template's path is its destination.** The layout under `templates/<kind>/`
@@ -783,9 +807,10 @@ application, so it lives beside that application's other templates and arrives
 and leaves with it.
 
 **Its shims.** Where upstream ships a file the deployment has to override, the
-override is a template like any other. Rule 3 already names one, and it is small
-enough to show. Mbin's `config/packages/oneup_flysystem.yaml` defines both a
-local adapter and an S3 adapter, and binds uploads to the local one:
+override is a template like any other. Rule 3 names the first candidate, and it
+turned out to be the cautionary case. Mbin's
+`config/packages/oneup_flysystem.yaml` defines both a local adapter and an S3
+adapter, and binds uploads to the local one:
 
 ```yaml
   filesystems:
@@ -794,15 +819,22 @@ local adapter and an S3 adapter, and binds uploads to the local one:
       #adapter: kbin.s3_adapter
 ```
 
-Rule 3 puts media in Garage from the first install, so the rendered override is
-that file with the adapter switched to `kbin.s3_adapter`
-([Mbin's S3 documentation](https://docs.joinmbin.org/admin/optional-features/s3_storage/)).
-The `S3_*` variables in `.env` supply the endpoint and credentials; this file is
-what decides whether they are used at all, which is why setting the variables
-alone appears to work and silently keeps writing to local disk. It renders to
-`/srv/talk/config/packages/oneup_flysystem.yaml` and is bind-mounted over the
-copy in the image. Entrypoint wrappers, module configuration and other
-dropped-in override files work the same way.
+On a bare metal or VM install, setting the `S3_*` variables alone appears to
+work and silently keeps writing to local disk, and the fix is editing this file.
+[Mbin's S3 documentation](https://docs.joinmbin.org/admin/optional-features/s3_storage/)
+says that edit is "only needed on bare metal/VM, not Docker", because the Docker
+image's entrypoint makes it: with `APP_ENV=prod` (the image's default) and
+`S3_KEY` set, it runs `sed -i` on that file at every start, switching the
+adapter to `kbin.s3_adapter`. On the image this toolkit runs, the variables in
+`.env` are the whole switch, and the toolkit renders no override.
+
+A rendered copy bind-mounted over the file was the first design, and it is worse
+than none: `sed -i` cannot replace a bind-mounted file, the entrypoint runs
+under `set -e`, and the container exits before it serves anything. So **before
+shimming a file, read the image's entrypoint.** A file it edits in place cannot
+be mounted over, and a file it edits is usually one the image already handles.
+Entrypoint wrappers, module configuration and other dropped-in override files
+that the image leaves alone are templates like any other.
 
 **A shim is a rendered, readable file in the template directory, never a private
 image build.** Baking one into an image moves it somewhere an operator cannot

@@ -23,8 +23,8 @@
 #   app, messenger  start as root; the image's entrypoint chowns var/, /data
 #                   and /config to MBIN_USER (1000:1000, set in .env) and then
 #                   drops to it. media/ and oauth/ are NOT chowned. media/ is
-#                   unused while uploads go to S3; oauth/ must be readable by
-#                   uid 1000 (see below).
+#                   unused while uploads go to S3; oauth/ holds two rendered
+#                   0644 files, which uid 1000 reads as they are (see below).
 #   rabbitmq        starts as root; its entrypoint chowns /var/lib/rabbitmq to
 #                   its own user and drops to it. No `user:` here for that
 #                   reason, which is a deliberate difference from upstream.
@@ -60,17 +60,20 @@ services:
       - /srv/talk/caddy_config:/config
       - /srv/talk/media:/app/public/media
       # Mbin's own OAuth2 server keypair, for API clients. Not the identity
-      # provider's client secret. The image does not generate it: an operator
-      # places private.pem (encrypted with OAUTH_PASSPHRASE from .env) and
-      # public.pem here, readable by uid 1000, before any API client connects.
-      # Read only, so the application cannot rewrite its own signing key. With
-      # cluster placement every apps site needs the same pair, or a token one
-      # site issues fails on another.
+      # provider's client secret. Generated at `paisans init`, kept in the
+      # secrets file and rendered here as oauth/private.pem and public.pem, so
+      # every apps site under cluster placement has the same pair and a token
+      # one site issues verifies on another. Both are 0644 so uid 1000 can read
+      # them without a chown; private.pem is encrypted with OAUTH_PASSPHRASE,
+      # which is only in the 0600 .env. Read only, so the application cannot
+      # rewrite its own signing key.
       - /srv/talk/oauth:/app/config/oauth2:ro
       - /srv/talk/php_logs:/app/var/log
-      # Upstream binds uploads to the local adapter. The shim switches it to
-      # S3; see the comment at the top of that file.
-      - /srv/talk/config/packages/oneup_flysystem.yaml:/app/config/packages/oneup_flysystem.yaml:ro
+      # Nothing is mounted over config/packages/. The image's entrypoint edits
+      # three files there in place at every start (liip_imagine.yaml,
+      # monolog.yaml, and oneup_flysystem.yaml, which it switches to the S3
+      # adapter because S3_KEY is set in .env), and `sed -i` over a bind mount
+      # fails and stops the container.
     depends_on:
       amqproxy:
         condition: service_started
@@ -95,7 +98,9 @@ services:
     volumes:
       - /srv/talk/media:/app/public/media
       - /srv/talk/messenger_logs:/app/var/log
-      - /srv/talk/config/packages/oneup_flysystem.yaml:/app/config/packages/oneup_flysystem.yaml:ro
+      # The same keypair as app, so that nothing the consumers run differs from
+      # the web container in which keys it can see.
+      - /srv/talk/oauth:/app/config/oauth2:ro
     depends_on:
       amqproxy:
         condition: service_started

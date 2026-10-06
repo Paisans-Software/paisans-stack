@@ -1,8 +1,12 @@
 package render_test
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"flag"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -13,7 +17,9 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/validate"
+	"gopkg.in/yaml.v3"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden tree from the current output")
@@ -262,7 +268,7 @@ func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
 		{"home-a/srv/talk/.env", 0o600, "DATABASE_URL="},
 		{"home-a/srv/talk/compose.yaml", 0o644, "name: paisans-talk"},
 		// A template's path is its destination, nested directories included.
-		{"home-a/srv/talk/config/packages/oneup_flysystem.yaml", 0o644, "kbin.s3_adapter"},
+		{"vm/srv/chat/initdb.d/01-mas-database.sql", 0o644, "CREATE DATABASE"},
 	}
 	for _, tc := range cases {
 		f, ok := files[tc.path]
@@ -530,6 +536,61 @@ func TestNoNamedVolumes(t *testing.T) {
 				t.Errorf("%s mounts something that is not a bind mount under /srv: %s", f.Path, mount)
 			}
 		}
+	}
+}
+
+// Compose resolves an env_file path against the directory holding compose.yaml
+// and refuses to load the project when the file is not there, so a path that
+// names nothing stops the whole stack rather than one setting. The gateway's
+// caddy service shipped exactly that: `caddy.env` beside compose.yaml, while
+// the file was rendered into caddy/. Checking the parsed paths against the
+// rendered tree catches the next one without needing Docker in the test.
+func TestEveryEnvFileIsRendered(t *testing.T) {
+	files := map[string]bool{}
+	plan := build(t)
+	for _, f := range plan.Files {
+		files[f.Path] = true
+	}
+	checked := 0
+	for _, f := range plan.Files {
+		if !strings.HasSuffix(f.Path, "/compose.yaml") {
+			continue
+		}
+		var doc struct {
+			Services map[string]struct {
+				EnvFile yaml.Node `yaml:"env_file"`
+			} `yaml:"services"`
+		}
+		if err := yaml.Unmarshal([]byte(f.Content), &doc); err != nil {
+			t.Fatalf("%s does not parse: %v", f.Path, err)
+		}
+		dir := path.Dir(f.Path)
+		for name, service := range doc.Services {
+			var entries []string
+			switch service.EnvFile.Kind {
+			case 0:
+				continue
+			case yaml.ScalarNode:
+				entries = []string{service.EnvFile.Value}
+			case yaml.SequenceNode:
+				for _, item := range service.EnvFile.Content {
+					entries = append(entries, item.Value)
+				}
+			default:
+				t.Errorf("%s: service %s has an env_file this test does not understand", f.Path, name)
+				continue
+			}
+			for _, entry := range entries {
+				resolved := path.Join(dir, entry)
+				if !files[resolved] {
+					t.Errorf("%s: service %s reads env_file %s, which resolves to %s and is not rendered", f.Path, name, entry, resolved)
+				}
+				checked++
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no env_file was found in any rendered compose file, so this test checked nothing")
 	}
 }
 
@@ -1861,12 +1922,21 @@ func TestMbinRendersItsWholeStack(t *testing.T) {
 	if _, ok := files["home-a/srv/talk/valkey.conf"]; !ok {
 		t.Error("valkey.conf was not rendered, so the cache would run without upstream's memory limit and with snapshots on")
 	}
-	// The consumers store fetched remote media through the same filesystem
-	// binding as the web container, so they need the same shim.
-	messenger := compose[strings.Index(compose, "\n  messenger:\n"):]
-	messenger = messenger[:strings.Index(messenger, "\n  amqproxy:\n")]
-	if !strings.Contains(messenger, "oneup_flysystem.yaml:/app/config/packages/oneup_flysystem.yaml:ro") {
-		t.Errorf("the messenger consumers do not mount the S3 shim:\n%s", messenger)
+	// The fork's docker/docker-entrypoint.sh (tag v1.13.3+paisans) runs
+	// `sed -i` on these three files at every start of app and messenger, under
+	// `set -e`. A bind mount over any of them makes that sed fail and the
+	// container exit, so the S3 switch is left to the entrypoint, which makes
+	// it whenever S3_KEY is set.
+	for _, edited := range []string{"liip_imagine.yaml", "monolog.yaml", "oneup_flysystem.yaml"} {
+		if strings.Contains(compose, ":/app/config/packages/"+edited) {
+			t.Errorf("compose.yaml mounts over config/packages/%s, which the image's entrypoint edits in place:\n%s", edited, compose)
+		}
+	}
+	if _, ok := files["home-a/srv/talk/config/packages/oneup_flysystem.yaml"]; ok {
+		t.Error("the oneup_flysystem.yaml shim is rendered again; the image's entrypoint switches the adapter itself")
+	}
+	if !strings.Contains(env, "\nS3_KEY=") {
+		t.Errorf("the Mbin .env does not set S3_KEY, so the entrypoint would leave uploads on local disk:\n%s", env)
 	}
 }
 
@@ -1941,5 +2011,92 @@ func TestWatchdogOffRendersPatroniWithoutTheDevice(t *testing.T) {
 	}
 	if compose := files["home-a/srv/infra/compose.yaml"]; !strings.Contains(compose, "- /dev/watchdog:/dev/watchdog") {
 		t.Errorf("home-a did not declare off and lost its device mapping:\n%s", compose)
+	}
+}
+
+// Mbin's OAuth2 keypair reaches every site that runs Mbin, as two files in the
+// directory compose.yaml mounts at /app/config/oauth2, which is where the
+// .env's OAUTH_PRIVATE_KEY and OAUTH_PUBLIC_KEY point.
+//
+// Both are 0644, the one private key this toolkit renders world readable, and
+// that is deliberate. apply writes every file as root, and Mbin reads the key
+// as uid 1000 after the entrypoint drops to it, so a 0600 key is a key Mbin
+// cannot open. What makes 0644 acceptable is that the key is encrypted with
+// OAUTH_PASSPHRASE, which is only in the 0600 .env, so the test opens it with
+// exactly that value.
+func TestMbinOAuthKeypairIsRenderedForEveryAppsSite(t *testing.T) {
+	plan := build(t)
+	files := map[string]render.File{}
+	for _, f := range plan.Files {
+		files[f.Path] = f
+	}
+
+	var privates []string
+	for path := range files {
+		if !strings.HasSuffix(path, "/srv/talk/compose.yaml") {
+			continue
+		}
+		dir := strings.TrimSuffix(path, "compose.yaml")
+		compose := files[path].Content
+		for _, service := range []string{"app", "messenger"} {
+			block := compose[strings.Index(compose, "\n  "+service+":\n"):]
+			block = block[:strings.Index(block[1:], "\n  amqproxy:\n")+1]
+			if service == "app" {
+				block = block[:strings.Index(block, "\n  messenger:\n")]
+			}
+			if !strings.Contains(block, "/srv/talk/oauth:/app/config/oauth2:ro") {
+				t.Errorf("%s: %s does not mount the keypair read only at /app/config/oauth2", path, service)
+			}
+		}
+
+		private, okPrivate := files[dir+"oauth/private.pem"]
+		public, okPublic := files[dir+"oauth/public.pem"]
+		if !okPrivate || !okPublic {
+			t.Errorf("%s has no rendered oauth/private.pem and oauth/public.pem beside it", path)
+			continue
+		}
+		for _, f := range []render.File{private, public} {
+			if f.Mode != 0o644 {
+				t.Errorf("%s is %04o; uid 1000 in the container cannot read a root owned file unless it is 0644", f.Path, f.Mode)
+			}
+		}
+
+		env := files[dir+".env"].Content
+		var passphrase string
+		for _, line := range strings.Split(env, "\n") {
+			if v, ok := strings.CutPrefix(line, "OAUTH_PASSPHRASE="); ok {
+				passphrase = v
+			}
+		}
+		if !strings.Contains(private.Content, "Proc-Type: 4,ENCRYPTED") {
+			t.Errorf("%s is 0644 and not encrypted", private.Path)
+		}
+		key, err := secretsgen.OpenOAuthPrivateKey(private.Content, passphrase)
+		if err != nil {
+			t.Errorf("%s does not open with the rendered OAUTH_PASSPHRASE: %v", private.Path, err)
+			continue
+		}
+		block, _ := pem.Decode([]byte(public.Content))
+		if block == nil {
+			t.Errorf("%s is not PEM", public.Path)
+			continue
+		}
+		parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			t.Errorf("%s does not parse: %v", public.Path, err)
+			continue
+		}
+		if pub, ok := parsed.(*rsa.PublicKey); !ok || !pub.Equal(&key.PublicKey) {
+			t.Errorf("%s is not the public half of %s", public.Path, private.Path)
+		}
+		privates = append(privates, private.Content)
+	}
+	if len(privates) < 2 {
+		t.Fatalf("the fixture's clustered Mbin rendered a keypair on %d sites; this test needs at least two to check they agree", len(privates))
+	}
+	for _, p := range privates[1:] {
+		if p != privates[0] {
+			t.Error("two apps sites rendered different private keys, so a token one issues fails on the other")
+		}
 	}
 }

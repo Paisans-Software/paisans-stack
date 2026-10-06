@@ -31,8 +31,11 @@ services:
     image: ghcr.io/paisans-software/caddy:2.11.6@sha256:ab053ca6172cdd3723701fff652f3ecd75572e03447e07a55d08464143e81147
     restart: unless-stopped
     network_mode: host
+    # Relative to this file, so the path names the caddy/ directory the token
+    # is rendered into. The token stays out of this file because compose.yaml
+    # is 0644 and readable by anything that can list the stack.
     env_file:
-      - caddy.env
+      - caddy/caddy.env
     volumes:
       - /srv/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # One file per application, imported by that application's host block.
