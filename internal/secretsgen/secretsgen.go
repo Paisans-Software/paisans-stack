@@ -216,6 +216,14 @@ func appSecretKeys(app config.App) []string {
 	if app.Kind == config.KindOAuth2Proxy {
 		keys = append(keys, "cookie_secret")
 	}
+	if app.Kind == config.KindPocketID {
+		// Pocket ID will not start without an ENCRYPTION_KEY of at least 16
+		// bytes (backend/internal/common/env_config.go:167-169 at tag
+		// v2.14.0). A generated password is 32 random bytes, base64 encoded.
+		// It encrypts stored secrets, so like every generated secret it is
+		// never replaced once set.
+		keys = append(keys, "encryption_key")
+	}
 	if app.Kind == config.KindSynapse {
 		// Three, because the homeserver no longer authenticates anyone and
 		// Matrix Authentication Service in front of it needs its own.

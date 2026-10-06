@@ -8,12 +8,12 @@
     },
     {
       "path": "srv/auth/.env",
-      "sha256": "b3cf80e404527ada23cc6fe08d146e327ea947fe58da6c3b76e50a9920e5b2b8",
+      "sha256": "f44d232b8e6c06aba6479e2e53fe95b72362070476944ecba50db12f07ac0e3c",
       "mode": "0600"
     },
     {
       "path": "srv/auth/compose.yaml",
-      "sha256": "223afa307233dfbc24f3013c7dfc59bb80227b51bb0fefef0abba8a4b202b7d8",
+      "sha256": "e63d2fd55537b04f36c269810d7611fa287929c428cf41de063a5b6c5dca1b4a",
       "mode": "0644"
     },
     {

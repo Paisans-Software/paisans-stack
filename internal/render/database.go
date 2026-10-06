@@ -3,6 +3,8 @@ package render
 import (
 	"fmt"
 	"sort"
+
+	"github.com/paisans-software/paisans-stack/internal/config"
 )
 
 // clusteredDatabaseHost is what a clustered application instance connects to:
@@ -51,6 +53,29 @@ func (p *planner) appDatabasePassword(planned plannedApp) (string, error) {
 	return "", fmt.Errorf(
 		"secrets apps.%s.database_password: required, and there is no fallback. Every app connects with its own role and its own password, so that one app's credential does not read another app's database. Generate one and record it",
 		planned.Name)
+}
+
+// requiredAppSecrets lists, per kind, the app secrets without which the
+// application will not start, and why. Most app secrets render as an empty
+// value when unset, because the kinds differ in what they need and an absent
+// optional one is not an error. These are not optional, and an empty one is a
+// container that exits on a host after the apply has already moved, so render
+// refuses first and names the command that fixes it.
+var requiredAppSecrets = map[config.Kind][]struct{ Key, Why string }{
+	config.KindPocketID: {
+		// env_config.go:167-169 at tag v2.14.0.
+		{"encryption_key", "Pocket ID refuses to start without an ENCRYPTION_KEY of at least 16 bytes"},
+	},
+}
+
+// requireAppSecrets refuses an app whose kind needs a secret that is unset.
+func (p *planner) requireAppSecrets(planned plannedApp) error {
+	for _, need := range requiredAppSecrets[planned.Kind] {
+		if p.appSecret(planned.Name, need.Key) == "" {
+			return fmt.Errorf("secrets apps.%s.%s: required, and there is no fallback: %s. Run `paisans init` to generate it", planned.Name, need.Key, need.Why)
+		}
+	}
+	return nil
 }
 
 func (p *planner) appSecret(app, key string) string {

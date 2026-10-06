@@ -204,6 +204,9 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 			return appValues{}, err
 		}
 	}
+	if err := p.requireAppSecrets(planned); err != nil {
+		return appValues{}, err
+	}
 
 	dbHost, dbPort := p.clusteredDatabaseHost(planned.Site), p.clusterPort()
 	if planned.Pinned {

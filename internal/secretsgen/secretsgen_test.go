@@ -148,6 +148,9 @@ func TestFillMatchesEachKindsNeeds(t *testing.T) {
 	if _, ok := secrets.Apps["docs"]["rabbitmq_password"]; ok {
 		t.Error("outline was given a broker password for a broker it does not run")
 	}
+	if key, _ := secrets.Apps["auth"]["encryption_key"].(string); len(key) < 16 {
+		t.Errorf("pocket-id needs an encryption key of at least 16 bytes, got %d", len(key))
+	}
 }
 
 // What the toolkit will not invent has to be said out loud. A pasted DNS token

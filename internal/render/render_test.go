@@ -471,6 +471,42 @@ func TestTrustedProxiesAreTheMeshSubnet(t *testing.T) {
 	}
 }
 
+// Pocket ID spells its setting TRUST_PROXY and takes `true` as "trust every
+// address" (env_config.go:425-437 at v2.14.0), so the assertion above, which
+// looks for TRUSTED_PROXIES, cannot see it.
+func TestPocketIDTrustsTheMeshSubnetOnly(t *testing.T) {
+	env := build(t).Files
+	var saw int
+	for _, f := range env {
+		if !strings.HasSuffix(f.Path, "srv/auth/.env") {
+			continue
+		}
+		saw++
+		if !strings.Contains(f.Content, "\nTRUST_PROXY=10.44.0.0/24\n") {
+			t.Errorf("%s does not trust exactly the mesh subnet", f.Path)
+		}
+	}
+	if saw == 0 {
+		t.Fatal("no Pocket ID .env was rendered, so this proved nothing")
+	}
+}
+
+// A Pocket ID without its encryption key exits on the host after apply has
+// moved, so render refuses first and says how to fix it.
+func TestPocketIDWithoutAnEncryptionKeyIsRefused(t *testing.T) {
+	secrets := fixtureSecrets(t)
+	delete(secrets.Apps["auth"], "encryption_key")
+	_, err := render.Build(fixture(t), secrets)
+	if err == nil {
+		t.Fatal("rendered a Pocket ID that cannot start")
+	}
+	for _, want := range []string{"apps.auth.encryption_key", "paisans init"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+}
+
 // The mesh subnet is whatever the file declares, not a constant in the code.
 // It reaches both the trusted proxy list and the WireGuard interface address.
 func TestMeshSubnetComesFromTheConfiguration(t *testing.T) {

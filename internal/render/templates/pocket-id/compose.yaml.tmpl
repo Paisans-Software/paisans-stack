@@ -13,6 +13,10 @@ services:
   app:
     image: {{ .Image "app" }}
     restart: unless-stopped
+    # No healthcheck is declared because the image has one: `/app/pocket-id
+    # healthcheck` every 90s after a 10s start period (docker/Dockerfile-prebuilt:20
+    # at tag v2.14.0, the Dockerfile .goreleaser.yaml:101 publishes from). apply's
+    # health gate reads it, so the first healthy report can take up to 90s.
     env_file:
       - .env
     # The mesh address only. Docker's own iptables rules bypass a host
