@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -104,6 +105,20 @@ type Plan struct {
 	// fails to bind, and a container that cannot bind is restarted in a loop
 	// by Docker rather than reported to the apply.
 	WireGuard WireGuardStep
+	// Bootstrap is the per app database work, nil when this site does none.
+	// It runs after the infrastructure stack and before any app stack, and a
+	// failure stops the apply there. See WithDatabases.
+	Bootstrap *Bootstrap
+	// Progress receives what Execute decided along the way that is not an
+	// error, such as a replica leaving the database work to the leader. Nil
+	// discards it.
+	Progress io.Writer
+}
+
+func (p *Plan) say(format string, args ...any) {
+	if p.Progress != nil {
+		fmt.Fprintf(p.Progress, format, args...)
+	}
 }
 
 // WireGuardStep is the one thing an apply does to wg0.
@@ -513,12 +528,28 @@ func Execute(plan *Plan, t Transport) error {
 		}
 	}
 
+	// App stacks start only after their databases exist. An app started
+	// first connects, fails to authenticate as a role nobody created, and is
+	// restarted in a loop by Docker while the apply reports success.
+	bootstrapped := plan.Bootstrap == nil
 	for _, action := range plan.Actions {
+		if action.Stack != infraStack && !bootstrapped {
+			if err := runBootstrap(plan, t); err != nil {
+				return err
+			}
+			bootstrapped = true
+		}
 		command := fmt.Sprintf("docker compose -f /srv/%s/compose.yaml restart", action.Stack)
 		if action.Recreate {
 			command = fmt.Sprintf("docker compose -f /srv/%s/compose.yaml up -d", action.Stack)
 		}
 		if _, err := t.Run(command); err != nil {
+			return err
+		}
+	}
+
+	if !bootstrapped {
+		if err := runBootstrap(plan, t); err != nil {
 			return err
 		}
 	}

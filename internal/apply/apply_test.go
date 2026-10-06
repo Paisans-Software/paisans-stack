@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
@@ -43,7 +44,13 @@ func newHost() *fakeHost { return &fakeHost{files: map[string]string{}, leader: 
 
 func (h *fakeHost) RunInput(command, stdin string) (string, error) {
 	h.inputs = append(h.inputs, stdin)
-	return h.Run(command)
+	out, err := h.Run(command)
+	if err != nil {
+		// psql quotes the failing line back, so a failure's output can carry
+		// whatever was sent. The fake does the worst version of that.
+		return out + "\n" + stdin, err
+	}
+	return out, nil
 }
 
 func (h *fakeHost) Describe() string { return "fake" }
@@ -773,5 +780,286 @@ func TestAStoppedApplyResumes(t *testing.T) {
 	}
 	if len(third.Actions) != 0 {
 		t.Errorf("a completed apply still owes %v", third.Actions)
+	}
+}
+
+// fixture loads the render fixture's configuration and secrets, for tests
+// that need what render does not carry, such as the database bootstrap.
+func fixture(t *testing.T) (*config.Config, *config.Secrets) {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "render", "testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := config.LoadSecrets(filepath.Join("..", "render", "testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg, secrets
+}
+
+// bootstrapPlan is a home-a plan with its database work attached, exactly as
+// cmd/paisans/main.go attaches it.
+func bootstrapPlan(t *testing.T, host *fakeHost) *apply.Plan {
+	t.Helper()
+	cfg, secrets := fixture(t)
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := apply.Databases(cfg, secrets, "home-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.WithDatabases(b)
+	return p
+}
+
+// clusteredPasswords are the fixture's clustered apps' database passwords,
+// which are what the bootstrap must never put on a command line.
+func clusteredPasswords(t *testing.T) map[string]string {
+	t.Helper()
+	cfg, secrets := fixture(t)
+	out := map[string]string{}
+	for _, name := range cfg.AppNames() {
+		if cfg.Apps[name].Placement.Mode == config.PlacementCluster {
+			out[name] = secrets.Apps[name]["database_password"].(string)
+		}
+	}
+	return out
+}
+
+func noWait(t *testing.T) {
+	t.Helper()
+	t.Cleanup(apply.SetPrimaryWait(9*time.Second, 3*time.Second, func(time.Duration) {}))
+}
+
+// The fixture's clustered apps are talk, docs and auth; the pinned ones keep
+// their own Postgres and are none of the cluster's business.
+func TestOnlyClusteredPostgresAppsAreBootstrapped(t *testing.T) {
+	cfg, secrets := fixture(t)
+	b, err := apply.Databases(cfg, secrets, "home-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, db := range b.Databases {
+		got = append(got, db.App+"="+db.Role+"/"+db.Name)
+	}
+	if want := "auth=auth/auth docs=docs/docs talk=talk/talk"; strings.Join(got, " ") != want {
+		t.Errorf("bootstrapped %v, want %s", got, want)
+	}
+	if b.Patroni != "10.44.0.1:8008" {
+		t.Errorf("Patroni is asked at %s, want the site's mesh address", b.Patroni)
+	}
+
+	none, err := apply.Databases(cfg, secrets, "vm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none != nil {
+		t.Errorf("a site with no Patroni plans database work: %+v", none)
+	}
+}
+
+// The order is the gate: infrastructure, then a primary, then roles and
+// databases, and only then any app.
+func TestDatabasesExistBeforeAnyAppStarts(t *testing.T) {
+	noWait(t)
+	host := newHost()
+	p := bootstrapPlan(t, host)
+	if p.Bootstrap == nil {
+		t.Fatal("a first apply on a cluster site plans no database work")
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	infra := host.indexOf("/srv/infra/compose.yaml up -d")
+	wait := host.indexOf(":8008/cluster")
+	psql := host.indexOf("psql")
+	if infra < 0 || wait < 0 || psql < 0 {
+		t.Fatalf("missing a step: infra %d, wait %d, psql %d in %v", infra, wait, psql, host.commands)
+	}
+	if !(infra < wait && wait < psql) {
+		t.Errorf("out of order: infra %d, wait %d, psql %d", infra, wait, psql)
+	}
+	for _, app := range []string{"auth", "blog", "docs", "talk"} {
+		if i := host.indexOf("/srv/" + app + "/compose.yaml up -d"); i < psql {
+			t.Errorf("%s was started before its database existed", app)
+		}
+	}
+}
+
+// Passwords travel on stdin. A command line is visible in `ps` to every user
+// on the host, and an ssh error message quotes the command it ran.
+func TestNoPasswordIsOnACommandLine(t *testing.T) {
+	noWait(t)
+	host := newHost()
+	if err := apply.Execute(bootstrapPlan(t, host), host); err != nil {
+		t.Fatal(err)
+	}
+	passwords := clusteredPasswords(t)
+	for app, password := range passwords {
+		for _, command := range host.commands {
+			if strings.Contains(command, password) {
+				t.Errorf("%s's database password is on a command line: %s", app, command)
+			}
+		}
+		found := false
+		for _, input := range host.inputs {
+			if strings.Contains(input, password) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s's password never reached Postgres", app)
+		}
+	}
+}
+
+// The script converges on a re-run: create only what is missing, always set
+// the password so a rotation is an apply, and never put CREATE DATABASE in a
+// transaction, which Postgres refuses.
+func TestTheBootstrapSQLIsIdempotent(t *testing.T) {
+	cfg, secrets := fixture(t)
+	secrets.Apps["talk"]["database_password"] = "it's"
+	b, err := apply.Databases(cfg, secrets, "home-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := apply.BootstrapSQL(b)
+	for _, want := range []string{
+		"SET log_statement = 'none';",
+		`SELECT 'CREATE ROLE "talk" LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'talk')\gexec`,
+		`ALTER ROLE "talk" WITH LOGIN PASSWORD 'it''s';`,
+		`SELECT 'CREATE DATABASE "talk" OWNER "talk"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'talk')\gexec`,
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("the script is missing\n  %s\nin\n%s", want, sql)
+		}
+	}
+	for _, refused := range []string{"BEGIN", "DO $", "CREATE DATABASE \"talk\" OWNER \"talk\";"} {
+		if strings.Contains(sql, refused) {
+			t.Errorf("the script contains %q, which cannot hold CREATE DATABASE or is not conditional", refused)
+		}
+	}
+	if strings.Index(sql, "SET log_statement") > strings.Index(sql, "PASSWORD") {
+		t.Error("statement logging is switched off after a password was sent, so the server log has it")
+	}
+}
+
+// No primary in time stops the apply before any app, and the next apply
+// resumes from the same place.
+func TestNoPrimaryStopsTheApply(t *testing.T) {
+	noWait(t)
+	host := newHost()
+	host.leader = ""
+	err := apply.Execute(bootstrapPlan(t, host), host)
+	if err == nil {
+		t.Fatal("apps were started with no Patroni primary")
+	}
+	if !strings.Contains(err.Error(), "no Patroni primary after 9s") {
+		t.Errorf("the timeout does not say what happened:\n%v", err)
+	}
+	polls := 0
+	for _, command := range host.commands {
+		if strings.Contains(command, ":8008/cluster") {
+			polls++
+		}
+	}
+	if polls != 3 {
+		t.Errorf("polled %d times, want 3 in 9s at 3s", polls)
+	}
+	if host.ran("psql") || host.ran("/srv/talk/compose.yaml up -d") {
+		t.Errorf("work went on past the gate: %v", host.commands)
+	}
+
+	host.leader = "home-a"
+	again := bootstrapPlan(t, host)
+	if again.Bootstrap == nil {
+		t.Fatal("the next apply does not resume the database work")
+	}
+	if err := apply.Execute(again, host); err != nil {
+		t.Fatal(err)
+	}
+	if !host.ran("psql") || !host.ran("/srv/talk/compose.yaml up -d") {
+		t.Error("the resumed apply did not finish")
+	}
+}
+
+// A replica leaves the work to the leader's site and says so. Its apps still
+// start: they reach the leader through HAProxy, and creating roles there from
+// a replica is not something Postgres allows.
+func TestAReplicaLeavesTheDatabasesToTheLeader(t *testing.T) {
+	noWait(t)
+	host := newHost()
+	host.leader = "home-b"
+	p := bootstrapPlan(t, host)
+	var said strings.Builder
+	p.Progress = &said
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if host.ran("psql") {
+		t.Error("a replica tried to create roles")
+	}
+	if !strings.Contains(said.String(), "home-b") {
+		t.Errorf("the skip does not name the leader's site:\n%s", said.String())
+	}
+	if !host.ran("/srv/talk/compose.yaml up -d") {
+		t.Error("a replica's apps were not started")
+	}
+}
+
+// A failed bootstrap is a gate, and its error does not echo a password even
+// when psql quotes the line back.
+func TestAFailedBootstrapStopsTheAppsAndHidesThePassword(t *testing.T) {
+	noWait(t)
+	host := newHost()
+	host.fail = "psql"
+	err := apply.Execute(bootstrapPlan(t, host), host)
+	if err == nil {
+		t.Fatal("apps were started after the bootstrap failed")
+	}
+	if host.ran("/srv/talk/compose.yaml up -d") {
+		t.Error("an app was started after its database could not be created")
+	}
+	for app, password := range clusteredPasswords(t) {
+		if strings.Contains(err.Error(), password) {
+			t.Errorf("%s's password is in the error", app)
+		}
+	}
+}
+
+// A dry run asks nothing of Patroni or Postgres: the bootstrap is planned,
+// not probed.
+func TestPlanningTheBootstrapTouchesNoDatabase(t *testing.T) {
+	host := newHost()
+	bootstrapPlan(t, host)
+	if host.ran(":8008") || host.ran("psql") {
+		t.Errorf("building a plan reached the database: %v", host.commands)
+	}
+}
+
+// An app whose role would be one the cluster uses itself is refused: the
+// bootstrap would set that app's password on the cluster's admin role.
+func TestAnAppCannotTakeAClusterRole(t *testing.T) {
+	cfg, secrets := fixture(t)
+	cfg.Apps["admin"] = cfg.Apps["talk"]
+	secrets.Apps["admin"] = secrets.Apps["talk"]
+	if _, err := apply.Databases(cfg, secrets, "home-a"); err == nil || !strings.Contains(err.Error(), "apps.admin") {
+		t.Errorf("an app named admin was given the cluster's admin role: %v", err)
+	}
+}
+
+// A second apply of the same thing runs nothing, database work included.
+func TestANoopApplyBootstrapsNothing(t *testing.T) {
+	noWait(t)
+	host := newHost()
+	if err := apply.Execute(bootstrapPlan(t, host), host); err != nil {
+		t.Fatal(err)
+	}
+	if p := bootstrapPlan(t, host); p.Bootstrap != nil {
+		t.Error("an apply with nothing to do still plans database work")
 	}
 }

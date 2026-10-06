@@ -92,6 +92,18 @@ unchanged file on a host whose interface is down starts it. A failure stops the
 apply there. `README.md` has the table under "`apply` brings `wg0` up before
 anything binds to it".
 
+**The infrastructure stack moves first, and app stacks only after their
+databases exist.** Sorted order alone started `blog` and `docs` before
+`infra`. Between the infrastructure stack and the first app stack, a site in
+`cluster.sites` waits for a Patroni primary and creates clustered apps' roles
+and databases; see "Every app has its own database credential" below.
+
+**A stopped apply resumes.** The manifest is written last, so files written
+before a gate stopped the apply already match the render, and the next apply
+would otherwise see nothing to do. `/srv/.paisans-pending.json` records the
+owed stack actions and gateway checks before the first write and is removed on
+success; `Build` folds it into the next plan.
+
 **The assembled gateway configuration is validated before any reload, and a
 failure stops the reload.** It is built from per app snippets, so a wrong
 snippet is a wrong configuration for every hostname at once. The cost of that
@@ -312,9 +324,17 @@ one is missing. WriteFreely is the exception and needs none: it has never
 supported Postgres and runs on a SQLite file in its own data directory, which
 is what keeps one blog from adding a second database engine to operate.
 
-Creating those roles in Postgres is not implemented. Nothing in this slice
-touches a running database, so the credentials are rendered and the roles that
-use them are a job for `apply`.
+`apply` creates the roles and databases for clustered apps, on a site in
+`cluster.sites`, after the infrastructure stack and before any app stack. It
+waits up to three minutes for Patroni's `/cluster` to name a running leader,
+then sends one psql script on stdin to the Spilo container: create the role if
+missing, set its password every time (so rotation is editing the secret and
+applying), create the database owned by it if missing. A replica skips the work
+and says which site holds the leader. A timeout or a psql failure stops the
+apply before any app starts, and the next apply resumes there. `README.md` has
+the reasoning under "`apply` creates each clustered app's role and database".
+A pinned app's own Postgres creates its role from the image's environment, as
+before.
 
 ## Things the code enforces that are easy to undo by accident
 
@@ -344,9 +364,10 @@ use them are a job for `apply`.
 ## What is not here yet
 
 No etcd, no preflight, and none of `site add`, `failover` or `backup`. `apply`
-pushes files and takes the narrowest action that makes them live; it does not
-bootstrap a site that has nothing on it, and it has never been run against a
-real host.
+pushes files, brings up `wg0`, creates clustered apps' roles and databases, and
+takes the narrowest action that makes the rest live. It has never been run
+against a real host, so every command it sends is reasoned from upstream source
+and documentation, not observed.
 
 Mbin's media reverse proxy is not rendered either. Upstream advises one on a
 hostname of its own so media URLs survive a change of storage provider, and

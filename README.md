@@ -1110,6 +1110,52 @@ inside the mesh subnet, which the interface's own `Address` already routes
 interface brought up by hand serves every service just as well, and starting the
 unit on top of it would fail on an interface that already exists.
 
+### `apply` creates each clustered app's role and database
+
+Step 6 needs something step 5 does not provide. Patroni creates its superuser,
+its replication user and an `admin` role from `patroni.env`, but nothing creates
+`talk` or `docs`, and an app started without its role fails to authenticate and
+is restarted in a loop. So on a site in `cluster.sites`, after the
+infrastructure stack and before the first app stack, `apply`:
+
+1. waits up to three minutes for Patroni's `GET /cluster` to name a running
+   leader;
+2. if the leader is another site, skips the rest and says which site to apply,
+   since a replica cannot create roles;
+3. otherwise sends one psql script on stdin to the Spilo container that, per
+   clustered app using Postgres, creates the role if it is missing, **sets its
+   password every time**, and creates the database owned by it if missing.
+
+A timeout or a psql failure stops the apply before any app stack starts, and
+the next apply resumes at the same place. It is a gate, not a warning: an app
+pointed at a role that does not exist has nothing to fall back on.
+
+**Setting the password every time is what makes rotation an addition.** The
+alternative, creating with a password once and never touching it again, means
+a changed `apps.<name>.database_password` renders a new `.env` the role does not
+accept, and rotation becomes a manual `ALTER ROLE` on the primary.
+
+**The SQL goes on stdin, never on a command line.** A command line is visible in
+`ps` to every user on the host and is quoted back in ssh errors. For the same
+reason the script switches off statement logging for its own session first:
+Spilo ships `log_statement = 'ddl'`, and `CREATE ROLE` and `ALTER ROLE` are DDL,
+so the server log would otherwise hold every password
+(zalando/spilo, `postgres-appliance/scripts/configure_spilo.py`).
+
+**It runs as `postgres` over the container's own socket**, which Spilo's
+`pg_hba` trusts (`local all all trust`, same file), so the toolkit passes no
+database credential to do it. `CREATE DATABASE` cannot run in a transaction or a
+`DO` block, so the conditional creates use psql's `\gexec`, which runs a
+generated statement at top level.
+
+**An app whose role would be `postgres`, `admin`, `standby` or `pg_*` is
+refused**, because the bootstrap would set that app's password on a role the
+cluster uses itself.
+
+`/cluster` is asked rather than `/primary` because it answers both questions:
+`/primary` returns the same 503 to a replica as to a node still running initdb,
+while `/cluster` names the leader (Patroni v4.1.0, `docs/rest_api.rst`).
+
 ### `site add` — the gateway and witness
 
 The straightforward case, because the VM has a stable address and is the one

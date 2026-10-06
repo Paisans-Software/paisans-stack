@@ -243,3 +243,11 @@ func contains(list []string, want string) bool {
 	}
 	return false
 }
+
+// DBIdentifier is the role and database name an app's rendered connection
+// uses. apply creates them, and must name them exactly as the render did.
+func DBIdentifier(name string) string { return dbIdentifier(name) }
+
+// PatroniAPIPort is where the rendered Patroni serves its REST API, on the
+// site's mesh address.
+const PatroniAPIPort = patroniAPIPort

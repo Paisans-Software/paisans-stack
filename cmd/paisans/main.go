@@ -307,6 +307,12 @@ func runApply(args []string) error {
 	if err != nil {
 		return err
 	}
+	databases, err := apply.Databases(cfg, secrets, *site)
+	if err != nil {
+		return err
+	}
+	plan.WithDatabases(databases)
+	plan.Progress = os.Stdout
 	printPlan(plan)
 
 	if !*execute {
@@ -429,12 +435,20 @@ func printPlan(plan *apply.Plan) {
 	if plan.WireGuard != apply.WireGuardNone {
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "mesh", plan.WireGuard.Describe())
 	}
+	bootstrapped := plan.Bootstrap == nil
 	for _, action := range plan.Actions {
+		if action.Stack != "infra" && !bootstrapped {
+			printBootstrap(plan.Bootstrap)
+			bootstrapped = true
+		}
 		verb := "restart"
 		if action.Recreate {
 			verb = "recreate"
 		}
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n      %s\n", verb, action.Stack, action.Reason)
+	}
+	if !bootstrapped {
+		printBootstrap(plan.Bootstrap)
 	}
 	if plan.GatewayChanging && plan.ACMEModule != "" {
 		fmt.Fprintf(os.Stdout, "  %-9s the gateway's Caddy carries %s, before anything moves\n", "check", plan.ACMEModule)
@@ -459,4 +473,13 @@ func report(w *os.File, path string, result validate.Result) {
 	}
 	fmt.Fprintf(w, "%s: %d refusal(s), %d warning(s)\n",
 		path, len(result.Refusals()), len(result.Warnings()))
+}
+
+// printBootstrap shows the database work where it happens: after the
+// infrastructure stack and before any app stack.
+func printBootstrap(b *apply.Bootstrap) {
+	fmt.Fprintf(os.Stdout, "  %-9s for a Patroni primary at %s, up to 3 minutes; a replica leaves the rest to the leader's site\n", "wait", b.Patroni)
+	for _, db := range b.Databases {
+		fmt.Fprintf(os.Stdout, "  %-9s database %s: role %s with its password, database owned by it, creating only what is missing\n", "bootstrap", db.App, db.Role)
+	}
 }
