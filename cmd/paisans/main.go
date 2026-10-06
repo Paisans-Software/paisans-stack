@@ -36,7 +36,7 @@ Usage:
   paisans host prepare --site <name> [--config paisans.yaml] [--ssh <destination>]
                [--execute]
   paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
-                   [--ssh <destination>] [--execute]
+                   [--ssh <destination>] [--overwrite <path>]... [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
@@ -288,6 +288,8 @@ func runApply(args []string) error {
 	site := fs.String("site", "", "the site to apply, by the name it has in the configuration")
 	destination := fs.String("ssh", "", "ssh destination (default: the site's declared ssh address)")
 	execute := fs.Bool("execute", false, "actually write files and restart services")
+	var overwrite pathList
+	fs.Var(&overwrite, "overwrite", "replace this conflicting file although it differs from the last apply's record (repeatable)")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -342,7 +344,7 @@ func runApply(args []string) error {
 	}
 
 	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
-	plan, err := apply.Build(*site, rendered, acme.Module(cfg.ACME.Provider), transport)
+	plan, err := apply.Build(*site, rendered, acme.Module(cfg.ACME.Provider), transport, overwrite...)
 	if err != nil {
 		return err
 	}
@@ -524,7 +526,11 @@ func printPlan(plan *apply.Plan) {
 			unchanged++
 			continue
 		}
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", change.Kind, change.Path)
+		kind := change.Kind.String()
+		if change.Overwritten {
+			kind = "overwrite"
+		}
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", kind, change.Path)
 	}
 	if unchanged > 0 {
 		fmt.Fprintf(os.Stdout, "  %-9s %d file(s)\n", "unchanged", unchanged)
@@ -648,4 +654,17 @@ func printBootstrap(b *apply.Bootstrap) {
 	for _, db := range b.Databases {
 		fmt.Fprintf(os.Stdout, "  %-9s database %s: role %s with its password, database owned by it, creating only what is missing\n", "bootstrap", db.App, db.Role)
 	}
+}
+
+// pathList collects a repeatable flag. --overwrite takes one path each time it
+// is given, so that every file replaced against its record was named on its
+// own: a pattern or a blanket switch would let one decision cover files the
+// operator never looked at.
+type pathList []string
+
+func (l *pathList) String() string { return strings.Join(*l, ",") }
+
+func (l *pathList) Set(value string) error {
+	*l = append(*l, value)
+	return nil
 }

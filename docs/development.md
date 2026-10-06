@@ -126,11 +126,25 @@ databases exist.** Sorted order alone started `blog` and `docs` before
 `cluster.sites` waits for a Patroni primary and creates clustered apps' roles
 and databases; see "Every app has its own database credential" below.
 
-**A stopped apply resumes.** The manifest is written last, so files written
-before a gate stopped the apply already match the render, and the next apply
-would otherwise see nothing to do. `/srv/.paisans-pending.json` records the
-owed stack actions and gateway checks before the first write and is removed on
-success; `Build` folds it into the next plan.
+**A stopped apply resumes.** Files written before a gate stopped the apply
+already match the render, so the next apply would otherwise see nothing to do.
+`/srv/.paisans-pending.json` records the owed stack actions and gateway checks
+before the first write and is removed on success; `Build` folds it into the
+next plan.
+
+**Files are recorded as soon as they land.** The manifest is written right
+after the files, and again at the end, not only on success. A manifest written
+only on success made every file of a failed first apply look like somebody
+else's: on the first real host, the next apply carried a fix to `patroni.env`
+and refused it as a host edit.
+
+**`--overwrite <path>` replaces one named conflict.** A conflict stops the
+apply, and the way out used to be deleting the file on the host by hand.
+Naming the path is the same decision made through the toolkit, and it is
+repeatable, one path per flag, so a single choice never covers files the
+operator did not look at. A path that is not a conflict is refused rather than
+ignored, so a typo cannot pass for consent. A blanket `--force` was rejected
+for that reason.
 
 **The assembled gateway configuration is validated before any reload, and a
 failure stops the reload.** It is built from per app snippets, so a wrong

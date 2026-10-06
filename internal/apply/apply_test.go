@@ -709,8 +709,13 @@ func TestAMeshThatWillNotStartStopsTheApply(t *testing.T) {
 	if host.firstCompose() >= 0 {
 		t.Errorf("a container was touched with the mesh down: %v", host.commands)
 	}
-	if _, ok := host.files["/srv/.paisans-manifest.json"]; ok {
-		t.Error("a failed apply recorded a manifest")
+	// The files are on the host and are this apply's, so they are recorded;
+	// what it still owes is in the pending record, so the next apply resumes.
+	if _, ok := host.files["/srv/.paisans-manifest.json"]; !ok {
+		t.Error("the files a failed apply wrote were not recorded")
+	}
+	if _, ok := host.files["/srv/.paisans-pending.json"]; !ok {
+		t.Error("a failed apply left no record of the actions it owes")
 	}
 }
 
@@ -1092,5 +1097,100 @@ func TestAnEnvFileChangeRecreates(t *testing.T) {
 				t.Error("the gateway is about to be replaced and its gates would not run")
 			}
 		})
+	}
+}
+
+// A first apply that stops after writing its files must still record them.
+// On the first real host the manifest was written only on success, so when the
+// next apply carried a fix to one of those files, it found an unrecorded file
+// that differed from the render and refused it as somebody's host edit.
+func TestAFailedApplyStillRecordsItsFiles(t *testing.T) {
+	host := newHost()
+	host.fail = "/srv/infra/compose.yaml up -d"
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err == nil {
+		t.Fatal("the failing action did not stop the apply")
+	}
+
+	fixed := plan(t)
+	for i, file := range fixed.Files {
+		if file.Path == "home-a/srv/infra/patroni.env" {
+			fixed.Files[i].Content = file.Content + "# a fix carried by the next apply\n"
+		}
+	}
+	host.fail = ""
+	again, err := apply.Build("home-a", fixed, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conflicts := again.Conflicts(); len(conflicts) != 0 {
+		t.Fatalf("files the failed apply wrote are treated as host edits: %v", conflicts)
+	}
+	for _, change := range again.Writes() {
+		if change.Path == "/srv/infra/patroni.env" && change.Kind == apply.Update {
+			return
+		}
+	}
+	t.Fatalf("the fixed patroni.env is not planned as an update: %v", again.Writes())
+}
+
+// --overwrite turns exactly the named conflict into a write, and nothing else.
+func TestOverwriteReplacesOnlyTheNamedConflict(t *testing.T) {
+	host := newHost()
+	host.files["/srv/infra/patroni.env"] = "edited on the host\n"
+	host.files["/srv/infra/haproxy/haproxy.cfg"] = "also edited\n"
+
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, "/srv/infra/patroni.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflicts := p.Conflicts()
+	if len(conflicts) != 1 || conflicts[0].Path != "/srv/infra/haproxy/haproxy.cfg" {
+		t.Fatalf("only the unnamed file should still conflict: %v", conflicts)
+	}
+	var overwritten bool
+	for _, change := range p.Writes() {
+		if change.Path == "/srv/infra/patroni.env" {
+			overwritten = change.Overwritten
+		}
+	}
+	if !overwritten {
+		t.Fatal("the named conflict is not marked as an overwrite")
+	}
+	if err := apply.Execute(p, host); err == nil {
+		t.Fatal("a remaining conflict did not stop the apply")
+	}
+	if host.files["/srv/infra/patroni.env"] != "edited on the host\n" {
+		t.Error("a refused apply still wrote the overwritten file")
+	}
+
+	p, err = apply.Build("home-a", plan(t), acmeModule(t), host, "/srv/infra/patroni.env", "/srv/infra/haproxy/haproxy.cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if host.files["/srv/infra/patroni.env"] == "edited on the host\n" {
+		t.Error("the named file was not replaced")
+	}
+	next, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Conflicts()) != 0 {
+		t.Errorf("an overwritten file was not recorded: %v", next.Conflicts())
+	}
+}
+
+// A path that is not a conflict is refused, so a typo cannot pass for consent.
+func TestOverwriteRefusesAPathThatIsNoConflict(t *testing.T) {
+	host := newHost()
+	_, err := apply.Build("home-a", plan(t), acmeModule(t), host, "/srv/infra/patroni.evn")
+	if err == nil || !strings.Contains(err.Error(), "names no conflicting file") {
+		t.Fatalf("a mistyped --overwrite was accepted: %v", err)
 	}
 }

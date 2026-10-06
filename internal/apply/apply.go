@@ -22,8 +22,12 @@ type Change struct {
 	Mode uint32
 	// Stack is the directory under /srv this file belongs to, empty for files
 	// outside one.
-	Stack   string
-	content string
+	Stack string
+	// Overwritten marks a conflict the operator named with --overwrite: a file
+	// that differs from the last record and is replaced anyway, because they
+	// said so for that one path.
+	Overwritten bool
+	content     string
 }
 
 // ChangeKind is what an apply will do to one file.
@@ -236,8 +240,17 @@ const wireguardProbe = "if ip link show wg0 >/dev/null 2>&1; then echo up; else 
 // both the rendered content and the manifest the last apply left behind, so a
 // conflict is found before a single byte is written. An apply that wrote files
 // as it discovered them could leave a stack half updated and then refuse.
-func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Plan, error) {
+func Build(site string, plan *render.Plan, acmeModule string, t Transport, overwrite ...string) (*Plan, error) {
 	out := &Plan{Site: site, Transport: t.Describe()}
+
+	// Paths the operator has said may be replaced although they conflict.
+	// Each must name a file that really is a conflict: a path that is not one
+	// is refused below rather than ignored, so a typo cannot pass for consent.
+	named := map[string]bool{}
+	for _, path := range overwrite {
+		named[path] = true
+	}
+	used := map[string]bool{}
 
 	recorded, err := readManifest(t)
 	if err != nil {
@@ -297,6 +310,11 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 		default:
 			change.Kind = Update
 		}
+		if change.Kind == Conflict && named[remote] {
+			change.Kind = Update
+			change.Overwritten = true
+			used[remote] = true
+		}
 
 		if rel == wireguardConfig {
 			copied := change
@@ -321,6 +339,12 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 			if rel == gatewayCompose || (change.Stack == infraStack && isEnvironment(rel)) {
 				gatewayComposeChanged = true
 			}
+		}
+	}
+
+	for _, path := range overwrite {
+		if !used[path] {
+			return nil, fmt.Errorf("%s: --overwrite %s names no conflicting file. Only a file this site renders, and which differs from what the last apply recorded, can be overwritten", site, path)
 		}
 	}
 
@@ -431,15 +455,15 @@ func Execute(plan *Plan, t Transport) error {
 			names = append(names, c.Path)
 		}
 		return fmt.Errorf(
-			"%s: %d file(s) were edited on the host and would be overwritten:\n  %s\nRendered files are build artifacts and nothing edits them in place, so a difference here is a change somebody made on the machine. Copy what is wanted into the configuration, or delete the file on the host, then apply again",
+			"%s: %d file(s) were edited on the host and would be overwritten:\n  %s\nRendered files are build artifacts and nothing edits them in place, so a difference here is a change somebody made on the machine. Copy what is wanted into the configuration and apply again, or, once you have looked at a file and want the rendered one, name it with --overwrite <path>",
 			plan.Site, len(conflicts), strings.Join(names, "\n  "))
 	}
 
-	// Record what this apply owes before writing anything. The manifest is
-	// written last, so a stop between here and there leaves files on the host
-	// that already match the render: without this record the next apply would
-	// see nothing to do, and an app stack held back by a failed gate would
-	// stay down until something unrelated changed it.
+	// Record what this apply owes before writing anything. Files that land
+	// before a gate stops the apply already match the render, so without
+	// this record the next apply would see nothing to do, and an app stack
+	// held back by a failed gate would stay down until something unrelated
+	// changed it.
 	owes := len(plan.Actions) > 0 || plan.GatewayChanging
 	if owes {
 		if err := writePending(plan, t); err != nil {
@@ -450,6 +474,18 @@ func Execute(plan *Plan, t Transport) error {
 	writes := plan.Writes()
 	for _, change := range writes {
 		if err := t.WriteFile(change.Path, change.content, change.Mode); err != nil {
+			return err
+		}
+	}
+
+	// Record the files as soon as they are on the host, not only at the end.
+	// They are this apply's files whether or not a later gate or action
+	// succeeds, and a manifest written only on success turned every file of a
+	// failed first apply into "somebody else's": the next apply, carrying a
+	// fix to one of them, refused it as a host edit. Owed actions are tracked
+	// separately, in the pending record above.
+	if len(writes) > 0 {
+		if err := writeManifest(plan, t); err != nil {
 			return err
 		}
 	}
