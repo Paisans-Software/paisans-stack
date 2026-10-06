@@ -1671,6 +1671,67 @@ was rejected** because of the disk this is for: on a 10 GB host one extra Mbin
 image is 1.4 GB, and `--keep-images` covers the rollback case when an operator
 actually wants it.
 
+### `app admin create` makes an app's first administrator
+
+An app whose registrations are closed has no way to make its first account
+from a browser, and making it by hand means a shell on the server and a
+password typed into a command line. So the toolkit makes it:
+
+```sh
+security find-generic-password -s talk-admin -w \
+  | paisans app admin create --app talk --username founder \
+      --email founder@example.org            # shows what it would do
+security find-generic-password -s talk-admin -w \
+  | paisans app admin create --app talk --username founder \
+      --email founder@example.org --execute  # does it
+```
+
+The result is a user that exists, is verified and is an administrator. The
+command probes first and plans only what is missing, one line each: `create
+user`, `verify`, `grant admin`, or `present` when there is nothing to do. An
+account that already exists keeps its password; only `--reset-password`
+replaces it, so re-running the command can never lock out an admin who has
+since changed theirs. After `--execute` it probes again and fails unless the
+user is now all three, because a command that exits zero without doing its job
+is the failure nobody notices.
+
+It runs on one site: a pinned app's site, or for a clustered app the first apps
+site in sorted order, since every copy shares one database. `--site` picks
+another, but only one the app runs on.
+
+**The password goes in on stdin and never on a command line.** A command line
+is in the process table, readable by every user on the host, for as long as it
+runs. Mbin's own commands take a password only as a positional argument
+(`mbin:user:create`, `src/Command/UserCommand.php:35-37`, and
+`mbin:user:password`, `src/Command/UserPasswordCommand.php:35-36`, at the
+fork's tag `v1.13.3+paisans`); neither prompts. So the toolkit pipes a short PHP
+script to `php` in the app container. It boots the same kernel `bin/console`
+boots and runs those same commands, plus `mbin:user:verify --activate` and
+`mbin:user:admin`, through the console Application with the arguments held in
+memory. Running the fork's commands rather than writing the user directly keeps
+the fork the owner of what an admin is: its pre-approval, its verification
+flag and its role array. The script runs as `MBIN_USER` through `gosu`, as the
+image's entrypoint runs the server, so nothing it writes under `var/` ends up
+owned by root.
+
+Admin creation is per kind, behind one small interface, and only Mbin
+implements it. Any other kind is refused by name, with the list of kinds that
+are implemented, before any host is reached.
+
+Two alternatives were rejected:
+
+* **Opening registrations briefly.** The window is public: on a federated,
+  publicly reachable instance anyone who finds it during the window can
+  register, and closing it again is a second manual step that can be
+  forgotten. It also needs the setting changed and changed back on a running
+  app, which is two mutations to make one account.
+* **An admin account declared by an environment variable in the image.** It
+  puts a password in the rendered `.env` and in the container's environment,
+  where `docker inspect` shows it, for the life of the container. It also needs
+  image code that runs at every start and decides whether to act, which is a
+  fork change for a one-time event, and it makes rotating that password a
+  redeploy.
+
 ### `site add` — the gateway and witness
 
 The straightforward case, because the VM has a stable address and is the one

@@ -42,6 +42,9 @@ Usage:
                [--ssh <destination>] [--execute]
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
   paisans secrets set <dotted.key> [--config paisans.yaml] [--secrets secrets.enc.yaml] < value
+  paisans app admin create --app <name> --username <u> --email <e> [--site <name>]
+               [--config paisans.yaml] [--ssh <destination>] [--reset-password]
+               [--execute] < password
 
 Commands:
   validate   Load the configuration and report every problem found.
@@ -63,8 +66,13 @@ Commands:
   secrets    set: read one value from stdin and write it into the encrypted
              secrets file, printing only its name. For credentials issued
              elsewhere, so they never touch a terminal or an editor.
+  app        admin create: make sure a user exists, is verified and is an
+             administrator of one app, reading the password from stdin.
+             Never changes an existing password without --reset-password.
+             Writes nothing without --execute. Mbin only, so far.
 
-host prepare, apply and storage init are the only commands that reach a host.
+host prepare, apply, storage init and app admin create are the only commands
+that reach a host.
 Each reads it to plan, and changes it only with --execute. dns init reaches no
 host, only the DNS provider's API, and changes it only with --execute.
 Everything else writes files locally and stops.
@@ -93,6 +101,8 @@ func main() {
 		err = runHostPrepare(os.Args[3:])
 	case "secrets":
 		err = runSecrets(os.Args[2:])
+	case "app":
+		err = runApp(os.Args[2:])
 	case "storage":
 		if len(os.Args) < 3 || os.Args[2] != "init" {
 			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init\n\n%s", usage)

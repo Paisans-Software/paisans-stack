@@ -14,9 +14,9 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 ## Run
 
 validate, init and render touch nothing outside the working directory.
-`host prepare`, `apply` and `storage init` reach a machine, and each changes it
-only with `--execute`. `dns init` reaches no machine, only the DNS provider's
-API, and changes it only with `--execute`.
+`host prepare`, `apply`, `storage init` and `app admin create` reach a machine,
+and each changes it only with `--execute`. `dns init` reaches no machine, only
+the DNS provider's API, and changes it only with `--execute`.
 
 ```
 paisans validate --config examples/paisans.example.yaml
@@ -63,6 +63,15 @@ terminal on stdin, and accepts a key only if it is already set, owed by `init`
 exists so a credential issued elsewhere never touches a terminal or an editor:
 an argument is in shell history and `ps`, a prompt is in scrollback, and `sops`
 opens the whole decrypted file in an editor.
+
+`app admin create --app <name> --username <u> --email <e>` makes sure one user
+exists, is verified and is an administrator of one app, reading the password
+from stdin under the same rules as `secrets set`. It probes, prints `create
+user`, `verify`, `grant admin` or `present`, and changes nothing without
+`--execute`; an existing password changes only with `--reset-password`. Only
+Mbin implements it. See *`app admin create` makes an app's first
+administrator* in `README.md` for why the password never reaches a command
+line.
 
 `render` and `apply` refuse a gateway site when `external.acme_dns_token` is
 empty. `init` lists it as owed, but rendering without it produced a Caddy that
