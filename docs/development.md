@@ -75,7 +75,7 @@ administrator* in `README.md` for why the password never reaches a command
 line.
 
 For `pocket-id` there is no password: the command creates the user as an
-administrator through Pocket ID's API and prints a one-time login link once,
+administrator, with its email marked verified, through Pocket ID's API and prints a one-time login link once,
 on `--execute`, valid fifteen minutes; `--login-link` issues a fresh one for an
 account that exists. It refuses a piped password rather than dropping it. It
 reads `apps.<app>.static_api_key` from the secrets file, so it takes

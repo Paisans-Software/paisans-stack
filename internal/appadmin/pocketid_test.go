@@ -20,7 +20,9 @@ type fakePocketID struct {
 	users     []pocketid.User
 	commands  []string
 	mutations []string
-	tokens    int
+	// bodies is every mutation's body, in order.
+	bodies []string
+	tokens int
 	// echo makes every mutation fail with a body that repeats its input, the
 	// worst case for a leak.
 	echo bool
@@ -40,6 +42,7 @@ func (f *fakePocketID) RunInput(command, stdin string) (string, error) {
 func (f *fakePocketID) serve(method string, u *url.URL, body, stdin string) (int, string) {
 	if method != "GET" {
 		f.mutations = append(f.mutations, method+" "+u.Path)
+		f.bodies = append(f.bodies, body)
 		if f.echo {
 			return 500, `{"error":"echo ` + strings.ReplaceAll(stdin, `"`, `'`) + `"}`
 		}
@@ -57,7 +60,7 @@ func (f *fakePocketID) serve(method string, u *url.URL, body, stdin string) (int
 	case method == "POST" && u.Path == "/api/users":
 		var n pocketid.NewUser
 		_ = json.Unmarshal([]byte(body), &n)
-		created := pocketid.User{ID: fmt.Sprintf("u-%d", len(f.users)+1), Username: n.Username, Email: n.Email, FirstName: n.FirstName, DisplayName: n.DisplayName, IsAdmin: n.IsAdmin}
+		created := pocketid.User{ID: fmt.Sprintf("u-%d", len(f.users)+1), Username: n.Username, Email: n.Email, EmailVerified: n.EmailVerified, FirstName: n.FirstName, DisplayName: n.DisplayName, IsAdmin: n.IsAdmin}
 		f.users = append(f.users, created)
 		raw, _ := json.Marshal(created)
 		return 201, string(raw)
@@ -68,6 +71,7 @@ func (f *fakePocketID) serve(method string, u *url.URL, body, stdin string) (int
 				var sent map[string]any
 				_ = json.Unmarshal([]byte(body), &sent)
 				f.users[i].IsAdmin, _ = sent["isAdmin"].(bool)
+				f.users[i].EmailVerified, _ = sent["emailVerified"].(bool)
 				f.users[i].FirstName, _ = sent["firstName"].(string)
 				return 200, `{}`
 			}
@@ -124,7 +128,7 @@ func TestPocketIDPlanShowsTheBodyAndChangesNothing(t *testing.T) {
 	}
 	lines := strings.Join(plan.Lines(), "\n")
 	for _, want := range []string{
-		`POST /api/users {"username":"founder","email":"founder@example.org","firstName":"Fern","lastName":"Founder","displayName":"Fern Founder","isAdmin":true}`,
+		`POST /api/users {"username":"founder","email":"founder@example.org","emailVerified":true,"firstName":"Fern","lastName":"Founder","displayName":"Fern Founder","isAdmin":true}`,
 		"valid 20m0s",
 	} {
 		if !strings.Contains(lines, want) {
@@ -149,7 +153,7 @@ func TestPocketIDExecuteCreatesAndReturnsTheLinkOnce(t *testing.T) {
 	if out.LoginLink != "https://id.example.org/lc/tok-not-real-0001" {
 		t.Errorf("link %q", out.LoginLink)
 	}
-	if len(f.users) != 1 || !f.users[0].IsAdmin {
+	if len(f.users) != 1 || !f.users[0].IsAdmin || !f.users[0].EmailVerified {
 		t.Errorf("users %+v", f.users)
 	}
 	for _, c := range f.commands {
@@ -168,7 +172,7 @@ func TestPocketIDExecuteCreatesAndReturnsTheLinkOnce(t *testing.T) {
 // link plans only the link; a non-admin is granted admin with its name kept.
 func TestPocketIDIsIdempotent(t *testing.T) {
 	email := "founder@example.org"
-	f := &fakePocketID{users: []pocketid.User{{ID: "u-1", Username: "founder", Email: &email, FirstName: "Fern", IsAdmin: true}}}
+	f := &fakePocketID{users: []pocketid.User{{ID: "u-1", Username: "founder", Email: &email, EmailVerified: true, FirstName: "Fern", IsAdmin: true}}}
 	plan, err := Build(config.KindPocketID, f, pidRequest())
 	if err != nil {
 		t.Fatal(err)
@@ -226,5 +230,86 @@ func TestPocketIDRefusesADisabledAccount(t *testing.T) {
 	f := &fakePocketID{users: []pocketid.User{{ID: "u-1", Username: "founder", Disabled: true}}}
 	if _, err := Build(config.KindPocketID, f, pidRequest()); err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// An existing administrator whose email is not verified plans only the
+// verify step, which sends the user back unchanged but for emailVerified; a
+// second run plans nothing.
+func TestPocketIDVerifiesAnExistingAdminsEmail(t *testing.T) {
+	email := "founder@example.org"
+	last := "Founder"
+	f := &fakePocketID{users: []pocketid.User{{ID: "u-1", Username: "founder", Email: &email, FirstName: "Fern", LastName: &last, DisplayName: "Fern Founder", IsAdmin: true}}}
+	plan, err := Build(config.KindPocketID, f, pidRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.Actions, []Action{ActionVerify}) {
+		t.Fatalf("an unverified admin planned %v", plan.Actions)
+	}
+	if got := plan.Lines()[0]; !strings.HasPrefix(got, "mark email verified for founder: PUT /api/users/<id>") {
+		t.Errorf("line %q", got)
+	}
+	if len(f.mutations) != 0 {
+		t.Fatalf("a dry run mutated: %v", f.mutations)
+	}
+	if _, err := Execute(plan, f); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(f.mutations, []string{"PUT /api/users/u-1"}) {
+		t.Fatalf("mutations %v", f.mutations)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(f.bodies[0]), &sent); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"username": "founder", "email": email, "emailVerified": true, "firstName": "Fern", "lastName": "Founder",
+		"displayName": "Fern Founder", "isAdmin": true, "locale": nil, "disabled": false}
+	if !reflect.DeepEqual(sent, want) {
+		t.Errorf("sent %v, want %v", sent, want)
+	}
+	for _, c := range f.commands {
+		if c != pocketid.CurlCommand || strings.Contains(c, pidKey) {
+			t.Errorf("ran %q", c)
+		}
+	}
+	plan, err = Build(config.KindPocketID, f, pidRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Actions) != 0 {
+		t.Errorf("a second run planned %v", plan.Actions)
+	}
+}
+
+// Verify and grant on one account: the second whole-user update must not undo
+// the first.
+func TestPocketIDVerifyAndGrantBothLand(t *testing.T) {
+	email := "founder@example.org"
+	f := &fakePocketID{users: []pocketid.User{{ID: "u-1", Username: "founder", Email: &email, FirstName: "Fern"}}}
+	plan, err := Build(config.KindPocketID, f, pidRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.Actions, []Action{ActionVerify, ActionGrantAdmin}) {
+		t.Fatalf("planned %v", plan.Actions)
+	}
+	if _, err := Execute(plan, f); err != nil {
+		t.Fatal(err)
+	}
+	if !f.users[0].EmailVerified || !f.users[0].IsAdmin {
+		t.Errorf("after: %+v", f.users[0])
+	}
+}
+
+// An account with no email has nothing to verify.
+func TestPocketIDAnAccountWithoutEmailNeedsNoVerify(t *testing.T) {
+	f := &fakePocketID{users: []pocketid.User{{ID: "u-1", Username: "founder", IsAdmin: true}}}
+	plan, err := Build(config.KindPocketID, f, pidRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Actions) != 0 {
+		t.Errorf("planned %v", plan.Actions)
 	}
 }

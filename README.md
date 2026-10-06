@@ -1754,7 +1754,7 @@ The dry run prints the exact body a create would send, and the link step:
 
 ```
 auth on home-a (pocket-id)
-  create user founder as an administrator: POST /api/users {"username":"founder","email":"founder@example.org","firstName":"Fern","lastName":"","displayName":"Fern","isAdmin":true}
+  create user founder as an administrator: POST /api/users {"username":"founder","email":"founder@example.org","emailVerified":true,"firstName":"Fern","lastName":"","displayName":"Fern","isAdmin":true}
   issue one-time login link for founder: valid 20m0s and for one sign in, printed once and only with --execute
 ```
 
@@ -1775,6 +1775,22 @@ expires, `--login-link --execute` issues a fresh one for an account that
 exists; without `--login-link`, an existing administrator plans nothing. An
 existing account that is not an administrator plans `grant admin` only, and a
 disabled one is refused rather than re-enabled.
+
+**The administrator's email is created verified** (`"emailVerified": true`,
+`dto/user_dto.go:29`, stored as sent at `service/user_service.go:299`), and an
+existing account whose email is not verified plans `mark email verified for
+<u>`: a `PUT /api/users/<id>` that sends every field back as read with only
+`emailVerified` changed, since that update overwrites the whole user
+(`service/user_service.go:495-519`). Without it Pocket ID sends
+`email_verified: false`, and the paisans Mbin fork refuses an OIDC sign in whose
+email matches an existing local account unless the provider marked it
+verified. That guard stops anyone taking over an account by claiming its
+address at the provider, and it is right; the operator creating an
+administrator is vouching for the address they typed, which is the
+verification it asks for. Turning the guard off in the fork was rejected: it
+protects every member who signs up at Pocket ID by themselves, and the
+founder's case is fixed where the vouching happens. An account with no email
+has nothing to verify and plans nothing for it.
 
 **A password piped to a `pocket-id` run is refused**, not ignored. Ignoring it
 would let an operator reusing the Mbin incantation believe a password was set.

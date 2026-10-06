@@ -27,6 +27,18 @@ import (
 // usersignup/module.go:87). It is open to whoever reaches it first while no
 // user exists, which on a public hostname is a race with the internet, and it
 // is a browser step.
+//
+// The account is made with its email marked verified, and an existing
+// account whose email is not verified is marked so. Pocket ID otherwise sends
+// email_verified false, and the paisans Mbin fork refuses an OIDC sign in
+// whose email matches an existing local account unless the provider marked it
+// verified: a guard against taking over an account by claiming its address
+// at the provider. The operator making an administrator vouches for the
+// address they typed, which is the verification the guard asks for.
+//
+// Rejected: turning that guard off in the fork. It is correct for every member
+// who signs up at Pocket ID by themselves, and the founder's case is fixed
+// where the vouching happens.
 type pocketID struct{}
 
 // loginTTL is how long a login link stays usable. It is 20 minutes, not
@@ -57,19 +69,23 @@ func (p pocketID) Probe(t Transport, req Request) (State, error) {
 	if u.Disabled {
 		return State{}, fmt.Errorf("%s exists in %s and is disabled. Re-enabling an account is not something this command decides; do it deliberately, then re-run", req.Username, req.App)
 	}
-	// Pocket ID has no verification step an administrator needs, so an
-	// account that exists is as verified as it gets.
-	return State{Exists: true, Verified: true, Admin: u.IsAdmin}, nil
+	// An account without an email has nothing to verify, and no address an
+	// app could match against one of its own.
+	return State{Exists: true, Verified: u.Email == nil || u.EmailVerified, Admin: u.IsAdmin}, nil
 }
 
 // Steps for a passkey account: a new one is created as an administrator and
 // given a link, since it cannot sign in without one. An existing one is only
-// made an administrator if it is not, and given a link only if asked.
+// made an administrator if it is not, has its email marked verified if it is
+// not, and is given a link only if asked.
 func (pocketID) Steps(state State, req Request) []Action {
 	if !state.Exists {
 		return []Action{ActionCreate, ActionLoginLink}
 	}
 	var out []Action
+	if !state.Verified {
+		out = append(out, ActionVerify)
+	}
 	if !state.Admin {
 		out = append(out, ActionGrantAdmin)
 	}
@@ -95,6 +111,7 @@ func (pocketID) newUser(req Request) pocketid.NewUser {
 	if req.Email != "" {
 		email := req.Email
 		u.Email = &email
+		u.EmailVerified = true
 	}
 	return u
 }
@@ -104,6 +121,8 @@ func (p pocketID) Describe(a Action, req Request) string {
 	case ActionCreate:
 		body, _ := json.Marshal(p.newUser(req))
 		return fmt.Sprintf("create user %s as an administrator: POST /api/users %s", req.Username, body)
+	case ActionVerify:
+		return fmt.Sprintf("mark email verified for %s: PUT /api/users/<id> with emailVerified true and every other field sent back as it is now", req.Username)
 	case ActionGrantAdmin:
 		return fmt.Sprintf("grant admin %s: PUT /api/users/<id> with isAdmin true and every other field sent back as it is now", req.Username)
 	case ActionLoginLink:
@@ -138,6 +157,16 @@ func (p pocketID) Execute(t Transport, req Request, actions []Action) (Outcome, 
 				return Outcome{}, fmt.Errorf("creating %s: %w", req.Username, err)
 			}
 			user = &created
+		// Each update sends the whole user, so the copy held here is kept
+		// as Pocket ID now has it, or the second update would undo the first.
+		case ActionVerify:
+			if err := load(); err != nil {
+				return Outcome{}, err
+			}
+			if err := c.VerifyEmail(*user); err != nil {
+				return Outcome{}, fmt.Errorf("marking %s's email verified: %w", req.Username, err)
+			}
+			user.EmailVerified = true
 		case ActionGrantAdmin:
 			if err := load(); err != nil {
 				return Outcome{}, err
@@ -145,6 +174,7 @@ func (p pocketID) Execute(t Transport, req Request, actions []Action) (Outcome, 
 			if err := c.SetAdmin(*user); err != nil {
 				return Outcome{}, fmt.Errorf("making %s an administrator: %w", req.Username, err)
 			}
+			user.IsAdmin = true
 		case ActionLoginLink:
 			if err := load(); err != nil {
 				return Outcome{}, err
