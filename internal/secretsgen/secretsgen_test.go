@@ -148,6 +148,11 @@ func TestFillMatchesEachKindsNeeds(t *testing.T) {
 	if _, ok := secrets.Apps["docs"]["rabbitmq_password"]; ok {
 		t.Error("outline was given a broker password for a broker it does not run")
 	}
+	for _, name := range []string{"encryption_key", "static_api_key"} {
+		if key, _ := secrets.Apps["auth"][name].(string); len(key) < 16 {
+			t.Errorf("pocket-id needs a %s of at least 16 characters, got %d", name, len(key))
+		}
+	}
 }
 
 // What the toolkit will not invent has to be said out loud. A pasted DNS token
@@ -229,7 +234,7 @@ func TestAnMbinOwedClientNamesItsRedirectURIAndPKCE(t *testing.T) {
 	if why == "" {
 		t.Fatal("the Mbin app's client was not reported as owed at all")
 	}
-	for _, want := range []string{kinds.MbinRedirectURI(cfg.Apps["talk"].Hostname), "PKCE"} {
+	for _, want := range []string{kinds.MbinRedirectURI(cfg.Apps["talk"].Hostname), "PKCE", "paisans oidc client create --app talk"} {
 		if !strings.Contains(why, want) {
 			t.Errorf("the owed client does not name %q:\n%s", want, why)
 		}

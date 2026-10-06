@@ -666,7 +666,7 @@ Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.
 |------|----------|--------|
 | **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys, Mercure JWT, RabbitMQ and Valkey passwords, Mbin's OAuth2 server keypair | created at `init`, never typed or seen |
 | **Pasted** | Cloudflare API token, SMTP credentials | issued elsewhere, supplied by a human |
-| **Captured** | OIDC client secrets | minted by a running service, then recorded |
+| **Captured** | OIDC client secrets | belong to a running service; recorded here, by `oidc client create` for Pocket ID |
 
 **Mbin's OAuth2 keypair is generated, not placed.** Mbin signs the tokens it
 issues to API clients and apps with an RSA key that its image does not create;
@@ -691,11 +691,15 @@ image's runtime user; running the container as root defeats the entrypoint's
 own privilege drop; and an unencrypted key at 0644 is a plaintext signing key
 for anyone on the host.
 
-The captured case matters. An identity provider mints a client secret and the
+The captured case matters. An identity provider holds a client secret and the
 app needs the identical value; recording it here makes it reproducible instead
-of existing on exactly one host. But minting one is a privileged mutation that
-belongs to a human — the toolkit records the value after the fact and must not
-automate the approval away.
+of existing on exactly one host. Creating one is a privileged mutation that
+belongs to a human, and the toolkit does not automate that approval away: `oidc
+client create` prints every mutation and changes nothing until the operator
+re-runs it with `--execute`. For Pocket ID the value is not even captured. The
+toolkit generates it, records it here, and then hands it to Pocket ID, which
+accepts a caller supplied secret; see *`oidc client create` makes an app's
+client at Pocket ID*.
 
 **Pasted and captured secrets go in through a pipe.** `paisans secrets set
 <dotted.key>` reads the value from stdin, writes it into `secrets.enc.yaml`
@@ -1714,8 +1718,8 @@ flag and its role array. The script runs as `MBIN_USER` through `gosu`, as the
 image's entrypoint runs the server, so nothing it writes under `var/` ends up
 owned by root.
 
-Admin creation is per kind, behind one small interface, and only Mbin
-implements it. Any other kind is refused by name, with the list of kinds that
+Admin creation is per kind, behind one small interface, and Mbin and Pocket ID
+implement it. Any other kind is refused by name, with the list of kinds that
 are implemented, before any host is reached.
 
 Two alternatives were rejected:
@@ -1731,6 +1735,192 @@ Two alternatives were rejected:
   image code that runs at every start and decides whether to act, which is a
   fork change for a one-time event, and it makes rotating that password a
   redeploy.
+
+#### Pocket ID's administrator gets a login link, not a password
+
+Pocket ID users sign in with passkeys, so there is no password to pipe in, and
+a new administrator cannot sign in at all until they have registered one. For
+a `pocket-id` app the command therefore creates the user as an administrator
+and issues a **one-time login link**:
+
+```sh
+paisans app admin create --app auth --username founder \
+    --email founder@example.org --first-name Fern     # shows what it would do
+paisans app admin create --app auth --username founder \
+    --email founder@example.org --first-name Fern --execute
+```
+
+The dry run prints the exact body a create would send, and the link step:
+
+```
+auth on home-a (pocket-id)
+  create user founder as an administrator: POST /api/users {"username":"founder","email":"founder@example.org","firstName":"Fern","lastName":"","displayName":"Fern","isAdmin":true}
+  issue one-time login link for founder: valid 15m0s and for one sign in, printed once and only with --execute
+```
+
+The link is Pocket ID's own mechanism: an admin issues a one-time access token
+for a user (`POST /api/users/:id/one-time-access-token`,
+`onetimeaccess/module.go:68` at `v2.14.0`), and `{APP_URL}/lc/{token}` signs
+that user in once, the same link the binary's `one-time-access-token`
+subcommand prints (`cmds/one_time_access_token.go:78`). The founder opens it
+and registers a passkey.
+
+**The link is a credential, and it is handled like one.** It is printed once,
+to the terminal running the command, only with `--execute`, with its expiry.
+It never appears in a plan line or an error and is never written to the
+secrets file. It lives fifteen minutes, Pocket ID's own default for an admin
+issued token (`onetimeaccess/handler.go:17`): long enough to open a link just
+printed, short enough that one left in scrollback is dead soon after. If it
+expires, `--login-link --execute` issues a fresh one for an account that
+exists; without `--login-link`, an existing administrator plans nothing. An
+existing account that is not an administrator plans `grant admin` only, and a
+disabled one is refused rather than re-enabled.
+
+**A password piped to a `pocket-id` run is refused**, not ignored. Ignoring it
+would let an operator reusing the Mbin incantation believe a password was set.
+`--reset-password` is refused for the same reason and points at
+`--login-link`. Stdin is not read at all when it is a terminal, so an
+interactive run never waits on it.
+
+The calls go through Pocket ID's REST API with its static API key; see *The
+toolkit administers Pocket ID through its static API key*. Three alternatives
+were rejected:
+
+* **The binary's `one-time-access-token` subcommand** in the container. It
+  takes the username on the command line, which is harmless, but it always
+  issues a one hour token (`cmds/one_time_access_token.go:68-78`), and the user
+  has to exist first, which only the API can arrange.
+* **Pocket ID's first-admin setup page** (`POST /api/signup/setup`,
+  `usersignup/module.go:87`). It is open to whoever reaches it first while no
+  user exists, which on a public hostname is a race with the internet, and it
+  is a browser step.
+* **Storing the link**, in the secrets file or anywhere else, so it could be
+  printed again. A stored link is a stored way to sign in as an administrator,
+  and issuing a new one is one command.
+
+### The toolkit administers Pocket ID through its static API key
+
+Pocket ID is the one application whose first administrator and whose clients
+this toolkit creates for itself, and every one of those is a call to its REST
+API. What makes the calls possible without a browser is `STATIC_API_KEY`
+(`backend/internal/common/env_config.go:59` at tag `v2.14.0`, at least 16
+characters at `:182-184`): a request whose `X-API-Key` header equals it
+authenticates as a synthetic administrator that Pocket ID creates on first use
+and deletes at startup once the variable is unset
+(`apikey/service.go:31-36`, `:156-163`, `:221-259`;
+`middleware/api_key_auth.go:38`). `init` generates it as
+`apps.<app>.static_api_key`, the `.env` renders it, and `render` refuses a
+Pocket ID app without it, as it refuses one without its `ENCRYPTION_KEY`.
+
+A call goes from the workstation over the operator's own ssh to the site the
+app runs on, where `curl` calls the port Pocket ID publishes on the mesh
+address. The command line is one constant, `curl --silent --show-error
+--globoff --config -`; the URL, the key and any request body are a curl
+configuration on stdin. A command line is in the process table, readable by
+every user on the host, for as long as it runs; stdin is not. `curl` runs on
+the host because the image has none (`docker/Dockerfile-prebuilt` is Alpine
+plus `su-exec`), and the host has it from `host prepare`.
+
+The key is a standing admin credential on every apps site that runs Pocket ID,
+which is worth stating plainly. It adds nothing to what root on that host
+already holds: the same `.env` carries the database connection string and the
+encryption key, and either is all of Pocket ID. It is reachable only over the
+mesh, because the port is bound to the mesh address and nowhere else.
+
+Three alternatives were rejected:
+
+* **Clicking through the admin UI.** It is a step on a host nobody can repeat
+  or review, and it cannot run before the first administrator exists, which is
+  the problem being solved.
+* **A key file on the host for an operator's own `curl`.** That is a second
+  long lived copy of an admin credential, outside the rendered set `apply` owns
+  and checks, readable by whoever can read that file rather than by whoever
+  holds the age key to the secrets file.
+* **A user API key minted in the UI.** It expires, it belongs to a person who
+  might leave, and minting it is the clicking this exists to remove.
+
+### `oidc client create` makes an app's client at Pocket ID
+
+An app that signs members in through Pocket ID needs a client there, and the
+app needs that client's ID and secret. The toolkit creates the client and
+records both in the secrets file, where `render` already reads them
+(`oidc_clients.<app>.client_id` and `.client_secret`), so the next `apply`
+renders the app's sign in settings with nothing else to do:
+
+```sh
+paisans oidc client create --app talk --admin-user founder            # shows what it would do
+paisans oidc client create --app talk --admin-user founder --execute  # does it
+paisans apply --site home-a --execute                                 # renders OAUTH_OIDC_*
+```
+
+For an app whose configuration sets `OAUTH_OIDC_ADMIN_GROUP: admins`, the dry
+run against an empty Pocket ID prints:
+
+```
+talk's client at auth on home-a (pocket-id)
+  create group admins: POST /api/user-groups {"friendlyName":"admins","name":"admins"}
+  create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false}
+  create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
+  add founder to group admins: PUT /api/users/<user id>/user-groups with the groups founder is in now, plus admins
+
+Nothing was changed. Re-run with --execute to apply this.
+```
+
+**Each line is a Pocket ID mutation, and printing it is what makes approving
+it possible.** Client, group and user changes at the identity provider need a
+human's approval every time. The command cannot know whether it has one, so it
+never assumes it: the dry run is the request, and the operator's `--execute`
+is the approval of exactly what was printed. The same probe runs again on
+`--execute`, so what executes is what a fresh probe plans.
+
+The client is the app kind's, not a choice made at the command line. For Mbin
+that is the paisans fork's verify route as the only callback, PKCE on because
+the fork always sends a code challenge, and a confidential client. The groups
+are the app's own: the fork reads `OAUTH_OIDC_ADMIN_GROUP` and
+`OAUTH_OIDC_MEMBER_GROUP` from the `groups` claim, which Pocket ID fills with
+group names (`oidc/claims_service.go:157-162`), so the command reads the same
+two keys from the app's `config` and creates whichever group is missing. A
+member group also restricts the client to the member and admin groups, so a
+refused member is stopped at Pocket ID before the app sees them.
+`--admin-user` adds a Pocket ID user, made with `app admin create`, to the
+admin group.
+
+**The secret is never printed and never captured.** Pocket ID accepts a client
+secret the caller supplies (`dto/oidc_dto.go:77-83` at `v2.14.0`), so the
+toolkit generates it on the workstation, writes it into the secrets file,
+re-encrypted to the recipients in `.sops.yaml`, and only then sends it. The
+order is the point. A run interrupted between the two leaves a recorded secret
+that Pocket ID does not hold; the next run sees that, because Pocket ID keeps
+each secret's first four characters (`model/oidc.go:43`), and sends the
+recorded one. The other order would leave a live secret at Pocket ID that is
+recorded nowhere. If the secrets file cannot be written, Pocket ID is sent
+nothing.
+
+**It is idempotent from the probe.** An existing client with the right
+callback, PKCE and restriction is `present`, and its secret is left alone
+unless `--rotate-secret` is given. A rotation adds a secret and leaves the old
+one valid, because Pocket ID allows several (`controller/oidc_controller.go:292`),
+so the app keeps signing people in until `apply` renders the new one. A client
+that differs from what the app needs is refused, with what differs, rather than
+reshaped: updating a client rewrites every field, and a client somebody shaped
+by hand is not this command's to change. After `--execute` it probes again and
+fails unless a fresh plan is empty.
+
+Four alternatives were rejected:
+
+* **Creating the client in Pocket ID's UI and pasting the secret into `secrets
+  set`.** It is the step this replaces: a browser on the admin UI, a secret
+  shown on screen and copied by hand, and a callback URL typed from memory.
+  `secrets set` still accepts the key for a client made elsewhere.
+* **Letting Pocket ID generate the secret and capturing it from the
+  response.** The value would exist only at Pocket ID until the write that
+  follows succeeded, and an interruption there leaves a live secret nobody has.
+* **Flags for the group names.** The name has to agree with the app's own
+  setting, and a flag is a second place to type it that can disagree. Reading
+  the app's `config` is the one place a passthrough key is read rather than
+  only placed, and this is why.
+* **Updating a client that differs.** It would quietly undo whatever made it
+  differ, which might have been deliberate.
 
 ### `site add` — the gateway and witness
 

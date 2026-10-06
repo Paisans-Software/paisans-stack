@@ -128,7 +128,11 @@ func parseMbinProbe(out string) (State, error) {
 	return State{}, fmt.Errorf("the probe printed no answer. It said:\n%s", out)
 }
 
-func (mbin) Execute(t Transport, req Request, actions []Action) error {
+func (mbin) Execute(t Transport, req Request, actions []Action) (Outcome, error) {
+	return Outcome{}, mbinExecute(t, req, actions)
+}
+
+func mbinExecute(t Transport, req Request, actions []Action) error {
 	var commands []map[string]any
 	for _, a := range actions {
 		c := map[string]any{"--no-interaction": true, "username": req.Username}

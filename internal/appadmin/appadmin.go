@@ -11,6 +11,12 @@
 // The password is the one input here that must never be seen. It travels only
 // on stdin, never in a command line (which `ps` shows to every user on the
 // host), and it is scrubbed from any output or error that comes back.
+//
+// A kind whose users sign in without a password (Pocket ID, with passkeys)
+// has no password to take. Its first administrator is made usable by a
+// one-time login link instead, which is as much a credential as a password
+// and is handled the same way: it is returned to the caller, which prints it
+// once, and it never enters a plan line, an error or a log.
 package appadmin
 
 import (
@@ -19,6 +25,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 )
@@ -45,6 +52,23 @@ type Request struct {
 	// existing account's password is never touched, so re-running the command
 	// cannot lock out an admin who has since changed theirs.
 	ResetPassword bool
+
+	// FirstName and LastName are used only by a kind that stores them, and
+	// only when the account is created.
+	FirstName string
+	LastName  string
+	// LoginLink asks a passwordless kind for a fresh one-time login link for
+	// an account that already exists. A created account always gets one,
+	// since it cannot be signed in to without it.
+	LoginLink bool
+
+	// APIBase, APIKey and PublicURL are for a kind administered through its
+	// own HTTP API rather than through commands in its container. APIBase is
+	// where the API answers from the site's host, APIKey is never printed,
+	// and PublicURL is what a login link is built on.
+	APIBase   string
+	APIKey    string
+	PublicURL string
 }
 
 // State is what a probe found about one username.
@@ -62,18 +86,51 @@ const (
 	ActionVerify        Action = "verify"
 	ActionGrantAdmin    Action = "grant admin"
 	ActionResetPassword Action = "reset password"
+	ActionLoginLink     Action = "issue one-time login link for"
 )
+
+// Outcome is what an execute produced that the operator has to be given.
+// LoginLink is a credential: the caller prints it once to the terminal and
+// keeps it nowhere else.
+type Outcome struct {
+	LoginLink string
+	ExpiresIn time.Duration
+}
 
 // Creator is what a kind implements to support admin creation. Probe must
 // change nothing. Execute performs the actions in order and stops at the
 // first failure.
 type Creator interface {
 	Probe(t Transport, req Request) (State, error)
-	Execute(t Transport, req Request, actions []Action) error
+	Execute(t Transport, req Request, actions []Action) (Outcome, error)
+}
+
+// stepper is a Creator whose steps differ from the password kinds' Steps.
+type stepper interface {
+	Steps(State, Request) []Action
+}
+
+// describer is a Creator that shows more of an action than its name, because
+// the operator approves exactly what is printed.
+type describer interface {
+	Describe(Action, Request) string
+}
+
+// passwordless is a Creator whose users have no password at all.
+type passwordless interface {
+	Passwordless()
+}
+
+// Passwordless reports whether a kind's administrator is made without a
+// password, so the caller neither asks for one nor accepts one.
+func Passwordless(kind config.Kind) bool {
+	_, ok := creators[kind].(passwordless)
+	return ok
 }
 
 var creators = map[config.Kind]Creator{
-	config.KindMbin: mbin{},
+	config.KindMbin:     mbin{},
+	config.KindPocketID: pocketID{},
 }
 
 // For returns the Creator for a kind, or an error naming the kinds that have
@@ -136,9 +193,13 @@ func Build(kind config.Kind, t Transport, req Request) (*Plan, error) {
 	}
 	state, err := c.Probe(t, req)
 	if err != nil {
-		return nil, redact(err, req.Password)
+		return nil, redact(err, req.Password, req.APIKey)
 	}
-	return &Plan{Kind: kind, State: state, Actions: Steps(state, req), creator: c, req: req}, nil
+	actions := Steps(state, req)
+	if s, ok := c.(stepper); ok {
+		actions = s.Steps(state, req)
+	}
+	return &Plan{Kind: kind, State: state, Actions: actions, creator: c, req: req}, nil
 }
 
 // Lines is the plan as printed: one line per action, or `present` when there
@@ -149,6 +210,10 @@ func (p *Plan) Lines() []string {
 	}
 	out := make([]string, 0, len(p.Actions))
 	for _, a := range p.Actions {
+		if d, ok := p.creator.(describer); ok {
+			out = append(out, d.Describe(a, p.req))
+			continue
+		}
 		out = append(out, string(a)+" "+p.req.Username)
 	}
 	return out
@@ -158,28 +223,29 @@ func (p *Plan) Lines() []string {
 // unless the user now exists, is verified and is an admin. A command that
 // exits zero without doing its job is exactly what that second probe exists
 // to catch.
-func Execute(p *Plan, t Transport) error {
+func Execute(p *Plan, t Transport) (Outcome, error) {
 	if len(p.Actions) == 0 {
-		return nil
+		return Outcome{}, nil
 	}
-	if p.req.Password == "" {
+	if _, ok := p.creator.(passwordless); !ok && p.req.Password == "" {
 		for _, a := range p.Actions {
 			if a == ActionCreate || a == ActionResetPassword {
-				return fmt.Errorf("%s %s needs a password, and none was given", a, p.req.Username)
+				return Outcome{}, fmt.Errorf("%s %s needs a password, and none was given", a, p.req.Username)
 			}
 		}
 	}
-	if err := p.creator.Execute(t, p.req, p.Actions); err != nil {
-		return redact(err, p.req.Password)
+	outcome, err := p.creator.Execute(t, p.req, p.Actions)
+	if err != nil {
+		return Outcome{}, redact(err, p.req.Password, p.req.APIKey, outcome.LoginLink)
 	}
 	after, err := p.creator.Probe(t, p.req)
 	if err != nil {
-		return redact(err, p.req.Password)
+		return Outcome{}, redact(err, p.req.Password, p.req.APIKey, outcome.LoginLink)
 	}
 	if !after.Exists || !after.Verified || !after.Admin {
-		return fmt.Errorf("%s: the commands succeeded but %s is now exists=%t verified=%t admin=%t", t.Describe(), p.req.Username, after.Exists, after.Verified, after.Admin)
+		return Outcome{}, fmt.Errorf("%s: the commands succeeded but %s is now exists=%t verified=%t admin=%t", t.Describe(), p.req.Username, after.Exists, after.Verified, after.Admin)
 	}
-	return nil
+	return outcome, nil
 }
 
 // redact removes every given secret from an error's text, and each one's

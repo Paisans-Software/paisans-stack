@@ -45,6 +45,12 @@ Usage:
   paisans app admin create --app <name> --username <u> --email <e> [--site <name>]
                [--config paisans.yaml] [--ssh <destination>] [--reset-password]
                [--execute] < password
+  paisans app admin create --app <pocket-id app> --username <u> [--email <e>]
+               [--first-name <f>] [--last-name <l>] [--login-link]
+               [--secrets secrets.enc.yaml] [--site <name>] [--execute]
+  paisans oidc client create --app <name> [--admin-user <u>] [--rotate-secret]
+               [--config paisans.yaml] [--secrets secrets.enc.yaml]
+               [--site <name>] [--ssh <destination>] [--execute]
 
 Commands:
   validate   Load the configuration and report every problem found.
@@ -69,10 +75,16 @@ Commands:
   app        admin create: make sure a user exists, is verified and is an
              administrator of one app, reading the password from stdin.
              Never changes an existing password without --reset-password.
+             For pocket-id there is no password: a created account gets a
+             one-time login link, printed once, to register a passkey with.
+             Writes nothing without --execute. Mbin and pocket-id, so far.
+  oidc       client create: create an app's client at the deployment's
+             Pocket ID, with the groups the app reads, and record its ID and
+             secret in the secrets file. The secret is never printed.
              Writes nothing without --execute. Mbin only, so far.
 
-host prepare, apply, storage init and app admin create are the only commands
-that reach a host.
+host prepare, apply, storage init, app admin create and oidc client create are
+the only commands that reach a host.
 Each reads it to plan, and changes it only with --execute. dns init reaches no
 host, only the DNS provider's API, and changes it only with --execute.
 Everything else writes files locally and stops.
@@ -103,6 +115,8 @@ func main() {
 		err = runSecrets(os.Args[2:])
 	case "app":
 		err = runApp(os.Args[2:])
+	case "oidc":
+		err = runOIDC(os.Args[2:])
 	case "storage":
 		if len(os.Args) < 3 || os.Args[2] != "init" {
 			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init\n\n%s", usage)
