@@ -187,8 +187,11 @@ func UnsupportedMessage(host OSRelease) string {
 }
 
 // Build probes the site's host and returns only what is missing, in the order
-// it must run: packages, then services, then the watchdog, then the firewall.
-// The firewall is last because the package step may be what installs it.
+// it must run: packages, then services, then the watchdog, then the login
+// user's authorized keys, then the firewall, then removing authorized keys
+// no longer listed. The firewall follows the packages because the package
+// step may be what installs it; key removals are last so that nothing is
+// taken away before every listed key is in place.
 func Build(site string, cfg *config.Config, t Transport) (*Plan, error) {
 	declared, ok := cfg.Sites[site]
 	if !ok {
@@ -228,11 +231,21 @@ func Build(site string, cfg *config.Config, t Transport) (*Plan, error) {
 	}
 	plan.add(watchdog)
 
+	keys, keyRemovals, err := planAuthorizedKeys(t, declared.SSH)
+	if err != nil {
+		return nil, fmt.Errorf("authorized keys on %s: %w", t.Describe(), err)
+	}
+	plan.add(keys)
+
 	firewall, err := profile.Firewall(t, append(Rules(declared), ContainerRules(cfg, site)...))
 	if err != nil {
 		return nil, fmt.Errorf("firewall on %s: %w", t.Describe(), err)
 	}
 	plan.add(firewall)
+
+	// Last of all, after the firewall's own removals: a key is taken away
+	// only once everything else, the listed keys included, is in place.
+	plan.Steps = append(plan.Steps, keyRemovals...)
 
 	return plan, nil
 }
