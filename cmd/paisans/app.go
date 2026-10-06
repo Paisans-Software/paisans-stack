@@ -21,9 +21,7 @@ import (
 const maxPassword = 4 << 10
 
 // adminTransport is how `app admin create` reaches a host. Tests replace it.
-var adminTransport = func(destination string, sudo bool) appadmin.Transport {
-	return apply.SSHTransport{Destination: destination, Sudo: sudo}
-}
+var adminTransport = func(t apply.SSHTransport) appadmin.Transport { return t }
 
 // runApp dispatches `paisans app <subcommand>`.
 func runApp(args []string) error {
@@ -59,7 +57,7 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	lastName := fs.String("last-name", "", "pocket-id only: the last name, used only if the account is created")
 	loginLink := fs.Bool("login-link", false, "pocket-id only: issue a fresh one-time login link for an account that already exists")
 	site := fs.String("site", "", "the site whose copy of the app to run the commands in (default: the pinned site, or the first apps site)")
-	destination := fs.String("ssh", "", "ssh destination (default: the site's declared ssh address)")
+	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	resetPassword := fs.Bool("reset-password", false, "replace the password of an account that already exists")
 	execute := fs.Bool("execute", false, "actually create, verify and grant")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since docker is root's (pocket-id never uses it: curl needs no root)")
@@ -118,12 +116,6 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	if err != nil {
 		return err
 	}
-	if *destination == "" {
-		*destination = cfg.Sites[where].SSH
-	}
-	if *destination == "" {
-		return fmt.Errorf("app admin create: site %s has no ssh address and none was given with --ssh", where)
-	}
 
 	if app.Kind == config.KindPocketID {
 		key, err := pocketIDKey(cfg, *configPath, *secretsPath, *appName)
@@ -136,7 +128,7 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 		*sudo = false
 	}
 
-	transport := adminTransport(*destination, *sudo)
+	transport := adminTransport(siteTransport(cfg.Sites[where], *destination, *sudo))
 	plan, err := appadmin.Build(app.Kind, transport, req)
 	if err != nil {
 		return fmt.Errorf("app admin create: %w", err)

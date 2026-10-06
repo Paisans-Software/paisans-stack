@@ -47,7 +47,11 @@ sites:
   home-a:
     roles: [data, apps]
     address: 10.44.0.1
-    ssh: home-a.local
+    ssh:
+      host: home-a.local
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 cluster:
   sites: [home-a]
   port: 5000
