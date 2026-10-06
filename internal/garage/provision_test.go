@@ -434,7 +434,7 @@ func commandsOf(plan *garage.Plan) []string {
 // client's ANSI coloured log line ahead of it, as the combined output of
 // `docker compose exec -T` carries it.
 const observedBucketInfo = "\x1b[2m2026-10-05T18:02:11.104Z\x1b[0m \x1b[32m INFO\x1b[0m \x1b[2mgarage_net::netapp\x1b[0m\x1b[2m:\x1b[0m Connection established to 51494feb5444d466\n" +
-	`Bucket: 8ec10628da23f1cb2e34bb19179f86c73126f059500b7063edc6e6c8330b8d0f
+	`Bucket: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
 
 Size: 0 B (0 B)
 Objects: 0
@@ -450,7 +450,7 @@ Global aliases:
 Key-specific aliases:
 
 Authorized keys:
-  RWO  GK089ae7d1d92604cfe916326a  talk
+  RWO  GK0123456789abcdef01234567  talk
 `
 
 // bucketInfoPlan builds a plan for a provisioned node whose talk-uploads
@@ -504,9 +504,9 @@ func TestWebsiteAccessOffIsPlanned(t *testing.T) {
 // all, is granted again.
 func TestAPartialOrMissingGrantIsPlanned(t *testing.T) {
 	for name, info := range map[string]string{
-		"read only": strings.Replace(observedBucketInfo, "  RWO  GK089ae7d1d92604cfe916326a  talk", "  R    GK089ae7d1d92604cfe916326a  talk", 1),
-		"no row":    strings.Replace(observedBucketInfo, "  RWO  GK089ae7d1d92604cfe916326a  talk\n", "", 1),
-		"other key": strings.Replace(observedBucketInfo, "GK089ae7d1d92604cfe916326a  talk", "GKffffffffffffffffffffffff  other", 1),
+		"read only": strings.Replace(observedBucketInfo, "  RWO  GK0123456789abcdef01234567  talk", "  R    GK0123456789abcdef01234567  talk", 1),
+		"no row":    strings.Replace(observedBucketInfo, "  RWO  GK0123456789abcdef01234567  talk\n", "", 1),
+		"other key": strings.Replace(observedBucketInfo, "GK0123456789abcdef01234567  talk", "GKffffffffffffffffffffffff  other", 1),
 	} {
 		_, talk := bucketInfoPlan(t, info)
 		if len(talk) != 1 || !strings.Contains(talk[0], "bucket allow --read --write --owner talk-uploads") {
