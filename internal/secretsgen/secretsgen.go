@@ -186,14 +186,23 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 
 // appSecretKeys is what one app's stanza needs, which depends on the kind:
 // the writefreely-wisp fork has a database role like any other Postgres
-// backed kind, and only Mbin runs a message broker and a cache of its own.
+// backed kind, and only Mbin runs a message broker, a cache and an OAuth2
+// server of its own.
 func appSecretKeys(app config.App) []string {
 	var keys []string
 	if kinds.UsesPostgres(app.Kind) {
 		keys = append(keys, "database_password")
 	}
 	if app.Kind == config.KindMbin {
-		keys = append(keys, "mercure_jwt_secret", "rabbitmq_password", "valkey_password")
+		// The broker, the cache and the Mercure hub each need one, and so do
+		// Symfony (APP_SECRET) and Mbin's own OAuth2 server for API clients
+		// (OAUTH_PASSPHRASE for its private key, OAUTH_ENCRYPTION_KEY for the
+		// tokens it issues). Upstream's .env.example_docker ships a
+		// placeholder for each of the last three, and the image bakes those
+		// placeholders in, so leaving one unset runs on a value anyone can
+		// read in upstream's repository.
+		keys = append(keys, "mercure_jwt_secret", "rabbitmq_password", "valkey_password",
+			"app_secret", "oauth_passphrase", "oauth_encryption_key")
 	}
 	if app.Kind == config.KindOAuth2Proxy {
 		keys = append(keys, "cookie_secret")

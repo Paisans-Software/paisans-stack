@@ -1,0 +1,29 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Upstream's own tuning for Mbin's cache, copied verbatim from docker/valkey.conf
+# at the paisans fork's tag v1.13.3+paisans. Nothing here is secret: the
+# password is passed on valkey's command line in compose.yaml, so this file is
+# 0644 and the .env stays the only place a credential is written.
+#
+# Snapshots are off, so a restart empties the cache. That is what upstream
+# chose, and it is why valkey mounts no data directory.
+# NETWORK
+timeout 300
+tcp-keepalive 300
+
+# MEMORY MANAGEMENT
+maxmemory 1gb
+maxmemory-policy volatile-ttl
+
+# LAZY FREEING
+lazyfree-lazy-eviction yes
+lazyfree-lazy-expire yes
+lazyfree-lazy-server-del yes
+replica-lazy-flush yes
+
+# THREADED I/O
+io-threads 4
+io-threads-do-reads yes
+
+# DISABLE SNAPSHOTS
+save ""

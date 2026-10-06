@@ -1800,3 +1800,100 @@ services:
 		}
 	}
 }
+
+// Mbin is a stack, not a container. Upstream's compose.yaml runs the web
+// application beside messenger consumers, a broker behind an AMQP proxy and a
+// cache, and an app container on its own starts, migrates and then cannot
+// deliver a single federated activity. Every name checked here was read from
+// the paisans fork at tag v1.13.3+paisans.
+func TestMbinRendersItsWholeStack(t *testing.T) {
+	files := planFiles(build(t))
+	compose := files["home-a/srv/talk/compose.yaml"]
+	env := files["home-a/srv/talk/.env"]
+
+	for _, service := range []string{"  app:", "  messenger:", "  amqproxy:", "  rabbitmq:", "  valkey:"} {
+		if !strings.Contains(compose, "\n"+service+"\n") {
+			t.Errorf("the Mbin stack has no %s service:\n%s", strings.TrimSpace(service), compose)
+		}
+	}
+	if strings.Count(compose, "ports:") != 1 {
+		t.Errorf("only app may publish a port; the sidecars are reached over the project's own network:\n%s", compose)
+	}
+
+	// FrankenPHP listens plainly on the port the gateway routes to, and never
+	// asks for a certificate of its own: TLS ends at the gateway.
+	for _, want := range []string{`SERVER_NAME: ":8080"`, `CADDY_GLOBAL_OPTIONS: "auto_https off"`, `"10.44.0.1:8080:8080"`} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("the app service does not carry %s:\n%s", want, compose)
+		}
+	}
+	if strings.Contains(env, "SERVER_NAME=") {
+		t.Errorf("SERVER_NAME belongs to compose.yaml, where a hostname cannot replace the plain listener:\n%s", env)
+	}
+	snippet := files["vm/srv/infra/caddy/snippets/talk.caddy"]
+	if !strings.Contains(snippet, "10.44.0.1:8080") || !strings.Contains(snippet, "10.44.0.2:8080") {
+		t.Errorf("the gateway does not route to the port the app publishes:\n%s", snippet)
+	}
+
+	for _, want := range []string{
+		"\nMBIN_USER=1000:1000\n",
+		"\nAPP_SECRET=fixture-not-a-secret-talk-app\n",
+		"\nRABBITMQ_DEFAULT_USER=mbin\n",
+		"\nRABBITMQ_DEFAULT_PASS=fixture-not-a-secret-rabbitmq\n",
+		"\nMESSENGER_TRANSPORT_DSN=amqp://mbin:fixture-not-a-secret-rabbitmq@amqproxy:5673/%2f/messages\n",
+		"\nVALKEY_PASSWORD=fixture-not-a-secret-valkey\n",
+		"\nREDIS_DNS=redis://fixture-not-a-secret-valkey@valkey:6379\n",
+		"\nMERCURE_URL=http://app:8080/.well-known/mercure\n",
+		"\nMERCURE_PUBLIC_URL=https://talk.example.org/.well-known/mercure\n",
+		"\nMERCURE_PUBLISHER_JWT_KEY=fixture-not-a-secret-mercure\n",
+		"\nMERCURE_SUBSCRIBER_JWT_KEY=fixture-not-a-secret-mercure\n",
+		"\nOAUTH_PASSPHRASE=fixture-not-a-secret-talk-oauth-passphrase\n",
+		"\nOAUTH_ENCRYPTION_KEY=fixture-not-a-secret-talk-oauth-encryption\n",
+		"\nS3_VERSION=latest\n",
+		`CORS_ALLOW_ORIGIN='^https?://(talk\.example\.org|127\.0\.0\.1)(:[0-9]+)?$'`,
+		"@10.44.0.1:5000/talk?serverVersion=18&charset=utf8\n",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("the Mbin .env does not carry %q:\n%s", strings.TrimSpace(want), env)
+		}
+	}
+
+	if _, ok := files["home-a/srv/talk/valkey.conf"]; !ok {
+		t.Error("valkey.conf was not rendered, so the cache would run without upstream's memory limit and with snapshots on")
+	}
+	// The consumers store fetched remote media through the same filesystem
+	// binding as the web container, so they need the same shim.
+	messenger := compose[strings.Index(compose, "\n  messenger:\n"):]
+	messenger = messenger[:strings.Index(messenger, "\n  amqproxy:\n")]
+	if !strings.Contains(messenger, "oneup_flysystem.yaml:/app/config/packages/oneup_flysystem.yaml:ro") {
+		t.Errorf("the messenger consumers do not mount the S3 shim:\n%s", messenger)
+	}
+}
+
+// Pinned Mbin keeps its own database beside the rest of the stack, and the
+// application waits for it.
+func TestPinnedMbinRunsItsOwnDatabase(t *testing.T) {
+	cfg := fixture(t)
+	talk := cfg.Apps["talk"]
+	talk.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-b", Literal: "home-b"}
+	cfg.Apps["talk"] = talk
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+	compose := files["home-b/srv/talk/compose.yaml"]
+	env := files["home-b/srv/talk/.env"]
+	if !strings.Contains(compose, "\n  postgres:\n") {
+		t.Errorf("a pinned Mbin has no postgres service:\n%s", compose)
+	}
+	if strings.Count(compose, "      postgres:\n        condition: service_started") != 2 {
+		t.Errorf("app and messenger should both wait for the pinned database:\n%s", compose)
+	}
+	if !strings.Contains(env, "@postgres:5432/talk?serverVersion=18&charset=utf8\n") || !strings.Contains(env, "\nPOSTGRES_PASSWORD=") {
+		t.Errorf("a pinned Mbin does not connect to its own database:\n%s", env)
+	}
+	if !strings.Contains(compose, `"10.44.0.2:8080:8080"`) {
+		t.Errorf("a pinned Mbin does not publish on its own site's mesh address:\n%s", compose)
+	}
+}

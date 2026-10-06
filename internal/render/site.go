@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"text/template"
@@ -37,6 +38,9 @@ var templates = template.Must(template.New("infra").Funcs(templateFuncs).ParseFS
 var templateFuncs = template.FuncMap{
 	"quote":  quote,
 	"indent": indent,
+	// regexquote escapes a value for a regular expression, so a hostname's
+	// dots match only dots.
+	"regexquote": regexp.QuoteMeta,
 	"yesno": func(b bool) string {
 		if b {
 			return "true"

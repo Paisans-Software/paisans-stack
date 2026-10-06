@@ -344,12 +344,22 @@ pushes files and takes the narrowest action that makes them live; it does not
 bootstrap a site that has nothing on it, and it has never been run against a
 real host.
 
-Mbin's media reverse proxy is not rendered either. Upstream advises one on a
-hostname of its own so media URLs survive a change of storage provider, and
-remote instances cache those URLs, so adding it later is a migration rather than
-an addition. It needs a hostname in the configuration and a site block of its
-own, which is a decision to take deliberately. If you find yourself writing a
-transport layer, that is the next slice and it wants its own review.
+Mbin's media reverse proxy, which this section used to list as missing, is
+rendered: `storage.media_hostname` becomes the gateway's `media.caddy`, and
+Mbin's `KBIN_STORAGE_URL` points at it.
+
+Mbin's own OAuth2 server keypair, which API clients and mobile apps need, is
+not generated. The stack mounts `/srv/<app>/oauth` read only and the
+`OAUTH_PASSPHRASE` it is encrypted with is in the rendered `.env`, but the
+`private.pem` and `public.pem` themselves are placed by an operator, readable
+by uid 1000, and with cluster placement the same pair has to be on every apps
+site. Without them the web interface and single sign on work and every API
+request fails. Nothing chowns any of the stack's bind mounted directories
+either; the header of `templates/mbin/compose.yaml.tmpl` says which containers
+cope with a root owned directory and which do not.
+
+If you find yourself writing a transport layer, that is the next slice and it
+wants its own review.
 
 Two claims used to live in this section and are corrected here rather than
 left to go on being read. **Secret generation exists**: `internal/secretsgen`

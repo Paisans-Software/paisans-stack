@@ -75,6 +75,10 @@ type appValues struct {
 	DBPassword string
 	DSN        string
 
+	// PostgresVersion is the cluster's major version, which every database in
+	// the deployment runs. Mbin's Doctrine wants it in its DSN.
+	PostgresVersion string
+
 	// S3 is object storage, which is Garage over the mesh.
 	S3 s3Values
 
@@ -207,21 +211,22 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	}
 
 	v := appValues{
-		App:            planned,
-		Hostname:       planned.Hostname,
-		PublicURL:      "https://" + planned.Hostname,
-		Domain:         p.cfg.Community.Domain,
-		TrustedProxies: p.mesh,
-		DBHost:         dbHost,
-		DBPort:         dbPort,
-		DBName:         planned.DBName,
-		DBUser:         planned.DBUser,
-		DBPassword:     password,
-		DSN:            dsn(planned, password, dbHost, dbPort),
-		DataPath:       "/srv/" + planned.Name,
-		MeshAddress:    p.meshAddress(planned.Site),
-		secrets:        p.secrets.Apps[planned.Name],
-		set:            app.Settings,
+		App:             planned,
+		Hostname:        planned.Hostname,
+		PublicURL:       "https://" + planned.Hostname,
+		Domain:          p.cfg.Community.Domain,
+		TrustedProxies:  p.mesh,
+		DBHost:          dbHost,
+		DBPort:          dbPort,
+		DBName:          planned.DBName,
+		DBUser:          planned.DBUser,
+		DBPassword:      password,
+		DSN:             dsn(planned, password, dbHost, dbPort),
+		PostgresVersion: p.postgresVersion(),
+		DataPath:        "/srv/" + planned.Name,
+		MeshAddress:     p.meshAddress(planned.Site),
+		secrets:         p.secrets.Apps[planned.Name],
+		set:             app.Settings,
 	}
 	v.ServerName = planned.Hostname
 	if delegated := app.Hostnames[kinds.WellknownRole]; delegated != "" {

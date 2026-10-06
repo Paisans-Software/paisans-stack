@@ -739,6 +739,7 @@ templates/mbin/                             templates/writefreely/
   .env.tmpl                                   config.ini.tmpl
   caddy.snippet.tmpl                          .env.tmpl
   config/packages/oneup_flysystem.yaml.tmpl   caddy.snippet.tmpl
+  valkey.conf.tmpl
 ```
 
 **A template's path is its destination.** The layout under `templates/<kind>/`

@@ -137,7 +137,7 @@ func TestFillMatchesEachKindsNeeds(t *testing.T) {
 	if _, ok := secrets.Apps["blog"]["database_password"]; !ok {
 		t.Error("the wisp fork keeps its data in Postgres and needs a database password")
 	}
-	for _, key := range []string{"database_password", "mercure_jwt_secret", "rabbitmq_password", "valkey_password"} {
+	for _, key := range []string{"database_password", "mercure_jwt_secret", "rabbitmq_password", "valkey_password", "app_secret", "oauth_passphrase", "oauth_encryption_key"} {
 		if _, ok := secrets.Apps["talk"][key]; !ok {
 			t.Errorf("mbin is missing %s", key)
 		}
