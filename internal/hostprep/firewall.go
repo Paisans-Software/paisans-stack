@@ -18,7 +18,16 @@ type Rule struct {
 	To string
 	// Why is printed beside the rule in the plan.
 	Why string
+	// SSH marks the allow for the site's ssh.port. It is the one rule never
+	// removed, and a deny on it is refused rather than warned about; see
+	// planRules.
+	SSH bool
 }
+
+// sshWhy is the SSH rule's reason, and so part of its ownership comment on the
+// host. It must not change: it is how planRules recognises an SSH allow host
+// prepare added for an earlier ssh.port, and keeps it.
+const sshWhy = "ssh, the bootstrap route"
 
 func (r Rule) String() string {
 	if r.Interface != "" && r.To != "" {
@@ -43,7 +52,8 @@ const wireguardPort = 51820
 // site: a site that gains the gateway role gains 80 and 443 on its next
 // prepare, and one that loses it has them removed by the same prepare, since
 // the profile removes a rule it added once nothing derives it any more. SSH is
-// the exception and is never removed; see the profile's Firewall.
+// the exception and is never removed; see the profile's Firewall. Its port is
+// the site's ssh.port, 22 unless declared.
 //
 // Why is written into the host's firewall as part of the rule's ownership
 // comment, so it must not contain a single quote: ufw refuses one in a comment.
@@ -52,7 +62,7 @@ func Rules(site config.Site) []Rule {
 		// First, and on every site: the firewall is enabled after it, and an
 		// enabled firewall without it would lock the operator out of the
 		// connection running this command.
-		{Port: 22, Proto: "tcp", Why: "ssh, the bootstrap route"},
+		{Port: site.SSH.PortOrDefault(), Proto: "tcp", Why: sshWhy, SSH: true},
 		{Port: wireguardPort, Proto: "udp", Why: "WireGuard, the mesh"},
 		{Interface: meshInterface, Why: "the mesh: etcd, Patroni, Garage, HAProxy"},
 	}

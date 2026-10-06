@@ -724,3 +724,66 @@ func TestSSHIsNeverRemoved(t *testing.T) {
 		t.Errorf("got:\n%s", printed(plan))
 	}
 }
+
+func withSSHPort(t *testing.T, site string, port int) *config.Config {
+	t.Helper()
+	cfg := fixture(t)
+	s := cfg.Sites[site]
+	s.SSH.Port = port
+	cfg.Sites[site] = s
+	return cfg
+}
+
+// The SSH allow is for the declared port, and it is still the first allow.
+func TestTheSSHRuleFollowsTheDeclaredPort(t *testing.T) {
+	plan, err := hostprep.Build("home-a", withSSHPort(t, "home-a", 2222), freshHost())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := printed(plan)
+	if !strings.Contains(out, "firewall: allow 2222/tcp (ssh, the bootstrap route)") {
+		t.Fatalf("no allow for the declared port:\n%s", out)
+	}
+	if strings.Contains(out, "allow 22/tcp") {
+		t.Errorf("port 22 allowed although ssh.port is 2222:\n%s", out)
+	}
+	cmds := commands(plan)
+	for _, c := range cmds {
+		if strings.HasPrefix(c, "ufw allow") {
+			if !strings.HasPrefix(c, "ufw allow 2222/tcp") {
+				t.Errorf("the first allow is %q, want SSH's", c)
+			}
+			break
+		}
+	}
+}
+
+// Moving ssh.port adds the new allow and keeps the old one, saying so: host
+// prepare cannot know sshd already listens on the new port.
+func TestMovingTheSSHPortKeepsTheOldAllow(t *testing.T) {
+	host := preparedHost(false)
+	host.responses[probeFirewall] = "ufw present\nstatus active\n" +
+		"rule allow 22/tcp comment 'paisans: ssh, the bootstrap route'\n" +
+		owned("allow 51820/udp", "allow in on wg0", "allow in on br-+ to 10.44.0.1 port 5000 proto tcp", "allow in on br-+ to 10.44.0.1 port 3900 proto tcp")
+	plan, err := hostprep.Build("home-a", withSSHPort(t, "home-a", 2222), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := printed(plan)
+	t.Logf("\n%s", out)
+	if got := commands(plan); len(got) != 1 || got[0] != "ufw allow 2222/tcp comment 'paisans: ssh, the bootstrap route'" {
+		t.Fatalf("want only the new allow, got %q", got)
+	}
+	if !strings.Contains(out, "present   firewall: `ufw allow 22/tcp comment 'paisans: ssh, the bootstrap route'` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow. Delete it yourself once SSH on 2222 works") {
+		t.Errorf("the old allow is not noted:\n%s", out)
+	}
+}
+
+// A deny on the declared SSH port is refused, whatever the port.
+func TestADenyOnTheDeclaredSSHPortIsRefused(t *testing.T) {
+	host := preparedHost(false)
+	host.responses[probeFirewall] = "ufw present\nstatus inactive\nrule deny 2222/tcp\n"
+	if _, err := hostprep.Build("home-a", withSSHPort(t, "home-a", 2222), host); err == nil || !strings.Contains(err.Error(), "blocks SSH") {
+		t.Fatalf("a deny on the SSH port was not refused: %v", err)
+	}
+}
