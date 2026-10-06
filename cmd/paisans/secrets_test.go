@@ -140,3 +140,51 @@ func TestSecretsSetReencrypts(t *testing.T) {
 		t.Errorf("encrypted %v, token round tripped %v", secrets.Encrypted, secrets.External["acme_dns_token"] == token)
 	}
 }
+
+// A gateway rendered without the DNS token is a Caddy that can obtain no
+// certificate, which only a visitor would discover. It is refused, and the
+// refusal says how to supply it.
+func TestRenderRefusesAGatewayWithoutItsACMEToken(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "internal", "render", "testdata", "secrets.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	without := strings.Replace(string(fixture), "acme_dns_token:", "unused_token:", 1)
+	configPath, secretsPath := secretsDir(t, without)
+
+	out := t.TempDir()
+	err = runRender([]string{"--config", configPath, "--secrets", secretsPath, "--out", out})
+	if err == nil {
+		t.Fatal("a gateway was rendered with no DNS token")
+	}
+	if !strings.Contains(err.Error(), "paisans secrets set external.acme_dns_token") {
+		t.Errorf("the refusal does not say how to fix it:\n%v", err)
+	}
+
+	// apply of a site without the gateway role does not need the token, and
+	// is stopped later by ssh rather than by this check.
+	if err := requireACMEToken(mustLoad(t, configPath), mustSecrets(t, secretsPath), []string{"home-a"}); err != nil {
+		t.Errorf("a site with no gateway was refused for the gateway's token: %v", err)
+	}
+	if err := requireACMEToken(mustLoad(t, configPath), mustSecrets(t, secretsPath), []string{"vm"}); err == nil {
+		t.Error("apply of the gateway site was not refused")
+	}
+}
+
+func mustLoad(t *testing.T, path string) *config.Config {
+	t.Helper()
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func mustSecrets(t *testing.T, path string) *config.Secrets {
+	t.Helper()
+	s, err := config.LoadSecrets(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}

@@ -152,3 +152,22 @@ func secretKeyAllowed(cfg *config.Config, secrets *config.Secrets, key string) e
 	}
 	return errors.New("secrets set: " + key + " is neither set nor owed from elsewhere. A generated secret is created by `paisans init`, which fills in what is missing; this command sets a pasted or captured one, or replaces one that exists")
 }
+
+// requireACMEToken refuses to render or apply a gateway without the DNS
+// provider's token.
+//
+// Without it the rendered Caddy starts, loads its configuration, and fails
+// every DNS-01 challenge, so the gateway serves no certificate for any
+// hostname. That is discovered by the first visitor, not by the apply, so it
+// is a refusal rather than the "still owed" note init prints.
+func requireACMEToken(cfg *config.Config, secrets *config.Secrets, sites []string) error {
+	if secrets.External["acme_dns_token"] != "" {
+		return nil
+	}
+	for _, site := range sites {
+		if cfg.Sites[site].Has(config.RoleGateway) {
+			return fmt.Errorf("%s holds the gateway, and secrets external.acme_dns_token is empty, so its Caddy could obtain no certificate. Get a token from %s scoped to this zone, then pipe it in: `paisans secrets set external.acme_dns_token < token-file`", site, cfg.ACME.Provider)
+		}
+	}
+	return nil
+}

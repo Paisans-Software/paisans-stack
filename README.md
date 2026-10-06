@@ -678,6 +678,13 @@ creates those with the shapes their consumers require, and it refuses an unknown
 top level section, because a value written where nothing reads it looks
 delivered and is not.
 
+**A gateway without its DNS token is refused at `render` and `apply`.** `init`
+lists `external.acme_dns_token` as owed rather than refusing, because an
+install is assembled in steps. Rendering without it is different: the gateway's
+Caddy starts, loads its configuration, and fails every DNS-01 challenge, so no
+hostname gets a certificate and the apply reports success. The first person to
+find out would be a visitor.
+
 **A hand edited Garage key is refused as `garage-key-is-malformed`.** A
 generated S3 access key ID is the literal `GK` followed by exactly 24
 lowercase hex characters, and a generated secret key is exactly 64 lowercase

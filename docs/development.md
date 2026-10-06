@@ -61,6 +61,11 @@ exists so a credential issued elsewhere never touches a terminal or an editor:
 an argument is in shell history and `ps`, a prompt is in scrollback, and `sops`
 opens the whole decrypted file in an editor.
 
+`render` and `apply` refuse a gateway site when `external.acme_dns_token` is
+empty. `init` lists it as owed, but rendering without it produced a Caddy that
+starts and then fails every DNS-01 challenge, which a visitor finds rather than
+the operator.
+
 A decryption failure names both `SOPS_AGE_KEY_FILE` and `SOPS_AGE_KEY_CMD`; the
 embedded sops (v3.13.3, `age/keysource.go`) reads either, and the second lets
 the age key live in a keychain rather than a file.

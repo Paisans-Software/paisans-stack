@@ -232,6 +232,9 @@ func runRender(args []string) error {
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
 	}
+	if err := requireACMEToken(cfg, secrets, cfg.SiteNames()); err != nil {
+		return err
+	}
 
 	plan, err := render.Build(cfg, secrets)
 	if err != nil {
@@ -300,6 +303,9 @@ func runApply(args []string) error {
 	// actually reaches a host: a malformed key has to stop here, not just
 	// print a confusing failure partway through provisioning on the machine.
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
+		return err
+	}
+	if err := requireACMEToken(cfg, secrets, []string{*site}); err != nil {
 		return err
 	}
 
