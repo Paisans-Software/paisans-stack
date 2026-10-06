@@ -1492,14 +1492,16 @@ infrastructure stack and before the first app stack, `apply`:
 
 1. waits up to three minutes for Patroni's `GET /cluster` to name a running
    leader;
-2. if the leader is another site, skips the rest and says which site to apply,
-   since a replica cannot create roles;
-3. otherwise sends one psql script on stdin to the Spilo container that, per
+2. if the leader is another site in `cluster.sites`, skips the rest and says
+   which site to apply, since a replica cannot create roles;
+3. if the leader is not in `cluster.sites` at all, stops, naming the leader it
+   saw and the sites it expected;
+4. otherwise sends one psql script on stdin to the Spilo container that, per
    clustered app using Postgres, creates the role if it is missing, **sets its
    password every time**, and creates the database owned by it if missing.
 
-A timeout or a psql failure stops the apply before any app stack starts, and
-the next apply resumes at the same place. It is a gate, not a warning: an app
+A timeout, an unknown leader or a psql failure stops the apply before any app
+stack starts, and the next apply resumes at the same place. It is a gate, not a warning: an app
 pointed at a role that does not exist has nothing to fall back on.
 
 **Setting the password every time is what makes rotation an addition.** The
@@ -1523,6 +1525,15 @@ generated statement at top level.
 **An app whose role would be `postgres`, `admin`, `standby` or `pg_*` is
 refused**, because the bootstrap would set that app's password on a role the
 cluster uses itself.
+
+**Only a declared site can be the reason to skip.** The rendered Patroni names
+each member after its site, so "the leader is not me" can be read as "the
+leader is that site" only when the name is one of `cluster.sites`. On the first
+real host the member was named after the machine instead, and an apply that
+took any other name for a replica skipped the databases and started every app
+with none. A name nobody declared means that pin did not hold, which is a
+fault to fix rather than someone else's work, so it is a gate. It is not
+polled out like a missing leader: a running member's name does not change.
 
 `/cluster` is asked rather than `/primary` because it answers both questions:
 `/primary` returns the same 503 to a replica as to a node still running initdb,

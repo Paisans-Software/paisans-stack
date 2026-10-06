@@ -27,6 +27,9 @@ type Bootstrap struct {
 	// Patroni is this site's Patroni REST API, host:port, on the mesh.
 	Patroni   string
 	Databases []Database
+	// ClusterSites is cluster.sites. A leader is one of these or it is not a
+	// member this deployment declared.
+	ClusterSites []string
 }
 
 // identifier is what this package will put into SQL as a role or database
@@ -57,7 +60,10 @@ func Databases(cfg *config.Config, secrets *config.Secrets, site string) (*Boots
 	if !inCluster {
 		return nil, nil
 	}
-	out := &Bootstrap{Patroni: fmt.Sprintf("%s:%d", cfg.Sites[site].Address, render.PatroniAPIPort)}
+	out := &Bootstrap{
+		Patroni:      fmt.Sprintf("%s:%d", cfg.Sites[site].Address, render.PatroniAPIPort),
+		ClusterSites: append([]string(nil), cfg.Cluster.Sites...),
+	}
 	for _, name := range cfg.AppNames() {
 		app := cfg.Apps[name]
 		if app.Placement.Mode != config.PlacementCluster || !kinds.UsesPostgres(app.Kind) {
@@ -118,6 +124,14 @@ func (e errReplica) Error() string { return "replica of " + e.leader }
 // waitForPrimary polls Patroni's /cluster until a member holds the leader key
 // and is running, then reports whether that member is this site.
 //
+// A leader is this site, another of cluster.sites, or an error. Only the
+// second is a replica: Patroni's member name is pinned to the site name, so a
+// leader named anything else means that pin did not hold (on the first real
+// host the member was named after the machine), and treating it as "someone
+// else's job" skipped the databases and started every app with none. The
+// error is immediate rather than polled out: a member's name does not change
+// while it runs.
+//
 // /cluster rather than /primary because it answers two questions at once.
 // /primary says only "not me" with a 503, which is the same answer a node
 // still running initdb gives; /cluster names the leader, so a replica can be
@@ -139,8 +153,12 @@ func waitForPrimary(plan *Plan, t Transport) error {
 			switch {
 			case leader == plan.Site:
 				return nil
-			case leader != "":
+			case leader != "" && contains(plan.Bootstrap.ClusterSites, leader):
 				return errReplica{leader: leader}
+			case leader != "":
+				return fmt.Errorf(
+					"%s: Patroni's leader is %q, which is not one of cluster.sites (%s), so no app database was created and no app stack was started. Each Patroni member's name must equal its site's name; read PATRONI_NAME in /srv/infra/patroni.env and `docker compose -f /srv/infra/compose.yaml logs patroni` on the leader's host",
+					plan.Site, leader, strings.Join(plan.Bootstrap.ClusterSites, ", "))
 			}
 			last = strings.TrimSpace(out)
 		} else {
@@ -153,6 +171,15 @@ func waitForPrimary(plan *Plan, t Transport) error {
 	return fmt.Errorf(
 		"%s: no Patroni primary after %s, so no app database was created and no app stack was started. Last answer from %s:\n%s\nRead `docker compose -f /srv/infra/compose.yaml logs patroni` on the host, then apply again: it resumes here",
 		plan.Site, primaryWait, plan.Bootstrap.Patroni, last)
+}
+
+func contains(list []string, s string) bool {
+	for _, item := range list {
+		if item == s {
+			return true
+		}
+	}
+	return false
 }
 
 // patroniLeader returns the running leader's name from a /cluster document,

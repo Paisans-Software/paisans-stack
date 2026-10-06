@@ -412,8 +412,9 @@ waits up to three minutes for Patroni's `/cluster` to name a running leader,
 then sends one psql script on stdin to the Spilo container: create the role if
 missing, set its password every time (so rotation is editing the secret and
 applying), create the database owned by it if missing. A replica skips the work
-and says which site holds the leader. A timeout or a psql failure stops the
-apply before any app starts, and the next apply resumes there. `README.md` has
+and says which site holds the leader; a leader that is not one of
+`cluster.sites` is not a replica and stops the apply. A timeout or a psql
+failure stops it too, before any app starts, and the next apply resumes there. `README.md` has
 the reasoning under "`apply` creates each clustered app's role and database".
 A pinned app's own Postgres creates its role from the image's environment, as
 before.

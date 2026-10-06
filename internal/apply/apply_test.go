@@ -1016,6 +1016,32 @@ func TestAReplicaLeavesTheDatabasesToTheLeader(t *testing.T) {
 	}
 }
 
+// A leader that is not a declared cluster site is not a replica: it means a
+// member's name is not its site's name, and skipping as if it were left every
+// app started with no database. It stops the apply before any app stack.
+func TestAnUnknownLeaderStopsTheApply(t *testing.T) {
+	noWait(t)
+	host := newHost()
+	host.leader = "some-machine"
+	err := apply.Execute(bootstrapPlan(t, host), host)
+	if err == nil {
+		t.Fatal("an unknown leader was taken for a replica")
+	}
+	for _, want := range []string{`"some-machine"`, "home-a, home-b", "must equal its site's name"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not say %q:\n%v", want, err)
+		}
+	}
+	if host.ran("psql") {
+		t.Error("roles were created under an unknown leader")
+	}
+	for _, command := range host.commands {
+		if strings.Contains(command, "docker compose") && !strings.Contains(command, "/srv/infra/") {
+			t.Errorf("an app stack was touched past the gate: %s", command)
+		}
+	}
+}
+
 // A failed bootstrap is a gate, and its error does not echo a password even
 // when psql quotes the line back.
 func TestAFailedBootstrapStopsTheAppsAndHidesThePassword(t *testing.T) {
