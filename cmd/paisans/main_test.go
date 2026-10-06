@@ -125,3 +125,39 @@ func captureStdout(t *testing.T, fn func()) string {
 	w.Close()
 	return <-done
 }
+
+// dns init has to refuse offline wherever it can: a configuration that cannot
+// name its records, or a provider whose record management does not exist,
+// must stop before the secrets are used to contact anything. The fixture
+// declares desec and gives the gateway no public_address.
+func TestRunDNSInitRefusesBeforeContactingAProvider(t *testing.T) {
+	fixture := filepath.Join("..", "..", "internal", "render", "testdata", "deployment.yaml")
+	secrets := filepath.Join("..", "..", "internal", "render", "testdata", "secrets.fixture.yaml")
+
+	err := runDNSInit([]string{"--config", fixture, "--secrets", secrets})
+	if err == nil || !strings.Contains(err.Error(), "sites.vm.public_address is not set") {
+		t.Fatalf("want a refusal naming the missing public_address, got %v", err)
+	}
+
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withAddress := strings.Replace(string(data), "    endpoint: vm.example.org:51820\n",
+		"    endpoint: vm.example.org:51820\n    public_address: 203.0.113.10\n", 1)
+	if withAddress == string(data) {
+		t.Fatal("the fixture no longer has the line this test edits")
+	}
+	dir := t.TempDir()
+	edited := filepath.Join(dir, "paisans.yaml")
+	if err := os.WriteFile(edited, []byte(withAddress), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = runDNSInit([]string{"--config", edited, "--secrets", secrets})
+	if err == nil || !strings.Contains(err.Error(), "desec record management is not implemented yet") {
+		t.Fatalf("want the unimplemented provider refusal, got %v", err)
+	}
+	if strings.Contains(err.Error(), "fixture-not-a-secret-desec") {
+		t.Fatalf("the token leaked into an error: %v", err)
+	}
+}

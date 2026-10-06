@@ -8,16 +8,19 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
@@ -34,6 +37,7 @@ Usage:
                    [--ssh <destination>] [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
+  paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
 
 Commands:
   validate   Load the configuration and report every problem found.
@@ -45,9 +49,15 @@ Commands:
   storage    Provision object storage on a site: the cluster layout, each
              app's key, and its bucket. Creates only what is missing.
              Writes nothing without --execute.
+  dns        Create the public DNS records the configuration implies, at the
+             provider named by acme.provider. Creates only what is missing,
+             never updates or deletes, and refuses if any record conflicts.
+             Writes nothing without --execute.
 
 apply and storage init are the only commands that reach a host, and each does
-so only with --execute. Everything else writes files locally and stops.
+so only with --execute. dns init reaches no host, only the DNS provider's API,
+and changes it only with --execute. Everything else writes files locally and
+stops.
 `
 
 func main() {
@@ -71,6 +81,12 @@ func main() {
 			os.Exit(2)
 		}
 		err = runStorageInit(os.Args[3:])
+	case "dns":
+		if len(os.Args) < 3 || os.Args[2] != "init" {
+			fmt.Fprintf(os.Stderr, "paisans: dns takes one subcommand, init\n\n%s", usage)
+			os.Exit(2)
+		}
+		err = runDNSInit(os.Args[3:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
@@ -456,4 +472,73 @@ func report(w *os.File, path string, result validate.Result) {
 	}
 	fmt.Fprintf(w, "%s: %d refusal(s), %d warning(s)\n",
 		path, len(result.Refusals()), len(result.Warnings()))
+}
+
+// runDNSInit creates the public DNS records a deployment needs, at the
+// provider acme.provider names, using the token that already answers ACME
+// challenges. It is modelled on runStorageInit: a dry run by default, and
+// only what is missing is created.
+//
+// It reaches no host. The workstation talks to the provider's API and to
+// nothing else, so it takes no --site and no --ssh.
+func runDNSInit(args []string) error {
+	fs := flag.NewFlagSet("dns init", flag.ExitOnError)
+	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
+	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
+	execute := fs.Bool("execute", false, "actually create the missing records")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	result := validate.Check(cfg)
+	report(os.Stderr, *configPath, result)
+	if result.Refused() {
+		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+	}
+	// Worked out before the secrets are opened or the provider is contacted,
+	// so a configuration that cannot name its records is refused offline.
+	wants, err := dns.Desired(cfg)
+	if err != nil {
+		return err
+	}
+
+	if *secretsPath == "" {
+		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
+	}
+	secrets, err := config.LoadSecrets(*secretsPath)
+	if err != nil {
+		return err
+	}
+	if !secrets.Encrypted {
+		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+	}
+	provider, err := dns.For(cfg.ACME.Provider, secrets.External["acme_dns_token"])
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	plan, err := dns.Build(ctx, provider, wants)
+	if err != nil {
+		return err
+	}
+	plan.Write(os.Stdout)
+
+	if !*execute {
+		if len(plan.Creates()) == 0 {
+			return nil
+		}
+		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to create these.\n")
+		return nil
+	}
+	if err := dns.Execute(ctx, provider, plan); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "\ncreated %d record(s) at %s, each read back\n", len(plan.Creates()), plan.Provider)
+	return nil
 }
