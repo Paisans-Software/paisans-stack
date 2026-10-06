@@ -88,7 +88,7 @@ func TestAFreshSitePlanShowsTheDatabaseBeforeTheApp(t *testing.T) {
 	printed := captureStdout(t, func() { printPlan(plan) })
 	t.Log("\n" + printed)
 
-	order := []string{"mesh ", "recreate  infra", "wait ", "bootstrap database talk", "recreate  talk"}
+	order := []string{"mesh ", "recreate  infra", "check     infra:", "wait ", "bootstrap database talk", "recreate  talk", "check     talk:"}
 	last := -1
 	for _, want := range order {
 		i := strings.Index(printed, want)

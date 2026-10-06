@@ -70,9 +70,28 @@ type Action struct {
 	// environment at start and a running container cannot be told about a new
 	// value.
 	Recreate bool
+	// Force means `docker compose up -d --force-recreate`, which replaces
+	// every container of the stack even when Compose sees nothing changed. It
+	// is set for a stack a stopped apply still owes and for one the operator
+	// named with --recreate, never for an ordinary change: a plain `up -d`
+	// over a container that an earlier `up -d` left half built only starts
+	// it, network and all missing, because its configuration matches.
+	Force bool
 	// Reason is quoted back to the operator, so that "why is it recreating"
 	// never needs guessing.
 	Reason string
+}
+
+// Command is what the action runs on the host.
+func (a Action) Command() string {
+	switch {
+	case a.Force:
+		return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml up -d --force-recreate", a.Stack)
+	case a.Recreate:
+		return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml up -d", a.Stack)
+	default:
+		return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml restart", a.Stack)
+	}
 }
 
 // Plan is everything one site's apply would do.
@@ -234,14 +253,39 @@ const (
 // exits non zero, so that "down" cannot be confused with ssh failing.
 const wireguardProbe = "if ip link show wg0 >/dev/null 2>&1; then echo up; else echo down; fi"
 
+// Option adjusts what Build plans, on the operator's word.
+type Option func(*options)
+
+type options struct {
+	overwrite []string
+	recreate  []string
+}
+
+// Overwrite names conflicting files that may be replaced anyway, one path
+// each, as --overwrite does.
+func Overwrite(paths ...string) Option {
+	return func(o *options) { o.overwrite = append(o.overwrite, paths...) }
+}
+
+// Recreate names stacks to force-recreate although nothing about them
+// changed, as --recreate does.
+func Recreate(stacks ...string) Option {
+	return func(o *options) { o.recreate = append(o.recreate, stacks...) }
+}
+
 // Build decides what one site's apply would do, without doing any of it.
 //
 // The order matters and is the whole design. Every file is compared against
 // both the rendered content and the manifest the last apply left behind, so a
 // conflict is found before a single byte is written. An apply that wrote files
 // as it discovered them could leave a stack half updated and then refuse.
-func Build(site string, plan *render.Plan, acmeModule string, t Transport, overwrite ...string) (*Plan, error) {
+func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts ...Option) (*Plan, error) {
 	out := &Plan{Site: site, Transport: t.Describe()}
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	overwrite := o.overwrite
 
 	// Paths the operator has said may be replaced although they conflict.
 	// Each must name a file that really is a conflict: a path that is not one
@@ -259,6 +303,9 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, overw
 
 	prefix := site + "/"
 	stacks := map[string]bool{}
+	// Every stack this site renders, changed or not, which is what a
+	// --recreate may name.
+	rendered := map[string]bool{}
 	envChanged := map[string]bool{}
 	// Whether this site runs the gateway at all, and which of the two ways its
 	// Caddy is about to change. render only emits a Caddyfile for a site
@@ -322,6 +369,9 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, overw
 			wireguardBefore = current
 		}
 
+		if change.Stack != "" {
+			rendered[change.Stack] = true
+		}
 		out.Changes = append(out.Changes, change)
 		if change.Kind == Create || change.Kind == Update {
 			if change.Stack != "" {
@@ -352,22 +402,34 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, overw
 	if err != nil {
 		return nil, err
 	}
-	resumedStacks := map[string]bool{}
+	// A stack the record still owes is force-recreated, whether or not its
+	// files changed again since. The record says its last action did not
+	// finish, and an `up -d` that stopped part way can leave a container
+	// created and never attached to its network; a plain `up -d` or a restart
+	// would start that container as it is.
+	owed := map[string]bool{}
 	for _, action := range resumed.Actions {
-		if !stacks[action.Stack] {
-			resumedStacks[action.Stack] = true
-		}
+		owed[action.Stack] = true
 		stacks[action.Stack] = true
-		if action.Recreate {
-			envChanged[action.Stack] = true
+	}
+
+	forced := map[string]bool{}
+	for _, stack := range o.recreate {
+		if !rendered[stack] {
+			return nil, fmt.Errorf("%s: --recreate %s names no stack this site renders. Its stacks are %s", site, stack, strings.Join(sortedKeys(rendered), ", "))
 		}
+		forced[stack] = true
+		stacks[stack] = true
 	}
 
 	for _, stack := range stackOrder(stacks) {
 		action := Action{Stack: stack}
-		if resumedStacks[stack] {
-			action.Recreate = envChanged[stack]
-			action.Reason = "a previous apply wrote this stack's files and stopped before acting on them, so the action it owed is taken now"
+		if owed[stack] {
+			action.Recreate, action.Force = true, true
+			action.Reason = "a previous apply stopped before this stack's action finished, so its containers may be half built and are replaced outright"
+		} else if forced[stack] {
+			action.Recreate, action.Force = true, true
+			action.Reason = "named with --recreate, so every container is replaced whether or not anything changed"
 		} else if envChanged[stack] {
 			action.Recreate = true
 			action.Reason = "an environment or compose file changed, and Compose passes environment at start, so a running container cannot be told about a new value"
@@ -466,7 +528,7 @@ func Execute(plan *Plan, t Transport) error {
 	// changed it.
 	owes := len(plan.Actions) > 0 || plan.GatewayChanging
 	if owes {
-		if err := writePending(plan, t); err != nil {
+		if err := writePending(plan, plan.Actions, t); err != nil {
 			return err
 		}
 	}
@@ -571,19 +633,32 @@ func Execute(plan *Plan, t Transport) error {
 	// first connects, fails to authenticate as a role nobody created, and is
 	// restarted in a loop by Docker while the apply reports success.
 	bootstrapped := plan.Bootstrap == nil
-	for _, action := range plan.Actions {
+	for i, action := range plan.Actions {
 		if action.Stack != infraStack && !bootstrapped {
 			if err := runBootstrap(plan, t); err != nil {
 				return err
 			}
 			bootstrapped = true
 		}
-		command := fmt.Sprintf("docker compose -f /srv/%s/compose.yaml restart", action.Stack)
-		if action.Recreate {
-			command = fmt.Sprintf("docker compose -f /srv/%s/compose.yaml up -d", action.Stack)
-		}
-		if _, err := t.Run(command); err != nil {
+		if _, err := t.Run(action.Command()); err != nil {
 			return err
+		}
+		// `up -d` and `restart` return once the containers start, which says
+		// nothing about whether they stay up or pass their own checks. The
+		// stack stays in the pending record until this passes, so a failure
+		// here is resumed, and force-recreated, by the next apply.
+		if err := waitHealthy(plan, action.Stack, t); err != nil {
+			return err
+		}
+		// The stack is done, so it leaves the record. Left in, a later stack
+		// failing would have the next apply force-recreate this one too, an
+		// outage for a stack that was fine. The last stack stays until the
+		// end, so that a bootstrap failing after it still leaves the record
+		// owing something and the next apply comes back to the bootstrap.
+		if i < len(plan.Actions)-1 {
+			if err := writePending(plan, plan.Actions[i+1:], t); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -634,9 +709,9 @@ func readPending(t Transport) (pending, error) {
 	return p, nil
 }
 
-func writePending(plan *Plan, t Transport) error {
+func writePending(plan *Plan, actions []Action, t Transport) error {
 	p := pending{Version: 1, GatewayChanging: plan.GatewayChanging, GatewayReload: plan.GatewayReload}
-	for _, action := range plan.Actions {
+	for _, action := range actions {
 		p.Actions = append(p.Actions, pendingAction{Stack: action.Stack, Recreate: action.Recreate})
 	}
 	data, err := json.MarshalIndent(p, "", "  ")

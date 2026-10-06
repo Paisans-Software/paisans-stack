@@ -1548,6 +1548,64 @@ polled out like a missing leader: a running member's name does not change.
 `/primary` returns the same 503 to a replica as to a node still running initdb,
 while `/cluster` names the leader (Patroni v4.1.0, `docs/rest_api.rst`).
 
+### A stopped apply force-recreates what it still owes
+
+A stack whose action did not finish is in an unknown state, and Compose cannot
+see that. On a real host an `up -d` for the Mbin stack failed part way, on a
+host port already in use, and left the `app` container created but attached to
+no network. The next apply resumed from the pending record and ran the same
+plain `up -d`. Compose compared the configuration, found it unchanged, and
+started the half built container, which ran with no networks and no routes.
+
+So a stack the pending record still owes runs `docker compose up -d
+--force-recreate`, which replaces its containers whatever Compose thinks of
+them. The record drops each stack as soon as its action finishes, so only the
+stack that stopped and the ones after it are forced, not the ones that were
+already fine. An operator who finds a stack in the same state with no record
+names it: `apply --recreate <stack>`, one stack per flag, refused for a stack
+the site does not render, and planned even when nothing changed. The ordering
+holds either way: the infrastructure stack first, the databases, then apps.
+
+**Forcing every recreate was rejected.** It would cover this case without a
+record, but it replaces every container of every stack an apply touches, every
+time, and a recreate is an outage however brief.
+
+### `apply` checks each stack before the next one moves
+
+`docker compose up -d` and `restart` exit as soon as containers start. On a
+real host that let an apply report success while Mbin's app could not reach its
+database: the containers were up, and nothing was asking whether they worked.
+
+So after each stack's action `apply` waits, up to five minutes and polling
+every five seconds, until every container of that compose project is running
+and every one that defines a healthcheck reports `healthy`. It reads `docker
+compose ps --all --format json`, `--all` because an exited container is exactly
+what the check is for (docker/compose, `cmd/compose/ps.go`). A container with
+no healthcheck counts once it runs: the toolkit cannot invent a check an image
+does not ship, and refusing such a stack would refuse most of them.
+
+| What `ps` shows | What `apply` does |
+|-----------------|-------------------|
+| every container running, healthchecks `healthy` | moves on to the next stack |
+| a container still `created`, or a healthcheck `starting` | keeps polling |
+| a container `exited`, `dead` or `restarting`, or a healthcheck `unhealthy` | stops now |
+| still polling after five minutes | stops |
+
+A stop names the stack and the services, carries the last 30 log lines of each
+(`docker compose logs --tail 30`), and starts nothing after it. The stack stays
+in the pending record, so the next apply resumes at it and, by the section
+above, recreates it outright. The infrastructure stack is checked like any
+other, which is also the check on the gateway's Caddy after a reload or an
+image change; Patroni's own wait for a primary still gates the database
+bootstrap, because a running Spilo container is not yet a primary.
+
+**Failing on the first `restarting` rather than waiting it out is deliberate.**
+Every rendered service carries `restart: unless-stopped`, so `restarting` means
+the process already crashed once after its dependencies were up, and Docker will
+keep trying forever without telling anyone. Treating a timeout as a warning was
+rejected for the same reason the other gates refuse rather than warn: an apply
+that reports success over a broken stack is how this was found.
+
 ### `site add` — the gateway and witness
 
 The straightforward case, because the VM has a stable address and is the one

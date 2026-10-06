@@ -129,8 +129,37 @@ and databases; see "Every app has its own database credential" below.
 **A stopped apply resumes.** Files written before a gate stopped the apply
 already match the render, so the next apply would otherwise see nothing to do.
 `/srv/.paisans-pending.json` records the owed stack actions and gateway checks
-before the first write and is removed on success; `Build` folds it into the
-next plan.
+before the first write, drops each stack as its action finishes (the last one
+stays until the end, so a bootstrap failing after it is still owed), and is
+removed on success; `Build` folds it into the next plan.
+
+**An owed stack is force-recreated.** On a real host an `up -d` failed part way
+("failed to bind host port ... address already in use") and left Mbin's `app`
+container created with no network attached. The resumed apply ran a plain
+`up -d`, Compose saw an unchanged configuration and only started that
+container, which came up with no networks and an empty route table. So a stack
+the pending record owes runs `up -d --force-recreate`, and the plan shows it as
+`recreate <stack> (forced)`. `--recreate <stack>` does the same for a stack
+named by the operator when no record exists; it is repeatable, one stack per
+flag, a stack this site does not render is refused, and a named stack is
+planned even when nothing changed. Forcing every recreate was rejected: it
+would replace every container of every acted on stack on every apply, an
+outage each time for the one case that needs it.
+
+**Each stack must come up healthy before the next one moves.** An apply
+reported success while Mbin's app could not reach its database, because `up -d`
+and `restart` return as soon as containers start. After each stack's action,
+`apply` polls `docker compose ps --all --format json` every 5 seconds for up to
+5 minutes until every container of the project is running and every one with a
+healthcheck reports `healthy`; a container without one counts once running.
+A container exited, restarting or `unhealthy` stops the apply at once, a
+timeout stops it too, and either error names the stack and services and carries
+the last 30 log lines of each. The stack stays in the pending record, so the
+next apply resumes there and force-recreates it. The infrastructure stack is
+checked like any other, which covers the gateway's Caddy; Patroni's own wait
+still gates the database bootstrap. `ps` output is read in both shapes Compose
+has printed: one JSON object per line (current, `cmd/formatter/container.go`)
+and one JSON array (older v2 releases, `cmd/formatter/formatter.go`).
 
 **Files are recorded as soon as they land.** The manifest is written right
 after the files, and again at the end, not only on success. A manifest written
