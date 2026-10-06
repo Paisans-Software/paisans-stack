@@ -145,6 +145,7 @@ func Check(cfg *config.Config) Result {
 	c.gatewayOnDataSite()
 	c.pocketIDFileBackend()
 	c.imageForAbsentPostgres()
+	c.publicAddress()
 
 	sort.SliceStable(c.findings, func(i, j int) bool {
 		if c.findings[i].Level != c.findings[j].Level {

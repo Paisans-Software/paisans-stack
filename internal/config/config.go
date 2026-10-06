@@ -140,6 +140,17 @@ type Site struct {
 	Address  string `yaml:"address"`
 	Endpoint string `yaml:"endpoint"`
 	SSH      string `yaml:"ssh"`
+
+	// PublicAddress is the IPv4 address the internet reaches this site on. It
+	// is optional, and only `paisans dns` reads it: it is the content of the A
+	// records that command creates. It is declared rather than discovered
+	// because the address a host sees on its own interface is often not the
+	// one the internet sees, behind NAT or a cloud provider's 1:1 mapping, and
+	// a guessed address published in DNS sends every visitor somewhere wrong.
+	PublicAddress string `yaml:"public_address"`
+	// PublicAddress6 is the IPv6 counterpart, for AAAA records. Optional even
+	// where PublicAddress is set.
+	PublicAddress6 string `yaml:"public_address6"`
 }
 
 // Has reports whether the site declares a role.
