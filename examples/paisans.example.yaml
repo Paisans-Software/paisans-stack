@@ -58,6 +58,13 @@ sites:
     roles: [gateway, witness]
     address: 10.44.0.3
     endpoint: vm.example.org:51820   # stable: the homes dial here
+    # What the internet reaches this site on, as the cloud provider reports it
+    # rather than as the host's own interface shows it. Optional, and read only
+    # by `paisans dns init`, which publishes every hostname below and the
+    # endpoint above as A records to it. Private, carrier grade NAT and mesh
+    # addresses are refused.
+    # public_address: 203.0.113.10
+    # public_address6: 2001:db8::10    # optional, adds AAAA records
     ssh: vm.example.org
 
 # One cluster. Multiple named clusters are out of scope: one cluster holds many

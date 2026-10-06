@@ -32,10 +32,16 @@ Three mismatches:
   meant to be handed to people we have never met. OpenTofu exists if it is ever
   wanted.
 
-Terraform *is* right for provisioning the cloud instance itself — create the
-machine, firewall rules, DNS records. That should stay **optional**, because most
+Terraform *is* right for provisioning the cloud instance itself: create the
+machine and its firewall rules. That should stay **optional**, because most
 operators will click a button in a provider's console and requiring otherwise
 raises the floor for no benefit.
+
+DNS records used to sit in that list, left to the operator. They no longer do:
+`paisans dns init` derives them from the configuration and creates them through
+the DNS provider's API, because a record typed by hand is one nothing checks
+against the configuration. Founder requirement. See *`dns init` creates the
+records a deployment needs* in `README.md`.
 
 ### Why not Ansible
 

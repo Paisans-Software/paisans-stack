@@ -13,8 +13,9 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 
 ## Run
 
-Four commands exist so far. Three touch nothing outside the working directory.
-`apply` is the exception and is the only code path here that reaches a machine.
+Six commands exist so far. Three touch nothing outside the working directory.
+`apply` and `storage init` reach a machine; `dns init` reaches no machine, only
+the DNS provider's API.
 
 ```
 paisans validate --config examples/paisans.example.yaml
@@ -23,6 +24,7 @@ paisans render   --config examples/paisans.example.yaml \
                  --secrets secrets.enc.yaml --out ./out
 paisans apply    --site home-a            # shows what would change
 paisans apply    --site home-a --execute  # does it
+paisans dns init                          # shows which records it would create
 ```
 
 `validate` loads a declaration and prints every problem it finds, rather than
@@ -101,6 +103,42 @@ requires a block with a `token` subdirective and rejects a bare argument. That
 is why `internal/acme` holds the exact lines for each provider rather than
 building one shared form (github.com/caddy-dns/cloudflare, README "Caddyfile"
 section; github.com/caddy-dns/desec, README "Caddyfile" section).
+
+## `dns init`, and why it can only create
+
+`dns init` is the one command that talks to something other than a host or the
+local disk: the DNS provider's API, from the workstation. It is a dry run unless
+`--execute` is given, like `apply` and `storage init`, and it takes no `--site`
+because it reaches no site.
+
+```
+paisans dns init                 # shows present, create and conflict per record
+paisans dns init --execute       # creates what is missing, then reads each back
+```
+
+The rules are in `README.md` under *`dns init` creates the records a deployment
+needs*. Three things about the code are easy to undo by accident:
+
+* **`internal/dns.Provider` has no update and no delete.** A method that does
+  not exist cannot be called by mistake, and a conflict is reported for a human
+  to resolve rather than handed to an overwrite. Adding either is a design
+  change, not a convenience.
+* **The provider's base URL is a struct field, not a flag.** Tests point it at
+  an `httptest` server; an operator has no reason to send the zone token
+  anywhere but the provider. No test calls a real provider, and none may.
+* **The token never leaves the request header.** Every error from the
+  Cloudflare client passes through a redaction of the token, and a test
+  asserts it, including against a fake provider that echoes the header back.
+
+Cloudflare's request and response shapes are cited in
+`internal/dns/cloudflare.go` against its API reference. Nothing in this package
+has been run against the real API yet.
+
+A deployment that uses the challenge only zone arrangement described under
+*Certificates use DNS-01, everywhere* holds a token that cannot see the main
+zone. `dns init` then reports that no zone it can see holds the name, which is
+correct: that arrangement trades this command for a narrower credential on the
+gateway, and the records are created by hand.
 
 ### Why ssh is shelled out to and sops is not
 
@@ -193,6 +231,7 @@ installed, on a workstation or anywhere else.
 | `internal/secretsgen` | what a deployment's secrets are, and which of them the toolkit may invent |
 | `internal/kinds` | what an application kind is: its compose services, and the image each runs by default |
 | `internal/render` | placement, templates, and the writer |
+| `internal/dns` | which public records a deployment needs, and creating the missing ones at the DNS provider |
 | `internal/apply` | the only package that reaches a host: what to push, what to restart, and the gates before either |
 | `internal/render/templates` | the infrastructure templates, plus one directory per kind |
 
