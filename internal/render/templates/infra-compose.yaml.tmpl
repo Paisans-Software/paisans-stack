@@ -43,6 +43,14 @@ services:
     # bearing host, so there is exactly one claimant for the device.
     devices:
       - /dev/watchdog:/dev/watchdog
+    # Spilo starts Patroni as postgres through chpst, which keeps only the
+    # primary group, so a root owned 0600 node is unusable and Patroni in
+    # required mode never takes the leader. Docker makes the container its own
+    # device node, so owning that copy changes nothing on the host. The image's
+    # own CMD follows unchanged. Widening the host's node instead (a udev
+    # rule) was tried first and rejected: chpst drops the group it relied on,
+    # and any mode wide enough would let every local user arm the timer.
+    command: ["/bin/sh", "-c", "chown postgres /dev/watchdog && exec /bin/sh /launch.sh init"]
 {{- end }}
 {{- end }}
 {{- if .Site.NeedsProxy }}

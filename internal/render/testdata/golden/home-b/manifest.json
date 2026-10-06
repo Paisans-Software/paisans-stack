@@ -28,7 +28,7 @@
     },
     {
       "path": "srv/infra/compose.yaml",
-      "sha256": "dfe9d8e55f7c41e9503135a66a8c4edf6f9b5fd8e0a2d477456f843e9d81dbf3",
+      "sha256": "651ce656eb55eaa7d618060bf802564aba9627942791db744bbc87aae5a5b63e",
       "mode": "0644"
     },
     {

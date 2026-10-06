@@ -2003,7 +2003,7 @@ func TestWatchdogOffRendersPatroniWithoutTheDevice(t *testing.T) {
 	if env := files["home-b/srv/infra/patroni.env"]; !strings.Contains(env, "watchdog: {mode: 'off'}") {
 		t.Errorf("home-b declared watchdog off and its patroni.env says otherwise:\n%s", env)
 	}
-	if compose := files["home-b/srv/infra/compose.yaml"]; strings.Contains(compose, "/dev/watchdog") {
+	if compose := files["home-b/srv/infra/compose.yaml"]; strings.Contains(compose, "/dev/watchdog:") || strings.Contains(compose, "chown postgres") {
 		t.Errorf("home-b declared watchdog off and its compose still maps the device:\n%s", compose)
 	}
 	if env := files["home-a/srv/infra/patroni.env"]; !strings.Contains(env, "watchdog: {mode: required}") {
@@ -2155,5 +2155,16 @@ func TestPatroniEnvSpeaksSpilosVocabulary(t *testing.T) {
 	}
 	if doc.Bootstrap.DCS["synchronous_mode"] != true {
 		t.Errorf("synchronous_mode did not reach the bootstrap DCS: %v", doc.Bootstrap.DCS)
+	}
+}
+
+// The container's watchdog node is owned by Spilo's postgres before Spilo
+// starts, because Patroni runs without the supplementary groups a host side
+// permission could have used. On the first real host Patroni reported the
+// device "not usable" and, in required mode, never became leader.
+func TestPatroniOwnsItsWatchdogNode(t *testing.T) {
+	compose := planFiles(build(t))["home-a/srv/infra/compose.yaml"]
+	if !strings.Contains(compose, `chown postgres /dev/watchdog && exec /bin/sh /launch.sh init`) {
+		t.Errorf("Patroni's container does not take ownership of its watchdog node:\n%s", compose)
 	}
 }
