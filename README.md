@@ -976,6 +976,97 @@ ssh <site-a> docker compose -f /srv/infra/compose.yaml exec -T garage \
 `garage status` on either node should then list both. Run `paisans storage init
 --site <name> --execute` for each site afterwards, in either order.
 
+### `dns init` creates the records a deployment needs
+
+Every public name a deployment answers on needs a DNS record, and the toolkit
+creates them, not the operator and not an agent working by hand. A record typed
+into a provider's console is a record nothing checks against the configuration,
+and the first anyone hears of a typo is a visitor who cannot reach the site.
+Founder requirement.
+
+```sh
+paisans dns init                # shows what it would create
+paisans dns init --execute      # creates it
+```
+
+**The records are derived, never declared.** Each app's `hostname`, each of its
+role `hostnames`, and `storage.media_hostname` get an A record pointing at the
+gateway site's `public_address`. A site whose `endpoint` is a name rather than
+an address gets an A record pointing at that site's own `public_address`,
+because that is the name the other sites' WireGuard dials. Where a site also
+declares `public_address6`, each of its names gets an AAAA record as well. A
+list of records in `paisans.yaml` would be simpler to read, but it would be a
+second place to write every hostname, and the copy that drifts is the one that
+sends visitors somewhere else.
+
+```yaml
+sites:
+  vm:
+    roles: [gateway, witness]
+    address: 10.44.0.3
+    endpoint: vm.example.org:51820
+    public_address: 203.0.113.10       # what the internet reaches, not the interface
+    # public_address6: 2001:db8::10    # optional, adds AAAA records
+```
+
+**`public_address` is declared, not discovered.** The address a host sees on
+its own interface is often not the one the internet sees, behind NAT or a cloud
+provider's one to one mapping, and a guessed address published in DNS is cached
+for the record's lifetime. `validate` refuses a value that is not an address of
+the right family, and one the internet cannot reach: private space (RFC 1918
+and RFC 4193), carrier grade NAT (100.64.0.0/10), loopback, link local, or an
+address inside `mesh.subnet`. A missing `public_address` is not refused by
+`validate`, because a deployment may manage its DNS some other way. `dns init`
+refuses it, naming the site, wherever a record would need it.
+
+**It only creates. It never updates and never deletes.** For each record it
+needs, the provider holds one of three things:
+
+| Provider holds | Plan |
+|----------------|------|
+| the same record, unproxied | `present` |
+| nothing at that name of that type | `create` |
+| a different address, a CNAME, a proxied copy, or an A or AAAA the deployment does not declare | `conflict` |
+
+**Any conflict refuses the whole run before a single record is written.** This
+is the same rule `apply` follows for a file it did not write: a record that
+disagrees with the configuration is somebody's, and overwriting it would take
+down whatever they pointed it at. Creating the records that do not conflict and
+skipping the rest was rejected too, because half a set of records is a
+deployment some names reach and others do not, which is harder to diagnose
+than a refusal. A stray AAAA is a conflict because clients on IPv6 would reach
+it instead of the gateway, silently. After `--execute`, every record created is
+read back and compared.
+
+**Records are DNS only, never proxied through a provider's CDN.** A proxied
+name resolves to the CDN's addresses rather than the gateway's, so a WireGuard
+endpoint behind it cannot be dialled at all, and every request reaches Caddy
+from the CDN rather than the client, undoing the client address handling the
+mesh subnet setting exists for. A proxied record that otherwise matches is a
+conflict, not a match.
+
+**One gateway only, for now.** With several gateway sites, which address a
+hostname should resolve to is a design that does not exist yet. `dns init`
+refuses rather than picking one. The same reasoning covers moving the gateway:
+the old records point at the old gateway, so they are conflicts, and repointing
+them is the human step in *Make it an overlap, not a cutover*, not something
+this command does behind an operator's back.
+
+**It reaches no host.** It talks to the DNS provider's API from the
+workstation, using `external.acme_dns_token`, the same zone scoped token the
+gateway uses to answer ACME challenges. A second credential with the same reach
+would be one more thing to rotate and leak. The token travels only in a request
+header and is redacted from every error. Finding which zone holds a name means
+reading the zone, so the token needs read access to the zone as well as
+permission to edit its records. The zone is found by trying each suffix of the
+name, longest first, so a delegated subzone wins over its parent.
+
+**Cloudflare is implemented. Other providers are not yet**, deSEC included,
+although both answer ACME challenges. Answering a challenge and managing
+ordinary records are different code, and `dns init` refuses an unimplemented
+provider by name rather than pretending. Until one is implemented, create the
+records it would have created by hand, unproxied.
+
 ### Decryption happens on a workstation, not on a host
 
 Rendering locally and pushing means no age key ever reaches a host. That
