@@ -34,6 +34,7 @@ Usage:
                    [--ssh <destination>] [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
+  paisans secrets set <dotted.key> [--config paisans.yaml] [--secrets secrets.enc.yaml] < value
 
 Commands:
   validate   Load the configuration and report every problem found.
@@ -45,6 +46,9 @@ Commands:
   storage    Provision object storage on a site: the cluster layout, each
              app's key, and its bucket. Creates only what is missing.
              Writes nothing without --execute.
+  secrets    set: read one value from stdin and write it into the encrypted
+             secrets file, printing only its name. For credentials issued
+             elsewhere, so they never touch a terminal or an editor.
 
 apply and storage init are the only commands that reach a host, and each does
 so only with --execute. Everything else writes files locally and stops.
@@ -65,6 +69,8 @@ func main() {
 		err = runRender(os.Args[2:])
 	case "apply":
 		err = runApply(os.Args[2:])
+	case "secrets":
+		err = runSecrets(os.Args[2:])
 	case "storage":
 		if len(os.Args) < 3 || os.Args[2] != "init" {
 			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init\n\n%s", usage)

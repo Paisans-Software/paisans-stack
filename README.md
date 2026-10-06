@@ -660,6 +660,24 @@ of existing on exactly one host. But minting one is a privileged mutation that
 belongs to a human — the toolkit records the value after the fact and must not
 automate the approval away.
 
+**Pasted and captured secrets go in through a pipe.** `paisans secrets set
+<dotted.key>` reads the value from stdin, writes it into `secrets.enc.yaml`
+re-encrypted to the recipients in `.sops.yaml`, and prints only `set <key>`:
+
+```
+security find-generic-password -s acme -w | paisans secrets set external.acme_dns_token
+```
+
+Every other way of getting a value into the file leaves a copy: an argument is
+in shell history and in `ps`, a prompt is in a scrollback buffer, and `sops
+secrets.enc.yaml` opens the whole decrypted file in an editor that may keep swap
+or backup files. It refuses a terminal on stdin for the same reason. It accepts
+a key that is already set (a rotation), a key `init` reports as owed, or any key
+under `external`; it refuses a generated key nobody created, because `init`
+creates those with the shapes their consumers require, and it refuses an unknown
+top level section, because a value written where nothing reads it looks
+delivered and is not.
+
 **A hand edited Garage key is refused as `garage-key-is-malformed`.** A
 generated S3 access key ID is the literal `GK` followed by exactly 24
 lowercase hex characters, and a generated secret key is exactly 64 lowercase

@@ -460,3 +460,14 @@ func wireGuardPrivateKey() (string, error) {
 	raw[31] |= 64
 	return base64.StdEncoding.EncodeToString(raw), nil
 }
+
+// OwedNames is the names Fill would report as owed, without generating
+// anything. `secrets set` uses it to accept exactly the keys an operator has
+// been told to supply.
+func OwedNames(cfg *config.Config, secrets *config.Secrets) []string {
+	var out []string
+	for _, o := range owed(cfg, secrets) {
+		out = append(out, o.Name)
+	}
+	return out
+}

@@ -13,8 +13,9 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 
 ## Run
 
-Four commands exist so far. Three touch nothing outside the working directory.
-`apply` is the exception and is the only code path here that reaches a machine.
+Six commands exist so far. `apply` and `storage init` are the only code paths
+here that reach a machine; the rest touch nothing outside the working
+directory.
 
 ```
 paisans validate --config examples/paisans.example.yaml
@@ -23,6 +24,8 @@ paisans render   --config examples/paisans.example.yaml \
                  --secrets secrets.enc.yaml --out ./out
 paisans apply    --site home-a            # shows what would change
 paisans apply    --site home-a --execute  # does it
+security find-generic-password -s acme -w \
+  | paisans secrets set external.acme_dns_token
 ```
 
 `validate` loads a declaration and prints every problem it finds, rather than
@@ -48,6 +51,19 @@ bearing:
 * **Without an age recipient it writes plaintext and says so loudly.** Refusing
   would leave an operator holding generated secrets that went nowhere, and a
   first look at the tool must not require a key.
+
+`secrets set <dotted.key>` writes one value read from stdin into the secrets
+file, re-encrypted to the recipients in `.sops.yaml`, and prints only `set
+<key>`. It strips one trailing newline, refuses an empty value, refuses a
+terminal on stdin, and accepts a key only if it is already set, owed by `init`
+(`external.acme_dns_token`, `oidc_clients.<app>.*`), or under `external`. It
+exists so a credential issued elsewhere never touches a terminal or an editor:
+an argument is in shell history and `ps`, a prompt is in scrollback, and `sops`
+opens the whole decrypted file in an editor.
+
+A decryption failure names both `SOPS_AGE_KEY_FILE` and `SOPS_AGE_KEY_CMD`; the
+embedded sops (v3.13.3, `age/keysource.go`) reads either, and the second lets
+the age key live in a keychain rather than a file.
 
 `render` validates, then writes per site artifacts under `--out`. It writes
 files and stops: pushing them to a host is a later slice.
