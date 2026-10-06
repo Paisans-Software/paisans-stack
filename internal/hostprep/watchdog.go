@@ -122,27 +122,6 @@ func planWatchdog(t Transport, profile Profile, site config.Site) (Section, erro
 		return out, nil
 	}
 
-	device, err := planWatchdogDevice(t, profile, mode)
-	if err != nil {
-		return out, err
-	}
-	out.add(device)
-
-	// Every mode that maps the device needs Patroni to be able to open it.
-	// Without this, Patroni's automatic mode carries on with no watchdog at
-	// all, and required stops it from starting.
-	access, err := profile.WatchdogAccess(t)
-	if err != nil {
-		return out, err
-	}
-	out.add(access)
-	return out, nil
-}
-
-// planWatchdogDevice is the part of planWatchdog that depends on the mode:
-// which device Patroni gets, and whether a module has to provide it.
-func planWatchdogDevice(t Transport, profile Profile, mode config.WatchdogMode) (Section, error) {
-	var out Section
 	facts, err := probeWatchdog(t)
 	if err != nil {
 		return out, err

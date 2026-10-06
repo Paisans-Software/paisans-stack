@@ -1,4 +1,0 @@
-for d in /dev/watchdog /dev/watchdog[0-9]*; do
-  [ -e "$d" ] || continue
-  printf 'mode %s %s\n' "$d" "$(stat -c %a "$d")"
-done

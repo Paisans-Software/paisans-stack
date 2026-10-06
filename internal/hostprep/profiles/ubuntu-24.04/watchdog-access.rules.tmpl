@@ -1,7 +1,0 @@
-# Written by paisans host prepare. Lets the Patroni container open the
-# watchdog, which Docker's device mapping gives it with the host's mode.
-#
-# Group rather than owner: the image's uid is the image's business, and Spilo
-# runs Patroni as a user whose supplementary groups include root (gid 0). The
-# group stays root; only the group's permission bits change.
-KERNEL=="watchdog*", MODE="0660"

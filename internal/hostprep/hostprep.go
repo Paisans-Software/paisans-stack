@@ -137,10 +137,6 @@ type Profile interface {
 	// WatchdogModule plans loading a kernel module now, unless loaded says
 	// it already is, and loading it at every boot.
 	WatchdogModule(t Transport, module string, loaded bool) (Section, error)
-	// WatchdogAccess plans making the watchdog openable by the Patroni
-	// container, now and at every boot: mode 0660 with the group left root,
-	// which a non root Patroni reaches through its supplementary group.
-	WatchdogAccess(t Transport) (Section, error)
 	// Firewall plans the given inbound rules, a default deny for everything
 	// else, and enabling the firewall. The SSH rule must be in place before
 	// the firewall is enabled, and enabling must not prompt.

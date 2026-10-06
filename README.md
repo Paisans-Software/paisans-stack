@@ -1362,50 +1362,11 @@ named on a command line does not apply the blacklist. This is the kind of
 difference a profile exists to hold: a distribution that does not blacklist
 `softdog` can use `modules-load.d`.
 
-**The device has to be openable by Patroni, not only present.** The kernel
-creates `/dev/watchdog` mode `0600`, owner and group root, and Docker's
-`devices:` mapping reproduces that mode inside the container. Spilo runs
-Patroni as `postgres`, not root, so on the first real host Patroni could not
-open the device, and in automatic mode it carried on with no watchdog at all
-rather than failing. So on every data site whose mode is not `off`, `host
-prepare` writes a udev rule, `/etc/udev/rules.d/60-paisans-watchdog.rules`:
-
-```
-KERNEL=="watchdog*", MODE="0660"
-```
-
-`KERNEL` matches the device name and `MODE` sets the node's permissions
-([udev(7)](https://manpages.ubuntu.com/manpages/noble/man7/udev.7.html));
-`watchdog*` covers both `/dev/watchdog` and the numbered `/dev/watchdogN`. It
-then reloads the rules and runs `chmod 0660` on the nodes that exist now. It
-does not use `udevadm trigger`: the numbered nodes are in the `watchdog`
-subsystem but the legacy `/dev/watchdog` is a `misc` device, so a trigger
-filtered on one subsystem would miss the node Patroni opens, and a `chmod` of
-the nodes that exist is exact and idempotent. The rule is what survives a
-reboot: the module unit's `modprobe` raises the add event it answers. The step
-is planned when the rule file is missing or differs, or when any node is not
-`0660`, and reported present otherwise.
-
-**Group, not owner.** The rule leaves the group root and opens it to the
-group; it does not hand the device to uid 101, which is the `postgres` user in
-the Spilo image in use. The image's uid is the image's business: a host rule
-naming it would couple every prepared host to one image and break silently on
-a rebuild that renumbered the user. What the rule relies on is narrower and
-was checked rather than assumed: `id postgres` inside the running Spilo
-container lists `0(root)` among its supplementary groups. A future image that
-drops that membership loses the device again, and the fix then belongs in the
-rendered compose file (a `group_add`), not in a host rule naming a uid.
-
-The rule lives in the Ubuntu profile, behind `WatchdogAccess`, rather than in
-the generic probe. Reading `/sys/class/watchdog` is the same everywhere; how a
-node's mode is made to stick is the device manager's business, and udev is
-not universal (Alpine, for one, uses `mdev` by default).
-
-**Provisional: this has run on one host.** That run is where the device mode
-above was found. The command is otherwise tested against a fake transport, and
-the probe output it parses (`ufw show added`, `systemctl show -p
-RuntimeWatchdogUSec`, `dpkg-query`, `stat -c %a`) is written from the tools'
-documented behaviour; read the next run rather than trusting it.
+**Provisional: none of this has run on a host yet.** The command is tested
+against a fake transport. The probe output it parses (`ufw show added`,
+`systemctl show -p RuntimeWatchdogUSec`, `dpkg-query`) is written from the
+tools' documented behaviour, not observed on Ubuntu 24.04, and the first real
+run should be read rather than trusted.
 
 ### Where WireGuard keys are generated
 

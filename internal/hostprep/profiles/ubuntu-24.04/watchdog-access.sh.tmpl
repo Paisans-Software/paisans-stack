@@ -1,5 +1,0 @@
-udevadm control --reload
-for d in /dev/watchdog /dev/watchdog[0-9]*; do
-  [ -e "$d" ] || continue
-  chmod 0660 "$d"
-done
