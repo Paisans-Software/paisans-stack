@@ -152,5 +152,5 @@ func verifyMAC(tree *sops.Tree, key []byte, cipher sops.Cipher, computed string)
 // to find a key is the ordinary case for a new admin, and "0 successful groups
 // required, got 0" tells them nothing they can act on.
 func decorateKeyError(err error) error {
-	return fmt.Errorf("%w\nNo age identity could decrypt this file. Point SOPS_AGE_KEY_FILE at your private key, and check that your public key is a recipient in .sops.yaml. If it was added recently, someone has to run `sops updatekeys` on the file", err)
+	return fmt.Errorf("%w\nNo age identity could decrypt this file. Point SOPS_AGE_KEY_FILE at your private key, or set SOPS_AGE_KEY_CMD to a command that prints it (a keychain lookup, say, so the key is never a file), and check that your public key is a recipient in .sops.yaml. If it was added recently, someone has to run `sops updatekeys` on the file", err)
 }
