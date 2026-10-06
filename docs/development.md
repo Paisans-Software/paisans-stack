@@ -161,6 +161,19 @@ still gates the database bootstrap. `ps` output is read in both shapes Compose
 has printed: one JSON object per line (current, `cmd/formatter/container.go`)
 and one JSON array (older v2 releases, `cmd/formatter/formatter.go`).
 
+**A pull onto a nearly full disk is refused before anything is written.** On
+the first real host (10 GB root disk) the deployed stacks left 1.8 GB free,
+and an Mbin upgrade pulls a 1.4 GB image beside the old one. `Build` probes
+every rendered image with `docker image inspect` in one loop that prints
+`present <id> <ref>` or `absent <ref>` per image; an output missing any image
+is an error rather than "present", so a garbled probe cannot skip the check.
+When a recreated stack names an absent image, `Build` reads Docker's data root
+and its free space, and `Plan.Disk` carries the numbers; the dry run prints
+them as `check disk:`, and `Execute` refuses first, before the pending record.
+The default is 3 GiB, `apply --min-free <size>` overrides it for one run, and
+the refusal quotes `docker system df`. README.md "`apply` checks free space
+before it pulls" has the rejected alternatives.
+
 **Files are recorded as soon as they land.** The manifest is written right
 after the files, and again at the end, not only on success. A manifest written
 only on success made every file of a failed first apply look like somebody

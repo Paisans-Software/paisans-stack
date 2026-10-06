@@ -43,6 +43,13 @@ type fakeHost struct {
 	ps map[string]string
 	// logs is what `docker compose logs` prints, by service.
 	logs map[string]string
+	// absent names images the host does not have. Every other image is
+	// present, so a test that is not about pulls never meets the disk check.
+	absent map[string]bool
+	// free is what `df` reports available on Docker's data root, in bytes.
+	free int64
+	// reclaimable is what `docker system df` prints.
+	reclaimable string
 }
 
 func newHost() *fakeHost { return &fakeHost{files: map[string]string{}, leader: "home-a"} }
@@ -64,6 +71,18 @@ func (h *fakeHost) Run(command string) (string, error) {
 	h.commands = append(h.commands, command)
 	if h.fail != "" && strings.Contains(command, h.fail) {
 		return "refused by the fake host", fmt.Errorf("exit status 1")
+	}
+	if strings.Contains(command, "docker image inspect") {
+		return h.imageProbe(command), nil
+	}
+	if strings.Contains(command, "docker info --format") {
+		return "/var/lib/docker\n", nil
+	}
+	if strings.HasPrefix(command, "df -B1 --output=avail ") {
+		return fmt.Sprintf("       Avail\n%d\n", h.free), nil
+	}
+	if strings.HasPrefix(command, "docker system df") {
+		return h.reclaimable, nil
 	}
 	if strings.Contains(command, ":8008/cluster") {
 		if h.leader == "" {
@@ -109,6 +128,23 @@ func (h *fakeHost) Run(command string) (string, error) {
 		return "\n", nil
 	}
 	return "", nil
+}
+
+// imageProbe answers the loop apply sends to ask which images are present:
+// each quoted reference between `for r in` and `; do`.
+func (h *fakeHost) imageProbe(command string) string {
+	list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")
+	var b strings.Builder
+	for _, quoted := range strings.Fields(list) {
+		ref := strings.Trim(quoted, "'")
+		if h.absent[ref] {
+			fmt.Fprintf(&b, "absent %s\n", ref)
+			continue
+		}
+		digest := sha256.Sum256([]byte(ref))
+		fmt.Fprintf(&b, "present sha256:%s %s\n", hex.EncodeToString(digest[:]), ref)
+	}
+	return b.String()
 }
 
 func (h *fakeHost) ReadFile(path string) (string, bool, error) {
@@ -1481,5 +1517,110 @@ func TestComposePsOutputIsReadInBothShapes(t *testing.T) {
 	}
 	if _, err := apply.ParseContainers("not json"); err == nil {
 		t.Error("unreadable output was accepted")
+	}
+}
+
+// talkImage is the image the fixture pins for the Mbin app.
+const talkImage = "ghcr.io/example-org/mbin:v1.10.1-fork"
+
+// A stack about to pull an image onto a host short of space is refused before
+// anything is written, and the refusal carries the numbers and what could be
+// reclaimed. A pull that fills the disk fails part way, with the old
+// containers already stopped.
+func TestAPullOntoAFullDiskIsRefused(t *testing.T) {
+	host := newHost()
+	host.absent = map[string]bool{talkImage: true}
+	host.free = 1932735283 // 1.8 GiB, what the first real host had left
+	host.reclaimable = "Images: 1.4GB (31%) reclaimable of 4.5GB\nContainers: 0B (0%) reclaimable of 12MB\n"
+
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Disk == nil || !p.Disk.Short() {
+		t.Fatalf("a pull onto 1.8 GiB free is not flagged: %+v", p.Disk)
+	}
+	if len(p.Disk.Pulls) != 1 || p.Disk.Pulls[0] != talkImage {
+		t.Errorf("pulls are %v, want only %s", p.Disk.Pulls, talkImage)
+	}
+	line := p.Disk.Describe()
+	for _, want := range []string{"1.8 GiB free on /var/lib/docker", "3.0 GiB required", talkImage, "refuses"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the plan line does not say %q: %s", want, line)
+		}
+	}
+
+	host.commands = nil
+	err = apply.Execute(p, host)
+	if err == nil {
+		t.Fatal("an apply pulled onto a disk without room for it")
+	}
+	for _, want := range []string{"1.8 GiB free", "at least 3.0 GiB", "Images: 1.4GB (31%) reclaimable of 4.5GB", "--min-free"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %q:\n%v", want, err)
+		}
+	}
+	if len(host.commands) != 0 || len(host.files) != 0 {
+		t.Errorf("a refused apply still ran %v or wrote %d file(s)", host.commands, len(host.files))
+	}
+}
+
+// --min-free lowers the threshold for one run, for an operator who knows the
+// pull fits.
+func TestMinFreeLowersTheThreshold(t *testing.T) {
+	host := newHost()
+	host.absent = map[string]bool{talkImage: true}
+	host.free = 1932735283
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.MinFree(1<<30))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Disk == nil || p.Disk.Short() {
+		t.Fatalf("1.8 GiB free against --min-free 1G is flagged: %+v", p.Disk)
+	}
+	if host.ran("docker system df") {
+		t.Error("what is reclaimable was read although nothing is short")
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Free space is only asked about when something will be pulled: an image
+// the host already has costs nothing, and a restart pulls nothing.
+func TestNoPullAsksNothingAboutDisk(t *testing.T) {
+	host := newHost()
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Disk != nil || host.ran("docker info") || host.ran("df -B1") {
+		t.Errorf("a plan pulling nothing checked the disk: %+v", p.Disk)
+	}
+}
+
+// An image probe that does not answer for every image is an error, not a
+// reason to assume the image is there and skip the check.
+func TestAnUnreadableImageProbeIsAnError(t *testing.T) {
+	host := newHost()
+	host.fail = "docker image inspect"
+	if _, err := apply.Build("home-a", plan(t), acmeModule(t), host); err == nil {
+		t.Error("a failed image probe was read as every image present")
+	}
+}
+
+func TestParseSize(t *testing.T) {
+	for in, want := range map[string]int64{
+		"2G": 2 << 30, "2GiB": 2 << 30, "2GB": 2 << 30, "1.5G": 3 << 29, "500M": 500 << 20, "1024": 1024, "1T": 1 << 40,
+	} {
+		got, err := apply.ParseSize(in)
+		if err != nil || got != want {
+			t.Errorf("ParseSize(%q) = %d, %v; want %d", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "two", "-1G", "G"} {
+		if _, err := apply.ParseSize(in); err == nil {
+			t.Errorf("ParseSize(%q) was accepted", in)
+		}
 	}
 }

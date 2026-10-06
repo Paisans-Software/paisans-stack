@@ -1606,6 +1606,38 @@ keep trying forever without telling anyone. Treating a timeout as a warning was
 rejected for the same reason the other gates refuse rather than warn: an apply
 that reports success over a broken stack is how this was found.
 
+### `apply` checks free space before it pulls
+
+A small host fills up with images. The first real host had a 10 GB root disk,
+and with the infrastructure stack and Mbin deployed it was 81% used with 1.8 GB
+free; one Mbin application image is about 1.4 GB, and an upgrade pulls the new
+one while the old one is still on disk. A pull that runs out of space fails
+part way through `docker compose up -d`, after the old containers have
+stopped, and a full disk takes the database and every log with it.
+
+So `Build` asks the host which of the site's rendered images it already has
+(`docker image inspect`, one round trip for all of them). When a stack that
+will be recreated names one it does not have, the action will pull it, and
+`apply` reads the free space on Docker's data root (`docker info --format
+'{{.DockerRootDir}}'`, then `df -B1 --output=avail`). Below the threshold,
+`apply` refuses before writing anything, says how much is free and how much it
+needs, quotes what `docker system df` says is reclaimable, and names
+`--min-free`. The dry run shows the same numbers as a `check disk:` line. A
+`restart` pulls nothing and is not checked, and nor is a plan that moves no
+stack.
+
+The threshold is 3 GiB, one Mbin image and room beside it, and `apply
+--min-free <size>` (Eg: `2G`; K, M, G and T are binary, as `df -h` means them)
+changes it for one run, for an operator who knows the pull fits.
+
+**Estimating the pull's size was rejected.** A registry's manifest gives the
+compressed size of each layer, not what it unpacks to, and layers already on
+the host are shared, so an estimate would be wrong in both directions and need
+registry credentials from the host. A fixed floor is crude and is right about
+the case that matters: a small disk nearly full. **Warning instead of
+refusing was rejected** for the reason every other gate refuses: the failure
+it warns of happens with the old stack already stopped.
+
 ### `site add` — the gateway and witness
 
 The straightforward case, because the VM has a stable address and is the one
