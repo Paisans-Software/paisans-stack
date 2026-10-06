@@ -148,8 +148,10 @@ func TestFillMatchesEachKindsNeeds(t *testing.T) {
 	if _, ok := secrets.Apps["docs"]["rabbitmq_password"]; ok {
 		t.Error("outline was given a broker password for a broker it does not run")
 	}
-	if key, _ := secrets.Apps["auth"]["encryption_key"].(string); len(key) < 16 {
-		t.Errorf("pocket-id needs an encryption key of at least 16 bytes, got %d", len(key))
+	for _, name := range []string{"encryption_key", "static_api_key"} {
+		if key, _ := secrets.Apps["auth"][name].(string); len(key) < 16 {
+			t.Errorf("pocket-id needs a %s of at least 16 characters, got %d", name, len(key))
+		}
 	}
 }
 

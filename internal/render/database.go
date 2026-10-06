@@ -65,6 +65,10 @@ var requiredAppSecrets = map[config.Kind][]struct{ Key, Why string }{
 	config.KindPocketID: {
 		// env_config.go:167-169 at tag v2.14.0.
 		{"encryption_key", "Pocket ID refuses to start without an ENCRYPTION_KEY of at least 16 bytes"},
+		// Not needed to start, but without it the toolkit cannot create an
+		// administrator or a client, and Pocket ID deletes the synthetic
+		// user an earlier key created (apikey/service.go:31-36).
+		{"static_api_key", "it is the only credential `paisans app admin create` and `paisans oidc client create` can reach Pocket ID's API with"},
 	},
 }
 

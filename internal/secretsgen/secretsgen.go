@@ -222,7 +222,14 @@ func appSecretKeys(app config.App) []string {
 		// v2.14.0). A generated password is 32 random bytes, base64 encoded.
 		// It encrypts stored secrets, so like every generated secret it is
 		// never replaced once set.
-		keys = append(keys, "encryption_key")
+		//
+		// static_api_key is how this toolkit administers Pocket ID without a
+		// browser: STATIC_API_KEY authenticates the X-API-Key header as a
+		// synthetic administrator (apikey/service.go:156-163 and :221-259,
+		// middleware/api_key_auth.go:38) and must be at least 16 characters
+		// (env_config.go:182-184). README, "The toolkit administers Pocket ID
+		// through its static API key", says why it is generated here.
+		keys = append(keys, "encryption_key", "static_api_key")
 	}
 	if app.Kind == config.KindSynapse {
 		// Three, because the homeserver no longer authenticates anyone and

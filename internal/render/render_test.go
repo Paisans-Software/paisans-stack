@@ -493,16 +493,21 @@ func TestPocketIDTrustsTheMeshSubnetOnly(t *testing.T) {
 
 // A Pocket ID without its encryption key exits on the host after apply has
 // moved, so render refuses first and says how to fix it.
+//
+// The static API key is held to the same rule: without it Pocket ID starts,
+// but nothing in this toolkit can administer it.
 func TestPocketIDWithoutAnEncryptionKeyIsRefused(t *testing.T) {
-	secrets := fixtureSecrets(t)
-	delete(secrets.Apps["auth"], "encryption_key")
-	_, err := render.Build(fixture(t), secrets)
-	if err == nil {
-		t.Fatal("rendered a Pocket ID that cannot start")
-	}
-	for _, want := range []string{"apps.auth.encryption_key", "paisans init"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal does not mention %q: %v", want, err)
+	for _, key := range []string{"encryption_key", "static_api_key"} {
+		secrets := fixtureSecrets(t)
+		delete(secrets.Apps["auth"], key)
+		_, err := render.Build(fixture(t), secrets)
+		if err == nil {
+			t.Fatalf("rendered a Pocket ID without %s", key)
+		}
+		for _, want := range []string{"apps.auth." + key, "paisans init"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal does not mention %q: %v", want, err)
+			}
 		}
 	}
 }

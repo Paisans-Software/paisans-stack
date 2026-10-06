@@ -8,7 +8,7 @@
     },
     {
       "path": "srv/auth/.env",
-      "sha256": "d309372bdc980ace092e6305dbf004157518da749aed9481e19133c8f8adbc6c",
+      "sha256": "fa1b191407efac9980a965e1f699d1dd2394e01d932f2a44204ce5e1c14453a8",
       "mode": "0600"
     },
     {
