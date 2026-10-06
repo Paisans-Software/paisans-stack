@@ -2168,3 +2168,13 @@ func TestPatroniOwnsItsWatchdogNode(t *testing.T) {
 		t.Errorf("Patroni's container does not take ownership of its watchdog node:\n%s", compose)
 	}
 }
+
+// Mbin's app container starts only if its Mercure configuration loads. The
+// 1.13.3 image's Caddyfile uses directives its Mercure module accepts only in
+// compatibility mode, and on the first real host the app restarted forever.
+func TestMbinOptsMercureIntoCompatibilityMode(t *testing.T) {
+	compose := planFiles(build(t))["home-a/srv/talk/compose.yaml"]
+	if !strings.Contains(compose, `MERCURE_EXTRA_DIRECTIVES: "protocol_version_compatibility 8"`) {
+		t.Errorf("Mbin's app does not opt Mercure into compatibility mode:\n%s", compose)
+	}
+}

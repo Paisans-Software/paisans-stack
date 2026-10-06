@@ -55,6 +55,15 @@ services:
       # here is the one the gateway routes to instead.
       SERVER_NAME: ":{{ .App.Port }}"
       CADDY_GLOBAL_OPTIONS: "auto_https off"
+      # The image's Caddyfile configures Mercure with publisher_jwt and
+      # subscriber_jwt, which the Mercure module in 1.13.3-paisans accepts only
+      # in compatibility mode: without this the app's Caddy refuses its own
+      # configuration and the container restarts forever, which is what the
+      # first real host did. The Caddyfile reads this variable inside its
+      # mercure block (docker/Caddyfile, "Extra directives", at the fork's tag
+      # v1.13.3+paisans). Moving to an issuer block is a change to the image,
+      # not to this file.
+      MERCURE_EXTRA_DIRECTIVES: "protocol_version_compatibility 8"
     # The mesh address only. Docker's own iptables rules bypass a host
     # firewall, so a port published on every interface of a host with a
     # public address is reachable from the internet whatever ufw says. The
