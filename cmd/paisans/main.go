@@ -40,6 +40,7 @@ Usage:
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
+  paisans secrets set <dotted.key> [--config paisans.yaml] [--secrets secrets.enc.yaml] < value
 
 Commands:
   validate   Load the configuration and report every problem found.
@@ -58,6 +59,9 @@ Commands:
              provider named by acme.provider. Creates only what is missing,
              never updates or deletes, and refuses if any record conflicts.
              Writes nothing without --execute.
+  secrets    set: read one value from stdin and write it into the encrypted
+             secrets file, printing only its name. For credentials issued
+             elsewhere, so they never touch a terminal or an editor.
 
 host prepare, apply and storage init are the only commands that reach a host.
 Each reads it to plan, and changes it only with --execute. dns init reaches no
@@ -86,6 +90,8 @@ func main() {
 			os.Exit(2)
 		}
 		err = runHostPrepare(os.Args[3:])
+	case "secrets":
+		err = runSecrets(os.Args[2:])
 	case "storage":
 		if len(os.Args) < 3 || os.Args[2] != "init" {
 			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init\n\n%s", usage)
@@ -253,6 +259,9 @@ func runRender(args []string) error {
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
 	}
+	if err := requireACMEToken(cfg, secrets, cfg.SiteNames()); err != nil {
+		return err
+	}
 
 	plan, err := render.Build(cfg, secrets)
 	if err != nil {
@@ -323,6 +332,9 @@ func runApply(args []string) error {
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
 	}
+	if err := requireACMEToken(cfg, secrets, []string{*site}); err != nil {
+		return err
+	}
 
 	rendered, err := render.Build(cfg, secrets)
 	if err != nil {
@@ -334,10 +346,16 @@ func runApply(args []string) error {
 	if err != nil {
 		return err
 	}
+	databases, err := apply.Databases(cfg, secrets, *site)
+	if err != nil {
+		return err
+	}
+	plan.WithDatabases(databases)
+	plan.Progress = os.Stdout
 	printPlan(plan)
 
 	if !*execute {
-		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 {
+		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone {
 			return nil
 		}
 		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
@@ -511,12 +529,23 @@ func printPlan(plan *apply.Plan) {
 	if unchanged > 0 {
 		fmt.Fprintf(os.Stdout, "  %-9s %d file(s)\n", "unchanged", unchanged)
 	}
+	if plan.WireGuard != apply.WireGuardNone {
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "mesh", plan.WireGuard.Describe())
+	}
+	bootstrapped := plan.Bootstrap == nil
 	for _, action := range plan.Actions {
+		if action.Stack != "infra" && !bootstrapped {
+			printBootstrap(plan.Bootstrap)
+			bootstrapped = true
+		}
 		verb := "restart"
 		if action.Recreate {
 			verb = "recreate"
 		}
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n      %s\n", verb, action.Stack, action.Reason)
+	}
+	if !bootstrapped {
+		printBootstrap(plan.Bootstrap)
 	}
 	if plan.GatewayChanging && plan.ACMEModule != "" {
 		fmt.Fprintf(os.Stdout, "  %-9s the gateway's Caddy carries %s, before anything moves\n", "check", plan.ACMEModule)
@@ -610,4 +639,13 @@ func runDNSInit(args []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "\ncreated %d record(s) at %s, each read back\n", len(plan.Creates()), plan.Provider)
 	return nil
+}
+
+// printBootstrap shows the database work where it happens: after the
+// infrastructure stack and before any app stack.
+func printBootstrap(b *apply.Bootstrap) {
+	fmt.Fprintf(os.Stdout, "  %-9s for a Patroni primary at %s, up to 3 minutes; a replica leaves the rest to the leader's site\n", "wait", b.Patroni)
+	for _, db := range b.Databases {
+		fmt.Fprintf(os.Stdout, "  %-9s database %s: role %s with its password, database owned by it, creating only what is missing\n", "bootstrap", db.App, db.Role)
+	}
 }

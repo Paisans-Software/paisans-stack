@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -99,6 +100,75 @@ type Plan struct {
 	// ACMEModule is the Caddy DNS module this deployment's gateway must have,
 	// as `caddy list-modules` prints it. Empty when this site runs no gateway.
 	ACMEModule string
+	// WireGuard is what wg0 needs before any stack moves. Every service binds
+	// the site's mesh address, so a stack started before the interface exists
+	// fails to bind, and a container that cannot bind is restarted in a loop
+	// by Docker rather than reported to the apply.
+	WireGuard WireGuardStep
+	// Bootstrap is the per app database work, nil when this site does none.
+	// It runs after the infrastructure stack and before any app stack, and a
+	// failure stops the apply there. See WithDatabases.
+	Bootstrap *Bootstrap
+	// Progress receives what Execute decided along the way that is not an
+	// error, such as a replica leaving the database work to the leader. Nil
+	// discards it.
+	Progress io.Writer
+}
+
+func (p *Plan) say(format string, args ...any) {
+	if p.Progress != nil {
+		fmt.Fprintf(p.Progress, format, args...)
+	}
+}
+
+// WireGuardStep is the one thing an apply does to wg0.
+type WireGuardStep int
+
+const (
+	// WireGuardNone means the interface is up and its file did not change.
+	WireGuardNone WireGuardStep = iota
+	// WireGuardStart enables the unit and starts it: a first apply, or an
+	// interface found down.
+	WireGuardStart
+	// WireGuardSync hands the running interface its new peers without taking
+	// it down, which is the ordinary update: a site joined or left.
+	WireGuardSync
+	// WireGuardRestart takes the interface down and up again. Only a change to
+	// a line that wg-quick itself applies needs it, because `wg syncconf`
+	// never sees those lines.
+	WireGuardRestart
+)
+
+// Command is what the step runs on the host, empty for WireGuardNone.
+func (w WireGuardStep) Command() string {
+	switch w {
+	case WireGuardStart:
+		return "systemctl enable --now " + wireguardUnit
+	case WireGuardSync:
+		// Through a temporary file rather than a pipe. /bin/sh has no
+		// pipefail, so a `wg-quick strip` that failed would hand syncconf an
+		// empty configuration, and syncconf removes every peer it is not
+		// given: one failed command would cut this site off the mesh.
+		return "set -e; f=$(mktemp); trap 'rm -f \"$f\"' EXIT; wg-quick strip wg0 > \"$f\"; wg syncconf wg0 \"$f\""
+	case WireGuardRestart:
+		return "systemctl restart " + wireguardUnit
+	default:
+		return ""
+	}
+}
+
+// Describe says what the step does, for a plan.
+func (w WireGuardStep) Describe() string {
+	switch w {
+	case WireGuardStart:
+		return "start wg0 and enable it at boot, before any stack moves"
+	case WireGuardSync:
+		return "give wg0 its new peers in place, without taking the mesh down"
+	case WireGuardRestart:
+		return "restart wg0, because a line only wg-quick applies changed"
+	default:
+		return ""
+	}
 }
 
 // Conflicts returns the files somebody edited on the host.
@@ -146,6 +216,20 @@ const (
 	gatewayCompose   = "srv/infra/compose.yaml"
 )
 
+// wireguardConfig is the mesh interface's file, relative to a site's root, and
+// wireguardUnit the systemd unit wg-quick ships to bring it up from it.
+const (
+	wireguardConfig = "etc/wireguard/wg0.conf"
+	wireguardUnit   = "wg-quick@wg0"
+)
+
+// wireguardProbe asks whether wg0 exists. It reads the kernel rather than the
+// unit, because an interface somebody brought up with a bare `wg-quick up` is
+// up for every service binding to it, and `systemctl enable --now` on top of
+// it would fail on an interface that already exists. It prints rather than
+// exits non zero, so that "down" cannot be confused with ssh failing.
+const wireguardProbe = "if ip link show wg0 >/dev/null 2>&1; then echo up; else echo down; fi"
+
 // Build decides what one site's apply would do, without doing any of it.
 //
 // The order matters and is the whole design. Every file is compared against
@@ -169,6 +253,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 	// signal, regardless of whether it changed: an image only apply changes no
 	// routing file at all.
 	var isGateway, routingChanged, gatewayComposeChanged bool
+	// The mesh file's fate, and what was on the host before, which decides
+	// whether its change can be applied in place.
+	var wireguard *Change
+	var wireguardBefore string
 	for _, file := range plan.Files {
 		if !strings.HasPrefix(file.Path, prefix) {
 			continue
@@ -210,6 +298,12 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 			change.Kind = Update
 		}
 
+		if rel == wireguardConfig {
+			copied := change
+			wireguard = &copied
+			wireguardBefore = current
+		}
+
 		out.Changes = append(out.Changes, change)
 		if change.Kind == Create || change.Kind == Update {
 			if change.Stack != "" {
@@ -221,15 +315,36 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 			if isRouting(rel) {
 				routingChanged = true
 			}
-			if rel == gatewayCompose {
+			// The compose file moves the image; an environment file under
+			// infra moves what the replaced container starts with. Both
+			// replace the gateway, so both need the gates.
+			if rel == gatewayCompose || (change.Stack == infraStack && isEnvironment(rel)) {
 				gatewayComposeChanged = true
 			}
 		}
 	}
 
-	for _, stack := range sortedKeys(stacks) {
+	resumed, err := readPending(t)
+	if err != nil {
+		return nil, err
+	}
+	resumedStacks := map[string]bool{}
+	for _, action := range resumed.Actions {
+		if !stacks[action.Stack] {
+			resumedStacks[action.Stack] = true
+		}
+		stacks[action.Stack] = true
+		if action.Recreate {
+			envChanged[action.Stack] = true
+		}
+	}
+
+	for _, stack := range stackOrder(stacks) {
 		action := Action{Stack: stack}
-		if envChanged[stack] {
+		if resumedStacks[stack] {
+			action.Recreate = envChanged[stack]
+			action.Reason = "a previous apply wrote this stack's files and stopped before acting on them, so the action it owed is taken now"
+		} else if envChanged[stack] {
 			action.Recreate = true
 			action.Reason = "an environment or compose file changed, and Compose passes environment at start, so a running container cannot be told about a new value"
 		} else {
@@ -240,13 +355,71 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
 
-	out.GatewayReload = isGateway && routingChanged
-	out.GatewayChanging = isGateway && (routingChanged || gatewayComposeChanged)
+	out.GatewayReload = isGateway && (routingChanged || resumed.GatewayReload)
+	out.GatewayChanging = isGateway && (routingChanged || gatewayComposeChanged || resumed.GatewayChanging)
 	if out.GatewayChanging {
 		out.ACMEModule = acmeModule
 	}
 
+	if wireguard != nil {
+		step, err := wireguardStep(*wireguard, wireguardBefore, t)
+		if err != nil {
+			return nil, err
+		}
+		out.WireGuard = step
+	}
+
 	return out, nil
+}
+
+// wireguardStep decides what wg0 needs. Reading the host here is a probe and
+// changes nothing, so a dry run can show it.
+func wireguardStep(change Change, before string, t Transport) (WireGuardStep, error) {
+	switch change.Kind {
+	case Create:
+		return WireGuardStart, nil
+	case Conflict:
+		// Execute refuses before any step runs.
+		return WireGuardNone, nil
+	}
+	out, err := t.Run(wireguardProbe)
+	if err != nil {
+		return WireGuardNone, fmt.Errorf("asking whether wg0 is up: %w", err)
+	}
+	if strings.TrimSpace(out) != "up" {
+		return WireGuardStart, nil
+	}
+	if change.Kind == Unchanged {
+		return WireGuardNone, nil
+	}
+	if wgQuickLines(before) != wgQuickLines(change.content) {
+		return WireGuardRestart, nil
+	}
+	return WireGuardSync, nil
+}
+
+// wgQuickOnly are the [Interface] keys wg-quick applies itself and `wg-quick
+// strip` removes, so `wg syncconf` never sees a change to one
+// (wireguard-tools, src/wg-quick/linux.bash, parse_options).
+var wgQuickOnly = map[string]bool{
+	"address": true, "dns": true, "mtu": true, "table": true, "saveconfig": true,
+	"preup": true, "postup": true, "predown": true, "postdown": true,
+}
+
+// wgQuickLines returns the wg-quick only lines of a configuration, in order,
+// as one comparable string.
+func wgQuickLines(content string) string {
+	var out []string
+	for _, line := range strings.Split(content, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		if wgQuickOnly[strings.ToLower(strings.TrimSpace(key))] {
+			out = append(out, strings.ToLower(strings.TrimSpace(key))+"="+strings.TrimSpace(value))
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // Execute carries out a plan. It refuses outright if anything conflicts,
@@ -262,10 +435,32 @@ func Execute(plan *Plan, t Transport) error {
 			plan.Site, len(conflicts), strings.Join(names, "\n  "))
 	}
 
+	// Record what this apply owes before writing anything. The manifest is
+	// written last, so a stop between here and there leaves files on the host
+	// that already match the render: without this record the next apply would
+	// see nothing to do, and an app stack held back by a failed gate would
+	// stay down until something unrelated changed it.
+	owes := len(plan.Actions) > 0 || plan.GatewayChanging
+	if owes {
+		if err := writePending(plan, t); err != nil {
+			return err
+		}
+	}
+
 	writes := plan.Writes()
 	for _, change := range writes {
 		if err := t.WriteFile(change.Path, change.content, change.Mode); err != nil {
 			return err
+		}
+	}
+
+	// The mesh comes up before anything that binds to it. It runs before the
+	// gateway gates as well, which need no mesh themselves, so that the one
+	// rule is simple: no container is started or checked on a site whose
+	// interface is down.
+	if command := plan.WireGuard.Command(); command != "" {
+		if out, err := t.Run(command); err != nil {
+			return fmt.Errorf("%s: bringing up wg0, so nothing that binds the mesh address was started:\n%s", plan.Site, out)
 		}
 	}
 
@@ -336,7 +531,17 @@ func Execute(plan *Plan, t Transport) error {
 		}
 	}
 
+	// App stacks start only after their databases exist. An app started
+	// first connects, fails to authenticate as a role nobody created, and is
+	// restarted in a loop by Docker while the apply reports success.
+	bootstrapped := plan.Bootstrap == nil
 	for _, action := range plan.Actions {
+		if action.Stack != infraStack && !bootstrapped {
+			if err := runBootstrap(plan, t); err != nil {
+				return err
+			}
+			bootstrapped = true
+		}
 		command := fmt.Sprintf("docker compose -f /srv/%s/compose.yaml restart", action.Stack)
 		if action.Recreate {
 			command = fmt.Sprintf("docker compose -f /srv/%s/compose.yaml up -d", action.Stack)
@@ -346,7 +551,83 @@ func Execute(plan *Plan, t Transport) error {
 		}
 	}
 
-	return writeManifest(plan, t)
+	if !bootstrapped {
+		if err := runBootstrap(plan, t); err != nil {
+			return err
+		}
+	}
+
+	if err := writeManifest(plan, t); err != nil {
+		return err
+	}
+	if owes {
+		if _, err := t.Run("rm -f " + shellQuote(pendingPath)); err != nil {
+			return fmt.Errorf("%s: everything was applied, but the record of owed actions could not be removed, so the next apply will repeat them: %w", plan.Site, err)
+		}
+	}
+	return nil
+}
+
+// pendingPath records what an apply has written but not yet acted on. It
+// exists only between the start of an Execute and its successful end.
+const pendingPath = "/srv/.paisans-pending.json"
+
+// pending is what one apply owes the host. It holds no file content and no
+// credential, only stack names and which gates to run.
+type pending struct {
+	Version         int             `json:"version"`
+	Actions         []pendingAction `json:"actions"`
+	GatewayChanging bool            `json:"gateway_changing,omitempty"`
+	GatewayReload   bool            `json:"gateway_reload,omitempty"`
+}
+
+type pendingAction struct {
+	Stack    string `json:"stack"`
+	Recreate bool   `json:"recreate,omitempty"`
+}
+
+func readPending(t Transport) (pending, error) {
+	content, found, err := t.ReadFile(pendingPath)
+	if err != nil || !found {
+		return pending{}, err
+	}
+	var p pending
+	if err := json.Unmarshal([]byte(content), &p); err != nil {
+		return pending{}, fmt.Errorf("%s is not readable: %w\nIt records actions a stopped apply still owes. Delete it and every stack will be acted on only when its files next change", pendingPath, err)
+	}
+	return p, nil
+}
+
+func writePending(plan *Plan, t Transport) error {
+	p := pending{Version: 1, GatewayChanging: plan.GatewayChanging, GatewayReload: plan.GatewayReload}
+	for _, action := range plan.Actions {
+		p.Actions = append(p.Actions, pendingAction{Stack: action.Stack, Recreate: action.Recreate})
+	}
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	return t.WriteFile(pendingPath, string(data)+"\n", 0o600)
+}
+
+// infraStack is the site's own infrastructure: etcd, Patroni, HAProxy, Garage
+// and the gateway. Every app stack depends on it.
+const infraStack = "infra"
+
+// stackOrder puts the infrastructure stack first and the rest in sorted
+// order. Sorting alone put "blog" and "docs" ahead of "infra", which started
+// applications before the database and proxy they connect to.
+func stackOrder(stacks map[string]bool) []string {
+	var out []string
+	if stacks[infraStack] {
+		out = append(out, infraStack)
+	}
+	for _, stack := range sortedKeys(stacks) {
+		if stack != infraStack {
+			out = append(out, stack)
+		}
+	}
+	return out
 }
 
 // readManifest returns what the last apply recorded, keyed by path relative to
@@ -405,15 +686,25 @@ func stackOf(rel string) string {
 
 // isEnvironment reports whether a change to this file needs the container
 // replaced rather than restarted.
+//
+// Any `*.env` counts, not only a file named `.env`: patroni.env and
+// caddy/caddy.env reach their containers through `env_file`, which Compose
+// reads when it creates a container, so a restart keeps the old values. Every
+// env_file the templates render ends in .env, which is what makes the suffix
+// a sufficient test; parsing each compose file for its env_file list was the
+// alternative, and it answers the same question with a YAML parser in the
+// path of every apply.
 func isEnvironment(rel string) bool {
 	base := rel[strings.LastIndex(rel, "/")+1:]
-	return base == ".env" || base == "compose.yaml"
+	return strings.HasSuffix(base, ".env") || base == "compose.yaml"
 }
 
 // isRouting reports whether a file is part of the assembled gateway
-// configuration.
+// configuration. An environment file beside the Caddyfile is not: a reload
+// rereads the Caddyfile and never the container's environment, so treating
+// caddy.env as routing reloaded a Caddy that still held the old DNS token.
 func isRouting(rel string) bool {
-	return strings.Contains(rel, "/caddy/")
+	return strings.Contains(rel, "/caddy/") && !isEnvironment(rel)
 }
 
 func sum(content string) string {

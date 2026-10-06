@@ -697,6 +697,31 @@ of existing on exactly one host. But minting one is a privileged mutation that
 belongs to a human — the toolkit records the value after the fact and must not
 automate the approval away.
 
+**Pasted and captured secrets go in through a pipe.** `paisans secrets set
+<dotted.key>` reads the value from stdin, writes it into `secrets.enc.yaml`
+re-encrypted to the recipients in `.sops.yaml`, and prints only `set <key>`:
+
+```
+security find-generic-password -s acme -w | paisans secrets set external.acme_dns_token
+```
+
+Every other way of getting a value into the file leaves a copy: an argument is
+in shell history and in `ps`, a prompt is in a scrollback buffer, and `sops
+secrets.enc.yaml` opens the whole decrypted file in an editor that may keep swap
+or backup files. It refuses a terminal on stdin for the same reason. It accepts
+a key that is already set (a rotation), a key `init` reports as owed, or any key
+under `external`; it refuses a generated key nobody created, because `init`
+creates those with the shapes their consumers require, and it refuses an unknown
+top level section, because a value written where nothing reads it looks
+delivered and is not.
+
+**A gateway without its DNS token is refused at `render` and `apply`.** `init`
+lists `external.acme_dns_token` as owed rather than refusing, because an
+install is assembled in steps. Rendering without it is different: the gateway's
+Caddy starts, loads its configuration, and fails every DNS-01 challenge, so no
+hostname gets a certificate and the apply reports success. The first person to
+find out would be a visitor.
+
 **A hand edited Garage key is refused as `garage-key-is-malformed`.** A
 generated S3 access key ID is the literal `GK` followed by exactly 24
 lowercase hex characters, and a generated secret key is exactly 64 lowercase
@@ -1383,6 +1408,86 @@ reconfigured and no address changes.
 
 Same principle as running the cluster at one node: build the final shape
 immediately, then grow it.
+
+### `apply` brings `wg0` up before anything binds to it
+
+Step 4 is `apply`'s job, and it runs after the files are written and before any
+container is started, checked or restarted. A stack started first fails to bind
+its mesh address, and Docker restarts it in a loop rather than reporting it, so
+the apply would claim success over a site where nothing listens.
+
+What it runs depends on what changed, and the narrower action wins here as it
+does for stacks:
+
+| `wg0.conf` | Interface | Action |
+|------------|-----------|--------|
+| new | any | `systemctl enable --now wg-quick@wg0` |
+| unchanged | down | the same, so a rebooted or hand stopped site recovers on the next apply |
+| unchanged | up | nothing |
+| changed peers | up | `wg syncconf` from `wg-quick strip`, in place |
+| changed `Address`, `MTU`, `PostUp` or another wg-quick only line | up | `systemctl restart wg-quick@wg0` |
+
+**A peer change is synced rather than restarted.** Restarting is simpler and
+always correct, but it takes the interface down, and on a data site that
+partitions etcd and Patroni for as long as it is down; with election timeouts
+measured in seconds, adding a site could start a failover on every existing one.
+`wg syncconf` changes peers without touching the interface. It cannot apply the
+lines wg-quick handles itself, because `wg-quick strip` removes them before `wg`
+sees the file, so a change to one of those is the one case that restarts.
+Nor does it add routes, which wg-quick does at start for each peer's
+`AllowedIPs`; that is safe here only because every peer's `AllowedIPs` sits
+inside the mesh subnet, which the interface's own `Address` already routes
+(wireguard-tools, `src/wg-quick/linux.bash`).
+
+"Up" is read from the kernel (`ip link show wg0`), not from the unit. An
+interface brought up by hand serves every service just as well, and starting the
+unit on top of it would fail on an interface that already exists.
+
+### `apply` creates each clustered app's role and database
+
+Step 6 needs something step 5 does not provide. Patroni creates its superuser,
+its replication user and an `admin` role from `patroni.env`, but nothing creates
+`talk` or `docs`, and an app started without its role fails to authenticate and
+is restarted in a loop. So on a site in `cluster.sites`, after the
+infrastructure stack and before the first app stack, `apply`:
+
+1. waits up to three minutes for Patroni's `GET /cluster` to name a running
+   leader;
+2. if the leader is another site, skips the rest and says which site to apply,
+   since a replica cannot create roles;
+3. otherwise sends one psql script on stdin to the Spilo container that, per
+   clustered app using Postgres, creates the role if it is missing, **sets its
+   password every time**, and creates the database owned by it if missing.
+
+A timeout or a psql failure stops the apply before any app stack starts, and
+the next apply resumes at the same place. It is a gate, not a warning: an app
+pointed at a role that does not exist has nothing to fall back on.
+
+**Setting the password every time is what makes rotation an addition.** The
+alternative, creating with a password once and never touching it again, means
+a changed `apps.<name>.database_password` renders a new `.env` the role does not
+accept, and rotation becomes a manual `ALTER ROLE` on the primary.
+
+**The SQL goes on stdin, never on a command line.** A command line is visible in
+`ps` to every user on the host and is quoted back in ssh errors. For the same
+reason the script switches off statement logging for its own session first:
+Spilo ships `log_statement = 'ddl'`, and `CREATE ROLE` and `ALTER ROLE` are DDL,
+so the server log would otherwise hold every password
+(zalando/spilo, `postgres-appliance/scripts/configure_spilo.py`).
+
+**It runs as `postgres` over the container's own socket**, which Spilo's
+`pg_hba` trusts (`local all all trust`, same file), so the toolkit passes no
+database credential to do it. `CREATE DATABASE` cannot run in a transaction or a
+`DO` block, so the conditional creates use psql's `\gexec`, which runs a
+generated statement at top level.
+
+**An app whose role would be `postgres`, `admin`, `standby` or `pg_*` is
+refused**, because the bootstrap would set that app's password on a role the
+cluster uses itself.
+
+`/cluster` is asked rather than `/primary` because it answers both questions:
+`/primary` returns the same 503 to a replica as to a node still running initdb,
+while `/cluster` names the leader (Patroni v4.1.0, `docs/rest_api.rst`).
 
 ### `site add` — the gateway and witness
 

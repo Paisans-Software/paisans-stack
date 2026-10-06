@@ -27,6 +27,8 @@ paisans host prepare --site home-a        # shows what a blank host lacks
 paisans apply    --site home-a            # shows what would change
 paisans apply    --site home-a --execute  # does it
 paisans dns init                          # shows which records it would create
+security find-generic-password -s acme -w \
+  | paisans secrets set external.acme_dns_token
 ```
 
 `validate` loads a declaration and prints every problem it finds, rather than
@@ -52,6 +54,24 @@ bearing:
 * **Without an age recipient it writes plaintext and says so loudly.** Refusing
   would leave an operator holding generated secrets that went nowhere, and a
   first look at the tool must not require a key.
+
+`secrets set <dotted.key>` writes one value read from stdin into the secrets
+file, re-encrypted to the recipients in `.sops.yaml`, and prints only `set
+<key>`. It strips one trailing newline, refuses an empty value, refuses a
+terminal on stdin, and accepts a key only if it is already set, owed by `init`
+(`external.acme_dns_token`, `oidc_clients.<app>.*`), or under `external`. It
+exists so a credential issued elsewhere never touches a terminal or an editor:
+an argument is in shell history and `ps`, a prompt is in scrollback, and `sops`
+opens the whole decrypted file in an editor.
+
+`render` and `apply` refuse a gateway site when `external.acme_dns_token` is
+empty. `init` lists it as owed, but rendering without it produced a Caddy that
+starts and then fails every DNS-01 challenge, which a visitor finds rather than
+the operator.
+
+A decryption failure names both `SOPS_AGE_KEY_FILE` and `SOPS_AGE_KEY_CMD`; the
+embedded sops (v3.13.3, `age/keysource.go`) reads either, and the second lets
+the age key live in a keychain rather than a file.
 
 `render` validates, then writes per site artifacts under `--out`. It writes
 files and stops: pushing them to a host is a later slice.
@@ -82,10 +102,35 @@ else's too, and is a conflict rather than something to adopt, which is the case
 on any host that was set up by hand before the toolkit existed.
 
 **The narrower action wins.** A changed bind mounted configuration file needs a
-restart at most, and the container keeps its identity. Only a changed `.env` or
-`compose.yaml` needs `up -d`, because Compose passes environment at start and a
-running container cannot be told about a new value. A recreate is an outage,
+restart at most, and the container keeps its identity. Only a changed `.env`, any
+other `*.env` handed over as an `env_file` (`patroni.env`, `caddy/caddy.env`),
+or `compose.yaml` needs `up -d`, because Compose passes environment at start and
+a running container cannot be told about a new value. `caddy.env` is not a
+routing file even though it sits beside the Caddyfile: a reload rereads the
+Caddyfile and never the environment, so a rotated DNS token arrives only by
+recreating the gateway, behind the same gates as an image change. A recreate is an outage,
 however brief, so it is not the default action for every change.
+
+**`wg0` is up before any container moves.** Every service binds the site's
+mesh address, so the mesh comes up right after the files are written and before
+the gateway checks and stack actions below. A first apply enables and starts
+`wg-quick@wg0`; a peer change is handed over with `wg syncconf` so the mesh
+stays up; a change to a line only wg-quick applies restarts it; and an
+unchanged file on a host whose interface is down starts it. A failure stops the
+apply there. `README.md` has the table under "`apply` brings `wg0` up before
+anything binds to it".
+
+**The infrastructure stack moves first, and app stacks only after their
+databases exist.** Sorted order alone started `blog` and `docs` before
+`infra`. Between the infrastructure stack and the first app stack, a site in
+`cluster.sites` waits for a Patroni primary and creates clustered apps' roles
+and databases; see "Every app has its own database credential" below.
+
+**A stopped apply resumes.** The manifest is written last, so files written
+before a gate stopped the apply already match the render, and the next apply
+would otherwise see nothing to do. `/srv/.paisans-pending.json` records the
+owed stack actions and gateway checks before the first write and is removed on
+success; `Build` folds it into the next plan.
 
 **The assembled gateway configuration is validated before any reload, and a
 failure stops the reload.** It is built from per app snippets, so a wrong
@@ -347,9 +392,17 @@ one is missing. WriteFreely is the exception and needs none: it has never
 supported Postgres and runs on a SQLite file in its own data directory, which
 is what keeps one blog from adding a second database engine to operate.
 
-Creating those roles in Postgres is not implemented. Nothing in this slice
-touches a running database, so the credentials are rendered and the roles that
-use them are a job for `apply`.
+`apply` creates the roles and databases for clustered apps, on a site in
+`cluster.sites`, after the infrastructure stack and before any app stack. It
+waits up to three minutes for Patroni's `/cluster` to name a running leader,
+then sends one psql script on stdin to the Spilo container: create the role if
+missing, set its password every time (so rotation is editing the secret and
+applying), create the database owned by it if missing. A replica skips the work
+and says which site holds the leader. A timeout or a psql failure stops the
+apply before any app starts, and the next apply resumes there. `README.md` has
+the reasoning under "`apply` creates each clustered app's role and database".
+A pinned app's own Postgres creates its role from the image's environment, as
+before.
 
 ## Things the code enforces that are easy to undo by accident
 
@@ -384,9 +437,10 @@ use them are a job for `apply`.
 ## What is not here yet
 
 No etcd, no preflight, and none of `site add`, `failover` or `backup`. `apply`
-pushes files and takes the narrowest action that makes them live; it does not
-bootstrap a site that has nothing on it, and it has never been run against a
-real host.
+pushes files, brings up `wg0`, creates clustered apps' roles and databases, and
+takes the narrowest action that makes the rest live. It has never been run
+against a real host, so every command it sends is reasoned from upstream source
+and documentation, not observed.
 
 Mbin's media reverse proxy, which this section used to list as missing, is
 rendered: `storage.media_hostname` becomes the gateway's `media.caddy`, and

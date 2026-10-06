@@ -3,9 +3,10 @@
 //
 // Everything here is staged and every stage is a gate that stops rather than
 // warning, because the blast radius lands on somebody else's stack. The order
-// is fixed: read what is on the host, refuse if anybody edited it, write, check
-// the assembled gateway configuration, and only then restart or recreate
-// anything.
+// is fixed: read what is on the host, refuse if anybody edited it, write, bring
+// up the mesh, check the assembled gateway configuration, act on the
+// infrastructure stack, create clustered apps' databases, and only then
+// restart or recreate any app.
 package apply
 
 import (
@@ -29,6 +30,10 @@ type Transport interface {
 	ReadFile(path string) (content string, found bool, err error)
 	// WriteFile writes content at path with mode, creating parent directories.
 	WriteFile(path string, content string, mode uint32) error
+	// RunInput is Run with stdin. It exists for input that must not appear
+	// in a command line, such as SQL carrying a password: a command line is
+	// visible in `ps` to every user on the host, and stdin is not.
+	RunInput(command, stdin string) (string, error)
 	// Describe names the destination, for messages.
 	Describe() string
 }
@@ -104,6 +109,24 @@ func (t SSHTransport) WriteFile(path, content string, mode uint32) error {
 		return fmt.Errorf("%s: writing %s: %w\n%s", t.Destination, path, err, out.String())
 	}
 	return nil
+}
+
+// RunInput runs a command with stdin, for the same reason WriteFile sends
+// content that way: what goes in carries credentials, and only the command
+// line is visible in the process table.
+func (t SSHTransport) RunInput(command, stdin string) (string, error) {
+	if t.Sudo {
+		command = "sudo sh -c " + shellQuote(command)
+	}
+	cmd := exec.Command("ssh", t.Destination, command)
+	cmd.Stdin = strings.NewReader(stdin)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		return out.String(), fmt.Errorf("%s: %s: %w\n%s", t.Destination, firstLine(command), err, out.String())
+	}
+	return out.String(), nil
 }
 
 func parentDir(path string) string {
