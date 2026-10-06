@@ -1362,11 +1362,50 @@ named on a command line does not apply the blacklist. This is the kind of
 difference a profile exists to hold: a distribution that does not blacklist
 `softdog` can use `modules-load.d`.
 
-**Provisional: none of this has run on a host yet.** The command is tested
-against a fake transport. The probe output it parses (`ufw show added`,
-`systemctl show -p RuntimeWatchdogUSec`, `dpkg-query`) is written from the
-tools' documented behaviour, not observed on Ubuntu 24.04, and the first real
-run should be read rather than trusted.
+**The device has to be openable by Patroni, not only present.** The kernel
+creates `/dev/watchdog` mode `0600`, owner and group root, and Docker's
+`devices:` mapping reproduces that mode inside the container. Spilo runs
+Patroni as `postgres`, not root, so on the first real host Patroni could not
+open the device, and in automatic mode it carried on with no watchdog at all
+rather than failing. So on every data site whose mode is not `off`, `host
+prepare` writes a udev rule, `/etc/udev/rules.d/60-paisans-watchdog.rules`:
+
+```
+KERNEL=="watchdog*", MODE="0660"
+```
+
+`KERNEL` matches the device name and `MODE` sets the node's permissions
+([udev(7)](https://manpages.ubuntu.com/manpages/noble/man7/udev.7.html));
+`watchdog*` covers both `/dev/watchdog` and the numbered `/dev/watchdogN`. It
+then reloads the rules and runs `chmod 0660` on the nodes that exist now. It
+does not use `udevadm trigger`: the numbered nodes are in the `watchdog`
+subsystem but the legacy `/dev/watchdog` is a `misc` device, so a trigger
+filtered on one subsystem would miss the node Patroni opens, and a `chmod` of
+the nodes that exist is exact and idempotent. The rule is what survives a
+reboot: the module unit's `modprobe` raises the add event it answers. The step
+is planned when the rule file is missing or differs, or when any node is not
+`0660`, and reported present otherwise.
+
+**Group, not owner.** The rule leaves the group root and opens it to the
+group; it does not hand the device to uid 101, which is the `postgres` user in
+the Spilo image in use. The image's uid is the image's business: a host rule
+naming it would couple every prepared host to one image and break silently on
+a rebuild that renumbered the user. What the rule relies on is narrower and
+was checked rather than assumed: `id postgres` inside the running Spilo
+container lists `0(root)` among its supplementary groups. A future image that
+drops that membership loses the device again, and the fix then belongs in the
+rendered compose file (a `group_add`), not in a host rule naming a uid.
+
+The rule lives in the Ubuntu profile, behind `WatchdogAccess`, rather than in
+the generic probe. Reading `/sys/class/watchdog` is the same everywhere; how a
+node's mode is made to stick is the device manager's business, and udev is
+not universal (Alpine, for one, uses `mdev` by default).
+
+**Provisional: this has run on one host.** That run is where the device mode
+above was found. The command is otherwise tested against a fake transport, and
+the probe output it parses (`ufw show added`, `systemctl show -p
+RuntimeWatchdogUSec`, `dpkg-query`, `stat -c %a`) is written from the tools'
+documented behaviour; read the next run rather than trusting it.
 
 ### Where WireGuard keys are generated
 
@@ -1453,14 +1492,16 @@ infrastructure stack and before the first app stack, `apply`:
 
 1. waits up to three minutes for Patroni's `GET /cluster` to name a running
    leader;
-2. if the leader is another site, skips the rest and says which site to apply,
-   since a replica cannot create roles;
-3. otherwise sends one psql script on stdin to the Spilo container that, per
+2. if the leader is another site in `cluster.sites`, skips the rest and says
+   which site to apply, since a replica cannot create roles;
+3. if the leader is not in `cluster.sites` at all, stops, naming the leader it
+   saw and the sites it expected;
+4. otherwise sends one psql script on stdin to the Spilo container that, per
    clustered app using Postgres, creates the role if it is missing, **sets its
    password every time**, and creates the database owned by it if missing.
 
-A timeout or a psql failure stops the apply before any app stack starts, and
-the next apply resumes at the same place. It is a gate, not a warning: an app
+A timeout, an unknown leader or a psql failure stops the apply before any app
+stack starts, and the next apply resumes at the same place. It is a gate, not a warning: an app
 pointed at a role that does not exist has nothing to fall back on.
 
 **Setting the password every time is what makes rotation an addition.** The
@@ -1484,6 +1525,15 @@ generated statement at top level.
 **An app whose role would be `postgres`, `admin`, `standby` or `pg_*` is
 refused**, because the bootstrap would set that app's password on a role the
 cluster uses itself.
+
+**Only a declared site can be the reason to skip.** The rendered Patroni names
+each member after its site, so "the leader is not me" can be read as "the
+leader is that site" only when the name is one of `cluster.sites`. On the first
+real host the member was named after the machine instead, and an apply that
+took any other name for a replica skipped the databases and started every app
+with none. A name nobody declared means that pin did not hold, which is a
+fault to fix rather than someone else's work, so it is a gate. It is not
+polled out like a missing leader: a running member's name does not change.
 
 `/cluster` is asked rather than `/primary` because it answers both questions:
 `/primary` returns the same 503 to a replica as to a node still running initdb,
