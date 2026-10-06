@@ -1875,7 +1875,7 @@ run against an empty Pocket ID prints:
 ```
 talk's client at auth on home-a (pocket-id)
   create group admins: POST /api/user-groups {"friendlyName":"admins","name":"admins"}
-  create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false}
+  create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false,"launchURL":"https://talk.example.org"}
   create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
   add founder to group admins: PUT /api/users/<user id>/user-groups with the groups founder is in now, plus admins
 
@@ -1901,6 +1901,21 @@ refused member is stopped at Pocket ID before the app sees them.
 `--admin-user` adds a Pocket ID user, made with `app admin create`, to the
 admin group.
 
+**The client is created with a launch URL**, the app's own address
+(`launchURL`, `dto/oidc_dto.go:52`). Pocket ID's dashboard lists only clients
+that have one (`service/oidc_service.go:673-680` and `:758-765` at `v2.14.0`),
+so a client without it works for signing in and is invisible to the members
+looking for the app; the first real host's founder saw no apps at all. An
+existing client with an empty launch URL plans `set launch URL for client
+<app>`: a `PUT /api/oidc/clients/<id>` that sends every field back as read with
+only `launchURL` changed, because the update overwrites the whole client. That
+keeps the callback URLs, PKCE, the public flag, the group restriction (sending
+it false would clear the allowed groups) and the federated credentials; it
+sends no secret and no logo URL, and Pocket ID ignores a secret sent there
+anyway. An existing client whose launch URL is set to something else is
+reported `present` with a note and left alone, since an operator may have
+pointed it somewhere on purpose.
+
 **The secret is never printed and never captured.** Pocket ID accepts a client
 secret the caller supplies (`dto/oidc_dto.go:77-83` at `v2.14.0`), so the
 toolkit generates it on the workstation, writes it into the secrets file,
@@ -1919,7 +1934,8 @@ one valid, because Pocket ID allows several (`controller/oidc_controller.go:292`
 so the app keeps signing people in until `apply` renders the new one. A client
 that differs from what the app needs is refused, with what differs, rather than
 reshaped: updating a client rewrites every field, and a client somebody shaped
-by hand is not this command's to change. After `--execute` it probes again and
+by hand is not this command's to change. An empty launch URL is the one
+exception, set as above, because empty is an omission rather than a choice. After `--execute` it probes again and
 fails unless a fresh plan is empty.
 
 Four alternatives were rejected:

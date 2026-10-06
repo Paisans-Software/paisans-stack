@@ -33,7 +33,10 @@ type Desired struct {
 	// its key under oidc_clients in the secrets file.
 	App         string
 	CallbackURL string
-	PKCE        bool
+	// LaunchURL is the app's own address, which lists the client on Pocket
+	// ID's dashboard. Empty plans nothing for it.
+	LaunchURL string
+	PKCE      bool
 	// AdminGroup is the group whose members the app makes administrators, and
 	// MemberGroup the group a member must be in to sign in at all. Each is
 	// empty when the app's configuration names none. A member group also
@@ -123,6 +126,8 @@ const (
 	// live but the ID beside it is missing.
 	RecordClientID
 	AddUserToGroup
+	// SetLaunchURL gives an existing client the launch URL it lacks.
+	SetLaunchURL
 )
 
 // Step is one mutation and the line that shows it.
@@ -149,6 +154,11 @@ type Plan struct {
 // app cannot work with. Rewriting a client means a full update of every
 // field (dto/oidc_dto.go:41-60), and a client somebody shaped by hand is not
 // this command's to reshape.
+//
+// The launch URL is the one exception, and only when it is empty: an empty
+// one is a client this command made before it set one, not a choice, and it
+// keeps the app off members' dashboards. A launch URL set to something else
+// may be deliberate and is left alone.
 func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 	p := &Plan{Desired: d, Recorded: rec, State: s}
 	if d.AdminUser != "" && d.AdminGroup == "" {
@@ -178,6 +188,15 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 	if client == nil {
 		body, _ := json.Marshal(d.newClient())
 		p.Steps = append(p.Steps, Step{Kind: CreateClient, Line: fmt.Sprintf("create client %s: POST /api/oidc/clients %s", d.App, body)})
+	} else if d.LaunchURL != "" {
+		switch {
+		case client.LaunchURL == nil || *client.LaunchURL == "":
+			p.Steps = append(p.Steps, Step{Kind: SetLaunchURL, Line: fmt.Sprintf("set launch URL for client %s: PUT /api/oidc/clients/%s with launchURL %q and every other field sent back as it is now", d.App, client.ID, d.LaunchURL)})
+		case *client.LaunchURL == d.LaunchURL:
+			p.Present = append(p.Present, fmt.Sprintf("present client %s launch URL %s", d.App, d.LaunchURL))
+		default:
+			p.Present = append(p.Present, fmt.Sprintf("present client %s launch URL %s, not %s; left as it is, since it may have been set deliberately", d.App, *client.LaunchURL, d.LaunchURL))
+		}
 	}
 
 	if d.restricted() {
@@ -236,6 +255,7 @@ func (d Desired) newClient() pocketid.NewOIDCClient {
 		CallbackURLs:      []string{d.CallbackURL},
 		PkceEnabled:       d.PKCE,
 		IsGroupRestricted: d.restricted(),
+		LaunchURL:         d.LaunchURL,
 	}
 }
 
@@ -301,6 +321,8 @@ func Execute(p *Plan, c *pocketid.Client, rec Recorder, newSecret func() (string
 			if created, err = c.CreateOIDCClient(d.newClient()); err == nil {
 				client = &created
 			}
+		case SetLaunchURL:
+			err = c.SetLaunchURL(client.ID, d.LaunchURL)
 		case AllowGroups:
 			ids := map[string]bool{}
 			for _, g := range client.AllowedUserGroups {

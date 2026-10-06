@@ -23,6 +23,9 @@ func MbinRedirectURI(hostname string) string {
 type OIDCClientSpec struct {
 	// CallbackURL is the one redirect URI the client must allow.
 	CallbackURL string
+	// LaunchURL is where Pocket ID's dashboard sends a member who picks the
+	// app, the app's own address. A client without one is not listed there.
+	LaunchURL string
 	// PKCE is whether the app always sends a code challenge, in which case a
 	// client with PKCE off refuses every sign in.
 	PKCE bool
@@ -47,6 +50,7 @@ func OIDCClient(kind config.Kind, hostname string) (OIDCClientSpec, bool) {
 	case config.KindMbin:
 		return OIDCClientSpec{
 			CallbackURL:    MbinRedirectURI(hostname),
+			LaunchURL:      "https://" + hostname,
 			PKCE:           true,
 			AdminGroupKey:  "OAUTH_OIDC_ADMIN_GROUP",
 			MemberGroupKey: "OAUTH_OIDC_MEMBER_GROUP",

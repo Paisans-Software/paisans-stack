@@ -25,6 +25,8 @@ type fakeIDP struct {
 	mutations []string
 	// sent is every secret value Pocket ID was given, in order.
 	sent []string
+	// updates is every client update's body, in order.
+	updates []string
 	// onMutation runs before a mutation is served, so a test can see what
 	// had already happened at that moment.
 	onMutation func(method, path string)
@@ -91,8 +93,30 @@ func (f *fakeIDP) serve(method string, u *url.URL, body string) (int, string) {
 		var n pocketid.NewOIDCClient
 		_ = json.Unmarshal([]byte(body), &n)
 		c := &pocketid.OIDCClient{ID: fmt.Sprintf("c-%d", len(f.clients)+1), Name: n.Name, CallbackURLs: n.CallbackURLs, PkceEnabled: n.PkceEnabled, IsGroupRestricted: n.IsGroupRestricted, IsPublic: n.IsPublic}
+		if n.LaunchURL != "" {
+			c.LaunchURL = &n.LaunchURL
+		}
 		f.clients = append(f.clients, c)
 		return 201, marshal(c)
+	case method == "PUT" && len(parts) == 4 && parts[2] == "clients":
+		// As Pocket ID does: every field is overwritten with what is sent,
+		// and an unrestricted client loses its allowed groups.
+		f.updates = append(f.updates, body)
+		var in struct {
+			Name              string   `json:"name"`
+			CallbackURLs      []string `json:"callbackURLs"`
+			IsPublic          bool     `json:"isPublic"`
+			PkceEnabled       bool     `json:"pkceEnabled"`
+			IsGroupRestricted bool     `json:"isGroupRestricted"`
+			LaunchURL         *string  `json:"launchURL"`
+		}
+		_ = json.Unmarshal([]byte(body), &in)
+		c := f.client(parts[3])
+		c.Name, c.CallbackURLs, c.IsPublic, c.PkceEnabled, c.IsGroupRestricted, c.LaunchURL = in.Name, in.CallbackURLs, in.IsPublic, in.PkceEnabled, in.IsGroupRestricted, in.LaunchURL
+		if !in.IsGroupRestricted {
+			c.AllowedUserGroups = nil
+		}
+		return 200, marshal(c)
 	case method == "POST" && len(parts) == 5 && parts[4] == "secrets":
 		var in struct{ Secret string }
 		_ = json.Unmarshal([]byte(body), &in)
@@ -199,7 +223,7 @@ func api(f *fakeIDP) *pocketid.Client {
 }
 
 func talk() Desired {
-	return Desired{App: "talk", CallbackURL: "https://talk.example.org/oauth/oidc/verify", PKCE: true, AdminGroup: "admins", AdminUser: "founder"}
+	return Desired{App: "talk", CallbackURL: "https://talk.example.org/oauth/oidc/verify", LaunchURL: "https://talk.example.org", PKCE: true, AdminGroup: "admins", AdminUser: "founder"}
 }
 
 func secretSource(values ...string) func() (string, error) {
@@ -245,7 +269,7 @@ func TestAFreshPlanShowsEverythingAndChangesNothing(t *testing.T) {
 	if fmt.Sprint(kinds(p)) != fmt.Sprint(want) {
 		t.Fatalf("planned %v, want %v", kinds(p), want)
 	}
-	if !strings.Contains(p.Steps[1].Line, `{"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false}`) {
+	if !strings.Contains(p.Steps[1].Line, `{"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false,"launchURL":"https://talk.example.org"}`) {
 		t.Errorf("the client line does not show the body: %s", p.Steps[1].Line)
 	}
 	if len(f.mutations) != 0 {
@@ -391,5 +415,83 @@ func TestAdminUserNeedsAGroupAndAnAccount(t *testing.T) {
 	}
 	if _, err := Build(talk(), Recorded{}, State{Groups: map[string]*pocketid.Group{}}); err == nil || !strings.Contains(err.Error(), "app admin create") {
 		t.Errorf("no user: %v", err)
+	}
+}
+
+// A client made before the launch URL was set, restricted and holding its
+// allowed groups, plans only the launch URL. The update sends everything else
+// back as it was, so nothing else about the client changes.
+func TestAClientWithoutALaunchURLGetsOne(t *testing.T) {
+	f := withFounder(newFake())
+	d := talk()
+	d.MemberGroup = "members"
+	rec := &memRecorder{}
+	if err := Execute(plan(t, f, d, Recorded{}), api(f), rec, secretSource("launch-secret-not-real-0001")); err != nil {
+		t.Fatal(err)
+	}
+	c := f.clients[0]
+	c.LaunchURL = nil
+	before := *c
+	p := plan(t, f, d, rec.rec)
+	if fmt.Sprint(kinds(p)) != fmt.Sprint([]StepKind{SetLaunchURL}) {
+		t.Fatalf("planned %v", kinds(p))
+	}
+	want := `set launch URL for client talk: PUT /api/oidc/clients/c-1 with launchURL "https://talk.example.org" and every other field sent back as it is now`
+	if p.Steps[0].Line != want {
+		t.Errorf("line %q", p.Steps[0].Line)
+	}
+	f.mutations = nil
+	if err := Execute(p, api(f), rec, func() (string, error) { return "", errors.New("must not generate") }); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(f.mutations) != "[PUT /api/oidc/clients/c-1]" {
+		t.Errorf("mutations %v", f.mutations)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(f.updates[0]), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent["launchURL"] != "https://talk.example.org" || sent["isGroupRestricted"] != true || sent["pkceEnabled"] != true || sent["isPublic"] != false || sent["name"] != "talk" {
+		t.Errorf("sent %v", sent)
+	}
+	if _, ok := sent["logoUrl"]; ok {
+		t.Error("a logo URL was sent")
+	}
+	if strings.Contains(f.updates[0], "secrets") || strings.Contains(f.updates[0], "launch-secret") {
+		t.Errorf("the update carries secrets: %s", f.updates[0])
+	}
+	after := *f.clients[0]
+	if fmt.Sprint(after.CallbackURLs) != fmt.Sprint(before.CallbackURLs) || after.PkceEnabled != before.PkceEnabled ||
+		after.IsPublic != before.IsPublic || !after.IsGroupRestricted || len(after.AllowedUserGroups) != 2 {
+		t.Errorf("the update changed more than the launch URL: before %+v, after %+v", before, after)
+	}
+	if len(f.secrets["c-1"]) != 1 {
+		t.Errorf("secrets %v", f.secrets["c-1"])
+	}
+	for _, cmd := range f.commands {
+		if cmd != pocketid.CurlCommand || strings.Contains(cmd, testKey) {
+			t.Errorf("ran %q", cmd)
+		}
+	}
+	if again := plan(t, f, d, rec.rec); len(again.Steps) != 0 {
+		t.Errorf("a second run plans %v", kinds(again))
+	}
+}
+
+// A launch URL set to something else is left alone and reported.
+func TestACustomisedLaunchURLIsLeftAlone(t *testing.T) {
+	f := withFounder(newFake())
+	rec := &memRecorder{}
+	if err := Execute(plan(t, f, talk(), Recorded{}), api(f), rec, secretSource("custom-secret-not-real-0001")); err != nil {
+		t.Fatal(err)
+	}
+	custom := "https://talk.example.org/magazines"
+	f.clients[0].LaunchURL = &custom
+	p := plan(t, f, talk(), rec.rec)
+	if len(p.Steps) != 0 {
+		t.Fatalf("planned %v", kinds(p))
+	}
+	if !strings.Contains(strings.Join(p.Present, "\n"), "launch URL https://talk.example.org/magazines, not https://talk.example.org; left as it is") {
+		t.Errorf("present %v", p.Present)
 	}
 }

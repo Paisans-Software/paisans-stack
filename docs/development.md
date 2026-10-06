@@ -82,7 +82,8 @@ reads `apps.<app>.static_api_key` from the secrets file, so it takes
 `--secrets`, and it never uses sudo, because curl needs no root.
 
 `oidc client create --app <name>` creates an app's client at the deployment's
-Pocket ID, with the groups the app's `config` names, and records its ID and
+Pocket ID, with the groups the app's `config` names and a launch URL so
+Pocket ID's dashboard lists it, and records its ID and
 secret under `oidc_clients.<app>`. Every step is printed with what it sends and
 nothing changes without `--execute`. The secret is generated on the
 workstation and written to the secrets file before Pocket ID is sent it, and is

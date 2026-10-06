@@ -119,6 +119,7 @@ func runOIDCClientCreate(args []string) error {
 	desired := oidcclient.Desired{
 		App:          *appName,
 		CallbackURL:  spec.CallbackURL,
+		LaunchURL:    spec.LaunchURL,
 		PKCE:         spec.PKCE,
 		AdminGroup:   configString(app, spec.AdminGroupKey),
 		MemberGroup:  configString(app, spec.MemberGroupKey),

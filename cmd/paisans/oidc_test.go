@@ -51,7 +51,11 @@ func (f *idpFake) RunInput(command, stdin string) (string, error) {
 		return reply(201, map[string]string{})
 	case strings.Contains(stdin, "/api/oidc/clients\""):
 		f.mutated = true
-		f.client = &pocketid.OIDCClient{ID: "c-1", Name: "talk", CallbackURLs: []string{"https://talk.example.org/oauth/oidc/verify"}, PkceEnabled: true}
+		launch := "https://talk.example.org"
+		if !strings.Contains(stdin, `\"launchURL\":\"`+launch+`\"`) {
+			return reply(400, map[string]string{"error": "no launch URL"})
+		}
+		f.client = &pocketid.OIDCClient{ID: "c-1", Name: "talk", CallbackURLs: []string{"https://talk.example.org/oauth/oidc/verify"}, PkceEnabled: true, LaunchURL: &launch}
 		return reply(201, f.client)
 	}
 	return reply(404, map[string]string{"error": "no route"})
@@ -95,7 +99,7 @@ func TestOIDCClientCreateDryRunWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"talk's client at auth on home-a (pocket-id)", "create client talk: POST /api/oidc/clients", `"pkceEnabled":true`, "create client secret for talk", "Nothing was changed"} {
+	for _, want := range []string{"talk's client at auth on home-a (pocket-id)", "create client talk: POST /api/oidc/clients", `"pkceEnabled":true`, `"launchURL":"https://talk.example.org"`, "create client secret for talk", "Nothing was changed"} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("output lacks %q:\n%s", want, printed)
 		}
