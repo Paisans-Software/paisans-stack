@@ -1744,3 +1744,22 @@ func TestAFailedPruneIsAWarning(t *testing.T) {
 		t.Error("a failed prune left the apply owing work")
 	}
 }
+
+// A gateway image that cannot be pulled is reported as a pull failure, not as
+// a Caddy without its DNS module. The first real gateway's image was private,
+// and the old message sent the operator looking for the wrong problem.
+func TestAnUnpullableGatewayImageSaysSo(t *testing.T) {
+	host := newHost()
+	host.fail = "compose.yaml pull caddy"
+	p, err := apply.Build("vm", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = apply.Execute(p, host)
+	if err == nil || !strings.Contains(err.Error(), "could not be pulled") {
+		t.Fatalf("a failed pull was not reported as one: %v", err)
+	}
+	if host.ran("list-modules") {
+		t.Error("the module check ran after the pull failed")
+	}
+}

@@ -632,6 +632,15 @@ func Execute(plan *Plan, t Transport) error {
 		// so the operator's configuration reaches this command line. Single
 		// quoting keeps it an argument rather than shell syntax, and -F keeps
 		// it a literal rather than a pattern whose dots match anything.
+		// Pull first, on its own. The module check below runs the image, and a
+		// run whose pull fails exits non zero exactly like a binary without
+		// the module: on the first real gateway a private image's
+		// "unauthorized" was reported as a missing DNS provider.
+		if out, err := t.Run("docker compose -f /srv/infra/compose.yaml pull caddy"); err != nil {
+			return fmt.Errorf(
+				"%s: the gateway's Caddy image could not be pulled, so nothing was changed. If the registry answered unauthorized or denied, the image is private: make it public, or log the host in to that registry:\n%s",
+				plan.Site, out)
+		}
 		command := fmt.Sprintf(
 			"docker compose -f /srv/infra/compose.yaml run --rm --no-deps --entrypoint caddy caddy list-modules | grep -qxF %s",
 			shellQuote(plan.ACMEModule))
