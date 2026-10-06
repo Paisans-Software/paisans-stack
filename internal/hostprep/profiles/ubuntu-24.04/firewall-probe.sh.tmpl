@@ -1,0 +1,8 @@
+{{- /* `ufw status` lists no rules while the firewall is inactive, so the rules
+        are read with `ufw show added`, which lists them either way. */ -}}
+if ! command -v ufw >/dev/null 2>&1; then echo "ufw absent"; exit 0; fi
+echo "ufw present"
+status=$(ufw status verbose) || exit 1
+printf '%s\n' "$status" | sed -n 's/^Status: /status /p'
+added=$(ufw show added) || exit 1
+printf '%s\n' "$added" | sed -n 's/^ufw /rule /p'

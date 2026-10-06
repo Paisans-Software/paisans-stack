@@ -1,0 +1,12 @@
+{{- /* Docker's apt repository, step 1, as published at
+        https://docs.docker.com/engine/install/ubuntu/ (fetched 2026-10-06).
+        The download goes to a temporary name first so that a failed
+        transfer never leaves a truncated key the probe would call present. */ -}}
+set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get -o DPkg::Lock::Timeout=300 update
+apt-get -o DPkg::Lock::Timeout=300 install -y ca-certificates curl
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc.paisans-tmp
+chmod a+r /etc/apt/keyrings/docker.asc.paisans-tmp
+mv /etc/apt/keyrings/docker.asc.paisans-tmp /etc/apt/keyrings/docker.asc
