@@ -3,6 +3,7 @@ package render_test
 import (
 	"flag"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/validate"
+	"gopkg.in/yaml.v3"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden tree from the current output")
@@ -530,6 +532,61 @@ func TestNoNamedVolumes(t *testing.T) {
 				t.Errorf("%s mounts something that is not a bind mount under /srv: %s", f.Path, mount)
 			}
 		}
+	}
+}
+
+// Compose resolves an env_file path against the directory holding compose.yaml
+// and refuses to load the project when the file is not there, so a path that
+// names nothing stops the whole stack rather than one setting. The gateway's
+// caddy service shipped exactly that: `caddy.env` beside compose.yaml, while
+// the file was rendered into caddy/. Checking the parsed paths against the
+// rendered tree catches the next one without needing Docker in the test.
+func TestEveryEnvFileIsRendered(t *testing.T) {
+	files := map[string]bool{}
+	plan := build(t)
+	for _, f := range plan.Files {
+		files[f.Path] = true
+	}
+	checked := 0
+	for _, f := range plan.Files {
+		if !strings.HasSuffix(f.Path, "/compose.yaml") {
+			continue
+		}
+		var doc struct {
+			Services map[string]struct {
+				EnvFile yaml.Node `yaml:"env_file"`
+			} `yaml:"services"`
+		}
+		if err := yaml.Unmarshal([]byte(f.Content), &doc); err != nil {
+			t.Fatalf("%s does not parse: %v", f.Path, err)
+		}
+		dir := path.Dir(f.Path)
+		for name, service := range doc.Services {
+			var entries []string
+			switch service.EnvFile.Kind {
+			case 0:
+				continue
+			case yaml.ScalarNode:
+				entries = []string{service.EnvFile.Value}
+			case yaml.SequenceNode:
+				for _, item := range service.EnvFile.Content {
+					entries = append(entries, item.Value)
+				}
+			default:
+				t.Errorf("%s: service %s has an env_file this test does not understand", f.Path, name)
+				continue
+			}
+			for _, entry := range entries {
+				resolved := path.Join(dir, entry)
+				if !files[resolved] {
+					t.Errorf("%s: service %s reads env_file %s, which resolves to %s and is not rendered", f.Path, name, entry, resolved)
+				}
+				checked++
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no env_file was found in any rendered compose file, so this test checked nothing")
 	}
 }
 
