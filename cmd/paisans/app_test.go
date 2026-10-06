@@ -232,7 +232,7 @@ func TestPocketIDAdminExecutePrintsTheLinkOnce(t *testing.T) {
 	if n := strings.Count(printed, link); n != 1 {
 		t.Errorf("the link was printed %d times:\n%s", n, printed)
 	}
-	if !strings.Contains(printed, "15m0s") {
+	if !strings.Contains(printed, "20m0s") {
 		t.Errorf("the expiry is not stated:\n%s", printed)
 	}
 }

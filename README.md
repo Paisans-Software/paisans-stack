@@ -1755,7 +1755,7 @@ The dry run prints the exact body a create would send, and the link step:
 ```
 auth on home-a (pocket-id)
   create user founder as an administrator: POST /api/users {"username":"founder","email":"founder@example.org","firstName":"Fern","lastName":"","displayName":"Fern","isAdmin":true}
-  issue one-time login link for founder: valid 15m0s and for one sign in, printed once and only with --execute
+  issue one-time login link for founder: valid 20m0s and for one sign in, printed once and only with --execute
 ```
 
 The link is Pocket ID's own mechanism: an admin issues a one-time access token

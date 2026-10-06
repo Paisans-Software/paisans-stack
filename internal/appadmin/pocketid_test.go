@@ -125,7 +125,7 @@ func TestPocketIDPlanShowsTheBodyAndChangesNothing(t *testing.T) {
 	lines := strings.Join(plan.Lines(), "\n")
 	for _, want := range []string{
 		`POST /api/users {"username":"founder","email":"founder@example.org","firstName":"Fern","lastName":"Founder","displayName":"Fern Founder","isAdmin":true}`,
-		"valid 15m0s",
+		"valid 20m0s",
 	} {
 		if !strings.Contains(lines, want) {
 			t.Errorf("the plan lacks %q:\n%s", want, lines)

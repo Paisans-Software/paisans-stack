@@ -29,11 +29,16 @@ import (
 // is a browser step.
 type pocketID struct{}
 
-// loginTTL is how long a login link stays usable. Pocket ID's own default for
-// an admin issued token is 15 minutes (onetimeaccess/handler.go:17), which is
-// long enough to open a link that was just printed and short enough that one
-// left in a scrollback buffer is dead soon after.
-const loginTTL = 15 * time.Minute
+// loginTTL is how long a login link stays usable. It is 20 minutes, not
+// Pocket ID's own 15 minute default, because the length of the code depends
+// on it: a TTL of 15 minutes or less gets a 6 character code
+// (onetimeaccess/service.go:271-274 at v2.14.0), and the login page accepts a
+// 6 character code only when unauthenticated email login is enabled
+// (frontend login/alternative/code/+page.svelte:24-29); otherwise it waits
+// for 12 and its submit button stays disabled. On the first real host, which
+// has no SMTP, the 15 minute link was unusable. Over 15 minutes gets the 12
+// character code, which the page accepts either way.
+const loginTTL = 20 * time.Minute
 
 func (pocketID) Passwordless() {}
 
