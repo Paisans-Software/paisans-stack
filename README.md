@@ -483,7 +483,10 @@ An app takes two maps that look alike and are not.
 
 **`settings` is input the toolkit reasons about.** A template asks for each key
 by name, and some are validated or acted on: `s3_bucket` is a setting because
-`validate` refuses one named `outline` and `storage init` creates it. A key no
+`validate` refuses one named `outline` and `storage init` creates it, and
+`sso_dashboard_link` is one because `oidc client create` sends it to the
+identity provider (see *`oidc client create` makes an app's client at Pocket
+ID*). A key no
 template asks for is silently ignored. That is the direction in which choosing
 wrong is silent, and the reason this section exists: an application option put
 under `settings` renders nothing and says nothing.
@@ -1875,7 +1878,7 @@ run against an empty Pocket ID prints:
 ```
 talk's client at auth on home-a (pocket-id)
   create group admins: POST /api/user-groups {"friendlyName":"admins","name":"admins"}
-  create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false,"launchURL":"https://talk.example.org"}
+  create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false,"launchURL":"https://talk.example.org/oauth/oidc/connect"}
   create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
   add founder to group admins: PUT /api/users/<user id>/user-groups with the groups founder is in now, plus admins
 
@@ -1901,20 +1904,61 @@ refused member is stopped at Pocket ID before the app sees them.
 `--admin-user` adds a Pocket ID user, made with `app admin create`, to the
 admin group.
 
-**The client is created with a launch URL**, the app's own address
-(`launchURL`, `dto/oidc_dto.go:52`). Pocket ID's dashboard lists only clients
-that have one (`service/oidc_service.go:673-680` and `:758-765` at `v2.14.0`),
-so a client without it works for signing in and is invisible to the members
-looking for the app; the first real host's founder saw no apps at all. An
-existing client with an empty launch URL plans `set launch URL for client
-<app>`: a `PUT /api/oidc/clients/<id>` that sends every field back as read with
-only `launchURL` changed, because the update overwrites the whole client. That
-keeps the callback URLs, PKCE, the public flag, the group restriction (sending
-it false would clear the allowed groups) and the federated credentials; it
-sends no secret and no logo URL, and Pocket ID ignores a secret sent there
-anyway. An existing client whose launch URL is set to something else is
-reported `present` with a note and left alone, since an operator may have
-pointed it somewhere on purpose.
+**The client is created with a launch URL** (`launchURL`, `dto/oidc_dto.go:52`).
+Pocket ID's dashboard lists only clients that have one
+(`service/oidc_service.go:673-680` and `:758-765` at `v2.14.0`), so a client
+without it works for signing in and is invisible to the members looking for the
+app; the first real host's founder saw no apps at all. The launch URL is only
+what the app's tile on that dashboard opens; signing in from the app itself
+uses the callback URL and does not read it.
+
+It is `https://<hostname>` plus a path. Each kind names its own
+(`kinds.DashboardPath`): Mbin's is `/oauth/oidc/connect`, the paisans fork's
+route that starts the OIDC flow (`config/mbin_routes/security.yaml:146-148` at
+`v1.13.3+paisans`), because the bare host lands a member signed out with a log
+in button still to press. Every other kind's is `/`, written as the bare host
+with no trailing slash, which is what clients got before kinds named a path.
+An app may replace the kind's path:
+
+```yaml
+apps:
+  talk:
+    kind: mbin
+    hostname: talk.example.org
+    settings:
+      sso_dashboard_link: /magazines   # tile opens https://talk.example.org/magazines
+```
+
+`validate` refuses a value that is not a path starting with a single `/`,
+including a full URL. The host is always the app's own hostname; accepting a
+URL would be a second place to spell it, one that can disagree with
+`hostname`.
+
+**An existing client's launch URL is changed only when the toolkit put it
+there.** That means empty, which is a client made before this command set one,
+or one of the toolkit's own defaults (`kinds.ToolkitLaunchURLs`): the bare
+`https://<hostname>`, the only default before kinds named a path, and the
+kind's current default. Either plans `set launch URL for client <app>`: a `PUT
+/api/oidc/clients/<id>` that sends every field back as read with only
+`launchURL` changed, because the update overwrites the whole client. That keeps
+the callback URLs, PKCE, the public flag, the group restriction (sending it
+false would clear the allowed groups) and the federated credentials; it sends no
+secret and no logo URL, and Pocket ID ignores a secret sent there anyway. So a
+Mbin client made with the bare host moves to the connect route on the next run:
+
+```
+  set launch URL for client talk: PUT /api/oidc/clients/<id> with launchURL "https://talk.example.org/oauth/oidc/connect" and every other field sent back as it is now
+```
+
+Any other value is an operator's, is reported `present` with a note, and is
+never overwritten. If `sso_dashboard_link` is set and the client holds a
+different custom value, the command also warns, naming both, and still changes
+nothing: clear the launch URL in Pocket ID's admin UI and re-run to use the
+setting, or remove the setting or make it match to keep the client's. The list
+of toolkit defaults is explicit rather than a rule like "anything under the
+app's hostname", because such a rule would overwrite a tile an operator pointed
+at a magazine on purpose. A value joins the list only once a release has
+actually sent it.
 
 **The secret is never printed and never captured.** Pocket ID accepts a client
 secret the caller supplies (`dto/oidc_dto.go:77-83` at `v2.14.0`), so the
@@ -1934,8 +1978,9 @@ one valid, because Pocket ID allows several (`controller/oidc_controller.go:292`
 so the app keeps signing people in until `apply` renders the new one. A client
 that differs from what the app needs is refused, with what differs, rather than
 reshaped: updating a client rewrites every field, and a client somebody shaped
-by hand is not this command's to change. An empty launch URL is the one
-exception, set as above, because empty is an omission rather than a choice. After `--execute` it probes again and
+by hand is not this command's to change. A launch URL that is empty or a
+toolkit default is the one exception, set as above, because neither is a
+choice anybody made. After `--execute` it probes again and
 fails unless a fresh plan is empty.
 
 Four alternatives were rejected:

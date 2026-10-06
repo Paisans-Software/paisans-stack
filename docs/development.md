@@ -89,8 +89,14 @@ nothing changes without `--execute`. The secret is generated on the
 workstation and written to the secrets file before Pocket ID is sent it, and is
 never printed. `--admin-user` adds a Pocket ID user to the app's admin group,
 and `--rotate-secret` adds a new secret, leaving the old one valid. Only Mbin's
-client is known so far (`kinds.OIDCClient`). See *`oidc client create` makes an
-app's client at Pocket ID* in `README.md`.
+client is known so far (`kinds.OIDCClient`). The launch URL is the app's
+hostname plus the kind's dashboard path (`kinds.DashboardPath`, Mbin's
+`/oauth/oidc/connect` so the tile signs the member in, otherwise `/`), or
+`apps.<app>.settings.sso_dashboard_link`, which `validate` refuses unless it is
+a path. An existing client's launch URL is moved only when it is empty or a
+toolkit default (`kinds.ToolkitLaunchURLs`); any other value is left, with a
+warning if `sso_dashboard_link` asks for something else. See *`oidc client
+create` makes an app's client at Pocket ID* in `README.md`.
 
 `render` and `apply` refuse a gateway site when `external.acme_dns_token` is
 empty. `init` lists it as owed, but rendering without it produced a Caddy that
