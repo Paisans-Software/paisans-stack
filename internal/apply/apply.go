@@ -643,6 +643,13 @@ func Execute(plan *Plan, t Transport) error {
 		if _, err := t.Run(action.Command()); err != nil {
 			return err
 		}
+		// `up -d` and `restart` return once the containers start, which says
+		// nothing about whether they stay up or pass their own checks. The
+		// stack stays in the pending record until this passes, so a failure
+		// here is resumed, and force-recreated, by the next apply.
+		if err := waitHealthy(plan, action.Stack, t); err != nil {
+			return err
+		}
 		// The stack is done, so it leaves the record. Left in, a later stack
 		// failing would have the next apply force-recreate this one too, an
 		// outage for a stack that was fine. The last stack stays until the

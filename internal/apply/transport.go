@@ -6,7 +6,8 @@
 // is fixed: read what is on the host, refuse if anybody edited it, write, bring
 // up the mesh, check the assembled gateway configuration, act on the
 // infrastructure stack, create clustered apps' databases, and only then
-// restart or recreate any app.
+// restart or recreate any app. Every stack acted on must come up healthy
+// before the next one moves.
 package apply
 
 import (

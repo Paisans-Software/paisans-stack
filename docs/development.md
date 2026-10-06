@@ -146,6 +146,21 @@ planned even when nothing changed. Forcing every recreate was rejected: it
 would replace every container of every acted on stack on every apply, an
 outage each time for the one case that needs it.
 
+**Each stack must come up healthy before the next one moves.** An apply
+reported success while Mbin's app could not reach its database, because `up -d`
+and `restart` return as soon as containers start. After each stack's action,
+`apply` polls `docker compose ps --all --format json` every 5 seconds for up to
+5 minutes until every container of the project is running and every one with a
+healthcheck reports `healthy`; a container without one counts once running.
+A container exited, restarting or `unhealthy` stops the apply at once, a
+timeout stops it too, and either error names the stack and services and carries
+the last 30 log lines of each. The stack stays in the pending record, so the
+next apply resumes there and force-recreates it. The infrastructure stack is
+checked like any other, which covers the gateway's Caddy; Patroni's own wait
+still gates the database bootstrap. `ps` output is read in both shapes Compose
+has printed: one JSON object per line (current, `cmd/formatter/container.go`)
+and one JSON array (older v2 releases, `cmd/formatter/formatter.go`).
+
 **Files are recorded as soon as they land.** The manifest is written right
 after the files, and again at the end, not only on success. A manifest written
 only on success made every file of a failed first apply look like somebody

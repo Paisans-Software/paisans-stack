@@ -555,6 +555,7 @@ func printPlan(plan *apply.Plan) {
 			stack += " (forced)"
 		}
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n      %s\n", verb, stack, action.Reason)
+		fmt.Fprintf(os.Stdout, "  %-9s %s: every container running, and healthy where it has a healthcheck, before anything after it moves\n", "check", action.Stack)
 	}
 	if !bootstrapped {
 		printBootstrap(plan.Bootstrap)

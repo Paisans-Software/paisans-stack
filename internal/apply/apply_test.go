@@ -38,6 +38,11 @@ type fakeHost struct {
 	// leader is the Patroni member /cluster reports as leader, empty for a
 	// cluster with none yet. newHost makes it home-a.
 	leader string
+	// ps is what `docker compose ps --format json` prints, by stack. A stack
+	// not in it answers with one running container and no healthcheck.
+	ps map[string]string
+	// logs is what `docker compose logs` prints, by service.
+	logs map[string]string
 }
 
 func newHost() *fakeHost { return &fakeHost{files: map[string]string{}, leader: "home-a"} }
@@ -65,6 +70,21 @@ func (h *fakeHost) Run(command string) (string, error) {
 			return `{"members":[{"name":"home-a","role":"replica","state":"starting"}]}`, nil
 		}
 		return fmt.Sprintf(`{"members":[{"name":%q,"role":"leader","state":"running"},{"name":"other","role":"replica","state":"streaming"}],"scope":"fixture"}`, h.leader), nil
+	}
+	if strings.Contains(command, " ps --all --format json") {
+		stack := strings.TrimSuffix(strings.TrimPrefix(command, "docker compose -f /srv/"), "/compose.yaml ps --all --format json")
+		if out, ok := h.ps[stack]; ok {
+			return out, nil
+		}
+		return `{"Service":"app","Name":"` + stack + `-app-1","State":"running","Health":""}` + "\n", nil
+	}
+	if strings.Contains(command, " logs --no-color --tail 30 ") {
+		for service, out := range h.logs {
+			if strings.HasSuffix(command, "'"+service+"'") {
+				return out, nil
+			}
+		}
+		return "", nil
 	}
 	if strings.HasPrefix(command, "rm -f ") {
 		delete(h.files, strings.Trim(strings.TrimPrefix(command, "rm -f "), "'"))
@@ -1306,5 +1326,160 @@ func TestRecreateRefusesAnUnknownStack(t *testing.T) {
 	_, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Recreate("tlak"))
 	if err == nil || !strings.Contains(err.Error(), "names no stack this site renders") {
 		t.Fatalf("an unknown --recreate was accepted: %v", err)
+	}
+}
+
+// fastHealth makes the health gate give up after three polls without sleeping,
+// and counts the polls it slept between.
+func fastHealth(t *testing.T) *int {
+	t.Helper()
+	slept := 0
+	t.Cleanup(apply.SetHealthWait(15*time.Second, 5*time.Second, func(time.Duration) { slept++ }))
+	return &slept
+}
+
+// A stack whose healthchecks pass lets the apply carry on, in either output
+// shape Compose has printed.
+func TestAHealthyStackPasses(t *testing.T) {
+	fastHealth(t)
+	host := newHost()
+	host.ps = map[string]string{
+		"infra": `[{"Service":"patroni","State":"running","Health":"healthy"},{"Service":"caddy","State":"running","Health":""}]`,
+		"talk":  "{\"Service\":\"app\",\"State\":\"running\",\"Health\":\"healthy\"}\n{\"Service\":\"db\",\"State\":\"running\",\"Health\":\"healthy\"}\n",
+	}
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	for _, stack := range []string{"infra", "talk", "docs"} {
+		if !host.ran("/srv/" + stack + "/compose.yaml ps --all --format json") {
+			t.Errorf("%s was never checked", stack)
+		}
+	}
+	if _, ok := host.files["/srv/.paisans-pending.json"]; ok {
+		t.Error("a healthy apply left owed actions behind")
+	}
+}
+
+// A container without a healthcheck counts once it runs; one still starting
+// is waited for, not failed.
+func TestARunningContainerWithoutAHealthcheckPasses(t *testing.T) {
+	slept := fastHealth(t)
+	host := applied(t, "home-a")
+	polls := 0
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Recreate("talk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.ps = map[string]string{"talk": `{"Service":"app","State":"created","Health":""}`}
+	wrapped := &pollingHost{fakeHost: host, onPoll: func() {
+		polls++
+		if polls == 1 {
+			host.ps["talk"] = `{"Service":"app","State":"running","Health":""}`
+		}
+	}}
+	if err := apply.Execute(p, wrapped); err != nil {
+		t.Fatal(err)
+	}
+	if *slept != 1 {
+		t.Errorf("slept %d times, want one wait between a created and a running container", *slept)
+	}
+}
+
+// pollingHost calls onPoll on every health poll, so a test can change what
+// the next one sees.
+type pollingHost struct {
+	*fakeHost
+	onPoll func()
+}
+
+func (h *pollingHost) Run(command string) (string, error) {
+	out, err := h.fakeHost.Run(command)
+	if strings.Contains(command, " ps --all --format json") {
+		h.onPoll()
+	}
+	return out, err
+}
+
+// An unhealthy stack stops the apply with its services and their logs, no
+// later stack starts, and the record keeps the stack owed so the next apply
+// resumes and force-recreates it. On a real host an apply reported success
+// while Mbin could not reach its database.
+func TestAnUnhealthyStackStopsTheApply(t *testing.T) {
+	for _, tc := range []struct{ name, ps string }{
+		{"unhealthy", `{"Service":"app","State":"running","Health":"unhealthy"}`},
+		{"restarting", `{"Service":"app","State":"restarting","Health":"","ExitCode":1}`},
+		{"timeout", `{"Service":"app","State":"running","Health":"starting"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// noWait first: the two waits share one sleep, and the counting
+			// sleeper must be the one left in place.
+			noWait(t)
+			slept := fastHealth(t)
+			host := newHost()
+			host.ps = map[string]string{"infra": tc.ps}
+			host.logs = map[string]string{"app": "SQLSTATE[08006] could not connect to server\n"}
+			p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = apply.Execute(p, host)
+			if err == nil {
+				t.Fatal("an unhealthy stack let the apply succeed")
+			}
+			for _, want := range []string{"infra", "app", "could not connect to server"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the error does not carry %q:\n%v", want, err)
+				}
+			}
+			if tc.name == "timeout" && *slept != 2 {
+				t.Errorf("a starting container was polled with %d sleeps, want the whole wait", *slept)
+			}
+			if tc.name != "timeout" && *slept != 0 {
+				t.Errorf("a failed container was waited on (%d sleeps)", *slept)
+			}
+			for _, stack := range []string{"blog", "docs", "talk"} {
+				if host.ran("/srv/" + stack + "/compose.yaml up -d") {
+					t.Errorf("%s was started after the infrastructure stack failed its check", stack)
+				}
+			}
+			if host.ran("psql") {
+				t.Error("databases were created behind an unhealthy infrastructure stack")
+			}
+
+			host.ps = nil
+			again, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(again.Actions) == 0 || again.Actions[0].Stack != "infra" || !again.Actions[0].Force {
+				t.Fatalf("the failed stack is not owed a forced recreate: %+v", again.Actions)
+			}
+		})
+	}
+}
+
+// Both shapes Compose prints for `ps --format json` are read: one array, and
+// one object per line.
+func TestComposePsOutputIsReadInBothShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name, out string
+		want      int
+	}{
+		{"array", `[{"Service":"a","State":"running"},{"Service":"b","State":"running"}]`, 2},
+		{"lines", "{\"Service\":\"a\",\"State\":\"running\"}\n{\"Service\":\"b\",\"State\":\"running\"}\n", 2},
+		{"empty", "\n", 0},
+		{"empty array", "[]", 0},
+	} {
+		n, err := apply.ParseContainers(tc.out)
+		if err != nil || n != tc.want {
+			t.Errorf("%s: read %d containers, %v; want %d", tc.name, n, err, tc.want)
+		}
+	}
+	if _, err := apply.ParseContainers("not json"); err == nil {
+		t.Error("unreadable output was accepted")
 	}
 }
