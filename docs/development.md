@@ -14,9 +14,9 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 ## Run
 
 validate, init and render touch nothing outside the working directory.
-`host prepare`, `apply`, `site add`, `storage init`, `storage add`, `app admin
-create` and `oidc client create` reach a machine, and each changes it only with
-`--execute`. `preflight`
+`host prepare`, `apply`, `prune`, `site add`, `storage init`, `storage add`,
+`app admin create` and `oidc client create` reach a machine, and each changes
+it only with `--execute`. `preflight`
 reaches every site and never changes one; `failover test` changes which site
 is primary, only with `--execute`. `dns init` reaches no machine, only
 the DNS provider's API, and changes it only with `--execute`.
@@ -29,6 +29,7 @@ paisans render   --config examples/paisans.example.yaml \
 paisans host prepare --site home-a        # shows what a blank host lacks
 paisans apply    --site home-a            # shows what would change
 paisans apply    --site home-a --execute  # does it
+paisans prune    --site home-a            # lists dangling volumes, and which go
 paisans preflight --site home-b           # site add's read only checks
 paisans storage add                       # every Garage stage, from live state
 paisans failover test                     # checks, and prints the plan
@@ -239,6 +240,39 @@ as `prune` lines. `apply --keep-images` skips both. IDs are compared by
 prefix with `sha256:` stripped, since Docker prints them full or 12
 characters short. README.md "`apply` prunes the images it superseded" has the
 rejected alternatives (`docker image prune -a`, keeping N versions).
+
+**An image's declared volume must be mounted at exactly its path.** Docker
+gives every new container an anonymous volume for a `VOLUME` nothing mounts,
+and Compose abandons it on the next recreate; a real apps site collected 18
+under Mbin's `/app/var/`. Three pieces, each easy to undo by accident:
+
+* `kinds.ImageVolumes` records what every pinned reference declares, read
+  with `docker image inspect --platform linux/amd64` (the platform matters on
+  an arm64 workstation: the containerd image store answered null for images
+  that declare volumes). `TestEveryDeclaredImageVolumeIsMounted` in
+  `internal/render` renders every app pinned and clustered at Postgres 16, 17
+  and 18 and fails on an unrecorded image or an unmounted path. Bumping an
+  image means inspecting the new reference and adding its row.
+* `Build` inspects every image of every acted on stack (`VolumeCheck`, in
+  `internal/apply/volumes.go`) with `kinds.ComposeMounts` and
+  `kinds.Uncovered`. Only an exact path counts, because a bind at a parent was
+  observed to leave Docker's volume beneath it. An absent image is owed and
+  `Execute` pulls and checks it after the disk check and before the pending
+  record; any uncovered path refuses there. The fakes in `internal/apply`,
+  `internal/siteadd` and `cmd/paisans` answer the probe, which is a `for r in`
+  loop like the presence probe and is told apart by `.Config.Volumes`.
+* Before a recreate, `Execute` records the stack's containers' anonymous
+  volumes, and after the health gate removes those now dangling
+  (`internal/apply/anonvolumes.go`). Warnings only, and nothing on a failed
+  gate.
+
+`prune --site <s>` (`internal/apply/volumeprune.go`) lists every dangling
+volume with size and top level entries and removes, with `--execute`, the
+anonymous ones and those of a `paisans-*` compose project; another project's,
+or a named one, is kept. The listing ends with an `end` marker, so a cut
+short answer is an error rather than a shorter list. README.md "Every volume
+an image declares is mounted, and `apply` checks it" has the audit table and
+the rejected alternatives.
 
 **Files are recorded as soon as they land.** The manifest is written right
 after the files, and again at the end, not only on success. A manifest written
