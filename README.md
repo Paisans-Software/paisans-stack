@@ -386,6 +386,42 @@ It is assembled rather than written: each `kind` ships its own Caddy snippet in
 its template set, and the gateway file holds only what is cross-cutting. See
 *The template set owns everything app-specific, routing and shims included*.
 
+#### Failing over, and saying so when nothing can serve
+
+Two things are cross-cutting enough to live in the gateway file as named
+snippets rather than in every kind.
+
+**`upstream_failover`**, imported inside the proxy of every app on more than
+one apps site: `lb_policy first`, `lb_try_duration 5s`, `fail_duration 30s`,
+`dial_timeout 2s`. `first`, not round robin, because the apps sites are not
+interchangeable during a failover. A dial that fails is retried on the next
+site within the same request, for a POST too: Caddy 2.11 retries any method
+only when the connection never opened, so no body was sent. A dead site on
+the mesh answers nothing, not even a reset, so the dial timeout is the whole
+price of finding it dead; once found, it is skipped for `fail_duration`, and
+then one request tries it again. Checked against a live Caddy: with one site
+refusing and the other up, a POST is answered by the live one with no error.
+A pinned app has nowhere to fail over to and does not import it.
+
+**`upstream_unavailable`**, imported in every host block, media included:
+when Caddy itself fails to reach any upstream, it answers 503 with
+`Retry-After: 120` instead of its own 502, 503 or 504. Without it, the status
+depends on how the sites died: a refused or timed out dial, or a site dying
+mid request, is 502; every upstream already marked down is 503. A fediverse
+server delivering to an inbox may treat a 502 as a permanent failure and drop
+the activity, which is the one loss nobody can recover later; 503 with
+`Retry-After` is the status that asks it to come back. It catches only errors
+Caddy raised: an application's own 502, 503 or 504 response (Garage's 503 for
+lost quorum among them) is passed through unchanged, so it never hides an
+application's real answer. It does also turn an auth gate's failure into 503,
+which is the right answer there too.
+
+Rejected: an active health check on each app. It would keep live requests off
+a dead site between failures, but Caddy's check sends the upstream's address
+as the Host header, which an app checking trusted hosts may refuse, and it
+adds steady traffic to every app on every site; the dial timeout it saves is
+paid once per `fail_duration`.
+
 ## Adding a site, and the constraint that shapes it
 
 etcd quorum is a majority: 1 member survives nothing but works; 3 members

@@ -14,10 +14,8 @@
 # block with its own snippet.
 reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
 {{- if gt (len .Upstreams) 1 }}
-	# first, not round robin: the apps sites are not interchangeable during a
-	# failover, and a dead one must simply be skipped.
-	lb_policy first
-	fail_duration 10s
+	# Failover across apps sites; see upstream_failover in the Caddyfile.
+	import upstream_failover
 {{- end }}
 	header_up X-Forwarded-Proto https
 }
