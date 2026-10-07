@@ -176,9 +176,9 @@ func Build(cfg *config.Config, secrets *config.Secrets, transports map[string]ap
 			break
 		}
 	}
-	if p.gateway != "" && cfg.Storage.MediaHostname != "" {
+	if p.gateway != "" {
 		if _, ok := transports[p.gateway]; !ok {
-			return nil, fmt.Errorf("storage add: no way to reach the gateway site %s, whose media routes name every Garage node", p.gateway)
+			return nil, fmt.Errorf("storage add: no way to reach the gateway site %s, whose media routes name the Garage nodes", p.gateway)
 		}
 	}
 

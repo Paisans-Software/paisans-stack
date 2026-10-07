@@ -61,7 +61,11 @@ func TestRulesFire(t *testing.T) {
 		{"gate-without-a-gate-app", "gate-without-a-gate-app", validate.Refuse},
 		{"gated-matrix-hostname", "gated-matrix-hostname", validate.Refuse},
 		{"homeserver-must-be-pinned", "homeserver-must-be-pinned", validate.Refuse},
-		{"object-storage-without-a-media-hostname", "object-storage-without-a-media-hostname", validate.Refuse},
+		{"media-hostname-is-not-a-hostname", "media-hostname-is-not-a-hostname", validate.Refuse},
+		{"media-hostname-outside-the-domain", "media-hostname-outside-the-domain", validate.Refuse},
+		{"media-hostname-under-an-app-hostname", "media-hostname-under-an-app-hostname", validate.Refuse},
+		{"outline-bucket-in-media-url", "outline-bucket-in-media-url", validate.Refuse},
+		{"duplicate-derived-media-hostname", "duplicate-hostname", validate.Refuse},
 		{"config-key-is-nested-in-an-env-file", "config-key-is-nested-in-an-env-file", validate.Refuse},
 		{"config-key-looks-like-a-secret", "config-key-looks-like-a-secret", validate.Refuse},
 		{"config-key-steers-compose", "config-key-steers-compose", validate.Refuse},
@@ -244,5 +248,96 @@ func TestFindingsAreDeterministic(t *testing.T) {
 		if first.Findings[i] != second.Findings[i] {
 			t.Fatalf("finding %d differs between runs", i)
 		}
+	}
+}
+
+// withMedia is the valid fixture with docs's media hostname declared, or left
+// to the derivation when media is empty, and one more app's hostname set.
+func withMedia(t *testing.T, media string) *config.Config {
+	t.Helper()
+	cfg := load(t, "valid")
+	docs := cfg.Apps["docs"]
+	docs.Hostnames = nil
+	if media != "" {
+		docs.Hostnames = map[string]string{"media": media}
+	}
+	cfg.Apps["docs"] = docs
+	return cfg
+}
+
+// The derived name and a declared one are checked alike, because both become
+// a site address. A derived name can be wrong without anything in the file
+// being wrong: a label of 60 characters is legal, and is not once -media is
+// appended to it.
+func TestADerivedMediaHostnameIsCheckedLikeADeclaredOne(t *testing.T) {
+	cfg := withMedia(t, "")
+	if result := validate.Check(cfg); len(result.Findings) != 0 {
+		t.Fatalf("the derived docs-media.example.org should be quiet, got %v", result.Findings)
+	}
+
+	long := strings.Repeat("d", 60)
+	docs := cfg.Apps["docs"]
+	docs.Hostname = long + ".example.org"
+	cfg.Apps["docs"] = docs
+	result := validate.Check(cfg)
+	if !refusedFor(result, "media-hostname-is-not-a-hostname", "apps.docs.hostnames.media") {
+		t.Fatalf("%s-media is a 66 character label and must be refused, got %v", long, result.Findings)
+	}
+	for _, f := range result.Refusals() {
+		if f.Rule == "media-hostname-is-not-a-hostname" && !strings.Contains(f.Message, "derived") {
+			t.Errorf("a refusal of a name nobody wrote must say it was derived, got %q", f.Message)
+		}
+	}
+}
+
+// Each declared shape that cannot work, against the key an operator edits.
+func TestADeclaredMediaHostnameIsAHostnameUnderTheDomain(t *testing.T) {
+	for _, tc := range []struct {
+		media, rule string
+	}{
+		{"Docs-Media.example.org", "media-hostname-is-not-a-hostname"},
+		{"https://docs-media.example.org", "media-hostname-is-not-a-hostname"},
+		{"docs-media.example.org:8443", "media-hostname-is-not-a-hostname"},
+		{"-docs.example.org", "media-hostname-is-not-a-hostname"},
+		{"docs..example.org", "media-hostname-is-not-a-hostname"},
+		{"localhost", "media-hostname-is-not-a-hostname"},
+		{"docs-media.example.net", "media-hostname-outside-the-domain"},
+		// A suffix match on the bare domain would accept this one.
+		{"docs-media.notexample.org", "media-hostname-outside-the-domain"},
+		{"media.docs.example.org", "media-hostname-under-an-app-hostname"},
+		// A child of another app's hostname is refused too.
+		{"media.id.example.org", "media-hostname-under-an-app-hostname"},
+	} {
+		result := validate.Check(withMedia(t, tc.media))
+		if !refusedFor(result, tc.rule, "apps.docs.hostnames.media") {
+			t.Errorf("hostnames.media %q: want %s, got %v", tc.media, tc.rule, result.Findings)
+		}
+	}
+	for _, ok := range []string{"docs-media.example.org", "attachments.example.org", "a.b.example.org"} {
+		if result := validate.Check(withMedia(t, ok)); len(result.Findings) != 0 {
+			t.Errorf("hostnames.media %q should be accepted, got %v", ok, result.Findings)
+		}
+	}
+}
+
+// A declared media hostname that another app already uses as its own, and a
+// derived one that collides with a declared one, are the same refusal from two
+// directions.
+func TestAMediaHostnameCannotBeAnotherAppsHostname(t *testing.T) {
+	result := validate.Check(withMedia(t, "id.example.org"))
+	if !refusedFor(result, "duplicate-hostname", "apps.docs.hostnames.media") && !refusedFor(result, "duplicate-hostname", "apps.auth.hostname") {
+		t.Errorf("docs's media hostname is auth's own hostname and must be refused, got %v", result.Findings)
+	}
+
+	cfg := load(t, "duplicate-derived-media-hostname")
+	result = validate.Check(cfg)
+	var found bool
+	for _, f := range result.Refusals() {
+		if f.Rule == "duplicate-hostname" && strings.Contains(f.Message, "derived") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a clash with a derived media hostname must say the name was derived, got %v", result.Findings)
 	}
 }

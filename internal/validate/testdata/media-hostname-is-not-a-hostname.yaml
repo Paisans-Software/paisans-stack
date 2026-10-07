@@ -1,5 +1,7 @@
-# A coherent three site deployment. Every fixture in this directory is a
-# variation on this one, so that a test names exactly the thing it breaks.
+# valid.yaml with one thing broken: docs declares a media hostname that is
+# not a hostname, because an underscore is not allowed in a DNS label. It
+# would be a site address the gateway cannot get a certificate for, and a URL
+# Outline hands every browser.
 version: 1
 
 community:
@@ -40,7 +42,7 @@ sites:
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 
 cluster:
-  sites: [home-a, home-c]
+  sites: [home-a, home-b]
   port: 5000
   postgres_version: "18"
   synchronous: true
@@ -61,6 +63,8 @@ apps:
     kind: outline
     hostname: docs.example.org
     placement: cluster
+    hostnames:
+      media: docs_media.example.org
     settings:
       s3_bucket: docs-uploads
   auth:

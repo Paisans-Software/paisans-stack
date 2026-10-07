@@ -28,11 +28,12 @@ func TestUsesObjectStorage(t *testing.T) {
 }
 
 // Mbin's media must be fetchable by a federating server with no credential,
-// which is why its bucket is public. Outline's bucket holds document
-// attachments and must never be.
-func TestOnlyMbinServesObjectsPublicly(t *testing.T) {
+// and so must the blog's images now that the wisp fork serves them only from
+// image_url_base. Outline's bucket holds document attachments and must never
+// be.
+func TestMbinAndTheBlogServeObjectsPubliclyAndOutlineDoesNot(t *testing.T) {
 	for _, kind := range config.Kinds() {
-		want := kind == config.KindMbin
+		want := kind == config.KindMbin || kind == config.KindWriteFreely
 		if got := kinds.ServesObjectsPublicly(kind); got != want {
 			t.Errorf("%s: ServesObjectsPublicly is %v, want %v", kind, got, want)
 		}
@@ -43,18 +44,18 @@ func TestOnlyMbinServesObjectsPublicly(t *testing.T) {
 }
 
 // The wisp fork supports Postgres and S3, so the blog joins the same cluster
-// and the same object store as everything else. Its objects are not public:
-// the fork streams images through its own /uploads/ route rather than emitting
-// an S3 URL, so nothing anonymous ever reaches its bucket.
-func TestWriteFreelyUsesPostgresAndPrivateObjectStorage(t *testing.T) {
+// and the same object store as everything else. With S3 the fork is direct
+// only: it writes images and never serves them, so a reader with no credential
+// has to be able to read its bucket.
+func TestWriteFreelyUsesPostgresAndPublicObjectStorage(t *testing.T) {
 	if !kinds.UsesPostgres(config.KindWriteFreely) {
 		t.Error("the wisp fork keeps its data in Postgres")
 	}
 	if !kinds.UsesObjectStorage(config.KindWriteFreely) {
 		t.Error("the wisp fork keeps uploaded images in S3")
 	}
-	if kinds.ServesObjectsPublicly(config.KindWriteFreely) {
-		t.Fatal("the fork serves its own images, so its bucket must never be world readable")
+	if !kinds.ServesObjectsPublicly(config.KindWriteFreely) {
+		t.Fatal("the fork never serves its own images under S3, so its bucket must be readable by a reader with no credential")
 	}
 	var sawPostgres bool
 	for _, s := range kinds.Services(config.KindWriteFreely) {
@@ -64,6 +65,49 @@ func TestWriteFreelyUsesPostgresAndPrivateObjectStorage(t *testing.T) {
 	}
 	if !sawPostgres {
 		t.Error("a pinned blog runs its own Postgres beside itself, so the kind needs that service")
+	}
+}
+
+// The media role and object storage are one fact stated twice, and they must
+// agree: a kind that stores objects without the role would publish URLs
+// nothing routes, and a kind with the role and no bucket would route a
+// hostname to nothing.
+func TestEveryKindThatStoresObjectsHasAMediaRole(t *testing.T) {
+	for _, kind := range config.Kinds() {
+		if got, want := kinds.HasHostnameRole(kind, kinds.MediaRole), kinds.UsesObjectStorage(kind); got != want {
+			t.Errorf("%s: HasHostnameRole(media) is %v, UsesObjectStorage is %v", kind, got, want)
+		}
+	}
+}
+
+// The derived name is a sibling of the app's own hostname, under the
+// community's domain, and never a child of it or a name for the backend. A
+// declared name wins outright.
+func TestMediaHostnameIsDerivedAsASiblingAndCanBeOverridden(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		app  config.App
+		want string
+	}{
+		{"mbin", config.App{Kind: config.KindMbin, Hostname: "talk.example.org"}, "talk-media.example.org"},
+		{"outline", config.App{Kind: config.KindOutline, Hostname: "docs.example.org"}, "docs-media.example.org"},
+		{"writefreely", config.App{Kind: config.KindWriteFreely, Hostname: "blog.example.org"}, "blog-media.example.org"},
+		// The label is the first one, and the result is under the domain
+		// rather than under whatever the rest of the app's hostname was.
+		{"deeper hostname", config.App{Kind: config.KindMbin, Hostname: "talk.eu.example.org"}, "talk-media.example.org"},
+		{"declared", config.App{Kind: config.KindOutline, Hostname: "docs.example.org", Hostnames: map[string]string{"media": "attachments.example.org"}}, "attachments.example.org"},
+		{"stores nothing", config.App{Kind: config.KindPocketID, Hostname: "id.example.org"}, ""},
+		{"synapse keeps media on disk", config.App{Kind: config.KindSynapse, Hostname: "chat.example.org"}, ""},
+	} {
+		if got := kinds.MediaHostname(tc.app, "example.org"); got != tc.want {
+			t.Errorf("%s: MediaHostname = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if !kinds.MediaHostnameIsDerived(config.App{Kind: config.KindMbin, Hostname: "talk.example.org"}) {
+		t.Error("an app with no hostnames.media has a derived media hostname")
+	}
+	if kinds.MediaHostnameIsDerived(config.App{Kind: config.KindMbin, Hostname: "talk.example.org", Hostnames: map[string]string{"media": "m.example.org"}}) {
+		t.Error("an app that declares hostnames.media does not have a derived one")
 	}
 }
 

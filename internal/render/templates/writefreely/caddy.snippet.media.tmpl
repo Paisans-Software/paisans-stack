@@ -1,0 +1,49 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# {{ .App.Name }}'s images, imported by the gateway's block for
+# {{ .S3.MediaHostname }}. With S3 storage the writefreely-wisp fork writes
+# images to its bucket and never reads them back to serve them: it publishes
+# every image URL under `[storage] image_url_base`, which is this hostname with
+# no path, and its own /uploads/ route only redirects here. A request's path is
+# therefore the object key, and nothing has to be stripped from it.
+#
+# NEVER GATE THIS HOSTNAME. A reader's browser fetches every image on the blog
+# from here, and so does a federating server copying a post. It is public to
+# anyone holding a link.
+#
+# Garage's web endpoint on 3902 is the only way Garage serves an object with no
+# credential, and it resolves the bucket from the request's Host. So Host is
+# rewritten to {{ .S3.WebHost }}, an internal name that resolves nowhere, and
+# that name never leaves the gateway.
+#
+# This hostname is {{ .App.Name }}'s alone, which is the reason it exists:
+# pointing it at a CDN, another provider or another Garage is a DNS change for
+# this app and no other.
+#
+# The headers are here because no S3 provider can store them on an object, and
+# an application that stores what it is given byte for byte stores an SVG
+# that can carry script. The sandbox keeps such a file inert even when it is
+# opened directly rather than through an <img>, and nosniff stops a browser
+# guessing a more dangerous type than the one Garage sends. `defer` applies
+# them after the upstream's own headers, so they replace rather than add to
+# anything Garage ever sends.
+header {
+	defer
+	Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+	X-Content-Type-Options nosniff
+}
+reverse_proxy{{ range .S3.GarageAddresses }} {{ . }}:3902{{ end }} {
+{{- if gt (len .S3.GarageAddresses) 1 }}
+	# Every Garage node, in storage.garage.sites order: the first serves while
+	# it is up. lb_try_duration sends a request whose connection failed to the
+	# next node, and a 503 is Garage saying it lost quorum. No active check on
+	# Garage's /health, which judges with the consistent write quorum whatever
+	# the configured mode, so at replication 2 on two nodes it calls the
+	# survivor unavailable while it serves every read.
+	lb_policy first
+	lb_try_duration 5s
+	fail_duration 10s
+	unhealthy_status 503
+{{- end }}
+	header_up Host {{ .S3.WebHost }}
+}

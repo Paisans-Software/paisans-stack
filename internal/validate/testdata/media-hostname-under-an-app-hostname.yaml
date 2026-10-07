@@ -1,5 +1,6 @@
-# A coherent three site deployment. Every fixture in this directory is a
-# variation on this one, so that a test names exactly the thing it breaks.
+# valid.yaml with one thing broken: docs declares a media hostname that is a
+# child of its own hostname, so cookies scoped to docs.example.org reach it.
+# A sibling, docs-media.example.org, is what the derivation would give.
 version: 1
 
 community:
@@ -40,7 +41,7 @@ sites:
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 
 cluster:
-  sites: [home-a, home-c]
+  sites: [home-a, home-b]
   port: 5000
   postgres_version: "18"
   synchronous: true
@@ -61,6 +62,8 @@ apps:
     kind: outline
     hostname: docs.example.org
     placement: cluster
+    hostnames:
+      media: files.docs.example.org
     settings:
       s3_bucket: docs-uploads
   auth:

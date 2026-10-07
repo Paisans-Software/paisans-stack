@@ -150,14 +150,11 @@ func absent(out string, err error, marker string) (bool, error) {
 }
 
 // BucketName is the bucket an app's objects live in: a declared s3_bucket
-// setting, or <app>-uploads. This mirrors internal/render's appValues.S3.Bucket
-// derivation (see internal/render/appview.go), because the bucket this package
-// creates has to be the same one the rendered application is told to use.
+// setting, or <app>-uploads. It is kinds.BucketName, which internal/render
+// also reads, because the bucket this package creates has to be the same one
+// the rendered application is told to use. Exported for storage add.
 func BucketName(app config.App, name string) string {
-	if v, ok := app.Settings["s3_bucket"].(string); ok && v != "" {
-		return v
-	}
-	return name + "-uploads"
+	return kinds.BucketName(name, app)
 }
 
 // Build checks what already exists on the target site's node and returns a

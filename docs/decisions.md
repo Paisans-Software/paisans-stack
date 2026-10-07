@@ -779,3 +779,92 @@ with 24 values covering each of those cases plus empty, numbers, booleans,
 matched the Go input, after undoing the `$$` compose prints for a literal `$`
 in its output. Reading `$$` as that escape is an inference from the output
 being consistently doubled, not documented behaviour that was looked up.
+
+## 2026-10-04: Each app's objects are served on a media hostname of its own
+
+Founder decision. The design is the amendment *one media hostname per app* in
+`docs/specs/2026-10-02-serving-public-objects.md`. This supersedes two earlier
+entries: *The media hostname is one per deployment, not one per app*, under
+the Garage provisioning decision, and the per bucket routing under *A public
+bucket is served by Garage's web endpoint*.
+
+### A hostname can move and a path cannot
+
+Each app that stores objects gets `<label>-media.<domain>`, a sibling of its
+own hostname, and can name another under `hostnames.media`. A hostname is the
+unit DNS re-points: one app's media can move to a CDN, another provider or
+another Garage without touching any other app. A bucket as a path under one
+shared hostname could only move with all of them. Two hostnames are also two
+browser origins, so one app's user uploads cannot script against another's.
+
+The single hostname was kept before because remote instances would have cached
+URLs in that form. Checked rather than assumed: `git tag` lists nothing, and
+`origin/main` carries none of the media work, so nothing has been released and
+no deployment has published a URL in either shape. There was nothing to keep
+working, so the old hostname was removed rather than kept as a legacy route.
+
+### A sibling, not a child, and not a backend name
+
+`media.talk.example.org` was rejected because a cookie the app scopes to its
+own host reaches every name under it. `garage.` and `s3.` were rejected
+because they name what answers rather than whose objects these are, and what
+answers is exactly the part that is meant to change. Both rules are refusals
+in `validate`, alongside a hostname shape check, a declared name outside the
+domain, and a derived name colliding with any other hostname.
+
+The config key is a role in the existing `hostnames` map rather than a new
+field, because a role is already what selects a hostname's snippet and what
+the duplicate check walks. It differs from `wellknown` in one way: it exists
+whether or not it is declared.
+
+### Public is per kind, and the blog joined Mbin
+
+writefreely-wisp#171 makes the fork's S3 storage direct only: it requires
+`[storage] image_url_base` and never serves an image from the bucket itself.
+`kinds.ServesObjectsPublicly` is therefore true for `writefreely` as well as
+`mbin`, and the earlier entry *The fork serves its own images, so its bucket
+stays private* no longer describes the fork. Outline stays private, behind its
+own media hostname on the S3 API with `Host` unchanged.
+
+The pinned fork image predates #171 and ignores `image_url_base`, which was
+observed rather than assumed: `TestRenderedPassthroughKeyIsReadByWriteFreely`
+boots that image against the rendered `config.ini`, key included. Until the pin
+moves, the blog streams its own images and its media hostname carries nothing.
+
+### No gate, and headers on the public ones
+
+Media hostnames are public to anyone with the link and never gated, including
+for an app whose own hostname is gated, because ActivityPub servers hotlink the
+original URLs. Public media hostnames send `Content-Security-Policy:
+default-src 'none'; style-src 'unsafe-inline'; sandbox` and
+`X-Content-Type-Options: nosniff`, because the apps store SVGs byte for byte
+and no S3 provider can store a header on an object. Outline's sends nosniff
+only: its PDF previews are an `<embed>` of the attachment, and the sandbox
+would stop the browser's PDF viewer. That consequence is reasoned, not
+observed in a browser.
+
+### Outline's bucket name is checked against its media URL
+
+Outline v1.10.0 treats the bucket name appearing anywhere in
+`AWS_S3_UPLOAD_BUCKET_URL` as virtual host addressing, by substring, and then
+drops the bucket from the upload path while Garage needs it there. A hostname
+per app makes that reachable (bucket `docs` on `docs-media.example.org`), so it
+is refused as `outline-bucket-in-media-url`. Read from Outline's source, not
+run against Outline.
+
+### What was run
+
+`TestEachAppsMediaHostnameServesOnlyItsOwnBucket`, behind the
+`garage_integration` tag, against two `dxflrs/garage:v1.0.1` nodes from their
+rendered `garage.toml` and a Caddy running the three rendered media snippets.
+Mbin's and the blog's objects returned 200 anonymously with exactly one copy of
+each header; Outline's returned 403 anonymously and 200 presigned for
+`docs-media.example.org`; Outline's key asked for on `talk-media.example.org`
+returned 404. With a `header_up Host` added to Outline's snippet, the presigned
+fetch failed with Garage's `Invalid signature`, so the test can fail.
+
+The Caddy was `ghcr.io/paisans-software/caddy:2.11.4`, through the
+`PAISANS_TEST_CADDY_IMAGE` override this change adds, not the rendered 2.11.6
+pin: that image is in a registry that needs a login the workstation did not
+have. The snippets use only stock directives, none from the modules that image
+adds, but it was not the pinned bytes.

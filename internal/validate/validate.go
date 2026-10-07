@@ -137,7 +137,9 @@ func Check(cfg *config.Config) Result {
 	c.gateWithoutAGate()
 	c.gatedMatrixHostname()
 	c.homeserverMustBePinned()
-	c.objectStorageWithoutAMediaHostname()
+	c.mediaHostnameShape()
+	c.mediaHostnameUnderAnAppHostname()
+	c.outlineBucketInMediaURL()
 	c.configKeyIsNestedInAnEnvFile()
 	c.configKeyLooksLikeASecret()
 	c.configKeySteersCompose()
@@ -775,32 +777,181 @@ func (c *checker) homeserverMustBePinned() {
 	}
 }
 
-// objectStorageWithoutAMediaHostname refuses an app that stores objects when
-// nothing names where they are served from.
+// mediaHostnameShape refuses a media hostname that cannot be one.
 //
-// This check lives here rather than as a structural error in internal/config
-// because internal/kinds, which is what knows a kind uses object storage,
-// already imports internal/config: config importing kinds back to ask would
-// be a cycle.
+// Every app that stores objects serves them on a hostname of its own, derived
+// as <label>-media.<domain> from the app's own hostname unless the app
+// declares `hostnames.media`. Either way the name becomes a site address on
+// the gateway and a URL an application writes into every page, feed and
+// federated post, so a name that is not a hostname is a gateway that will not
+// load or a URL nothing can fetch.
 //
-// storage.media_hostname is one hostname for the whole deployment, not one per
-// app, and without it the endpoint an app writes through is a mesh address. A
-// browser cannot reach that, and a federating instance that has cached such a
-// URL keeps it, which makes the failure permanent rather than merely broken
-// until fixed.
-func (c *checker) objectStorageWithoutAMediaHostname() {
-	if c.cfg.Storage.MediaHostname != "" {
-		return
+// A declared name must also sit under community.domain. The certificate is
+// issued over DNS-01 against the deployment's own zone, and a name outside it
+// is a name the configured DNS provider cannot answer a challenge for. A
+// derived name is under the domain by construction, and can still fail the
+// hostname check: a 60 character label is legal and is not once -media is
+// added to it.
+func (c *checker) mediaHostnameShape() {
+	domain := strings.ToLower(c.cfg.Community.Domain)
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		media := kinds.MediaHostname(app, c.cfg.Community.Domain)
+		if media == "" {
+			continue
+		}
+		key := fmt.Sprintf("apps.%s.hostnames.%s", name, kinds.MediaRole)
+		derived := kinds.MediaHostnameIsDerived(app)
+		if problem := hostnameProblem(media); problem != "" {
+			if derived {
+				c.refuse("media-hostname-is-not-a-hostname", key,
+					"is not declared, and the name derived from apps.%s.hostname is %q, which is not a hostname: %s. The media hostname is <label>-media.<domain>, a sibling of the app's own hostname. Declare hostnames.media to choose another name under %s.",
+					name, media, problem, c.cfg.Community.Domain)
+			} else {
+				c.refuse("media-hostname-is-not-a-hostname", key,
+					"is %q, which is not a hostname: %s. It becomes a site address on the gateway and a URL the app publishes to readers, so it has to be a name a browser can fetch, for example %s.",
+					media, problem, name+kinds.MediaSuffix+"."+c.cfg.Community.Domain)
+			}
+			continue
+		}
+		if derived || domain == "" {
+			continue
+		}
+		if !strings.HasSuffix(media, "."+domain) {
+			c.refuse("media-hostname-outside-the-domain", key,
+				"is %q, which is not under community.domain (%s). Its certificate is issued over DNS-01 against the deployment's own zone, so the configured DNS provider cannot answer for a name outside it. Use a name under %s, for example %s.",
+				media, c.cfg.Community.Domain, c.cfg.Community.Domain, name+kinds.MediaSuffix+"."+c.cfg.Community.Domain)
+		}
+	}
+}
+
+// mediaHostnameUnderAnAppHostname refuses a media hostname that is a child of
+// an app's own hostname.
+//
+// media.talk.example.org would sit under talk.example.org, so any cookie an
+// app sets with a Domain attribute on its own host is sent to the media
+// hostname too, and a file served from there could set cookies the app would
+// then read back. The media hostname exists partly to be a different origin
+// from every app, and a child shares exactly the cookie scope that origin was
+// meant to leave behind. A sibling, <label>-media.<domain>, shares nothing
+// with the app but the community's own domain.
+//
+// That domain is the one exception, because it cannot be otherwise: every
+// hostname in a deployment sits under it, and a synapse kind commonly serves
+// its delegation documents on it. A cookie scoped to the community's domain is
+// a deliberate choice, made by the gate, and it already reaches every app.
+func (c *checker) mediaHostnameUnderAnAppHostname() {
+	domain := strings.ToLower(c.cfg.Community.Domain)
+	type claim struct{ key, hostname string }
+	var appHosts []claim
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		appHosts = append(appHosts, claim{fmt.Sprintf("apps.%s.hostname", name), app.Hostname})
+		for _, role := range sortedKeys(app.Hostnames) {
+			if role == kinds.MediaRole {
+				continue
+			}
+			appHosts = append(appHosts, claim{fmt.Sprintf("apps.%s.hostnames.%s", name, role), app.Hostnames[role]})
+		}
 	}
 	for _, name := range c.cfg.AppNames() {
 		app := c.cfg.Apps[name]
-		if !kinds.UsesObjectStorage(app.Kind) {
+		media := strings.ToLower(kinds.MediaHostname(app, c.cfg.Community.Domain))
+		if media == "" {
 			continue
 		}
-		c.refuse("object-storage-without-a-media-hostname", "storage.media_hostname",
-			"is required: %s stores objects and the URL an app publishes must be one a browser can reach. The endpoint an app writes through is a mesh address, which a browser cannot reach and which a federating instance caches permanently once it has seen one. Declare one hostname for the deployment, for example media.%s.",
-			name, c.cfg.Community.Domain)
+		for _, host := range appHosts {
+			parent := strings.ToLower(strings.TrimSpace(host.hostname))
+			if parent == "" || parent == domain {
+				continue
+			}
+			if !strings.HasSuffix(media, "."+parent) {
+				continue
+			}
+			c.refuse("media-hostname-under-an-app-hostname", fmt.Sprintf("apps.%s.hostnames.%s", name, kinds.MediaRole),
+				"is %q, a child of %q (%s). Cookies an app scopes to its own host reach every name under it, so a media hostname there shares the cookie scope it exists to be outside of. Use a sibling instead, for example %s.",
+				media, host.hostname, host.key, name+kinds.MediaSuffix+"."+c.cfg.Community.Domain)
+			break
+		}
 	}
+}
+
+// outlineBucketInMediaURL refuses an Outline app whose bucket name appears in
+// its media URL.
+//
+// Outline decides between path style and virtual host addressing by looking
+// for the bucket name anywhere in AWS_S3_UPLOAD_BUCKET_URL, as a substring,
+// rather than by asking: getPublicEndpoint in server/storage/files/
+// S3Storage.ts, read at v1.10.0, is `host.includes(AWS_S3_UPLOAD_BUCKET_NAME)`.
+// When it matches, Outline stops appending the bucket to the URL a browser
+// uploads to and builds attachment URLs on, while its S3 client still signs
+// path style. Garage resolves a bucket from the path here, because the media
+// hostname is not under its S3 root domain, so every upload would go to a
+// path with no bucket in it and fail after the deployment is up.
+//
+// With the default names it cannot happen: docs-uploads is not a substring of
+// https://docs-media.example.org. A bucket named docs, or one named media, is.
+func (c *checker) outlineBucketInMediaURL() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Kind != config.KindOutline {
+			continue
+		}
+		media := kinds.MediaHostname(app, c.cfg.Community.Domain)
+		if media == "" {
+			continue
+		}
+		bucket := kinds.BucketName(name, app)
+		url := "https://" + media
+		if !strings.Contains(url, bucket) {
+			continue
+		}
+		c.refuse("outline-bucket-in-media-url", fmt.Sprintf("apps.%s.hostnames.%s", name, kinds.MediaRole),
+			"makes the bucket URL %s, which contains the bucket name %q. Outline reads a bucket name anywhere in that URL as virtual host addressing and stops putting the bucket in the path, while Garage needs it there, so every attachment upload would fail. Rename the bucket (settings.s3_bucket) or choose a media hostname that does not contain it.",
+			url, bucket)
+	}
+}
+
+// hostnameProblem says why a name is not a usable DNS hostname, or returns
+// empty when it is one. It is the RFC 1123 shape, written lowercase: labels of
+// 1 to 63 letters, digits and hyphens, not starting or ending with a hyphen,
+// at least two of them, 253 characters in all.
+//
+// Lowercase is required rather than folded. Caddy and DNS both ignore case,
+// but the name is also written into an application's configuration and from
+// there into URLs other servers store, and two spellings of one name are two
+// URLs to anything comparing them as strings.
+func hostnameProblem(host string) string {
+	switch {
+	case host == "":
+		return "it is empty"
+	case len(host) > 253:
+		return "it is longer than 253 characters"
+	case host != strings.ToLower(host):
+		return "it contains capital letters; write it lowercase"
+	case strings.Contains(host, "://") || strings.ContainsAny(host, "/:"):
+		return "it carries a scheme, a port or a path; give the name alone"
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return "it is a single label, not a name under a domain"
+	}
+	for _, label := range labels {
+		switch {
+		case label == "":
+			return "it has an empty label"
+		case len(label) > 63:
+			return fmt.Sprintf("its label %q is longer than 63 characters", label)
+		case label[0] == '-' || label[len(label)-1] == '-':
+			return fmt.Sprintf("its label %q starts or ends with a hyphen", label)
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+				return fmt.Sprintf("its label %q contains %q, and only letters, digits and hyphens are allowed", label, r)
+			}
+		}
+	}
+	return ""
 }
 
 // duplicateHostname refuses the same public name claimed twice.
@@ -819,28 +970,51 @@ func (c *checker) objectStorageWithoutAMediaHostname() {
 // This is the same failure unknown-hostname-role and gate-without-a-gate-app
 // exist to prevent, arrived at from a different direction.
 func (c *checker) duplicateHostname() {
-	first := map[string]string{} // hostname -> the key that claimed it first
+	type claim struct {
+		key, hostname string
+		// derived is set for a media hostname nobody wrote, so the message
+		// can say where the name came from rather than quoting a line the
+		// file does not have.
+		derived bool
+	}
+	describe := func(cl claim) string {
+		if cl.derived {
+			return cl.key + ", derived from the app's own hostname,"
+		}
+		return cl.key
+	}
+	first := map[string]claim{} // hostname -> the claim that took it first
 	for _, name := range c.cfg.AppNames() {
 		app := c.cfg.Apps[name]
-		claims := []struct{ key, hostname string }{
-			{fmt.Sprintf("apps.%s.hostname", name), app.Hostname},
-		}
+		claims := []claim{{key: fmt.Sprintf("apps.%s.hostname", name), hostname: app.Hostname}}
 		for _, role := range sortedKeys(app.Hostnames) {
-			claims = append(claims, struct{ key, hostname string }{
-				fmt.Sprintf("apps.%s.hostnames.%s", name, role), app.Hostnames[role],
-			})
+			claims = append(claims, claim{key: fmt.Sprintf("apps.%s.hostnames.%s", name, role), hostname: app.Hostnames[role]})
 		}
-		for _, claim := range claims {
-			if claim.hostname == "" {
+		// A derived media hostname is claimed exactly as if it had been
+		// written, because it becomes a site address exactly as if it had
+		// been. It is the claim most likely to collide unseen: an app whose
+		// hostname is talk-media.example.org clashes with talk's media
+		// hostname, and neither line in the file says so.
+		if kinds.MediaHostnameIsDerived(app) {
+			if media := kinds.MediaHostname(app, c.cfg.Community.Domain); media != "" {
+				claims = append(claims, claim{key: fmt.Sprintf("apps.%s.hostnames.%s", name, kinds.MediaRole), hostname: media, derived: true})
+			}
+		}
+		for _, cl := range claims {
+			if cl.hostname == "" {
 				continue
 			}
-			if earlier, taken := first[claim.hostname]; taken {
-				c.refuse("duplicate-hostname", claim.key,
-					"is %q, which %s already claims. Every hostname becomes a site address in the gateway's Caddyfile, and Caddy refuses a configuration where two site blocks claim one address rather than choosing between them, so this takes every hostname in the deployment down rather than these two. Give each name to one app and one role.",
-					claim.hostname, earlier)
+			if earlier, taken := first[cl.hostname]; taken {
+				said := fmt.Sprintf("is %q", cl.hostname)
+				if cl.derived {
+					said = fmt.Sprintf("is not declared, so it is derived as %q", cl.hostname)
+				}
+				c.refuse("duplicate-hostname", cl.key,
+					"%s, which %s already claims. Every hostname becomes a site address in the gateway's Caddyfile, and Caddy refuses a configuration where two site blocks claim one address rather than choosing between them, so this takes every hostname in the deployment down rather than these two. Give each name to one app and one role; a media hostname can be chosen with hostnames.media.",
+					said, describe(earlier))
 				continue
 			}
-			first[claim.hostname] = claim.key
+			first[cl.hostname] = cl
 		}
 	}
 }

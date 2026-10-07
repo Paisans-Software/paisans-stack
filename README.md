@@ -84,7 +84,7 @@ toolkit should not overstate it:
 | Outline | full | `FILE_STORAGE=s3` with the `AWS_*` variables; non-AWS endpoints need `AWS_S3_FORCE_PATH_STYLE=true`. Known upstream bug: the bucket must not be named `outline` |
 | Synapse | partial | `synapse-s3-storage-provider` is a *storage provider* that supplements the media store. **A local media directory is still required.** `store_synchronous: True` writes to S3 immediately; the bucket prefix cannot be changed once media exists |
 | Pocket ID | full, plus better | `FILE_BACKEND` takes `filesystem` (default), `s3`, or **`database`**. See the note below — `database` is the recommendation |
-| WriteFreely | full, but private | the kind means the [writefreely-wisp](https://github.com/josephquigley/writefreely-wisp) fork, which adds `[storage] type = s3`. Its bucket is never routed to the media hostname: the fork streams uploads through its own `/uploads/` route rather than emitting an S3 URL, so nothing anonymous reaches the bucket directly |
+| WriteFreely | full, and public | the kind means the [writefreely-wisp](https://github.com/josephquigley/writefreely-wisp) fork, which adds `[storage] type = s3`. With S3 the fork is direct only: it writes images and never serves them, requires `[storage] image_url_base`, and redirects its own `/uploads/` route there, so the blog's bucket is served on the blog's media hostname like Mbin's. That needs a fork build containing writefreely-wisp#171; an older one ignores the key and streams images itself |
 
 **Pocket ID should use `FILE_BACKEND=database`, not S3.** Its uploads are
 profile pictures and admin-uploaded branding — on a real deployment, about a
@@ -108,19 +108,51 @@ because its S3 support supplements the media store rather than replacing it. Its
 local media directory has to be replicated out of band, or accepted as lost on
 promotion. Either is defensible; leaving it undecided is not.
 
-**`storage.media_hostname` says where objects are served from, and it is
-required once any app stores objects, refused as
-`object-storage-without-a-media-hostname` otherwise.** It is one hostname for
-the whole deployment rather than one per app, because a bucket is a path under
-it. The endpoint an app writes through is a mesh address, and a browser cannot
-reach one: without this hostname the toolkit would render an app that uploads
-successfully and publishes a URL nothing outside the mesh can fetch, and a
-federating instance that has cached such a URL keeps it.
+**Each app that stores objects serves them on a hostname of its own**, a
+sibling of the app's: an app at `talk.example.org` serves its media at
+`talk-media.example.org`. The name is derived, `<label>-media.<domain>` from the
+first label of the app's hostname, and an app can choose another under
+`hostnames.media`. Every one of them needs a DNS record pointing at the
+gateway, the same as the app's own hostname. The endpoint an app writes through
+is a mesh address, and a browser cannot reach one: without a public hostname
+the toolkit would render an app that uploads successfully and publishes a URL
+nothing outside the mesh can fetch, and a federating instance that has cached
+such a URL keeps it.
 
-This check lives in `internal/validate` rather than as a structural error in
+One hostname per app, rather than one for the deployment with a bucket as a
+path under it, because a hostname is the unit DNS can move. Pointing one app's
+media at a CDN, another provider or another Garage is a record change for that
+app and no other; a path under a shared hostname can only move with every other
+app's. Two apps' uploads on two hostnames are also two browser origins, so a
+file one app stored cannot script against another's. The shared hostname was
+this toolkit's first shape, and it was replaced before anything was released
+under it.
+
+The name is a **sibling, never a child**, and never a name for the backend.
+`media.talk.example.org` sits under the app's own host, so a cookie the app
+scopes to that host reaches every media request and a file served there could
+set cookies the app reads back; that is refused as
+`media-hostname-under-an-app-hostname`. `garage.` or `s3.` would name what
+answers today rather than whose objects these are, which is the one thing about
+the URL that should never change. A declared name must be a hostname
+(`media-hostname-is-not-a-hostname`) under `community.domain`
+(`media-hostname-outside-the-domain`), because its certificate is issued over
+DNS-01 against the deployment's own zone. A derived name is checked the same
+way, and so is a clash with any other hostname in the deployment
+(`duplicate-hostname`): a derived name nobody wrote is still a site address,
+and it is the claim most likely to collide unseen.
+
+These checks live in `internal/validate` rather than as structural errors in
 `internal/config`. `internal/kinds`, which knows which kinds use object
 storage, already imports `internal/config`; `config` asking `kinds` back would
 be an import cycle.
+
+**Media is public to anyone holding the link, and a media hostname is never
+gated.** A federating server fetching an image is a machine with no account; it
+will not sign a request and it will not follow a redirect to a passkey prompt,
+so a gate would break every federated image. That holds for the app whose own
+hostname is gated, too: the gate stays on the app's hostname and does not
+follow it to its media.
 
 **A public bucket's objects are served without a credential, and a private
 bucket's are not.** Garage's S3 API refuses every unauthenticated request
@@ -130,27 +162,45 @@ that serves an object anonymously, so the toolkit renders it as `[s3_web]` in
 `garage.toml` and grants `garage bucket website --allow` on public buckets
 only.
 
-The gateway is what joins the two. The media hostname carries one route per
-public bucket: the bucket prefix is stripped from the path and the `Host` is
-rewritten to the vhost form the web endpoint resolves a bucket from, which is
-an internal suffix that resolves nowhere on purpose. Everything else falls
-through to the S3 API with `Host` forwarded unchanged, which is load bearing
-rather than tidy: Outline presigns its object URLs, a SigV4 signature covers
-the host it was signed with, and rewriting that header would invalidate every
-URL Outline issues.
+The gateway is what joins the two, one site block per media hostname:
 
-Nothing an app publishes changes, and that is the point of rewriting at the
-gateway rather than changing the URL: `KBIN_STORAGE_URL` stays the path style
-media URL it always was, because remote instances have cached Mbin's URLs and
-we cannot recall them.
+| Kind | Objects | The media hostname goes to | Published as |
+|------|---------|----------------------------|--------------|
+| Mbin | public | Garage's web endpoint on 3902, `Host` rewritten to `<bucket>.web.garage.internal` | `KBIN_STORAGE_URL=https://<media host>` |
+| WriteFreely (the fork) | public | the same | `[storage] image_url_base = https://<media host>` |
+| Outline | private | Garage's S3 API on 3900, `Host` forwarded unchanged | `AWS_S3_UPLOAD_BUCKET_URL=https://<media host>`, path style |
+
+The rewritten `Host` is an internal suffix that resolves nowhere on purpose, so
+there is no DNS record or certificate for it. Because a hostname is one bucket,
+the path is the object key and nothing is stripped from it. Outline's
+forwarding is load bearing rather than tidy: Outline presigns its object URLs
+and the upload a browser submits, a SigV4 signature covers the host it was
+signed with, and rewriting that header would invalidate every URL Outline
+issues. Its URLs are path style, `https://<media host>/<bucket>/<key>`, because
+the media hostname is not under Garage's S3 root domain and Garage then reads
+the bucket from the path. Outline also decides path style by looking for the
+bucket name anywhere in that URL, so a bucket whose name appears in it is
+refused as `outline-bucket-in-media-url`.
+
+**Every public media hostname sends `Content-Security-Policy: default-src
+'none'; style-src 'unsafe-inline'; sandbox` and `X-Content-Type-Options:
+nosniff`.** Mbin and the blog store what they are given byte for byte, an SVG
+that carries script among it, and no S3 provider can store a response header on
+an object, so the gateway is the only place one can be set. The sandbox keeps
+such a file inert when it is opened directly rather than through an `<img>`.
+Outline's media hostname sends nosniff and not the policy, because Outline
+embeds PDF attachments in the page and a browser will not run its PDF viewer in
+a sandboxed document. What the policy would protect against there is already
+handled upstream: Outline stores every type outside a short list of images,
+PDF, audio and video as `Content-Disposition: attachment`, and leaves SVG off
+that list deliberately.
 
 Which kinds are public is a property of the kind, in `internal/kinds`, not a
-setting. A federating server fetching an image is a machine with no account,
-so Mbin's media has to be readable without one; Outline's is read by people
-who are signed in, and its bucket is never routed to the web endpoint at all.
-There is no configuration key that can get this wrong in either direction.
+setting. Outline's attachments are read by people who are signed in, and its
+bucket is never routed to the web endpoint at all. There is no configuration
+key that can get this wrong in either direction.
 
-`TestAnonymousFetchReadsMbinsMediaAndNotOutlines` in `internal/garage` is what
+`TestEachAppsMediaHostnameServesOnlyItsOwnBucket` in `internal/garage` is what
 keeps that honest, against a real Garage behind a real Caddy.
 
 ### Rule 4: the domain is a one-way door
@@ -1060,7 +1110,7 @@ replication reset when one is needed, connect, one layout version with each
 node in a zone named after its site (only distinct zones spread copies across
 sites), sync, provisioning planned by `storage init`'s own planner and found
 present, the gateway's media routes, and a smoke test that writes a probe and
-reads it back through every node and the media hostname. The design, with
+reads it back through every node and through the app's own media hostname. The design, with
 Garage v1.0.1's source behind each gate, is
 `docs/specs/2026-10-07-multisite-garage.md`.
 
@@ -1073,7 +1123,8 @@ blocking in the foreground, which leaves an operator's terminal hostage to a
 residential uplink.
 
 **`storage.garage.sites` is a preference order, not a set.** The first site
-serves every media read the gateway passes on and takes every app's writes
+serves every media read the gateway passes on, for every app's media
+hostname, and takes every app's writes
 (`S3_ENDPOINT`); the others serve only when the ones before them are down. A
 Garage node that receives a write sends the other copies itself, and a home
 line's upload is its slow direction, so the site with the best upload goes
@@ -1146,8 +1197,9 @@ paisans dns init --execute      # creates it
 ```
 
 **The records are derived, never declared.** Each app's `hostname`, each of its
-role `hostnames`, and `storage.media_hostname` get an A record pointing at the
-gateway site's `public_address`. A site whose `endpoint` is a name rather than
+role `hostnames`, and the media hostname of each app that stores objects,
+derived or declared, get an A record pointing at the gateway site's
+`public_address`. A site whose `endpoint` is a name rather than
 an address gets an A record pointing at that site's own `public_address`,
 because that is the name the other sites' WireGuard dials. Where a site also
 declares `public_address6`, each of its names gets an AAAA record as well. A

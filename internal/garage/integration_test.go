@@ -437,17 +437,23 @@ func renderedGarageTOML(t *testing.T) string {
 }
 
 // ---------------------------------------------------------------------------
-// The anonymous read, which is the whole reason the media hostname has two
-// upstreams.
+// The anonymous read, and the presigned one, each on its app's own media
+// hostname.
 // ---------------------------------------------------------------------------
 
+// mediaHosts are the fixture's media hostnames, one per app that stores
+// objects, each derived as <label>-media.<domain> from that app's own
+// hostname. The Host a request carries is the only thing that selects which
+// app's media routing it gets, so every request below sets one.
+var mediaHosts = map[string]string{
+	"talk": "talk-media.example.org",
+	"blog": "blog-media.example.org",
+	"docs": "docs-media.example.org",
+}
+
 const (
-	// mediaHostname is storage.media_hostname in the fixture deployment. It
-	// is the Host every request below carries, because that is the only thing
-	// that selects the gateway's media routing.
-	mediaHostname = "media.example.org"
 	// meshSubnet is mesh.subnet in the fixture deployment. The rendered
-	// garage.toml binds a mesh address and the rendered media snippet proxies
+	// garage.toml binds a mesh address and the rendered media snippets proxy
 	// to one, so the Docker network this test builds has to carry the same
 	// subnet or neither rendered file would be usable as written.
 	meshSubnet = "10.44.0.0/24"
@@ -480,7 +486,7 @@ var garageNodes = []struct {
 
 // mediaCluster is the thing under test: two Garage nodes started from their
 // own rendered garage.toml, and a gateway started from the rendered media
-// snippet, on one network that carries the fixture's mesh subnet.
+// snippets, on one network that carries the fixture's mesh subnet.
 type mediaCluster struct {
 	// Nodes is each site's transport into its own container.
 	Nodes map[string]dockerTransport
@@ -541,8 +547,19 @@ func waitForLog(t *testing.T, container string, within time.Duration, markers ..
 // renderedCaddyImage reads the gateway image out of the rendered infra
 // compose file rather than naming it here, so this test runs the image an
 // operator receives and cannot drift from it when the pin moves.
+//
+// PAISANS_TEST_CADDY_IMAGE replaces it, and the test logs that it did. It
+// exists for a workstation that cannot pull the pinned image, which is
+// published to a registry that needs a login. Nothing the snippets under test
+// use comes from the modules that image adds, so a stock Caddy of the same
+// release exercises the same directives; it is still not the pinned bytes, and
+// a run that used it has to say so.
 func renderedCaddyImage(t *testing.T) string {
 	t.Helper()
+	if override := os.Getenv("PAISANS_TEST_CADDY_IMAGE"); override != "" {
+		t.Logf("PAISANS_TEST_CADDY_IMAGE is set: running %s rather than the rendered pin", override)
+		return override
+	}
 	compose := renderedFile(t, "vm/srv/infra/compose.yaml")
 	match := regexp.MustCompile(`image:\s*(\S*/caddy:\S+)`).FindStringSubmatch(compose)
 	if match == nil {
@@ -562,7 +579,7 @@ func startMediaCluster(t *testing.T) *mediaCluster {
 	stamp := time.Now().UnixNano()
 	dir := t.TempDir()
 
-	network := fmt.Sprintf("paisans-media-%d", stamp)
+	network := fmt.Sprintf("paisans-permedia-%d", stamp)
 	// Registered before any container, so that LIFO cleanup removes the
 	// containers first and the network last. A network with a container still
 	// attached cannot be removed.
@@ -582,7 +599,7 @@ func startMediaCluster(t *testing.T) *mediaCluster {
 			t.Fatalf("writing %s's rendered garage.toml: %v", node.Site, err)
 		}
 
-		container := fmt.Sprintf("paisans-media-%s-%d", node.Site, stamp)
+		container := fmt.Sprintf("paisans-permedia-%s-%d", node.Site, stamp)
 		args := []string{"run", "-d", "--name", container,
 			"--network", network, "--ip", node.Address,
 			"-v", tomlPath + ":/etc/garage.toml"}
@@ -642,34 +659,30 @@ func startMediaCluster(t *testing.T) *mediaCluster {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// The gateway, from the rendered snippet. The Caddyfile is minimal on
-	// purpose: the rendered one would try to obtain certificates for nine
-	// hostnames from a DNS provider. What it would contribute is the site
-	// block, which is three lines and reproduced here, and what is under test
-	// is the snippet it imports.
+	// The gateway, from the rendered snippets. The Caddyfile is minimal on
+	// purpose: the rendered one would try to obtain certificates for every
+	// hostname from a DNS provider. What it would contribute is one site block
+	// per media hostname, three lines each and reproduced here over plain
+	// http, and what is under test is the snippet each one imports.
 	snippets := filepath.Join(dir, "snippets")
 	if err := os.MkdirAll(snippets, 0o755); err != nil {
 		t.Fatalf("creating the snippet directory: %v", err)
 	}
-	snippet := renderedFile(t, "vm/srv/infra/caddy/snippets/media.caddy")
-	if err := os.WriteFile(filepath.Join(snippets, "media.caddy"), []byte(snippet), 0o644); err != nil {
-		t.Fatalf("writing the rendered media snippet: %v", err)
+	caddyfile := "{\n\tadmin off\n\tauto_https off\n}\n"
+	for _, app := range []string{"blog", "docs", "talk"} {
+		file := app + "-media.caddy"
+		snippet := renderedFile(t, "vm/srv/infra/caddy/snippets/"+file)
+		if err := os.WriteFile(filepath.Join(snippets, file), []byte(snippet), 0o644); err != nil {
+			t.Fatalf("writing the rendered %s: %v", file, err)
+		}
+		caddyfile += fmt.Sprintf("\nhttp://%s {\n\timport /etc/caddy/snippets/%s\n}\n", mediaHosts[app], file)
 	}
-	caddyfile := fmt.Sprintf(`{
-	admin off
-	auto_https off
-}
-
-http://%s {
-	import /etc/caddy/snippets/media.caddy
-}
-`, mediaHostname)
 	caddyfilePath := filepath.Join(dir, "Caddyfile")
 	if err := os.WriteFile(caddyfilePath, []byte(caddyfile), 0o644); err != nil {
 		t.Fatalf("writing the minimal Caddyfile: %v", err)
 	}
 
-	gateway := fmt.Sprintf("paisans-media-gateway-%d", stamp)
+	gateway := fmt.Sprintf("paisans-permedia-gateway-%d", stamp)
 	t.Cleanup(func() {
 		exec.Command("docker", "rm", "-f", gateway).Run()
 	})
@@ -875,16 +888,16 @@ func putObject(t *testing.T, endpoint, bucket, key, keyID, secret, body string) 
 	}
 }
 
-// throughGateway issues one request to the gateway with Host set to the media
-// hostname, and returns the status and the body. The Host is the only thing
-// that selects the media routing, so it is set on every call rather than left
-// to the address the request was dialled on.
+// throughGateway issues one request to the gateway with Host set to a media
+// hostname, and returns the status, the response headers and the body. The
+// Host is the only thing that selects an app's media routing, so it is set on
+// every call rather than left to the address the request was dialled on.
 //
 // No credential is added here. A caller that wants one passes a presigned
 // query; there is no code path in this helper that could add an Authorization
 // header, which is what makes the anonymous assertions below mean what they
 // say.
-func throughGateway(t *testing.T, cluster *mediaCluster, path, rawQuery string) (int, string) {
+func throughGateway(t *testing.T, cluster *mediaCluster, host, path, rawQuery string) (int, http.Header, string) {
 	t.Helper()
 	target := "http://" + cluster.Caddy + path
 	if rawQuery != "" {
@@ -894,21 +907,21 @@ func throughGateway(t *testing.T, cluster *mediaCluster, path, rawQuery string) 
 	if err != nil {
 		t.Fatalf("building the request for %s: %v", target, err)
 	}
-	req.Host = mediaHostname
+	req.Host = host
 	if req.Header.Get("Authorization") != "" {
 		t.Fatal("this helper must never carry a credential")
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("fetching %s through the gateway: %v", path, err)
+		t.Fatalf("fetching %s%s through the gateway: %v", host, path, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("reading the response body for %s: %v", path, err)
+		t.Fatalf("reading the response body for %s%s: %v", host, path, err)
 	}
-	return resp.StatusCode, string(body)
+	return resp.StatusCode, resp.Header, string(body)
 }
 
 // bucketWebsiteAccess reads one bucket's website flag back out of Garage.
@@ -927,105 +940,136 @@ func bucketWebsiteAccess(t *testing.T, node dockerTransport, bucket string) stri
 	return ""
 }
 
-// TestAnonymousFetchReadsMbinsMediaAndNotOutlines is the assertion this
-// branch exists for, and it is made against nothing this test wrote itself.
+// publicMediaPolicy is the Content-Security-Policy every public media
+// hostname must send, exactly as the rendered snippet sets it.
+const publicMediaPolicy = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+
+// TestEachAppsMediaHostnameServesOnlyItsOwnBucket is the assertion the media
+// routing exists for, and it is made against nothing this test wrote itself.
 // Two Garage nodes are started from their own rendered garage.toml, a Caddy
-// from the rendered media snippet, the buckets and keys come from the real
+// from the rendered media snippets, the buckets and keys come from the real
 // garage.Build and garage.Execute, and the objects are uploaded with the
 // rendered credential.
 //
-// Three fetches, all through the same gateway, all with Host set to the media
-// hostname:
+// Every fetch goes through the same gateway, and the Host it carries is the
+// only thing that differs:
 //
-//  1. Mbin's object, with no credential of any kind. 200 and the bytes. This
-//     is why the [s3_web] endpoint is rendered and why the gateway rewrites
-//     path style into vhost style: a federating server fetching an image is a
-//     machine with no account, and Garage's S3 API refuses every
-//     unauthenticated request outright.
-//  2. Outline's object, same gateway, no credential. Refused. The absence of
+//  1. Mbin's object on talk-media, with no credential of any kind. 200 and the
+//     bytes, with the sandboxing policy and nosniff. The path is the object
+//     key with no bucket in it, because the hostname is the bucket.
+//  2. The blog's object on blog-media, the same way. The wisp fork never reads
+//     its bucket back under S3, so a reader's browser has to be able to.
+//  3. Outline's object on docs-media, no credential. Refused. The absence of
 //     the object's bytes is asserted alongside the status, because a 200
-//     carrying an error document would satisfy a status check alone and
-//     nothing in a byte comparison can be talked round.
-//  3. Outline's object again, presigned. 200 and the bytes. This is the
-//     property the fallback route exists for and the one most likely to break
-//     now that the routing has a branch: the signature covers the Host
-//     header, so a gateway that rewrote it on the fallback the way it does on
-//     a public bucket's route would invalidate every URL Outline issues.
-func TestAnonymousFetchReadsMbinsMediaAndNotOutlines(t *testing.T) {
+//     carrying an error document would satisfy a status check alone.
+//  4. Outline's object on docs-media, presigned for that hostname. 200 and the
+//     bytes. The signature covers Host, so this is what proves the gateway
+//     forwards it unchanged to the S3 API rather than to the web endpoint.
+//  5. Outline's key asked for on talk-media. Not Outline's object: talk-media
+//     resolves to talk's bucket whatever the path says, so one app's media
+//     hostname cannot be used to reach another app's bucket.
+//  6. talk's object again with the first listed Garage node stopped. 200
+//     and the bytes, from the second node.
+func TestEachAppsMediaHostnameServesOnlyItsOwnBucket(t *testing.T) {
 	cfg, secrets := fixtureDeployment(t)
 	cluster := startMediaCluster(t)
 	cluster.provision(t, cfg, secrets)
 
-	publicBucket, publicKeyID, publicSecret := appCredential(t, cfg, secrets, "talk")
-	privateBucket, privateKeyID, privateSecret := appCredential(t, cfg, secrets, "docs")
+	talkBucket, talkKeyID, talkSecret := appCredential(t, cfg, secrets, "talk")
+	blogBucket, blogKeyID, blogSecret := appCredential(t, cfg, secrets, "blog")
+	docsBucket, docsKeyID, docsSecret := appCredential(t, cfg, secrets, "docs")
 
-	// Website access, stated rather than implied. The public bucket must have
-	// it or no anonymous read is possible; the private bucket must not, or
-	// the refusal below would be an accident of routing rather than a
-	// property of the bucket.
-	if got := bucketWebsiteAccess(t, cluster.Nodes["home-a"], publicBucket); got != "true" {
-		t.Errorf("%s serves objects publicly, so its website access must be true, got %q", publicBucket, got)
+	// Website access, stated rather than implied. A public bucket must have it
+	// or no anonymous read is possible; the private bucket must not, or the
+	// refusal below would be an accident of routing rather than a property of
+	// the bucket.
+	for _, bucket := range []string{talkBucket, blogBucket} {
+		if got := bucketWebsiteAccess(t, cluster.Nodes["home-a"], bucket); got != "true" {
+			t.Errorf("%s serves objects publicly, so its website access must be true, got %q", bucket, got)
+		}
 	}
-	if got := bucketWebsiteAccess(t, cluster.Nodes["home-a"], privateBucket); got != "false" {
-		t.Errorf("%s must never be readable without a credential, so its website access must be false, got %q", privateBucket, got)
-	}
-
-	const publicKey = "media/anonymous-read.txt"
-	const privateKey = "media/presigned-read.txt"
-	publicBody := "mbin media bytes " + hexString(t, 16)
-	privateBody := "outline private bytes " + hexString(t, 16)
-	putObject(t, cluster.S3, publicBucket, publicKey, publicKeyID, publicSecret, publicBody)
-	putObject(t, cluster.S3, privateBucket, privateKey, privateKeyID, privateSecret, privateBody)
-
-	// 1. Anonymous, public bucket.
-	status, body := throughGateway(t, cluster, "/"+publicBucket+"/"+publicKey, "")
-	t.Logf("anonymous GET /%s/%s: HTTP %d", publicBucket, publicKey, status)
-	if status != http.StatusOK {
-		t.Errorf("an anonymous fetch of %s must return 200, got %d:\n%s", publicBucket, status, body)
-	}
-	if body != publicBody {
-		t.Errorf("an anonymous fetch of %s must return the object's bytes, got %q", publicBucket, body)
+	if got := bucketWebsiteAccess(t, cluster.Nodes["home-a"], docsBucket); got != "false" {
+		t.Errorf("%s must never be readable without a credential, so its website access must be false, got %q", docsBucket, got)
 	}
 
-	// 2. Anonymous, private bucket, same gateway.
-	status, body = throughGateway(t, cluster, "/"+privateBucket+"/"+privateKey, "")
-	t.Logf("anonymous GET /%s/%s: HTTP %d", privateBucket, privateKey, status)
-	if status == http.StatusOK {
-		t.Errorf("an anonymous fetch of %s must be refused, got 200:\n%s", privateBucket, body)
+	const key = "media/permedia-read.svg"
+	talkBody := "mbin media bytes " + hexString(t, 16)
+	blogBody := "blog image bytes " + hexString(t, 16)
+	docsBody := "outline private bytes " + hexString(t, 16)
+	putObject(t, cluster.S3, talkBucket, key, talkKeyID, talkSecret, talkBody)
+	putObject(t, cluster.S3, blogBucket, key, blogKeyID, blogSecret, blogBody)
+	putObject(t, cluster.S3, docsBucket, key, docsKeyID, docsSecret, docsBody)
+
+	// 1 and 2. Anonymous, public buckets, each on its own hostname.
+	for _, tc := range []struct{ app, body string }{{"talk", talkBody}, {"blog", blogBody}} {
+		host := mediaHosts[tc.app]
+		status, header, body := throughGateway(t, cluster, host, "/"+key, "")
+		t.Logf("anonymous GET %s/%s: HTTP %d", host, key, status)
+		if status != http.StatusOK {
+			t.Errorf("an anonymous fetch on %s must return 200, got %d:\n%s", host, status, body)
+		}
+		if body != tc.body {
+			t.Errorf("an anonymous fetch on %s must return %s's object, got %q", host, tc.app, body)
+		}
+		if got := header.Values("Content-Security-Policy"); len(got) != 1 || got[0] != publicMediaPolicy {
+			t.Errorf("%s must send exactly one Content-Security-Policy, %q, got %q", host, publicMediaPolicy, got)
+		}
+		if got := header.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s must send X-Content-Type-Options: nosniff, got %q", host, got)
+		}
 	}
+
+	// 3. Anonymous, private bucket, on Outline's hostname.
+	docsHost := mediaHosts["docs"]
+	docsPath := "/" + docsBucket + "/" + key
+	status, _, body := throughGateway(t, cluster, docsHost, docsPath, "")
+	t.Logf("anonymous GET %s%s: HTTP %d", docsHost, docsPath, status)
 	if status != http.StatusForbidden {
-		t.Errorf("an anonymous fetch of %s should be refused with 403 by Garage's S3 API, got %d:\n%s", privateBucket, status, body)
+		t.Errorf("an anonymous fetch on %s should be refused with 403 by Garage's S3 API, got %d:\n%s", docsHost, status, body)
 	}
-	if strings.Contains(body, privateBody) {
-		t.Errorf("an anonymous fetch of %s returned the object's bytes in a %d response, which is the failure a status check alone would miss:\n%s", privateBucket, status, body)
+	if strings.Contains(body, docsBody) {
+		t.Errorf("an anonymous fetch on %s returned the object's bytes in a %d response, which is the failure a status check alone would miss:\n%s", docsHost, status, body)
 	}
 
-	// 3. Presigned, private bucket, same gateway.
-	privatePath := "/" + privateBucket + "/" + privateKey
-	query := presignGet(privateKeyID, privateSecret, mediaHostname, privatePath)
-	status, body = throughGateway(t, cluster, privatePath, query)
-	t.Logf("presigned GET %s: HTTP %d", privatePath, status)
+	// 4. Presigned for Outline's hostname, path style, the form Outline issues.
+	query := presignGet(docsKeyID, docsSecret, docsHost, docsPath)
+	status, header, body := throughGateway(t, cluster, docsHost, docsPath, query)
+	t.Logf("presigned GET %s%s: HTTP %d", docsHost, docsPath, status)
 	if status != http.StatusOK {
-		t.Errorf("a presigned fetch of %s must still return 200 through the fallback route, got %d:\n%s", privateBucket, status, body)
+		t.Errorf("a presigned fetch on %s must return 200, got %d:\n%s", docsHost, status, body)
 	}
-	if body != privateBody {
-		t.Errorf("a presigned fetch of %s must return the object's bytes, got %q", privateBucket, body)
+	if body != docsBody {
+		t.Errorf("a presigned fetch on %s must return the object's bytes, got %q", docsHost, body)
+	}
+	if got := header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("%s should send X-Content-Type-Options: nosniff, got %q", docsHost, got)
+	}
+	if got := header.Get("Content-Security-Policy"); got != "" {
+		t.Errorf("%s should carry no sandboxing policy, which would break Outline's embedded PDF previews, got %q", docsHost, got)
 	}
 
-	// 4. The first listed node gone. The media routes name every Garage node
-	// in storage.garage.sites order, so the gateway must find the object on
-	// the second: the request that meets the dead node is retried there
-	// (lb_try_duration), and every node holds a copy at replication 2.
+	// 5. Another app's key on talk's hostname.
+	status, _, body = throughGateway(t, cluster, mediaHosts["talk"], docsPath, "")
+	t.Logf("anonymous GET %s%s: HTTP %d", mediaHosts["talk"], docsPath, status)
+	if status == http.StatusOK || strings.Contains(body, docsBody) {
+		t.Errorf("talk's media hostname must not reach Outline's bucket, got %d:\n%s", status, body)
+	}
+
+	// 6. The first listed node gone. Every media hostname names the Garage
+	// nodes in storage.garage.sites order, so the gateway must find talk's
+	// object on the second: the request that meets the dead node is retried
+	// there (lb_try_duration), and both nodes hold a copy at replication 2.
 	// Asserted at once, without waiting for Garage to notice the node is
 	// down, because a reader does not wait either.
 	if out, err := exec.Command("docker", "stop", cluster.Nodes[garageNodes[0].Site].container).CombinedOutput(); err != nil {
 		t.Fatalf("stopping %s: %v\n%s", garageNodes[0].Site, err, out)
 	}
+	talkHost := mediaHosts["talk"]
 	for i := 0; i < 3; i++ {
-		status, body = throughGateway(t, cluster, "/"+publicBucket+"/"+publicKey, "")
-		t.Logf("anonymous GET /%s/%s with %s stopped, attempt %d: HTTP %d", publicBucket, publicKey, garageNodes[0].Site, i+1, status)
-		if status != http.StatusOK || body != publicBody {
-			t.Errorf("with %s stopped, the gateway must serve %s from %s, got %d:\n%s", garageNodes[0].Site, publicBucket, garageNodes[1].Site, status, body)
+		status, _, body = throughGateway(t, cluster, talkHost, "/"+key, "")
+		t.Logf("anonymous GET %s/%s with %s stopped, attempt %d: HTTP %d", talkHost, key, garageNodes[0].Site, i+1, status)
+		if status != http.StatusOK || body != talkBody {
+			t.Errorf("with %s stopped, %s must serve talk's object from %s, got %d:\n%s", garageNodes[0].Site, talkHost, garageNodes[1].Site, status, body)
 		}
 	}
 }

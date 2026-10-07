@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
@@ -12,9 +13,10 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
-// mediaSnippet is the gateway's media routing, relative to a site's root, as
-// render places it.
-const mediaSnippet = "srv/infra/caddy/snippets/media.caddy"
+// mediaSnippetDir is where render places each app's media routing on the
+// gateway, relative to a site's root, one <app>-media.caddy per app that
+// stores objects.
+const mediaSnippetDir = "srv/infra/caddy/snippets/"
 
 // webSuffix is the internal suffix Garage's web endpoint resolves a bucket
 // from. It must match root_domain in garage.toml.tmpl and render's
@@ -26,30 +28,35 @@ const (
 	reloadCaddy   = "docker compose -f /srv/infra/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"
 )
 
-// buildMedia is stage 8: the gateway's media routes, which name every Garage
-// node in storage.garage.sites order. It comes after the join on purpose: a
-// node with no role answers every bucket as missing, so the route must not
-// prefer one before it has joined. Nil when the deployment has no gateway or
-// no media hostname.
+// buildMedia is stage 8: the gateway's media routes, one snippet per app that
+// stores objects, each naming the Garage nodes in storage.garage.sites order.
+// It comes after the join on purpose: a node with no role answers every
+// bucket as missing, so a route must not prefer one before it has joined.
+// Nil when the deployment has no gateway or no app stores objects.
 func (p *Plan) buildMedia() (*Stage, error) {
-	if p.gateway == "" || p.cfg.Storage.MediaHostname == "" {
+	if p.gateway == "" {
 		return nil, nil
 	}
-	want := ""
+	want := map[string]string{}
+	var paths []string
 	for _, f := range p.rendered.Files {
-		if f.Path == p.gateway+"/"+mediaSnippet {
-			want = f.Content
+		rel, ok := strings.CutPrefix(f.Path, p.gateway+"/")
+		if !ok || !strings.HasPrefix(rel, mediaSnippetDir) || !strings.HasSuffix(rel, "-"+kinds.MediaRole+".caddy") {
+			continue
 		}
+		want[rel] = f.Content
+		paths = append(paths, rel)
 	}
-	if want == "" {
+	if len(paths) == 0 {
 		return nil, nil
 	}
+	sort.Strings(paths)
 	st := &Stage{
 		Name: "media routes",
-		Gate: "the gateway's media routes match the render, every Garage node in storage.garage.sites order",
+		Gate: "the gateway's media routes match the render, the Garage nodes in storage.garage.sites order",
 	}
 	t := p.transports[p.gateway]
-	sp, err := apply.Build(p.gateway, p.rendered, acme.Module(p.cfg.ACME.Provider), t, apply.Scope(mediaSnippet))
+	sp, err := apply.Build(p.gateway, p.rendered, acme.Module(p.cfg.ACME.Provider), t, apply.Scope(paths...))
 	if err != nil {
 		return nil, err
 	}
@@ -77,12 +84,14 @@ func (p *Plan) buildMedia() (*Stage, error) {
 		return nil
 	}
 	st.gate = func() error {
-		have, _, err := t.ReadFile("/" + mediaSnippet)
-		if err != nil {
-			return err
-		}
-		if have != want {
-			return fmt.Errorf("%s's /%s does not match the render", p.gateway, mediaSnippet)
+		for _, rel := range paths {
+			have, _, err := t.ReadFile("/" + rel)
+			if err != nil {
+				return err
+			}
+			if have != want[rel] {
+				return fmt.Errorf("%s's /%s does not match the render", p.gateway, rel)
+			}
 		}
 		return nil
 	}
@@ -93,6 +102,8 @@ func (p *Plan) buildMedia() (*Stage, error) {
 type probe struct {
 	app, bucket, keyID, secret, region string
 	key, body                          string
+	// media is the app's own media hostname, empty when it has none.
+	media string
 }
 
 // publicProbe picks the first app, by name, that stores objects and serves
@@ -117,6 +128,7 @@ func (p *Plan) publicProbe() *probe {
 		rand.Read(buf)
 		return &probe{
 			app: name, bucket: garage.BucketName(app, name), keyID: keyID, secret: secret, region: region,
+			media: kinds.MediaHostname(app, p.cfg.Community.Domain),
 			// One fixed key, overwritten by every run and deleted at the end,
 			// so an interrupted run leaves at most this one object behind.
 			key:  "paisans-probe/storage-add",
@@ -151,7 +163,7 @@ func (pr *probe) redact(s string) string {
 
 // buildSmoke is the last stage: a probe object written through the first
 // listed node, read back through every node's S3 API and web endpoint and
-// through the media hostname, then deleted. Nil, with a note, when no app
+// through the app's own media hostname, then deleted. Nil, with a note, when no app
 // serves objects publicly.
 func (p *Plan) buildSmoke() *Stage {
 	pr := p.publicProbe()
@@ -163,14 +175,14 @@ func (p *Plan) buildSmoke() *Stage {
 	st := &Stage{
 		Name:     "smoke",
 		Verifies: true,
-		Gate:     "the probe reads back, byte for byte, through every node's S3 API and web endpoint and through the media hostname, and is deleted",
+		Gate:     "the probe reads back, byte for byte, through every node's S3 API and web endpoint and through the app's media hostname, and is deleted",
 	}
 	st.Steps = append(st.Steps, Step{Site: first.site, Verb: "write", Text: fmt.Sprintf("%s/%s through %s's S3 API, with %s's key", pr.bucket, pr.key, first.site, pr.app)})
 	for _, n := range p.nodes {
 		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "read", Text: "the probe through its S3 API (3900) and its web endpoint (3902)"})
 	}
-	if p.gateway != "" && p.cfg.Storage.MediaHostname != "" {
-		st.Steps = append(st.Steps, Step{Site: p.gateway, Verb: "read", Text: fmt.Sprintf("https://%s/%s/%s, through the gateway's own Caddy", p.cfg.Storage.MediaHostname, pr.bucket, pr.key)})
+	if p.gateway != "" && pr.media != "" {
+		st.Steps = append(st.Steps, Step{Site: p.gateway, Verb: "read", Text: fmt.Sprintf("https://%s/%s, %s's media hostname, through the gateway's own Caddy", pr.media, pr.key, pr.app)})
 	}
 	st.Steps = append(st.Steps, Step{Site: first.site, Verb: "delete", Text: "the probe"})
 
@@ -210,9 +222,9 @@ func (p *Plan) buildSmoke() *Stage {
 				return err
 			}
 		}
-		if p.gateway != "" && p.cfg.Storage.MediaHostname != "" {
-			host := p.cfg.Storage.MediaHostname
-			cmd := fmt.Sprintf("curl -fsS --max-time 20 --resolve %s:443:127.0.0.1 https://%s/%s/%s", host, host, pr.bucket, pr.key)
+		if p.gateway != "" && pr.media != "" {
+			host := pr.media
+			cmd := fmt.Sprintf("curl -fsS --max-time 20 --resolve %s:443:127.0.0.1 https://%s/%s", host, host, pr.key)
 			got, err := p.transports[p.gateway].Run(cmd)
 			if err != nil {
 				return fmt.Errorf("reading the probe through https://%s on %s: %s", host, p.gateway, lastLines(got, 3))

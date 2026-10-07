@@ -1,7 +1,6 @@
-# valid.yaml with one thing broken: an app stores objects and
-# storage.media_hostname is never declared. Without it, an app renders a
-# working uploader and publishes a URL pointing at a mesh address, which no
-# browser can reach and which a federating instance caches permanently.
+# valid.yaml with one thing broken: docs declares a media hostname outside
+# community.domain. Its certificate is issued over DNS-01 against the
+# deployment's own zone, so the configured provider cannot answer for it.
 version: 1
 
 community:
@@ -65,6 +64,8 @@ apps:
     placement: cluster
     settings:
       s3_bucket: docs-uploads
+    hostnames:
+      media: docs-media.example.net
   auth:
     kind: pocket-id
     hostname: id.example.org

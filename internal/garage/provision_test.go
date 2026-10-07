@@ -253,8 +253,10 @@ func TestASiteWithNoGarageRoleIsRefused(t *testing.T) {
 }
 
 // Website access is what makes an object readable with no credential, and it
-// is per bucket. Mbin's bucket needs it. Outline's must never have it, because
-// its bucket holds the attachments of documents only members can read.
+// is per bucket. Mbin's bucket needs it, and so does the blog's now that the
+// wisp fork serves images only from image_url_base. Outline's must never have
+// it, because its bucket holds the attachments of documents only members can
+// read.
 func TestOnlyAPublicBucketIsAllowedWebsiteAccess(t *testing.T) {
 	transport := &fakeTransport{responses: map[string]response{
 		"layout show": {out: "Connection established to 51494feb5444d466\n==== CURRENT CLUSTER LAYOUT ====\nID  Tags  Zone  Capacity\n51494feb5444d466  []  home-a  100.0 GB\n\nCurrent cluster layout version: 1\n"},
@@ -281,12 +283,11 @@ func TestOnlyAPublicBucketIsAllowedWebsiteAccess(t *testing.T) {
 	if strings.Contains(joined, "docs-uploads") {
 		t.Errorf("outline's bucket must never be world readable, got:\n%s", joined)
 	}
-	// The blog's bucket (blog-uploads) must never be world readable either,
-	// for a different reason than outline's: the wisp fork streams its
-	// images through its own /uploads/ route and never addresses the object
-	// store from a browser at all.
-	if strings.Contains(joined, "blog-uploads") {
-		t.Errorf("the blog's bucket must never be world readable, got:\n%s", joined)
+	// The blog's bucket (blog-uploads) needs it too: the wisp fork writes
+	// images there and never reads them back, so a reader's browser fetches
+	// them from the bucket through the blog's media hostname.
+	if !strings.Contains(joined, "bucket website --allow blog-uploads") {
+		t.Errorf("the blog's bucket needs website access or no image on the blog loads, got:\n%s", joined)
 	}
 }
 
