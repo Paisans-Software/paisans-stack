@@ -187,3 +187,38 @@ func TestPruneTokenNeverAppearsInAnError(t *testing.T) {
 		}
 	}
 }
+
+// --name vouches for one exact name outside community.domain that the
+// configuration no longer produces, lifting the scope rule for it alone. The
+// first real use: a media hostname configured explicitly beside the domain and
+// dropped when media moved to per-app hostnames.
+func TestPruneRemovesAVouchedNameOutsideTheDomain(t *testing.T) {
+	fake := newFake()
+	fake.zones["example.org"] = "zone-1"
+	fake.zones["example.net"] = "zone-2"
+	fake.records["zone-2"] = []cfRecord{
+		{ID: "rec-net", Type: "A", Name: "old.example.net", Content: "203.0.113.10", Comment: recordComment},
+		{ID: "rec-foreign", Type: "A", Name: "other.example.net", Content: "198.51.100.7", Comment: recordComment},
+	}
+	cfg := deployment()
+	talk := cfg.Apps["talk"]
+	talk.Hostname = "talk.example.net"
+	cfg.Apps["talk"] = talk
+	wants, err := Desired(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := BuildPrune(context.Background(), fake.serve(t), cfg, wants, "old.example.net", "other.example.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, ok := entry(p, "rec-net"); !ok || e.Action != Remove {
+		t.Fatalf("want the vouched rec-net removed, got %+v", e)
+	}
+	if e, ok := entry(p, "rec-foreign"); !ok || e.Action != Keep {
+		t.Fatalf("vouching lifts only the scope rule; a foreign address must still be kept, got %+v", e)
+	}
+	if _, err := BuildPrune(context.Background(), fake.serve(t), cfg, wants, "typo.example.net"); err == nil || !strings.Contains(err.Error(), "matches no record") {
+		t.Fatalf("a --name matching nothing was accepted: %v", err)
+	}
+}

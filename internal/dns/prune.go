@@ -90,7 +90,18 @@ func (p *PrunePlan) Removes() []PruneEntry {
 // wants must be Desired(cfg): it is passed in rather than recomputed so that
 // a configuration that cannot name its records is refused before the
 // provider is contacted, exactly as for dns init.
-func BuildPrune(ctx context.Context, provider Provider, cfg *config.Config, wants []Want) (*PrunePlan, error) {
+func BuildPrune(ctx context.Context, provider Provider, cfg *config.Config, wants []Want, vouched ...string) (*PrunePlan, error) {
+	// vouched are names the operator named with --name: records at a name the
+	// configuration no longer produces and that sits outside
+	// community.domain, which only the operator can say were this
+	// deployment's (Eg: a media hostname configured explicitly and since
+	// dropped). Naming one lifts the scope rule for that exact name and
+	// nothing else; the comment, address and not-wanted rules still apply.
+	vouchedSet := map[string]bool{}
+	for _, n := range vouched {
+		vouchedSet[normalise(n)] = true
+	}
+	seenVouched := map[string]bool{}
 	domain := normalise(cfg.Community.Domain)
 	if domain == "" {
 		return nil, fmt.Errorf("dns: community.domain is not set, so there is no subtree to prune within")
@@ -149,8 +160,11 @@ func BuildPrune(ctx context.Context, provider Provider, cfg *config.Config, want
 			if typ != "A" && typ != "AAAA" {
 				reasons = append(reasons, fmt.Sprintf("it is a %s record; prune removes only A and AAAA records", typ))
 			}
-			if name != domain && !strings.HasSuffix(name, "."+domain) && !wantedNames[name] {
-				reasons = append(reasons, fmt.Sprintf("%s is outside community.domain (%s) and is not a name this configuration produces, so nothing says it was ever this deployment's", name, domain))
+			if vouchedSet[name] {
+				seenVouched[name] = true
+			}
+			if name != domain && !strings.HasSuffix(name, "."+domain) && !wantedNames[name] && !vouchedSet[name] {
+				reasons = append(reasons, fmt.Sprintf("%s is outside community.domain (%s) and is not a name this configuration produces, so nothing says it was ever this deployment's. If it was, name it with --name %s", name, domain, name))
 			}
 			if ip := net.ParseIP(strings.TrimSpace(r.Content)); ip == nil || addresses[ip.String()] == "" {
 				reasons = append(reasons, fmt.Sprintf("%s is not any site's public_address or public_address6, so it does not point at this deployment", r.Content))
@@ -175,6 +189,11 @@ func BuildPrune(ctx context.Context, provider Provider, cfg *config.Config, want
 		}
 		return a.Type < b.Type
 	})
+	for n := range vouchedSet {
+		if !seenVouched[n] {
+			return nil, fmt.Errorf("dns prune: --name %s matches no record dns init created, so it vouches for nothing; check the spelling", n)
+		}
+	}
 	return plan, nil
 }
 

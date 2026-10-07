@@ -1290,6 +1290,17 @@ paisans dns prune               # lists remove and keep, with reasons
 paisans dns prune --execute     # deletes the removes, then confirms each is gone
 ```
 
+**`--name <fqdn>` vouches for one name outside the domain.** A hostname
+configured explicitly beside `community.domain` (Eg: an old shared media name
+`staging-media.example.org` for the domain `staging.example.org`) and later
+dropped leaves a record no rule can tie to this deployment, so prune keeps it
+and says so. Naming it with `--name` lifts the scope rule for that exact name
+and nothing else: the comment, the address and the not-wanted rules still
+apply, and a `--name` that matches no record `dns init` created is refused, so
+a typo cannot widen anything. Widening the scope to the whole zone was
+rejected: a zone usually holds more than one deployment's names.
+
+
 A record is deleted only when every one of these holds:
 
 | Rule | Why |

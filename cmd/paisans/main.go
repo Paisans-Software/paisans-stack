@@ -49,7 +49,7 @@ Usage:
   paisans preflight --site <new site> [--config paisans.yaml]
   paisans failover test [--config paisans.yaml] [--execute]
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
-  paisans dns prune [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
+  paisans dns prune [--config paisans.yaml] [--secrets secrets.enc.yaml] [--name <fqdn>]... [--execute]
   paisans secrets set <dotted.key> [--config paisans.yaml] [--secrets secrets.enc.yaml] < value
   paisans app admin create --app <name> --username <u> --email <e> [--site <name>]
                [--config paisans.yaml] [--ssh <destination>] [--reset-password]
@@ -756,14 +756,17 @@ func runDNSInit(args []string) error {
 // configuration no longer implies, under the rules internal/dns/prune.go
 // states. A dry run by default, like dns init, and it reaches no host.
 func runDNSPrune(args []string) error {
-	cfg, wants, provider, execute, err := dnsSetup("dns prune", "actually delete the records listed as remove", args)
+	var vouched pathList
+	cfg, wants, provider, execute, err := dnsSetup("dns prune", "actually delete the records listed as remove", args, func(fs *flag.FlagSet) {
+		fs.Var(&vouched, "name", "vouch that this exact name, outside community.domain and no longer configured, was this deployment's (repeatable)")
+	})
 	if err != nil {
 		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	plan, err := dns.BuildPrune(ctx, provider, cfg, wants)
+	plan, err := dns.BuildPrune(ctx, provider, cfg, wants, vouched...)
 	if err != nil {
 		return err
 	}
@@ -787,8 +790,11 @@ func runDNSPrune(args []string) error {
 // validate, derive the wanted records, then open the secrets. The records
 // are worked out before the secrets are opened or the provider is contacted,
 // so a configuration that cannot name its records is refused offline.
-func dnsSetup(name, executeHelp string, args []string) (*config.Config, []dns.Want, dns.Provider, bool, error) {
+func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagSet)) (*config.Config, []dns.Want, dns.Provider, bool, error) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	for _, add := range extra {
+		add(fs)
+	}
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, executeHelp)
