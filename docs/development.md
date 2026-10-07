@@ -14,8 +14,9 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 ## Run
 
 validate, init and render touch nothing outside the working directory.
-`host prepare`, `apply`, `site add`, `storage init`, `app admin create` and `oidc client
-create` reach a machine, and each changes it only with `--execute`. `preflight`
+`host prepare`, `apply`, `site add`, `storage init`, `storage add`, `app admin
+create` and `oidc client create` reach a machine, and each changes it only with
+`--execute`. `preflight`
 reaches every site and never changes one; `failover test` changes which site
 is primary, only with `--execute`. `dns init` reaches no machine, only
 the DNS provider's API, and changes it only with `--execute`.
@@ -29,6 +30,7 @@ paisans host prepare --site home-a        # shows what a blank host lacks
 paisans apply    --site home-a            # shows what would change
 paisans apply    --site home-a --execute  # does it
 paisans preflight --site home-b           # site add's read only checks
+paisans storage add                       # every Garage stage, from live state
 paisans failover test                     # checks, and prints the plan
 paisans dns init                          # shows which records it would create
 security find-generic-password -s acme -w \
@@ -307,6 +309,48 @@ a whole join leaving nothing to do, the mesh rollback, the promotion retry and
 its limit, resuming after a stopped learner and after a failed replica gate,
 and the stage 5 and 6 gates failing.
 
+## `storage add`, and what lives where
+
+`internal/storageadd` is shaped like `internal/siteadd`: Build reads every
+Garage site and the gateway and changes nothing, each stage carries its steps
+and a gate, and Execute runs the steps only when there are some and the gate
+always. `docs/specs/2026-10-07-multisite-garage.md` is the approved design and
+cites the Garage v1.0.1 source behind every gate. What is easy to undo by
+accident:
+
+* **Two gates wait on Garage, not on the toolkit** (`Stage.Waits`: settle and
+  sync). They return a `*Waiting`, which unwraps to `ErrWaiting`, and
+  `cmd/paisans` exits 75 on it rather than 1. A failure that is really a wait
+  makes an operator chase a problem that is not there; a wait that is really a
+  failure makes them wait for ever. Pick deliberately.
+* **Every piece of resume state is on a host.** The deployed factor in
+  `garage.toml`, `meta/cluster_layout.rf<N>` beside a set aside layout, and
+  the object counts in `/srv/infra/garage/replication-change.counts` on the
+  anchor's host. Nothing is kept on the operator's machine, so a run resumed
+  from another machine sees the same state.
+* **The reset stops every node at the old factor before it changes any.**
+  Garage exits a node that meets a peer at a higher factor
+  (`src/rpc/system.rs:583-587`), so stopping and rewriting one node at a time
+  takes the others down mid-run. A unit test asserts the order.
+* **`garage.toml` is rewritten through `apply`, scoped, with
+  `apply.ReplicationChange()`**, which is the only way past `apply`'s refusal
+  of another factor. Writing it any other way leaves the manifest stale and
+  makes the next `apply` call it somebody's edit.
+* **The probe's key goes to curl on stdin** (`curl -K -`), never in a command
+  line, and a failure is redacted. A unit test makes the fake host echo stdin
+  into the error, which is the worst case.
+* **The media routes are rendered after the join, not before.** A node with no
+  role answers every bucket as missing, and the routes prefer the first
+  listed node.
+
+The tests in `internal/storageadd` run a Garage cluster in maps: each host's
+files, its node, its copy of the layout and the peers it has met, with output
+shaped like `dxflrs/garage:v1.0.1`'s. They cover the refusal without
+`--change-replication`, a reset that waits at the sync and resumes, `--wait`,
+a reset interrupted between rewriting and starting, the order rule, a site
+with no `garage.toml`, a join without a reset, the probe's secret, and a
+shortfall in object counts.
+
 ## `dns init`, and why it can only create
 
 `dns init` is the one command that talks to something other than a host or the
@@ -423,6 +467,20 @@ go test ./internal/render -update
 **A determinism test** renders twice and compares byte for byte. Nothing
 rendered may carry a timestamp or depend on map iteration order, or a diff
 between two renders stops meaning anything.
+
+**Docker tests** run real `dxflrs/garage:v1.0.1` containers, and are behind a
+build tag because they need Docker and take seconds rather than milliseconds:
+
+```
+go test -tags garage_integration ./internal/garage/ ./internal/storageadd/
+```
+
+`internal/garage`'s starts the rendered `garage.toml`, provisions a node, and
+routes media through the rendered snippet in the real gateway image,
+including a read with the first listed node stopped. `internal/storageadd`'s
+drives `storage add` from one node at replication 1 to two at replication 2,
+`dangerous`, through the reset, and reads an object written before it back
+through both nodes. It runs its probe in `curlimages/curl`, which it pulls.
 
 ## Fixtures and secrets
 
@@ -626,7 +684,10 @@ before.
 ## What is not here yet
 
 No `backup`. `site add` exists for sites that all declare an endpoint; the
-relay for sites behind NAT is still design. Its first stage is `preflight`, and
+relay for sites behind NAT is still design. `storage add` joins Garage nodes
+and changes the replication factor, and has run against containers but not
+yet against a real host; removing or replacing a Garage node, and a site with
+no role other than storage, are not built. Its first stage is `preflight`, and
 `failover test` exists; both are described above. `apply`
 pushes files, brings up `wg0`, creates clustered apps' roles and databases, and
 takes the narrowest action that makes the rest live. `site add` has never been

@@ -1021,7 +1021,8 @@ are state inside a running service that no manifest describes, so they are a
 separate command: `paisans storage init --site <name>`.
 
 It checks what a site's Garage node already has and creates only what is
-missing, so running it again is safe. Like `apply`, it prints a plan and
+missing, so running it again is safe. It assigns the cluster layout only when
+the site is the one Garage site; joining several is `storage add`, below. Like `apply`, it prints a plan and
 writes nothing without `--execute`.
 
 It has to run after the infrastructure stack is up, because Garage has to be
@@ -1031,39 +1032,105 @@ application key can reach one, so the failure an adopter meets is an
 application error with no obvious cause, not a message naming a missing step.
 `storage init` is that missing step.
 
-#### A second Garage site has to be joined by hand first
+#### More than one Garage site: `storage add`
 
 **One Garage site needs nothing extra.** Run `paisans storage init --site
 <name> --execute` after the infrastructure stack is up and it does the whole
-job.
+job, layout included.
 
-**A second Garage site needs a `garage node connect` first, run by you.** The
-toolkit does not plan that join and nothing it renders performs one: there is
-no `bootstrap_peers` in the rendered `garage.toml`, and no Consul or Kubernetes
-discovery. The shared `rpc_secret` every site carries authenticates a peer; it
-does not find one. Two nodes brought up from rendered configuration sit alone
-indefinitely, each listing only itself in `garage status`.
-
-Until they are joined, `storage init` cannot converge on either site. With one
-node visible, `garage layout apply` is refused because the node count is below
-the declared `replication`, and `storage init` stops at the first failing step,
-so no application key, no bucket and no website grant is created anywhere.
-
-From one site, once both nodes are running:
+**Several Garage sites are joined by `paisans storage add`**, and by nothing
+done by hand. A server is changed only by the toolkit. `storage init` lays a
+node out only when it is the one Garage site; with several it refuses a node
+that has no role and names `storage add`, because assigning one node alone
+either fails (`layout apply` refuses fewer nodes than the replication factor)
+or, at replication 1, starts a second cluster that never meets the first.
 
 ```sh
-# On the second site, read its node ID. This is the command shape
-# `storage init` prints for everything else it runs.
-ssh <site-b> docker compose -f /srv/infra/compose.yaml exec -T garage \
-    /garage node id -q
-
-# On the first site, join it. Pass the whole id@address that printed.
-ssh <site-a> docker compose -f /srv/infra/compose.yaml exec -T garage \
-    /garage node connect <id@address>
+paisans apply --site home-b       # writes garage.toml, starts an isolated node
+paisans storage add               # dry run: every stage, read from live state
+paisans storage add --execute     # add --change-replication if the factor changes
 ```
 
-`garage status` on either node should then list both. Run `paisans storage init
---site <name> --execute` for each site afterwards, in either order.
+It is cluster-wide and takes no `--site`. A layout at replication 3 cannot
+grow one node at a time, since Garage refuses a layout with fewer storage
+nodes than the factor, and another factor is a whole-cluster stop; a per-site
+command would have to refuse half its invocations. It reads every node and
+plans only what differs, in gated stages: the nodes as they are, the
+replication reset when one is needed, connect, one layout version with each
+node in a zone named after its site (only distinct zones spread copies across
+sites), sync, provisioning planned by `storage init`'s own planner and found
+present, the gateway's media routes, and a smoke test that writes a probe and
+reads it back through every node and the media hostname. The design, with
+Garage v1.0.1's source behind each gate, is
+`docs/specs/2026-10-07-multisite-garage.md`.
+
+**It does not wait for Garage.** Copying data to a new node runs at the speed
+of the slowest site's upload, which on a home line can be hours. A stage
+waiting on Garage exits with status 75, "try again later", and the next run
+reads live state and carries on; `--wait <duration>` polls instead. Everything
+a resumed run needs is on the hosts, so any machine can resume it. Rejected:
+blocking in the foreground, which leaves an operator's terminal hostage to a
+residential uplink.
+
+**`storage.garage.sites` is a preference order, not a set.** The first site
+serves every media read the gateway passes on and takes every app's writes
+(`S3_ENDPOINT`); the others serve only when the ones before them are down. A
+Garage node that receives a write sends the other copies itself, and a home
+line's upload is its slow direction, so the site with the best upload goes
+first. A new site joins at the end of the list and moves up only after
+`storage add` has passed, because a node with no role answers every bucket as
+missing; `storage add` refuses the other order. Rejected: each app writing to
+its own site's node (every write would leave the home once per remote copy),
+choosing the fastest node at run time (Caddy 2.11.6 has no latency aware
+policy, and a render must not change with network conditions), and an active
+health check on Garage's `/health` (it judges with the consistent write
+quorum whatever the configured mode, so at replication 2 on two nodes it calls
+the survivor unavailable while it serves every read). Media failover is
+passive: `lb_policy first`, `lb_try_duration` so the request that finds a
+node dead is retried on the next, and `unhealthy_status 503` for a node that
+has lost quorum.
+
+**What one site down costs depends on replication and consistency.** Garage
+v1.0.1's quorums, each observed on real containers as well as read from its
+source:
+
+| Layout | Uploads with one site down | Reads |
+|---|---|---|
+| replication 2 on two sites, `consistent` | fail until it returns | work |
+| replication 2 on two sites, `dangerous` | work; an upload is confirmed once one copy exists | work |
+| replication 2 on three sites | the ones landing on the down site fail, about two in three | work |
+| replication 3 on three sites | work | work |
+
+Garage has no data-less tie breaker: a layout gateway node stores nothing and
+does not count toward an object's write quorum, so availability with a site
+down takes a third copy on a third host, with the disk for it.
+`storage.garage.consistency` sets the mode, `consistent` by default, and
+validation warns on `dangerous` and on the two-site trade above. What
+`dangerous` risks: an upload exists on one disk until the other site catches
+up, uploads made during an outage are single copy until it returns, and a
+read can miss a recent change, including a delete, after a failover.
+Changing the mode is an ordinary `apply`.
+
+**Changing `replication` is not an ordinary apply.** Garage refuses to start
+when its stored layout was built at another factor, so `apply` refuses to
+write such a `garage.toml`. `storage add --change-replication` runs the only
+procedure Garage documents, which it calls unsupported: every node at the old
+factor is stopped before any is changed (a node that meets a peer at a higher
+factor exits), each stored layout is moved aside to
+`meta/cluster_layout.rf<N>` rather than deleted, `garage.toml` is rewritten,
+and the cluster is laid out again. Media is unavailable for about a minute.
+Before it stops anything it waits for every node to have caught up, so nothing
+written at `dangerous` exists on one node only, and it records each bucket's
+object count on a host, to be compared once the data has moved. Rejected:
+rebuilding Garage empty (loses data, and contradicts rule 3's growth from one
+node), and a second cluster plus an S3 copy (not in Garage's documentation,
+twice the disk, and a cutover of every app's endpoint).
+
+**Removing or replacing a node is not built.** After `garage layout remove`
+the old node must stay online until its data directory is empty, because
+Garage does not track block migration, and a dead one needs `layout
+skip-dead-nodes`, possibly with `--allow-missing-data`. Both are decisions
+about losing data, and will get their own gates.
 
 ### `dns init` creates the records a deployment needs
 

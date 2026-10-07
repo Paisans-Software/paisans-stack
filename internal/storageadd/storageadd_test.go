@@ -9,11 +9,11 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
 )
 
-// staging is the shape storage add was built for: home-a has run Garage
+// growing is the shape storage add was built for, a deployment growing from one Garage node: home-a has run Garage
 // alone at replication 1, with every app provisioned, and home-b has just
 // been applied at the configuration's replication 2, so its node runs alone
 // with an empty layout.
-func staging(t *testing.T) *world {
+func growing(t *testing.T) *world {
 	t.Helper()
 	cfg, secrets := fixture(t)
 	cfg.Storage.Garage.Consistency = "dangerous"
@@ -41,7 +41,7 @@ func printed(p *storageadd.Plan) string {
 // unsupported, so a plan that needs it refuses at the first gate unless the
 // operator asked for it, having changed nothing.
 func TestAFactorChangeNeedsTheFlag(t *testing.T) {
-	w := staging(t)
+	w := growing(t)
 	p := w.build(storageadd.Options{})
 	if got := strings.Join(stageNames(p), ","); got != "nodes,settle,reset,connect,layout,sync,provision,media routes,smoke" {
 		t.Fatalf("stages: %s", got)
@@ -62,12 +62,12 @@ func TestAFactorChangeNeedsTheFlag(t *testing.T) {
 	}
 }
 
-// The whole join from staging's shape: reset, connect, one layout version,
+// The whole join from that shape: reset, connect, one layout version,
 // a sync that has to be waited for, then provisioning found present, the
 // media routes and the probe. The first run exits at the sync with
 // ErrWaiting, and a later run resumes and finishes.
 func TestAResetJoinWaitsAndResumes(t *testing.T) {
-	w := staging(t)
+	w := growing(t)
 	// Metadata still moving at the first read; the blocks are covered by
 	// TestWaitPollsThroughTheSync.
 	w.migrate = 1
@@ -160,7 +160,7 @@ func assertStoppedBeforeAnyRewrite(t *testing.T, w *world) {
 
 // --wait polls a waiting gate instead of exiting.
 func TestWaitPollsThroughTheSync(t *testing.T) {
-	w := staging(t)
+	w := growing(t)
 	w.migrate, w.resync = 2, 3
 	p := w.build(storageadd.Options{ChangeReplication: true, Wait: 30_000_000_000})
 	if err := storageadd.Execute(p); err != nil {
@@ -172,7 +172,7 @@ func TestWaitPollsThroughTheSync(t *testing.T) {
 // node was started leaves no factor that differs. The counts file is what
 // says it is unfinished, and the next run starts the nodes and carries on.
 func TestAnInterruptedResetResumes(t *testing.T) {
-	w := staging(t)
+	w := growing(t)
 	w.failOnce = "up -d garage"
 	p := w.build(storageadd.Options{ChangeReplication: true})
 	err := storageadd.Execute(p)
@@ -288,7 +288,7 @@ func TestAFailingProbeDoesNotPrintTheKey(t *testing.T) {
 // passed: the counts converge through table sync, so it waits, and says
 // where the previous layouts are.
 func TestFewerObjectsAfterAResetWaits(t *testing.T) {
-	w := staging(t)
+	w := growing(t)
 	p := w.build(storageadd.Options{ChangeReplication: true})
 	// The counts are recorded at the start of the reset; lose objects after.
 	w.failOnce = "stop garage"
