@@ -113,7 +113,7 @@ func TestAJoinCompletesAndLeavesNothingToDo(t *testing.T) {
 		t.Errorf("synchronous mode %v, HAProxy serves:\n%s", w.syncMode, w.served["home-a"])
 	}
 	for _, c := range w.hosts["home-a"].commands {
-		if strings.HasSuffix(c, "compose.yaml restart") || strings.Contains(c, "compose.yaml up -d") {
+		if strings.HasSuffix(c, "/srv/infra/compose.yaml restart") || strings.Contains(c, "/srv/infra/compose.yaml up -d") {
 			t.Errorf("the primary's whole stack was acted on: %s", c)
 		}
 	}
@@ -283,5 +283,78 @@ func TestALearnerAddRefusedAsUnhealthyIsRetried(t *testing.T) {
 	w.addRefusals = 2
 	if err := siteadd.Execute(build(t, w)); err != nil {
 		t.Fatalf("a transient unhealthy cluster stopped the join: %v", err)
+	}
+}
+
+// Stage 6 stops the apps that reach the database through HAProxy before it
+// restarts, and starts and checks them after. A real join restarted HAProxy
+// under a running Mbin, whose workers never reconnected. A pinned app with its
+// own Postgres is left alone.
+func TestHAProxyRestartsWithItsDatabaseAppsStopped(t *testing.T) {
+	defer siteadd.SetFast()()
+	w := newWorld(t)
+	p := build(t, w)
+	var out bytes.Buffer
+	p.Print(&out)
+	plan := out.String()
+	for _, want := range []string{
+		"stop      home-a: auth, docs, talk: they reach the database through this HAProxy",
+		"restart   home-a: HAProxy alone",
+		"start     home-a: auth, docs, talk (docker compose -f /srv/auth/compose.yaml up -d;",
+		"check     home-a: auth, docs, talk: every container running",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("the plan has no %q:\n%s", want, plan)
+		}
+	}
+	if err := siteadd.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+
+	cmds := w.hosts["home-a"].commands
+	index := func(sub string) int {
+		for i, c := range cmds {
+			if strings.Contains(c, sub) {
+				return i
+			}
+		}
+		return -1
+	}
+	restart := index("restart haproxy")
+	if restart < 0 {
+		t.Fatal("HAProxy was not restarted")
+	}
+	for _, app := range []string{"auth", "docs", "talk"} {
+		compose := "/srv/" + app + "/compose.yaml"
+		stop, start, check := index(compose+" stop"), index(compose+" up -d"), index(compose+" ps --all")
+		if stop < 0 || stop > restart {
+			t.Errorf("%s was not stopped before HAProxy's restart (stop at %d, restart at %d)", app, stop, restart)
+		}
+		if start < restart {
+			t.Errorf("%s was not started after HAProxy's restart (start at %d, restart at %d)", app, start, restart)
+		}
+		if check < start {
+			t.Errorf("%s was not checked after it started", app)
+		}
+	}
+	for _, c := range cmds {
+		if strings.Contains(c, "/srv/blog/") || strings.Contains(c, "/srv/gate/") {
+			t.Errorf("an app that does not use the cluster's database was moved: %s", c)
+		}
+	}
+}
+
+// An app that does not come back healthy stops the join at stage 6, with its
+// logs, and HAProxy's own gate is not reached.
+func TestAnAppUnhealthyAfterHAProxyStopsAtStage6(t *testing.T) {
+	defer siteadd.SetFast()()
+	w := newWorld(t)
+	w.unhealthy = "talk"
+	err := siteadd.Execute(build(t, w))
+	if err == nil || !strings.Contains(err.Error(), "stage 6") || !strings.Contains(err.Error(), "stack talk is not healthy") || !strings.Contains(err.Error(), "last 30 log lines") {
+		t.Fatalf("want a stage 6 failure naming talk, got %v", err)
+	}
+	if w.hosts["home-a"].ran("/stats;csv") > 2 {
+		t.Error("HAProxy's gate ran after an app failed")
 	}
 }

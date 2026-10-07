@@ -41,11 +41,14 @@ type world struct {
 	promoteRefusals int
 	// addRefusals is how many learner adds etcd refuses as an unhealthy
 	// cluster, as it does until every voter has been connected five seconds.
-	addRefusals int
-	lags            []float64
-	noSyncStandby   bool
-	replicaUp       bool
-	failOnce        string
+	addRefusals   int
+	lags          []float64
+	noSyncStandby bool
+	replicaUp     bool
+	failOnce      string
+	// unhealthy names an app stack whose container has exited, once it has
+	// been started.
+	unhealthy string
 }
 
 type host struct {
@@ -109,6 +112,8 @@ func (h *host) Run(command string) (string, error) {
 		return "/var/lib/docker\n", nil
 	case strings.HasPrefix(command, "df -B1"):
 		return "Avail\n999999999999\n", nil
+	case w.unhealthy != "" && strings.Contains(command, "/srv/"+w.unhealthy+"/compose.yaml ps --all --format json"):
+		return `{"Service":"app","Name":"x","State":"exited","ExitCode":1}` + "\n", nil
 	case strings.Contains(command, " ps --all --format json"):
 		return `{"Service":"x","Name":"x","State":"running","Health":""}` + "\n", nil
 	case strings.Contains(command, "ip link show wg0"):

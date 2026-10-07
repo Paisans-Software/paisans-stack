@@ -117,6 +117,21 @@ func judge(list []container) (verdict, []string) {
 // `--all` because a container that exited is exactly what this gate is for,
 // and plain `ps` lists only running ones.
 func waitHealthy(plan *Plan, stack string, t Transport) error {
+	return waitStack(plan.Site, stack, t, applyStopped)
+}
+
+// applyStopped is what a failed gate tells the operator inside an apply.
+const applyStopped = "The apply stopped here and nothing after it was started; the next apply resumes at this stack and recreates it"
+
+// WaitHealthy is the same gate for a command outside apply that has just
+// started a stack: it waits as apply does, and on failure names the services
+// with the tail of their logs, then stopped, which says what the caller did
+// and did not do.
+func WaitHealthy(site, stack string, t Transport, stopped string) error {
+	return waitStack(site, stack, t, stopped)
+}
+
+func waitStack(site, stack string, t Transport, stopped string) error {
 	compose := fmt.Sprintf("docker compose -f /srv/%s/compose.yaml", stack)
 	attempts := int(healthWait / healthPoll)
 	if attempts < 1 {
@@ -136,7 +151,7 @@ func waitHealthy(plan *Plan, stack string, t Transport) error {
 			case healthy:
 				return nil
 			case failed:
-				return unhealthy(plan, stack, compose, "is not healthy", names, t)
+				return unhealthy(site, stack, compose, "is not healthy", names, stopped, t)
 			}
 			named, last = names, ""
 			if len(list) == 0 {
@@ -148,17 +163,17 @@ func waitHealthy(plan *Plan, stack string, t Transport) error {
 		}
 	}
 	if last != "" && len(named) == 0 {
-		return fmt.Errorf("%s: stack %s did not come up healthy within %s (%s), so the apply stopped here and nothing after it was started. The next apply resumes at this stack", plan.Site, stack, healthWait, last)
+		return fmt.Errorf("%s: stack %s did not come up healthy within %s (%s). %s", site, stack, healthWait, last, stopped)
 	}
-	return unhealthy(plan, stack, compose, fmt.Sprintf("did not come up healthy within %s", healthWait), named, t)
+	return unhealthy(site, stack, compose, fmt.Sprintf("did not come up healthy within %s", healthWait), named, stopped, t)
 }
 
 // unhealthy builds the gate's error, with the tail of each named service's
 // log, since the log is the first thing anyone would ask for.
-func unhealthy(plan *Plan, stack, compose, what string, names []string, t Transport) error {
+func unhealthy(site, stack, compose, what string, names []string, stopped string, t Transport) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s: stack %s %s: %s. The apply stopped here and nothing after it was started; the next apply resumes at this stack and recreates it",
-		plan.Site, stack, what, strings.Join(names, ", "))
+	fmt.Fprintf(&b, "%s: stack %s %s: %s. %s",
+		site, stack, what, strings.Join(names, ", "), stopped)
 	seen := map[string]bool{}
 	var services []string
 	for _, name := range names {

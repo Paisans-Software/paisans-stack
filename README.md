@@ -2306,7 +2306,7 @@ skipped and why.
 | 3. etcd | for each joiner, witness first: `member add --learner`, its compose file and record written, `up -d etcd` alone, `member promote` retried until etcd accepts it | `endpoint health --cluster` all healthy, and the voters are exactly `etcd.members` |
 | 4. Replica | the new site's remaining files by a whole `apply`, then `up -d`, which starts Patroni beside the running etcd | the member `streaming`, its replay lag zero or falling over three samples five seconds apart |
 | 5. Cluster configuration | `patronictl edit-config --force -q -s synchronous_mode=true -s synchronous_mode_strict=<value>` when the live values differ | a member with the role `Sync Standby` |
-| 6. HAProxy | `haproxy.cfg` as a scoped `apply`, then HAProxy alone restarted | the statistics list every cluster site, the leader `UP` and every replica `DOWN` |
+| 6. HAProxy | `haproxy.cfg` as a scoped `apply`; the site's cluster database apps stopped, HAProxy alone restarted, the apps started and each through `apply`'s health gate | the statistics list every cluster site, the leader `UP` and every replica `DOWN` |
 
 **Learners, one at a time.** A full voter added to a cluster of one makes the
 quorum two before it has started; if it then fails to start, the cluster stops.
@@ -2371,6 +2371,23 @@ stats socket, which needs a client the image may not carry, and a query
 through HAProxy for `pg_is_in_recovery()`, which needs the superuser password
 over TCP and shows only that a primary answered, not that a replica is out of
 the rotation.
+
+**The apps that use the database are stopped around HAProxy's restart.** On
+the first real join, stage 6 restarted HAProxy under a running Mbin, and Mbin
+answered HTTP 500 from then on (`SSL SYSCALL error: EOF detected`, then `no
+connection to the server`) until it was recreated by hand. Its FrankenPHP
+workers keep their database connections open across requests and do not
+reconnect when one is closed, and its healthcheck does not touch the database,
+so the container stayed `healthy` throughout. Pocket ID recovered on its own.
+So on each site whose HAProxy restarts, stage 6 first stops every app stack
+there with `cluster` placement and a kind that uses Postgres (`docker compose
+-f /srv/<app>/compose.yaml stop`), restarts HAProxy, starts them again (`up
+-d`), and holds each to `apply`'s health gate; a failure stops the join there
+with the app's logs. The plan lists the outage: stop, restart, start, check. A
+pinned app has its own Postgres and is left alone. This is one instance of a
+rule the toolkit owns: whatever changes the database path restarts the apps
+that depend on it (see "`apply` restarts the apps whose database path
+changed").
 
 ### Preflight
 
