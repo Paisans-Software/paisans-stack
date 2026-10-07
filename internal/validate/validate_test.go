@@ -38,6 +38,8 @@ func TestRulesFire(t *testing.T) {
 		{"garage-replication-exceeds-sites", "garage-replication-exceeds-sites", validate.Refuse},
 		{"garage-consistency-unknown", "garage-consistency-unknown", validate.Refuse},
 		{"storage-role-without-garage", "storage-role-without-garage", validate.Refuse},
+		{"garage-capacity-for-no-garage-site", "garage-capacity-for-no-garage-site", validate.Refuse},
+		{"garage-capacity-not-a-size", "garage-capacity-not-a-size", validate.Refuse},
 		{"garage-consistency-dangerous", "garage-consistency-dangerous", validate.Warn},
 		{"garage-consistency-degraded-is-consistent", "garage-consistency-degraded-is-consistent", validate.Warn},
 		{"garage-single-copy", "garage-single-copy", validate.Warn},

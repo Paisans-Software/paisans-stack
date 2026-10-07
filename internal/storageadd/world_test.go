@@ -66,7 +66,8 @@ type host struct {
 	layoutFactor int
 	asides       map[string]bool
 	// version and roles are this node's copy of the layout, staged what was
-	// assigned on it and not yet applied.
+	// assigned on it and not yet applied. A role is "<zone> <capacity>", the
+	// capacity as layout show prints it.
 	version int
 	roles   map[string]string
 	staged  map[string]string
@@ -241,7 +242,8 @@ func (h *host) garage(cmd string) (string, error) {
 		} else {
 			b.WriteString("ID                Tags  Zone   Capacity  Usable capacity\n")
 			for _, id := range sortedKeys(h.roles) {
-				fmt.Fprintf(&b, "%s        %s  100.0 GB  100.0 GB (100.0%%)\n", id, h.roles[id])
+				zone, capacity := splitRole(h.roles[id])
+				fmt.Fprintf(&b, "%s        %s  %s  %s (100.0%%)\n", id, zone, capacity, capacity)
 			}
 		}
 		fmt.Fprintf(&b, "\nCurrent cluster layout version: %d\n", h.version)
@@ -250,7 +252,8 @@ func (h *host) garage(cmd string) (string, error) {
 		var b strings.Builder
 		b.WriteString("==== HEALTHY NODES ====\nID                Hostname  Address  Tags  Zone  Capacity  DataAvail\n")
 		for _, n := range h.component() {
-			fmt.Fprintf(&b, "%s  %s  %s:3901  []  %s  100.0 GB  1 TB\n", n.short(), n.name, w.cfg.Sites[n.name].Address, h.roles[n.short()])
+			zone, _ := splitRole(h.roles[n.short()])
+			fmt.Fprintf(&b, "%s  %s  %s:3901  []  %s  100.0 GB  1 TB\n", n.short(), n.name, w.cfg.Sites[n.name].Address, zone)
 		}
 		return b.String(), nil
 	case connectRe.MatchString(cmd):
@@ -265,7 +268,11 @@ func (h *host) garage(cmd string) (string, error) {
 		return "Error: could not connect", fmt.Errorf("exit status 1")
 	case assignRe.MatchString(cmd):
 		m := assignRe.FindStringSubmatch(cmd)
-		h.staged[m[3][:16]] = m[1]
+		n, err := config.ParseSize(m[2])
+		if err != nil {
+			return "Error: invalid capacity", fmt.Errorf("exit status 1")
+		}
+		h.staged[m[3][:16]] = m[1] + " " + shown(n)
 		return "Role changes are staged but not yet committed.\n", nil
 	case applyRe.MatchString(cmd):
 		v, _ := strconv.Atoi(applyRe.FindStringSubmatch(cmd)[1])
@@ -462,7 +469,8 @@ func (w *world) provisioned(factor int, sites ...string) {
 	}
 	roles := map[string]string{}
 	for _, h := range hs {
-		roles[h.short()] = h.name
+		n, _ := config.ParseSize(w.cfg.Storage.Garage.CapacityFor(h.name))
+		roles[h.short()] = h.name + " " + shown(n)
 		for _, other := range hs {
 			if other != h {
 				h.peers[other.name] = true
@@ -501,4 +509,28 @@ func (w *world) build(opts storageadd.Options) *storageadd.Plan {
 		w.t.Fatalf("building the plan: %v", err)
 	}
 	return p
+}
+
+// splitRole is a fake role's zone and shown capacity.
+func splitRole(role string) (zone, capacity string) {
+	zone, capacity, _ = strings.Cut(role, " ")
+	return zone, capacity
+}
+
+// shown is a capacity the way dxflrs/garage:v1.0.1's layout show prints it:
+// decimal units, one decimal place.
+func shown(n int64) string {
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	f := float64(n)
+	i := 0
+	for f >= 1000 && i < len(units)-1 {
+		f /= 1000
+		i++
+	}
+	return fmt.Sprintf("%.1f %s", f, units[i])
+}
+
+func zoneOf(h *host, of *host) string {
+	zone, _ := splitRole(h.roles[of.short()])
+	return zone
 }

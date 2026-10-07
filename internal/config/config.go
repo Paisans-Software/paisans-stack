@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -241,6 +243,11 @@ type Garage struct {
 	// because the toolkit cannot know how much of that disk is meant for
 	// objects. Defaulted in Load when left unset.
 	Capacity string `yaml:"capacity"`
+	// Capacities overrides Capacity for the sites it names, so nodes of
+	// different sizes can share a layout: Garage spreads partitions in
+	// proportion to capacity. Founder decision, over a field on each site,
+	// which would spread Garage's configuration across site entries.
+	Capacities map[string]string `yaml:"capacities"`
 	// Consistency is Garage's consistency_mode: consistent, degraded or
 	// dangerous. At replication 2 on two sites, dangerous is the only mode in
 	// which uploads continue while a site is down, at the price of an upload
@@ -578,4 +585,41 @@ func (e *LoadError) Error() string {
 		out += "\n  " + p
 	}
 	return out
+}
+
+// CapacityFor is the capacity a Garage site advertises: its entry in
+// Capacities, or the deployment's Capacity.
+func (g Garage) CapacityFor(site string) string {
+	if c := strings.TrimSpace(g.Capacities[site]); c != "" {
+		return c
+	}
+	return g.Capacity
+}
+
+// sizeShape is a size as Garage's -c flag takes it: a number, then a unit.
+var sizeShape = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*([KMGTP]?)(I?)(B?)$`)
+
+// ParseSize reads a size such as 100G, 3GB, 3GiB or 1.5T into bytes. K, M, G,
+// T and P are decimal and Ki, Mi, Gi, Ti and Pi binary, with or without a
+// trailing B, matching what dxflrs/garage:v1.0.1 accepts for a capacity and
+// how it displays one (observed: 3G and 3GB show as 3.0 GB, 3GiB as 3.2 GB).
+// A bare number is refused: Garage requires the unit, and so does this.
+func ParseSize(s string) (int64, error) {
+	m := sizeShape.FindStringSubmatch(strings.ToUpper(strings.TrimSpace(s)))
+	if m == nil || m[2] == "" {
+		return 0, fmt.Errorf("%q is not a size with a unit, Eg: 100G, 3GiB or 1.5T", s)
+	}
+	n, err := strconv.ParseFloat(m[1], 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%q is not a positive size", s)
+	}
+	base := 1000.0
+	if m[3] == "I" {
+		base = 1024
+	}
+	power := strings.Index("KMGTP", m[2]) + 1
+	for i := 0; i < power; i++ {
+		n *= base
+	}
+	return int64(n), nil
 }

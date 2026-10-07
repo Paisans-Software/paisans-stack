@@ -98,7 +98,7 @@ func TestAResetJoinWaitsAndResumes(t *testing.T) {
 	if a.factor() != 2 || b.factor() != 2 {
 		t.Errorf("garage.toml factors after the reset: home-a %d, home-b %d", a.factor(), b.factor())
 	}
-	if a.roles[a.short()] != "home-a" || a.roles[b.short()] != "home-b" || a.version != 1 {
+	if zoneOf(a, a) != "home-a" || zoneOf(a, b) != "home-b" || a.version != 1 {
 		t.Errorf("the layout after the reset is version %d with roles %v", a.version, a.roles)
 	}
 	if _, ok := a.files[storageadd.CountsFile]; !ok {
@@ -244,7 +244,7 @@ func TestAJoinWithoutAReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, b := w.hosts["home-a"], w.hosts["home-b"]
-	if b.roles[b.short()] != "home-b" || a.version != 2 {
+	if zoneOf(b, b) != "home-b" || a.version != 2 {
 		t.Errorf("home-b has no role in a layout at version 2: version %d, roles %v", a.version, a.roles)
 	}
 	for _, h := range w.hosts {
@@ -301,5 +301,45 @@ func TestFewerObjectsAfterAResetWaits(t *testing.T) {
 	err := storageadd.Execute(w.build(storageadd.Options{ChangeReplication: true}))
 	if !errors.Is(err, storageadd.ErrWaiting) || !strings.Contains(err.Error(), "held 7 before the reset") {
 		t.Fatalf("expected a wait on the object counts, got %v", err)
+	}
+}
+
+// Each node takes its own capacity, and changing one later reassigns that
+// node alone, in one new layout version. A change smaller than layout show's
+// rounding is not a change.
+func TestCapacitiesAreAssignedAndResized(t *testing.T) {
+	cfg, secrets := fixture(t)
+	cfg.Storage.Garage.Replication = 1
+	cfg.Storage.Garage.Capacities = map[string]string{"home-b": "2T"}
+	w := newWorld(t, cfg, secrets)
+	w.provisioned(1, "home-a")
+	w.deployGarage("home-b", 1)
+
+	if err := storageadd.Execute(w.build(storageadd.Options{})); err != nil {
+		t.Fatal(err)
+	}
+	a, b := w.hosts["home-a"], w.hosts["home-b"]
+	if a.roles[b.short()] != "home-b 2.0 TB" || a.roles[a.short()] != "home-a 100.0 GB" {
+		t.Fatalf("roles after the join: %v", a.roles)
+	}
+
+	// Within the rounding: nothing to do.
+	cfg.Storage.Garage.Capacities["home-b"] = "2010G"
+	if p := w.build(storageadd.Options{}); p.Pending() {
+		t.Errorf("a change hidden by layout show's rounding planned a rebalance:\n%s", printed(p))
+	}
+
+	// A real change: home-b alone is reassigned, in one version.
+	cfg.Storage.Garage.Capacities["home-b"] = "500G"
+	p := w.build(storageadd.Options{})
+	if !strings.Contains(printed(p), "resize") {
+		t.Fatalf("a capacity change was not planned:\n%s", printed(p))
+	}
+	before := a.version
+	if err := storageadd.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+	if a.version != before+1 || a.roles[b.short()] != "home-b 500.0 GB" || a.roles[a.short()] != "home-a 100.0 GB" {
+		t.Errorf("after the resize: version %d (was %d), roles %v", a.version, before, a.roles)
 	}
 }

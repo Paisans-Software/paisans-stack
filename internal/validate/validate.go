@@ -127,6 +127,7 @@ func Check(cfg *config.Config) Result {
 	c.garageReplicationExceedsSites()
 	c.garageConsistency()
 	c.storageRoleWithoutGarage()
+	c.garageCapacities()
 	c.garageAvailability()
 	c.siteOutsideMesh()
 	c.imageServices()
@@ -302,6 +303,39 @@ func (c *checker) storageRoleWithoutGarage() {
 		}
 		c.refuse("storage-role-without-garage", fmt.Sprintf("sites.%s.roles", name),
 			"includes storage, but storage.garage.sites does not list %s, so it would run no Garage at all. Add it to storage.garage.sites, at the end if the cluster is already running, or drop the role.", name)
+	}
+}
+
+// garageCapacities refuses a capacity Garage would refuse, and an override
+// for a site that runs no Garage.
+//
+// Garage's `layout assign -c` takes a number with a unit and refuses a bare
+// number or zero, so a bad value would surface as a failed layout stage on a
+// live cluster rather than here. A capacities key that is not a Garage site
+// is a typo or a leftover, and silently ignoring it would leave the node it
+// meant at the default.
+func (c *checker) garageCapacities() {
+	garage := c.cfg.Storage.Garage
+	if len(garage.Sites) > 0 {
+		if _, err := config.ParseSize(garage.Capacity); err != nil {
+			c.refuse("garage-capacity-not-a-size", "storage.garage.capacity", "%v. Garage's layout needs a capacity with a unit.", err)
+		}
+	}
+	keys := make([]string, 0, len(garage.Capacities))
+	for site := range garage.Capacities {
+		keys = append(keys, site)
+	}
+	sort.Strings(keys)
+	for _, site := range keys {
+		key := "storage.garage.capacities." + site
+		if !slices.Contains(garage.Sites, site) {
+			c.refuse("garage-capacity-for-no-garage-site", key,
+				"names %s, which storage.garage.sites does not list, so no node would take it. Remove it, or list the site.", site)
+			continue
+		}
+		if _, err := config.ParseSize(garage.Capacities[site]); err != nil {
+			c.refuse("garage-capacity-not-a-size", key, "%v. Garage's layout needs a capacity with a unit.", err)
+		}
 	}
 }
 
