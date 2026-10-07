@@ -9,9 +9,17 @@ services:
   app:
     image: ghcr.io/pocket-id/pocket-id:v2.14.0
     restart: unless-stopped
+    # No healthcheck is declared because the image has one: `/app/pocket-id
+    # healthcheck` every 90s after a 10s start period (docker/Dockerfile-prebuilt:20
+    # at tag v2.14.0, the Dockerfile .goreleaser.yaml:101 publishes from). apply's
+    # health gate reads it, so the first healthy report can take up to 90s.
     env_file:
       - .env
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says. The
+    # gateway, over the mesh, is the only thing that should reach it.
     ports:
-      - "1411:1411"
+      - "10.44.0.2:1411:1411"
     volumes:
       - /srv/auth/data:/app/data

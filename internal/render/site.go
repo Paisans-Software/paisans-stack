@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"text/template"
@@ -37,6 +38,9 @@ var templates = template.Must(template.New("infra").Funcs(templateFuncs).ParseFS
 var templateFuncs = template.FuncMap{
 	"quote":  quote,
 	"indent": indent,
+	// regexquote escapes a value for a regular expression, so a hostname's
+	// dots match only dots.
+	"regexquote": regexp.QuoteMeta,
 	"yesno": func(b bool) string {
 		if b {
 			return "true"
@@ -174,10 +178,12 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			return nil, err
 		}
 	}
+	initial := p.etcdInitialFor(site.Name)
 	infra, err := p.renderTemplate("infra-compose.yaml.tmpl", map[string]any{
 		"Site":               site,
 		"Scope":              p.scope(),
-		"EtcdInitialCluster": p.etcdInitialCluster(),
+		"EtcdInitialCluster": initial.Cluster,
+		"EtcdInitialState":   initial.State,
 		"HeartbeatMS":        p.heartbeatMS(),
 		"ElectionTimeoutMS":  p.electionTimeoutMS(),
 		"PostgresVersion":    p.postgresVersion(),
@@ -188,6 +194,9 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		return nil, err
 	}
 	files = append(files, File{Path: base + "srv/infra/compose.yaml", Content: infra, Mode: 0o644})
+	if site.IsEtcd {
+		files = append(files, File{Path: base + EtcdInitialPath, Content: FormatEtcdInitial(initial), Mode: 0o644})
+	}
 
 	if site.IsData {
 		env, err := p.renderTemplate("patroni.env.tmpl", map[string]any{
@@ -195,6 +204,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"Scope":             p.scope(),
 			"EtcdClientHosts":   p.etcdClientHosts(),
 			"PatroniAPIPort":    patroniAPIPort,
+			"BgMonPort":         bgMonPort,
 			"PostgresPort":      postgresPort,
 			"SuperuserPassword": p.secrets.Cluster.SuperuserPassword,
 			"StandbyPassword":   p.secrets.Cluster.StandbyPassword,
@@ -210,10 +220,12 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 
 	if site.NeedsProxy {
 		cfg, err := p.renderTemplate("haproxy.cfg.tmpl", map[string]any{
+			"Address":        site.Address,
 			"ClusterPort":    p.clusterPort(),
 			"ClusterMembers": p.clusterMembers(),
 			"PostgresPort":   postgresPort,
 			"PatroniAPIPort": patroniAPIPort,
+			"StatsPort":      haproxyStatsPort,
 		})
 		if err != nil {
 			return nil, err
@@ -236,6 +248,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"Site":        site,
 			"Domain":      p.cfg.Community.Domain,
 			"Replication": p.replication(),
+			"Consistency": p.consistency(),
 			"RPCSecret":   rpcSecret,
 			"AdminToken":  p.secrets.Storage.Garage.AdminToken,
 		})
@@ -272,8 +285,8 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 				return nil, err
 			}
 			media, err := p.renderTemplate("media.caddy.snippet.tmpl", map[string]any{
-				"GarageAddress": garageEndpointHost(p),
-				"PublicBuckets": publicBuckets,
+				"GarageAddresses": garageAddresses(p),
+				"PublicBuckets":   publicBuckets,
 			})
 			if err != nil {
 				return nil, err
@@ -777,6 +790,13 @@ func (p *planner) replication() int {
 	return p.cfg.Storage.Garage.Replication
 }
 
+func (p *planner) consistency() string {
+	if p.cfg.Storage.Garage.Consistency == "" {
+		return config.GarageConsistent
+	}
+	return p.cfg.Storage.Garage.Consistency
+}
+
 func (p *planner) heartbeatMS() int {
 	if p.cfg.Etcd.HeartbeatMS == 0 {
 		return 100
@@ -790,3 +810,7 @@ func (p *planner) electionTimeoutMS() int {
 	}
 	return p.cfg.Etcd.ElectionTimeoutMS
 }
+
+// PublicKey derives a site's WireGuard public key from its private key, for a
+// command that reads a peer's key back from `wg show`.
+func PublicKey(private string) (string, error) { return publicKey(private) }

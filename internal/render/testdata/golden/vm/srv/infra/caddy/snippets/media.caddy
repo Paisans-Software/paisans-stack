@@ -5,7 +5,7 @@
 # NEVER GATE THIS HOSTNAME. A federating server fetching an image is a machine,
 # and it will not follow a redirect to a passkey prompt.
 #
-# Two upstreams, and which one a request takes is decided by its bucket.
+# Two Garage endpoints, and which one a request takes is decided by its bucket.
 #
 # A public bucket goes to Garage's web endpoint on 3902. That endpoint is the
 # only way Garage serves an object with no credential, and it resolves the
@@ -19,12 +19,30 @@
 #
 # Caddy sorts these by path matcher length, longest first, so the bucket routes
 # are evaluated before the fallback no matter what order they are written in.
+#
+# Every Garage node is an upstream, in storage.garage.sites order, and the
+# first one serves while it is up: any node answers for every bucket, reading
+# its own copy first. lb_try_duration sends a request whose connection failed
+# to the next node, so the request that finds a node dead does not fail with
+# it; a 503 is Garage saying it lost quorum. There is no active check on
+# Garage's /health: it judges with the consistent write quorum whatever the
+# configured mode, so at replication 2 on two nodes it calls the survivor
+# unavailable while it serves every read.
 handle /talk-uploads/* {
 	uri strip_prefix /talk-uploads
-	reverse_proxy 10.44.0.1:3902 {
+	reverse_proxy 10.44.0.1:3902 10.44.0.2:3902 {
+		lb_policy first
+		lb_try_duration 5s
+		fail_duration 10s
+		unhealthy_status 503
 		header_up Host talk-uploads.web.garage.internal
 	}
 }
 handle {
-	reverse_proxy 10.44.0.1:3900
+	reverse_proxy 10.44.0.1:3900 10.44.0.2:3900 {
+		lb_policy first
+		lb_try_duration 5s
+		fail_duration 10s
+		unhealthy_status 503
+	}
 }

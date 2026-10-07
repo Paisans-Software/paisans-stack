@@ -1,13 +1,42 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
+# The whole Mbin stack, in the shape upstream's own compose.yaml has (read at
+# the paisans fork's tag v1.13.3+paisans): the web application, its messenger
+# consumers, a message broker behind an AMQP proxy, and a cache. Only `app`
+# publishes a port. Every other service is on this project's own network and
+# reachable from nothing else.
 {{- if .App.Pinned }}
+#
 # {{ .App.Name }} is pinned to {{ .App.Site }}: app, database and media
 # together. A half pinned app needs both its own location and the cluster site
 # to be reachable, which makes it less available than either alone.
 {{- else }}
+#
 # {{ .App.Name }} has cluster placement: no Postgres service of its own, and a
-# connection to the local HAProxy on {{ .DBHost }}:{{ .DBPort }}.
+# connection to the local HAProxy on {{ .DBHost }}:{{ .DBPort }}, this site's own
+# mesh address. Every apps site runs this same stack with its own broker and
+# cache. Sessions are in Postgres (the image's framework.yaml uses
+# PdoSessionHandler), so a member keeps their session when the gateway moves
+# to another site; the queue and the cache are per site and are not. Each
+# site's consumers also run Mbin's scheduled tasks (the scheduler_default
+# transport), so with two apps sites each task runs once per site. Whether
+# every task tolerates that has not been checked.
 {{- end }}
+#
+# OWNERSHIP. Every directory below is a bind mount under {{ .DataPath }}, and
+# whoever creates a missing one owns it: Docker creates it as root. The
+# containers cope with that as follows, and nothing here chowns anything:
+#
+#   app, messenger  start as root; the image's entrypoint chowns var/, /data
+#                   and /config to MBIN_USER (1000:1000, set in .env) and then
+#                   drops to it. media/ and oauth/ are NOT chowned. media/ is
+#                   unused while uploads go to S3; oauth/ holds two rendered
+#                   0644 files, which uid 1000 reads as they are (see below).
+#   rabbitmq        starts as root; its entrypoint chowns /var/lib/rabbitmq to
+#                   its own user and drops to it. No `user:` here for that
+#                   reason, which is a deliberate difference from upstream.
+#   valkey          mounts only valkey.conf, read only, so owns nothing.
+#   amqproxy        mounts nothing.
 name: paisans-{{ .App.Name }}
 
 services:
@@ -16,16 +45,136 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # The image is FrankenPHP, which is Caddy, and by default it terminates
+      # TLS itself and asks for a certificate for SERVER_NAME. The gateway
+      # terminates TLS, so this listens plainly on the port it publishes and
+      # never attempts ACME. Upstream's documented pattern for running behind a
+      # reverse proxy (docs/02-admin/01-installation/02-docker.md, "Running
+      # behind a reverse proxy") is these two settings with ":80"; the port
+      # here is the one the gateway routes to instead.
+      SERVER_NAME: ":{{ .App.Port }}"
+      CADDY_GLOBAL_OPTIONS: "auto_https off"
+      # The image's Caddyfile configures Mercure with publisher_jwt and
+      # subscriber_jwt, which the Mercure module in 1.13.3-paisans accepts only
+      # in compatibility mode: without this the app's Caddy refuses its own
+      # configuration and the container restarts forever, which is what the
+      # first real host did. The Caddyfile reads this variable inside its
+      # mercure block (docker/Caddyfile, "Extra directives", at the fork's tag
+      # v1.13.3+paisans). Moving to an issuer block is a change to the image,
+      # not to this file.
+      MERCURE_EXTRA_DIRECTIVES: "protocol_version_compatibility 8"
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says. The
+    # gateway, over the mesh, is the only thing that should reach it.
     ports:
-      - "{{ .App.Port }}:{{ .App.Port }}"
+      - "{{ .MeshAddress }}:{{ .App.Port }}:{{ .App.Port }}"
     volumes:
-      - {{ .DataPath }}/data:/data
-      # Upstream binds uploads to the local adapter. The shim switches it to
-      # S3; see the comment at the top of that file.
-      - {{ .DataPath }}/config/packages/oneup_flysystem.yaml:/app/config/packages/oneup_flysystem.yaml:ro
-{{- if .App.Pinned }}
+      # Caddy's own state, including the Mercure hub's bolt database.
+      - {{ .DataPath }}/caddy_data:/data
+      - {{ .DataPath }}/caddy_config:/config
+      - {{ .DataPath }}/media:/app/public/media
+      # Mbin's own OAuth2 server keypair, for API clients. Not the identity
+      # provider's client secret. Generated at `paisans init`, kept in the
+      # secrets file and rendered here as oauth/private.pem and public.pem, so
+      # every apps site under cluster placement has the same pair and a token
+      # one site issues verifies on another. Both are 0644 so uid 1000 can read
+      # them without a chown; private.pem is encrypted with OAUTH_PASSPHRASE,
+      # which is only in the 0600 .env. Read only, so the application cannot
+      # rewrite its own signing key.
+      - {{ .DataPath }}/oauth:/app/config/oauth2:ro
+      - {{ .DataPath }}/php_logs:/app/var/log
+      # Nothing is mounted over config/packages/. The image's entrypoint edits
+      # three files there in place at every start (liip_imagine.yaml,
+      # monolog.yaml, and oneup_flysystem.yaml, which it switches to the S3
+      # adapter because S3_KEY is set in .env), and `sed -i` over a bind mount
+      # fails and stops the container.
     depends_on:
-      - postgres
+      amqproxy:
+        condition: service_started
+      valkey:
+        condition: service_healthy
+{{- if .App.Pinned }}
+      postgres:
+        condition: service_started
+{{- end }}
+
+  messenger:
+    # The same image as app, always: the consumers run the application's own
+    # code, so they are not a service with an image of their own to declare.
+    image: {{ .Image "app" }}
+    restart: unless-stopped
+    command: bin/console messenger:consume scheduler_default old async outbox deliver inbox resolve receive failed --time-limit=3600
+    # Two, not upstream's six: one consumer restarting does not stop
+    # federation delivery, at a third of the memory. Raise it when the queue
+    # is seen to back up, not before.
+    deploy:
+      replicas: 2
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep 'messenger[:]consume' || exit 1"]
+    env_file:
+      - .env
+    volumes:
+      - {{ .DataPath }}/media:/app/public/media
+      - {{ .DataPath }}/messenger_logs:/app/var/log
+      # The same keypair as app, so that nothing the consumers run differs from
+      # the web container in which keys it can see.
+      - {{ .DataPath }}/oauth:/app/config/oauth2:ro
+    depends_on:
+      amqproxy:
+        condition: service_started
+      valkey:
+        condition: service_healthy
+{{- if .App.Pinned }}
+      postgres:
+        condition: service_started
+{{- end }}
+
+  amqproxy:
+    image: {{ .Image "amqproxy" }}
+    restart: unless-stopped
+    # Upstream's MBIN_USER default. Nothing is mounted, so there is no host
+    # ownership for it to match.
+    user: "1000:1000"
+    command: amqp://rabbitmq:5672
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  rabbitmq:
+    image: {{ .Image "rabbitmq" }}
+    restart: unless-stopped
+    # Fixed, because RabbitMQ keys its on disk state on the node name, which
+    # derives from the hostname. A generated one would orphan the queue on
+    # every recreate.
+    hostname: rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+    # Only the two variables it reads, rather than the whole .env upstream
+    # hands it: a broker has no business holding the database password.
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:?set in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?set in .env}
+    volumes:
+      # Data only. Upstream also mounts /var/log/rabbitmq, but the image logs
+      # to the console (its conf.d/10-defaults.conf sets log.console), and its
+      # entrypoint chowns only the data directory, so a root owned log mount
+      # would be a directory the broker cannot write to.
+      - {{ .DataPath }}/rabbitmq_data:/var/lib/rabbitmq
+
+  valkey:
+    image: {{ .Image "valkey" }}
+    restart: unless-stopped
+    # The password is on the command line, as upstream has it, so it is
+    # visible to `ps` on the host. valkey.conf is not secret and is rendered
+    # 0644 for that reason; the password stays out of it.
+    command: valkey-server /valkey.conf --requirepass ${VALKEY_PASSWORD:?set in .env}
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+    volumes:
+      - {{ .DataPath }}/valkey.conf:/valkey.conf:ro
+{{- if .App.Pinned }}
 
   postgres:
     image: {{ .Image "postgres" }}

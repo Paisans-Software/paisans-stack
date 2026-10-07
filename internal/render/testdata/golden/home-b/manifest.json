@@ -8,62 +8,77 @@
     },
     {
       "path": "srv/auth/.env",
-      "sha256": "5c1c78c22870bfff6d3b92d2f8b71a510d70a214134b9e570e97f129ef2130eb",
+      "sha256": "fa1b191407efac9980a965e1f699d1dd2394e01d932f2a44204ce5e1c14453a8",
       "mode": "0600"
     },
     {
       "path": "srv/auth/compose.yaml",
-      "sha256": "0b01f094b0c5ef48e257d8af7a28ab9e4a12a8bd445e567978c5627202d01b52",
+      "sha256": "4fae51ad5ca3e5453a03d94c923d08e6391c34e40834a54f461c0f2cff9d78e5",
       "mode": "0644"
     },
     {
       "path": "srv/docs/.env",
-      "sha256": "ee7b631d156680254d1d9d09f991276ab98f2e600d7c4d3a3e2814e173c633fe",
+      "sha256": "b43301198ae9f24789d743be2cf852f32febbba8d95d6076c71e7bdc43c4f59d",
       "mode": "0600"
     },
     {
       "path": "srv/docs/compose.yaml",
-      "sha256": "a16de4fcff31962c6c2a4c2bf5d77d1adcee2b600c20945d0200869d33396137",
+      "sha256": "cb021e390004a897d4039a8009d3f74c1da56f9af47cea2c5020cd5634d11bbf",
       "mode": "0644"
     },
     {
       "path": "srv/infra/compose.yaml",
-      "sha256": "dfe9d8e55f7c41e9503135a66a8c4edf6f9b5fd8e0a2d477456f843e9d81dbf3",
+      "sha256": "651ce656eb55eaa7d618060bf802564aba9627942791db744bbc87aae5a5b63e",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/etcd-initial",
+      "sha256": "ba76b866cca9d84f06ab7bf484b87c06e2ccc96cbbbe83e063dd4ce73971b009",
       "mode": "0644"
     },
     {
       "path": "srv/infra/garage/garage.toml",
-      "sha256": "f331579f4c8f2624a4c6155ed6c1a0c92eae76830f1331d329dcfb72f2b04206",
+      "sha256": "f0f4bea80230d829afd822932d5281b1fbf0f150fdb228aedf8c6b2648fa3b7e",
       "mode": "0600"
     },
     {
       "path": "srv/infra/haproxy/haproxy.cfg",
-      "sha256": "60c7be2b671d4bb18703a12c33914a8226dce60be123bef5299f8002544e071e",
+      "sha256": "45a6bf3c0a8d188b3c65e8d5cfe33a244435ce2a33c7f8c1f638c210c3c139e0",
       "mode": "0644"
     },
     {
       "path": "srv/infra/patroni.env",
-      "sha256": "aaab73a1b130089dbcbe3162ca035a80431cfd4e1e99ec8217151cd4c72cfc9a",
+      "sha256": "8a7bf5a399549846ead0821deb319c1e8d2add34e2611f417b6968dcd03bb733",
       "mode": "0600"
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "cc7453b019b14d45d8ce44da9520db5ce52952f60fcb4a4b360a2258e1440665",
+      "sha256": "94ea106b983fe036eb1c9589cd602b5456d41cca22dbb5e3c45f208c7f72f15c",
       "mode": "0600"
     },
     {
       "path": "srv/talk/compose.yaml",
-      "sha256": "0df0cc43b70de788fc3b0207125bff37508a3cf31c7b925de0c5c510bb627393",
+      "sha256": "0d0101acb2ba347568cb6097849c0550f8c3f57c00103a76caf65e4bf22f698f",
       "mode": "0644"
     },
     {
-      "path": "srv/talk/config/packages/oneup_flysystem.yaml",
-      "sha256": "9e676d3569b2fe39d5ce151f4dbfbbf065fbe020b1b194f547320a0a309d4efd",
+      "path": "srv/talk/oauth/private.pem",
+      "sha256": "411b0aaba0a0e761d2de5af24c296ea49e3955c64c03880ccb2199de1c2ca751",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/talk/oauth/public.pem",
+      "sha256": "03d2b40509c8d0c7b462e0ed95feefd687a9075145fa35f66c03bbc9015bb6c9",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/talk/valkey.conf",
+      "sha256": "b297524a011668e3be21f50075ada0b5bcc7229ba49dfed6cd13abf420045094",
       "mode": "0644"
     },
     {
       "path": "srv/web/compose.yaml",
-      "sha256": "b0b89fe31df61e0357230da1c0572f3b4e306c2c7433b63e12912692123589cb",
+      "sha256": "58668f868e322850cf11f158610073ce845611457d867b9185ce7048fa8de24d",
       "mode": "0644"
     },
     {

@@ -5,7 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -21,8 +24,14 @@ type Change struct {
 	Mode uint32
 	// Stack is the directory under /srv this file belongs to, empty for files
 	// outside one.
-	Stack   string
-	content string
+	Stack string
+	// Overwritten marks a conflict the operator named with --overwrite: a file
+	// that differs from the last record and is replaced anyway, because they
+	// said so for that one path.
+	Overwritten bool
+	content     string
+	// before is what the host held, for a scoped plan's Rollback.
+	before string
 }
 
 // ChangeKind is what an apply will do to one file.
@@ -65,9 +74,36 @@ type Action struct {
 	// environment at start and a running container cannot be told about a new
 	// value.
 	Recreate bool
+	// Force means `docker compose up -d --force-recreate`, which replaces
+	// every container of the stack even when Compose sees nothing changed. It
+	// is set for a stack a stopped apply still owes and for one the operator
+	// named with --recreate, never for an ordinary change: a plain `up -d`
+	// over a container that an earlier `up -d` left half built only starts
+	// it, network and all missing, because its configuration matches.
+	Force bool
 	// Reason is quoted back to the operator, so that "why is it recreating"
 	// never needs guessing.
 	Reason string
+	// Services narrows a restart to these compose services, empty for every
+	// service of the stack. Only the infrastructure stack sets it: its
+	// services share one compose project, and restarting the whole project
+	// for a new garage.toml restarted Patroni, which on the primary is a
+	// failover, and HAProxy, which drops every app's database connection.
+	Services []string
+}
+
+// Command is what the action runs on the host.
+func (a Action) Command() string {
+	switch {
+	case a.Force:
+		return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml up -d --force-recreate", a.Stack)
+	case a.Recreate:
+		return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml up -d", a.Stack)
+	case len(a.Services) > 0:
+		return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml restart %s", a.Stack, strings.Join(a.Services, " "))
+	default:
+		return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml restart", a.Stack)
+	}
 }
 
 // Plan is everything one site's apply would do.
@@ -99,6 +135,96 @@ type Plan struct {
 	// ACMEModule is the Caddy DNS module this deployment's gateway must have,
 	// as `caddy list-modules` prints it. Empty when this site runs no gateway.
 	ACMEModule string
+	// WireGuard is what wg0 needs before any stack moves. Every service binds
+	// the site's mesh address, so a stack started before the interface exists
+	// fails to bind, and a container that cannot bind is restarted in a loop
+	// by Docker rather than reported to the apply.
+	WireGuard WireGuardStep
+	// Bootstrap is the per app database work, nil when this site does none.
+	// It runs after the infrastructure stack and before any app stack, and a
+	// failure stops the apply there. See WithDatabases.
+	Bootstrap *Bootstrap
+	// Disk is the free space check on Docker's data root, nil when no stack
+	// action will pull an image. Execute refuses before writing anything when
+	// it is short. See DiskCheck.
+	Disk *DiskCheck
+	// Prunes are the images on the host that this apply's stacks supersede,
+	// as Build saw them. Execute reads the host again after each stack is
+	// healthy, and removes only what no container uses by then.
+	Prunes []Prune
+	// KeepImages skips pruning for this run, as --keep-images does.
+	KeepImages bool
+	// images is what each stack of this site renders, from its compose file.
+	images map[string][]string
+	// scoped marks a plan built with Scope: it writes its files and syncs
+	// the mesh, and leaves every stack, gate and other file to its caller.
+	scoped bool
+	// partial marks a plan built with Only: like a scoped one, its manifest
+	// write keeps every entry outside the named stacks.
+	partial bool
+	// recorded is the manifest as Build read it, which a scoped plan's own
+	// manifest write keeps for every file outside its scope.
+	recorded map[string]render.ManifestFile
+	// Progress receives what Execute decided along the way that is not an
+	// error, such as a replica leaving the database work to the leader. Nil
+	// discards it.
+	Progress io.Writer
+}
+
+func (p *Plan) say(format string, args ...any) {
+	if p.Progress != nil {
+		fmt.Fprintf(p.Progress, format, args...)
+	}
+}
+
+// WireGuardStep is the one thing an apply does to wg0.
+type WireGuardStep int
+
+const (
+	// WireGuardNone means the interface is up and its file did not change.
+	WireGuardNone WireGuardStep = iota
+	// WireGuardStart enables the unit and starts it: a first apply, or an
+	// interface found down.
+	WireGuardStart
+	// WireGuardSync hands the running interface its new peers without taking
+	// it down, which is the ordinary update: a site joined or left.
+	WireGuardSync
+	// WireGuardRestart takes the interface down and up again. Only a change to
+	// a line that wg-quick itself applies needs it, because `wg syncconf`
+	// never sees those lines.
+	WireGuardRestart
+)
+
+// Command is what the step runs on the host, empty for WireGuardNone.
+func (w WireGuardStep) Command() string {
+	switch w {
+	case WireGuardStart:
+		return "systemctl enable --now " + wireguardUnit
+	case WireGuardSync:
+		// Through a temporary file rather than a pipe. /bin/sh has no
+		// pipefail, so a `wg-quick strip` that failed would hand syncconf an
+		// empty configuration, and syncconf removes every peer it is not
+		// given: one failed command would cut this site off the mesh.
+		return "set -e; f=$(mktemp); trap 'rm -f \"$f\"' EXIT; wg-quick strip wg0 > \"$f\"; wg syncconf wg0 \"$f\""
+	case WireGuardRestart:
+		return "systemctl restart " + wireguardUnit
+	default:
+		return ""
+	}
+}
+
+// Describe says what the step does, for a plan.
+func (w WireGuardStep) Describe() string {
+	switch w {
+	case WireGuardStart:
+		return "start wg0 and enable it at boot, before any stack moves"
+	case WireGuardSync:
+		return "give wg0 its new peers in place, without taking the mesh down"
+	case WireGuardRestart:
+		return "restart wg0, because a line only wg-quick applies changed"
+	default:
+		return ""
+	}
 }
 
 // Conflicts returns the files somebody edited on the host.
@@ -146,35 +272,186 @@ const (
 	gatewayCompose   = "srv/infra/compose.yaml"
 )
 
+// wireguardConfig is the mesh interface's file, relative to a site's root, and
+// wireguardUnit the systemd unit wg-quick ships to bring it up from it.
+const (
+	wireguardConfig = "etc/wireguard/wg0.conf"
+	wireguardUnit   = "wg-quick@wg0"
+)
+
+// wireguardProbe asks whether wg0 exists. It reads the kernel rather than the
+// unit, because an interface somebody brought up with a bare `wg-quick up` is
+// up for every service binding to it, and `systemctl enable --now` on top of
+// it would fail on an interface that already exists. It prints rather than
+// exits non zero, so that "down" cannot be confused with ssh failing.
+const wireguardProbe = "if ip link show wg0 >/dev/null 2>&1; then echo up; else echo down; fi"
+
+// Option adjusts what Build plans, on the operator's word.
+type Option func(*options)
+
+type options struct {
+	scope      []string
+	overwrite  []string
+	recreate   []string
+	minFree    int64
+	minFreeSet bool
+	keepImages bool
+	only       []string
+	dbApps     []string
+	// replicationChange lets a garage.toml with a different
+	// replication_factor replace the deployed one. Only `storage add
+	// --change-replication` sets it; see GarageReplication.
+	replicationChange bool
+}
+
+// ReplicationChange lets this apply replace a deployed garage.toml whose
+// replication_factor differs from the rendered one. It is for `storage add
+// --change-replication`, which stops every Garage node and sets its stored
+// layout aside first; any other caller gets the refusal in Build.
+func ReplicationChange() Option {
+	return func(o *options) { o.replicationChange = true }
+}
+
+// KeepImages leaves superseded images on the host for this run, as
+// --keep-images does, for an operator who wants the old image to roll back to.
+func KeepImages() Option {
+	return func(o *options) { o.keepImages = true }
+}
+
+// MinFree sets the free space an apply needs on Docker's data root before it
+// pulls an image, as --min-free does. The default is DefaultMinFree.
+func MinFree(bytes int64) Option {
+	return func(o *options) { o.minFree, o.minFreeSet = bytes, true }
+}
+
+// Overwrite names conflicting files that may be replaced anyway, one path
+// each, as --overwrite does.
+func Overwrite(paths ...string) Option {
+	return func(o *options) { o.overwrite = append(o.overwrite, paths...) }
+}
+
+// Recreate names stacks to force-recreate although nothing about them
+// changed, as --recreate does.
+func Recreate(stacks ...string) Option {
+	return func(o *options) { o.recreate = append(o.recreate, stacks...) }
+}
+
+// Only restricts an apply to the named stacks, as `apply --only` does: their
+// files are compared and written, their actions and health gates run, and
+// nothing else on the site moves. The first real `site add` needed it: its
+// HAProxy restart broke Mbin's database connections, and the only way to
+// recreate Mbin through the toolkit was a whole apply, which would also have
+// recreated the primary's Patroni for an unrelated pending change. The
+// manifest keeps every entry outside the named stacks as it was, as a scoped
+// plan's does.
+func Only(stacks ...string) Option {
+	return func(o *options) { o.only = append(o.only, stacks...) }
+}
+
+// DatabaseApps names the apps that reach the cluster's database through the
+// site's HAProxy, as ClusterDatabaseApps returns them. When the plan moves
+// HAProxy or Patroni on this site, each of them this site runs is restarted
+// after the infrastructure stack: see databasePathMoves.
+func DatabaseApps(apps ...string) Option {
+	return func(o *options) { o.dbApps = append(o.dbApps, apps...) }
+}
+
+// Scope restricts an apply to the named files, as paths relative to the
+// site's root (Eg: etc/wireguard/wg0.conf). It is for a staged operation such
+// as `site add`, which has to move one file on every site and nothing else:
+// the new peer goes into wg0.conf on every site before etcd may change, and
+// HAProxy's backend list changes on a site whose patroni.env changed too,
+// where a whole apply would recreate the primary.
+//
+// A scoped plan compares, refuses on conflict and writes exactly like a whole
+// one, and records what it wrote in the same manifest, so a later apply sees
+// those files as its own. It plans no stack action, no gateway gate and no
+// image work, and does not read or write the record of owed actions: its
+// caller runs the one command the change needs. The manifest keeps every
+// entry outside the scope as it was.
+func Scope(paths ...string) Option {
+	return func(o *options) { o.scope = append(o.scope, paths...) }
+}
+
 // Build decides what one site's apply would do, without doing any of it.
 //
 // The order matters and is the whole design. Every file is compared against
 // both the rendered content and the manifest the last apply left behind, so a
 // conflict is found before a single byte is written. An apply that wrote files
 // as it discovered them could leave a stack half updated and then refuse.
-func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Plan, error) {
+func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts ...Option) (*Plan, error) {
 	out := &Plan{Site: site, Transport: t.Describe()}
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	overwrite := o.overwrite
 
-	recorded, err := readManifest(t)
+	// Paths the operator has said may be replaced although they conflict.
+	// Each must name a file that really is a conflict: a path that is not one
+	// is refused below rather than ignored, so a typo cannot pass for consent.
+	named := map[string]bool{}
+	for _, path := range overwrite {
+		named[path] = true
+	}
+	used := map[string]bool{}
+
+	entries, err := readManifestFiles(t)
 	if err != nil {
 		return nil, err
+	}
+	recorded := make(map[string]string, len(entries))
+	for path, entry := range entries {
+		recorded[path] = entry.SHA256
+	}
+	inScope := map[string]bool{}
+	for _, path := range o.scope {
+		inScope[strings.TrimPrefix(path, "/")] = true
+	}
+	if len(o.scope) > 0 {
+		out.scoped = true
+		out.recorded = entries
+	}
+	var onlySet map[string]bool
+	if len(o.only) > 0 {
+		onlySet = map[string]bool{}
+		for _, stack := range o.only {
+			onlySet[stack] = true
+		}
+		out.partial = true
+		out.recorded = entries
 	}
 
 	prefix := site + "/"
 	stacks := map[string]bool{}
+	// Every stack this site renders, changed or not, which is what a
+	// --recreate may name.
+	rendered := map[string]bool{}
 	envChanged := map[string]bool{}
+	// The infrastructure services whose bind mounted files changed, and
+	// whether some changed infrastructure file belongs to no one service, in
+	// which case a restart is of the whole stack. See infraService.
+	infraServices := map[string]bool{}
+	infraWhole := false
 	// Whether this site runs the gateway at all, and which of the two ways its
 	// Caddy is about to change. render only emits a Caddyfile for a site
 	// holding the gateway role, so its presence in the rendered tree is the
 	// signal, regardless of whether it changed: an image only apply changes no
 	// routing file at all.
 	var isGateway, routingChanged, gatewayComposeChanged bool
+	// The mesh file's fate, and what was on the host before, which decides
+	// whether its change can be applied in place.
+	var wireguard *Change
+	var wireguardBefore string
 	for _, file := range plan.Files {
 		if !strings.HasPrefix(file.Path, prefix) {
 			continue
 		}
 		rel := strings.TrimPrefix(file.Path, prefix)
 		if rel == render.ManifestName {
+			continue
+		}
+		if out.scoped && !inScope[rel] {
 			continue
 		}
 		remote := remoteRoot + rel
@@ -194,6 +471,12 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 		if err != nil {
 			return nil, err
 		}
+		change.before = current
+		if rel == GarageConfig && found && !o.replicationChange {
+			if err := garageReplicationGuard(site, current, file.Content); err != nil {
+				return nil, err
+			}
+		}
 		switch {
 		case !found:
 			change.Kind = Create
@@ -209,44 +492,212 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport) (*Pla
 		default:
 			change.Kind = Update
 		}
+		if change.Kind == Conflict && named[remote] {
+			change.Kind = Update
+			change.Overwritten = true
+			used[remote] = true
+		}
 
+		if rel == wireguardConfig {
+			copied := change
+			wireguard = &copied
+			wireguardBefore = current
+		}
+
+		if change.Stack != "" {
+			rendered[change.Stack] = true
+		}
+		if onlySet != nil && !onlySet[change.Stack] {
+			continue
+		}
 		out.Changes = append(out.Changes, change)
-		if change.Kind == Create || change.Kind == Update {
+		if (change.Kind == Create || change.Kind == Update) && !isRecord(rel) {
 			if change.Stack != "" {
 				stacks[change.Stack] = true
 				if isEnvironment(rel) {
 					envChanged[change.Stack] = true
+				} else if change.Stack == infraStack {
+					if service := infraService(rel); service != "" {
+						infraServices[service] = true
+					} else {
+						infraWhole = true
+					}
 				}
 			}
 			if isRouting(rel) {
 				routingChanged = true
 			}
-			if rel == gatewayCompose {
+			// The compose file moves the image; an environment file under
+			// infra moves what the replaced container starts with. Both
+			// replace the gateway, so both need the gates.
+			if rel == gatewayCompose || (change.Stack == infraStack && isEnvironment(rel)) {
 				gatewayComposeChanged = true
 			}
 		}
 	}
 
-	for _, stack := range sortedKeys(stacks) {
+	for _, path := range overwrite {
+		if !used[path] {
+			return nil, fmt.Errorf("%s: --overwrite %s names no conflicting file. Only a file this site renders, and which differs from what the last apply recorded, can be overwritten", site, path)
+		}
+	}
+
+	if out.scoped {
+		for path := range inScope {
+			if !seenInScope(out.Changes, path) {
+				return nil, fmt.Errorf("%s: %s is not a file this site renders", site, path)
+			}
+		}
+		sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
+		if wireguard != nil {
+			step, err := wireguardStep(*wireguard, wireguardBefore, t)
+			if err != nil {
+				return nil, err
+			}
+			out.WireGuard = step
+		}
+		return out, nil
+	}
+
+	resumed, err := readPending(t)
+	if err != nil {
+		return nil, err
+	}
+	// A stack the record still owes is force-recreated, whether or not its
+	// files changed again since. The record says its last action did not
+	// finish, and an `up -d` that stopped part way can leave a container
+	// created and never attached to its network; a plain `up -d` or a restart
+	// would start that container as it is.
+	owed := map[string]bool{}
+	for _, action := range resumed.Actions {
+		owed[action.Stack] = true
+		stacks[action.Stack] = true
+	}
+
+	forced := map[string]bool{}
+	for _, stack := range o.recreate {
+		if !rendered[stack] {
+			return nil, fmt.Errorf("%s: --recreate %s names no stack this site renders. Its stacks are %s", site, stack, strings.Join(sortedKeys(rendered), ", "))
+		}
+		forced[stack] = true
+		stacks[stack] = true
+	}
+
+	if onlySet != nil {
+		for stack := range onlySet {
+			if !rendered[stack] {
+				return nil, fmt.Errorf("%s: --only %s names no stack this site renders. Its stacks are %s", site, stack, strings.Join(sortedKeys(rendered), ", "))
+			}
+		}
+		for stack := range stacks {
+			if !onlySet[stack] {
+				delete(stacks, stack)
+			}
+		}
+		wireguard = nil
+	}
+
+	for _, stack := range stackOrder(stacks) {
 		action := Action{Stack: stack}
-		if envChanged[stack] {
+		if owed[stack] {
+			action.Recreate, action.Force = true, true
+			action.Reason = "a previous apply stopped before this stack's action finished, so its containers may be half built and are replaced outright"
+		} else if forced[stack] {
+			action.Recreate, action.Force = true, true
+			action.Reason = "named with --recreate, so every container is replaced whether or not anything changed"
+		} else if envChanged[stack] {
 			action.Recreate = true
 			action.Reason = "an environment or compose file changed, and Compose passes environment at start, so a running container cannot be told about a new value"
 		} else {
 			action.Reason = "only bind mounted configuration changed, so the container keeps its identity"
+			if stack == infraStack && !infraWhole && len(infraServices) > 0 {
+				action.Services = sortedKeys(infraServices)
+				action.Reason += ", and only " + strings.Join(action.Services, ", ") + " is restarted, since the rest of the stack reads none of it"
+			}
 		}
 		out.Actions = append(out.Actions, action)
 	}
+	out.restartDatabaseApps(o.dbApps, rendered)
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
 
-	out.GatewayReload = isGateway && routingChanged
-	out.GatewayChanging = isGateway && (routingChanged || gatewayComposeChanged)
+	need := DefaultMinFree
+	if o.minFreeSet {
+		need = o.minFree
+	}
+	out.KeepImages = o.keepImages
+	if err := out.probeImages(need, t); err != nil {
+		return nil, fmt.Errorf("%s: %w", site, err)
+	}
+
+	out.GatewayReload = isGateway && (routingChanged || resumed.GatewayReload)
+	out.GatewayChanging = isGateway && (routingChanged || gatewayComposeChanged || resumed.GatewayChanging)
+	if onlySet != nil && !onlySet[infraStack] {
+		out.GatewayReload, out.GatewayChanging = false, false
+	}
 	if out.GatewayChanging {
 		out.ACMEModule = acmeModule
 	}
 
+	if wireguard != nil {
+		step, err := wireguardStep(*wireguard, wireguardBefore, t)
+		if err != nil {
+			return nil, err
+		}
+		out.WireGuard = step
+	}
+
 	return out, nil
+}
+
+// wireguardStep decides what wg0 needs. Reading the host here is a probe and
+// changes nothing, so a dry run can show it.
+func wireguardStep(change Change, before string, t Transport) (WireGuardStep, error) {
+	switch change.Kind {
+	case Create:
+		return WireGuardStart, nil
+	case Conflict:
+		// Execute refuses before any step runs.
+		return WireGuardNone, nil
+	}
+	out, err := t.Run(wireguardProbe)
+	if err != nil {
+		return WireGuardNone, fmt.Errorf("asking whether wg0 is up: %w", err)
+	}
+	if strings.TrimSpace(out) != "up" {
+		return WireGuardStart, nil
+	}
+	if change.Kind == Unchanged {
+		return WireGuardNone, nil
+	}
+	if wgQuickLines(before) != wgQuickLines(change.content) {
+		return WireGuardRestart, nil
+	}
+	return WireGuardSync, nil
+}
+
+// wgQuickOnly are the [Interface] keys wg-quick applies itself and `wg-quick
+// strip` removes, so `wg syncconf` never sees a change to one
+// (wireguard-tools, src/wg-quick/linux.bash, parse_options).
+var wgQuickOnly = map[string]bool{
+	"address": true, "dns": true, "mtu": true, "table": true, "saveconfig": true,
+	"preup": true, "postup": true, "predown": true, "postdown": true,
+}
+
+// wgQuickLines returns the wg-quick only lines of a configuration, in order,
+// as one comparable string.
+func wgQuickLines(content string) string {
+	var out []string
+	for _, line := range strings.Split(content, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		if wgQuickOnly[strings.ToLower(strings.TrimSpace(key))] {
+			out = append(out, strings.ToLower(strings.TrimSpace(key))+"="+strings.TrimSpace(value))
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // Execute carries out a plan. It refuses outright if anything conflicts,
@@ -258,14 +709,56 @@ func Execute(plan *Plan, t Transport) error {
 			names = append(names, c.Path)
 		}
 		return fmt.Errorf(
-			"%s: %d file(s) were edited on the host and would be overwritten:\n  %s\nRendered files are build artifacts and nothing edits them in place, so a difference here is a change somebody made on the machine. Copy what is wanted into the configuration, or delete the file on the host, then apply again",
+			"%s: %d file(s) were edited on the host and would be overwritten:\n  %s\nRendered files are build artifacts and nothing edits them in place, so a difference here is a change somebody made on the machine. Copy what is wanted into the configuration and apply again, or, once you have looked at a file and want the rendered one, name it with --overwrite <path>",
 			plan.Site, len(conflicts), strings.Join(names, "\n  "))
+	}
+
+	// A pull that fills the disk fails part way through a stack's action,
+	// with the old containers stopped and the new image half written, and it
+	// takes the database and every log down with it. Refusing here, before the
+	// first write, leaves the host exactly as it was.
+	if plan.Disk.Short() {
+		return diskRefusal(plan)
+	}
+
+	// Record what this apply owes before writing anything. Files that land
+	// before a gate stops the apply already match the render, so without
+	// this record the next apply would see nothing to do, and an app stack
+	// held back by a failed gate would stay down until something unrelated
+	// changed it.
+	owes := len(plan.Actions) > 0 || plan.GatewayChanging
+	if owes {
+		if err := writePending(plan, plan.Actions, t); err != nil {
+			return err
+		}
 	}
 
 	writes := plan.Writes()
 	for _, change := range writes {
 		if err := t.WriteFile(change.Path, change.content, change.Mode); err != nil {
 			return err
+		}
+	}
+
+	// Record the files as soon as they are on the host, not only at the end.
+	// They are this apply's files whether or not a later gate or action
+	// succeeds, and a manifest written only on success turned every file of a
+	// failed first apply into "somebody else's": the next apply, carrying a
+	// fix to one of them, refused it as a host edit. Owed actions are tracked
+	// separately, in the pending record above.
+	if len(writes) > 0 {
+		if err := writeManifest(plan, t); err != nil {
+			return err
+		}
+	}
+
+	// The mesh comes up before anything that binds to it. It runs before the
+	// gateway gates as well, which need no mesh themselves, so that the one
+	// rule is simple: no container is started or checked on a site whose
+	// interface is down.
+	if command := plan.WireGuard.Command(); command != "" {
+		if out, err := t.Run(command); err != nil {
+			return fmt.Errorf("%s: bringing up wg0, so nothing that binds the mesh address was started:\n%s", plan.Site, out)
 		}
 	}
 
@@ -295,6 +788,15 @@ func Execute(plan *Plan, t Transport) error {
 		// so the operator's configuration reaches this command line. Single
 		// quoting keeps it an argument rather than shell syntax, and -F keeps
 		// it a literal rather than a pattern whose dots match anything.
+		// Pull first, on its own. The module check below runs the image, and a
+		// run whose pull fails exits non zero exactly like a binary without
+		// the module: on the first real gateway a private image's
+		// "unauthorized" was reported as a missing DNS provider.
+		if out, err := t.Run("docker compose -f /srv/infra/compose.yaml pull caddy"); err != nil {
+			return fmt.Errorf(
+				"%s: the gateway's Caddy image could not be pulled, so nothing was changed. If the registry answered unauthorized or denied, the image is private: make it public, or log the host in to that registry:\n%s",
+				plan.Site, out)
+		}
 		command := fmt.Sprintf(
 			"docker compose -f /srv/infra/compose.yaml run --rm --no-deps --entrypoint caddy caddy list-modules | grep -qxF %s",
 			shellQuote(plan.ACMEModule))
@@ -336,53 +838,172 @@ func Execute(plan *Plan, t Transport) error {
 		}
 	}
 
-	for _, action := range plan.Actions {
-		command := fmt.Sprintf("docker compose -f /srv/%s/compose.yaml restart", action.Stack)
-		if action.Recreate {
-			command = fmt.Sprintf("docker compose -f /srv/%s/compose.yaml up -d", action.Stack)
+	// App stacks start only after their databases exist. An app started
+	// first connects, fails to authenticate as a role nobody created, and is
+	// restarted in a loop by Docker while the apply reports success.
+	bootstrapped := plan.Bootstrap == nil
+	for i, action := range plan.Actions {
+		if action.Stack != infraStack && !bootstrapped {
+			if err := runBootstrap(plan, t); err != nil {
+				return err
+			}
+			bootstrapped = true
 		}
-		if _, err := t.Run(command); err != nil {
+		if _, err := t.Run(action.Command()); err != nil {
+			return err
+		}
+		// `up -d` and `restart` return once the containers start, which says
+		// nothing about whether they stay up or pass their own checks. The
+		// stack stays in the pending record until this passes, so a failure
+		// here is resumed, and force-recreated, by the next apply.
+		if err := waitHealthy(plan, action.Stack, t); err != nil {
+			return err
+		}
+		// Only now, with the stack healthy on its new image, is the old one
+		// safe to lose. Before the gate it is the image a rollback would use.
+		if !plan.KeepImages {
+			pruneStack(plan, action.Stack, t)
+		}
+		// The stack is done, so it leaves the record. Left in, a later stack
+		// failing would have the next apply force-recreate this one too, an
+		// outage for a stack that was fine. The last stack stays until the
+		// end, so that a bootstrap failing after it still leaves the record
+		// owing something and the next apply comes back to the bootstrap.
+		if i < len(plan.Actions)-1 {
+			if err := writePending(plan, plan.Actions[i+1:], t); err != nil {
+				return err
+			}
+		}
+	}
+
+	if !bootstrapped {
+		if err := runBootstrap(plan, t); err != nil {
 			return err
 		}
 	}
 
-	return writeManifest(plan, t)
+	if err := writeManifest(plan, t); err != nil {
+		return err
+	}
+	if owes {
+		if _, err := t.Run("rm -f " + shellQuote(pendingPath)); err != nil {
+			return fmt.Errorf("%s: everything was applied, but the record of owed actions could not be removed, so the next apply will repeat them: %w", plan.Site, err)
+		}
+	}
+	return nil
 }
 
-// readManifest returns what the last apply recorded, keyed by path relative to
-// the site root. A host with no manifest is a first apply, which is ordinary.
-func readManifest(t Transport) (map[string]string, error) {
+// pendingPath records what an apply has written but not yet acted on. It
+// exists only between the start of an Execute and its successful end.
+const pendingPath = "/srv/.paisans-pending.json"
+
+// pending is what one apply owes the host. It holds no file content and no
+// credential, only stack names and which gates to run.
+type pending struct {
+	Version         int             `json:"version"`
+	Actions         []pendingAction `json:"actions"`
+	GatewayChanging bool            `json:"gateway_changing,omitempty"`
+	GatewayReload   bool            `json:"gateway_reload,omitempty"`
+}
+
+type pendingAction struct {
+	Stack    string `json:"stack"`
+	Recreate bool   `json:"recreate,omitempty"`
+}
+
+func readPending(t Transport) (pending, error) {
+	content, found, err := t.ReadFile(pendingPath)
+	if err != nil || !found {
+		return pending{}, err
+	}
+	var p pending
+	if err := json.Unmarshal([]byte(content), &p); err != nil {
+		return pending{}, fmt.Errorf("%s is not readable: %w\nIt records actions a stopped apply still owes. Delete it and every stack will be acted on only when its files next change", pendingPath, err)
+	}
+	return p, nil
+}
+
+func writePending(plan *Plan, actions []Action, t Transport) error {
+	p := pending{Version: 1, GatewayChanging: plan.GatewayChanging, GatewayReload: plan.GatewayReload}
+	for _, action := range actions {
+		p.Actions = append(p.Actions, pendingAction{Stack: action.Stack, Recreate: action.Recreate})
+	}
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	return t.WriteFile(pendingPath, string(data)+"\n", 0o600)
+}
+
+// infraStack is the site's own infrastructure: etcd, Patroni, HAProxy, Garage
+// and the gateway. Every app stack depends on it.
+const infraStack = "infra"
+
+// stackOrder puts the infrastructure stack first and the rest in sorted
+// order. Sorting alone put "blog" and "docs" ahead of "infra", which started
+// applications before the database and proxy they connect to.
+func stackOrder(stacks map[string]bool) []string {
+	var out []string
+	if stacks[infraStack] {
+		out = append(out, infraStack)
+	}
+	for _, stack := range sortedKeys(stacks) {
+		if stack != infraStack {
+			out = append(out, stack)
+		}
+	}
+	return out
+}
+
+// readManifestFiles returns what the last apply recorded, keyed by path
+// relative to the site root. A host with no manifest is a first apply, which
+// is ordinary.
+func readManifestFiles(t Transport) (map[string]render.ManifestFile, error) {
 	content, found, err := t.ReadFile(manifestPath)
 	if err != nil {
 		return nil, err
 	}
 	if !found {
-		return map[string]string{}, nil
+		return map[string]render.ManifestFile{}, nil
 	}
 	var m render.Manifest
 	if err := json.Unmarshal([]byte(content), &m); err != nil {
 		return nil, fmt.Errorf("%s is not readable as a manifest: %w\nIt records what the last apply wrote. Delete it to treat every file on this host as somebody else's, which is the safe reading", manifestPath, err)
 	}
-	out := make(map[string]string, len(m.Files))
+	out := make(map[string]render.ManifestFile, len(m.Files))
 	for _, file := range m.Files {
-		out[file.Path] = file.SHA256
+		out[file.Path] = file
 	}
 	return out, nil
 }
 
 // writeManifest records what is now on the host, so the next apply can tell its
 // own writes from somebody's edit.
+//
+// A whole plan records exactly what it renders. A scoped one starts from the
+// manifest it read and replaces only its own files, because the rest of the
+// site is still what the last whole apply wrote.
 func writeManifest(plan *Plan, t Transport) error {
-	var files []render.ManifestFile
+	entries := map[string]render.ManifestFile{}
+	if plan.scoped || plan.partial {
+		for path, entry := range plan.recorded {
+			entries[path] = entry
+		}
+	}
 	for _, change := range plan.Changes {
 		if change.Kind == Conflict {
 			continue
 		}
-		files = append(files, render.ManifestFile{
-			Path:   strings.TrimPrefix(change.Path, remoteRoot),
+		path := strings.TrimPrefix(change.Path, remoteRoot)
+		entries[path] = render.ManifestFile{
+			Path:   path,
 			SHA256: sum(change.content),
 			Mode:   fmt.Sprintf("%04o", change.Mode),
-		})
+		}
+	}
+	files := make([]render.ManifestFile, 0, len(entries))
+	for _, entry := range entries {
+		files = append(files, entry)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	data, err := json.MarshalIndent(render.Manifest{Version: 1, Files: files}, "", "  ")
@@ -403,17 +1024,50 @@ func stackOf(rel string) string {
 	return parts[1]
 }
 
+// infraService returns the compose service a file of the infrastructure stack
+// is mounted into, empty when it is not one service's. The templates put each
+// service's bind mounted files in a directory named for the service
+// (infra-compose.yaml.tmpl: haproxy/haproxy.cfg, garage/garage.toml, caddy/),
+// so the directory is the answer. A file at the top of the stack, such as
+// compose.yaml, belongs to the whole stack.
+func infraService(rel string) string {
+	parts := strings.Split(rel, "/")
+	if len(parts) < 4 || parts[0] != "srv" || parts[1] != infraStack {
+		return ""
+	}
+	return parts[2]
+}
+
 // isEnvironment reports whether a change to this file needs the container
 // replaced rather than restarted.
+//
+// Any `*.env` counts, not only a file named `.env`: patroni.env and
+// caddy/caddy.env reach their containers through `env_file`, which Compose
+// reads when it creates a container, so a restart keeps the old values. Every
+// env_file the templates render ends in .env, which is what makes the suffix
+// a sufficient test; parsing each compose file for its env_file list was the
+// alternative, and it answers the same question with a YAML parser in the
+// path of every apply.
 func isEnvironment(rel string) bool {
 	base := rel[strings.LastIndex(rel, "/")+1:]
-	return base == ".env" || base == "compose.yaml"
+	return strings.HasSuffix(base, ".env") || base == "compose.yaml"
 }
 
 // isRouting reports whether a file is part of the assembled gateway
-// configuration.
+// configuration. An environment file beside the Caddyfile is not: a reload
+// rereads the Caddyfile and never the container's environment, so treating
+// caddy.env as routing reloaded a Caddy that still held the old DNS token.
 func isRouting(rel string) bool {
-	return strings.Contains(rel, "/caddy/")
+	return strings.Contains(rel, "/caddy/") && !isEnvironment(rel)
+}
+
+// isRecord reports whether a file is a record the toolkit keeps for itself
+// beside a stack, which no container mounts or reads. Writing one changes
+// nothing that runs, so it is never a reason to restart or recreate the
+// stack: on a deployment applied before the etcd record existed, treating its
+// first write as a change restarted etcd and Patroni for a file neither reads.
+func isRecord(rel string) bool {
+	return rel == render.EtcdInitialPath
 }
 
 func sum(content string) string {
@@ -428,4 +1082,48 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// GarageConfig is Garage's configuration file, relative to a site's root.
+const GarageConfig = "srv/infra/garage/garage.toml"
+
+// garageReplicationLine matches the replication_factor setting as
+// garage.toml.tmpl renders it.
+var garageReplicationLine = regexp.MustCompile(`(?m)^\s*replication_factor\s*=\s*(\d+)\s*$`)
+
+// GarageReplication reads replication_factor out of a garage.toml, false when
+// the file does not set one.
+func GarageReplication(toml string) (int, bool) {
+	m := garageReplicationLine.FindStringSubmatch(toml)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// garageReplicationGuard refuses to replace a deployed garage.toml with one at
+// a different replication_factor.
+//
+// Garage v1.0.1 records the factor in its stored layout and refuses to start
+// when the configuration disagrees: "Prevous cluster layout has replication
+// factor 1, which is different than the one specified in the config file (2)"
+// (src/rpc/layout/manager.rs:46-56; observed). An apply that wrote the file
+// would restart Garage into that refusal and leave object storage down until
+// somebody read the container log. Refuse, not warn: the outcome is certain.
+// The change is `paisans storage add --change-replication`, which stops every
+// node and sets the stored layout aside first.
+func garageReplicationGuard(site, deployed, rendered string) error {
+	have, ok := GarageReplication(deployed)
+	if !ok {
+		return nil
+	}
+	want, ok := GarageReplication(rendered)
+	if !ok || have == want {
+		return nil
+	}
+	return fmt.Errorf("%s: Garage there runs at replication %d and the configuration says %d. Garage refuses to start when its stored layout disagrees with its configuration, so apply will not write this file. Change the factor with `paisans storage add --change-replication`, which stops every Garage node and rebuilds the layout, then run apply again. Nothing was changed", site, have, want)
 }

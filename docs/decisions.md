@@ -32,10 +32,16 @@ Three mismatches:
   meant to be handed to people we have never met. OpenTofu exists if it is ever
   wanted.
 
-Terraform *is* right for provisioning the cloud instance itself — create the
-machine, firewall rules, DNS records. That should stay **optional**, because most
+Terraform *is* right for provisioning the cloud instance itself: create the
+machine and its firewall rules. That should stay **optional**, because most
 operators will click a button in a provider's console and requiring otherwise
 raises the floor for no benefit.
+
+DNS records used to sit in that list, left to the operator. They no longer do:
+`paisans dns init` derives them from the configuration and creates them through
+the DNS provider's API, because a record typed by hand is one nothing checks
+against the configuration. Founder requirement. See *`dns init` creates the
+records a deployment needs* in `README.md`.
 
 ### Why not Ansible
 
@@ -320,8 +326,14 @@ automated, in `internal/garage/integration_test.go`:
   reach quorum";
 * `key import` and `bucket create` both fail loudly when the target already
   exists, which is what makes "was it missing" the right question for a
-  planner to ask before running either; `bucket allow` is idempotent and is
-  always planned rather than checked first;
+  planner to ask before running either; `bucket allow` and `bucket website
+  --allow` are idempotent, and were planned on every run until real `bucket
+  info` output had been seen. It prints `Website access: true` and an
+  `Authorized keys:` section of `RWO  <key ID>  <key name>` rows, possibly
+  after ANSI coloured log lines, so each step is now planned only when the
+  website flag is not `true` or the app's key (by ID or name) lacks one of R,
+  W and O. Output that does not parse plans both and the plan says so: a
+  repeated set costs nothing, a missed grant leaves the app unable to write;
 * `garage layout show` prints only the first 16 hex characters of a node's ID
   in its table rows, while `node id -q` prints the full one. The integration
   test caught a real bug this produced: matching the full ID against the

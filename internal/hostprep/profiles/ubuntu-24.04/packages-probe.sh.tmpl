@@ -1,0 +1,7 @@
+{{- /* Read only. One line per fact, parsed by ubuntu.go. */ -}}
+if docker compose version >/dev/null 2>&1; then echo "compose present"; else echo "compose absent"; fi
+for p in{{ range .Packages }} {{ . }}{{ end }}; do
+  printf 'pkg %s %s\n' "$p" "$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null || echo absent)"
+done
+if [ -s /etc/apt/keyrings/docker.asc ]; then echo "keyring present"; else echo "keyring absent"; fi
+printf 'arch %s\n' "$(dpkg --print-architecture)"

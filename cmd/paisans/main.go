@@ -1,26 +1,30 @@
 // Command paisans renders, checks and applies a paisans deployment
 // declaration.
 //
-// Three of its four commands touch nothing outside the working directory.
-// `apply` is the exception and is the only code path here that reaches a
-// machine: it shows what it would do and changes nothing unless it is told to
-// with --execute.
+// validate, init and render touch nothing outside the working directory.
+// `host prepare`, `apply` and `storage init` reach a machine: each reads it to
+// show what it would do, and changes nothing unless told to with --execute.
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/garage"
+	"github.com/paisans-software/paisans-stack/internal/hostprep"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/storageadd"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -30,24 +34,85 @@ Usage:
   paisans validate [--config paisans.yaml]
   paisans init     [--config paisans.yaml] [--secrets secrets.enc.yaml]
   paisans render   [--config paisans.yaml] [--secrets secrets.enc.yaml] --out ./out
+  paisans host prepare --site <name> [--config paisans.yaml] [--ssh <destination>]
+               [--execute]
   paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
-                   [--ssh <destination>] [--execute]
+                   [--ssh <destination>] [--overwrite <path>]... [--recreate <stack>]...
+                   [--min-free <size>] [--keep-images] [--execute]
+  paisans site add <site> [--config paisans.yaml] [--secrets secrets.enc.yaml]
+               [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
+  paisans storage add [--config paisans.yaml] [--secrets secrets.enc.yaml]
+               [--change-replication] [--wait <duration>] [--execute]
+  paisans preflight --site <new site> [--config paisans.yaml]
+  paisans failover test [--config paisans.yaml] [--execute]
+  paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
+  paisans secrets set <dotted.key> [--config paisans.yaml] [--secrets secrets.enc.yaml] < value
+  paisans app admin create --app <name> --username <u> --email <e> [--site <name>]
+               [--config paisans.yaml] [--ssh <destination>] [--reset-password]
+               [--execute] < password
+  paisans app admin create --app <pocket-id app> --username <u> [--email <e>]
+               [--first-name <f>] [--last-name <l>] [--login-link]
+               [--secrets secrets.enc.yaml] [--site <name>] [--execute]
+  paisans oidc client create --app <name> [--admin-user <u>] [--rotate-secret]
+               [--config paisans.yaml] [--secrets secrets.enc.yaml]
+               [--site <name>] [--ssh <destination>] [--execute]
 
 Commands:
   validate   Load the configuration and report every problem found.
   init       Generate the secrets this configuration needs, filling in only
              what is missing, and say what is still owed from elsewhere.
   render     Validate, then write per site artifacts to a local directory.
+  host       Take a blank host to the state apply assumes: Docker, the
+             WireGuard tools, a firewall, and a watchdog on a data site.
+             Installs only what is missing. Writes nothing without --execute.
   apply      Compare one site's rendered artifacts with what is on that host
              and show what would change. Writes nothing without --execute.
-  storage    Provision object storage on a site: the cluster layout, each
-             app's key, and its bucket. Creates only what is missing.
+  site       add: join a new data site to the running cluster in six gated
+             stages: preflight, mesh, etcd (learners, then promoted), the
+             Patroni replica, synchronous mode, HAProxy. Reads every site
+             and plans only what differs, so a re-run resumes. Writes
+             nothing without --execute.
+  storage    init: provision object storage on a site: each app's key and
+             bucket, and the layout when it is the only Garage site.
+             add: join every site in storage.garage.sites into one Garage
+             cluster, in gated stages: connect, layout, sync, provision,
+             media routes, a smoke test; and, with --change-replication,
+             Garage's reset for another replication factor. Exits at a
+             stage waiting on Garage (status 75) and resumes on the next
+             run. Both create only what is missing, and write nothing
+             without --execute.
+  preflight  The read only checks site add runs first, for the site being
+             added and every site already running. Changes nothing.
+  failover   test: switch the Patroni primary to another data site and
+             back, checking the cluster and every app before and after
+             each switch. Interrupts writes briefly, twice. Changes
+             nothing without --execute.
+  dns        Create the public DNS records the configuration implies, at the
+             provider named by acme.provider. Creates only what is missing,
+             never updates or deletes, and refuses if any record conflicts.
              Writes nothing without --execute.
+  secrets    set: read one value from stdin and write it into the encrypted
+             secrets file, printing only its name. For credentials issued
+             elsewhere, so they never touch a terminal or an editor.
+  app        admin create: make sure a user exists, is verified and is an
+             administrator of one app, reading the password from stdin.
+             Never changes an existing password without --reset-password.
+             For pocket-id there is no password: a created account gets a
+             one-time login link, printed once, to register a passkey with.
+             Writes nothing without --execute. Mbin and pocket-id, so far.
+  oidc       client create: create an app's client at the deployment's
+             Pocket ID, with the groups the app reads, and record its ID and
+             secret in the secrets file. The secret is never printed.
+             Writes nothing without --execute. Mbin only, so far.
 
-apply and storage init are the only commands that reach a host, and each does
-so only with --execute. Everything else writes files locally and stops.
+host prepare, apply, site add, storage init, storage add, app admin create,
+oidc client create, preflight and failover test are the only commands that
+reach a host.
+Each reads it to plan, and changes it only with --execute. dns init reaches no
+host, only the DNS provider's API, and changes it only with --execute.
+Everything else writes files locally and stops.
 `
 
 func main() {
@@ -65,12 +130,44 @@ func main() {
 		err = runRender(os.Args[2:])
 	case "apply":
 		err = runApply(os.Args[2:])
-	case "storage":
-		if len(os.Args) < 3 || os.Args[2] != "init" {
-			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init\n\n%s", usage)
+	case "host":
+		if len(os.Args) < 3 || os.Args[2] != "prepare" {
+			fmt.Fprintf(os.Stderr, "paisans: host takes one subcommand, prepare\n\n%s", usage)
 			os.Exit(2)
 		}
-		err = runStorageInit(os.Args[3:])
+		err = runHostPrepare(os.Args[3:])
+	case "site":
+		if len(os.Args) < 3 || os.Args[2] != "add" {
+			fmt.Fprintf(os.Stderr, "paisans: site takes one subcommand, add\n\n%s", usage)
+			os.Exit(2)
+		}
+		err = runSiteAdd(os.Args[3:])
+	case "secrets":
+		err = runSecrets(os.Args[2:])
+	case "app":
+		err = runApp(os.Args[2:])
+	case "oidc":
+		err = runOIDC(os.Args[2:])
+	case "storage":
+		switch {
+		case len(os.Args) >= 3 && os.Args[2] == "init":
+			err = runStorageInit(os.Args[3:])
+		case len(os.Args) >= 3 && os.Args[2] == "add":
+			err = runStorageAdd(os.Args[3:])
+		default:
+			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init or add\n\n%s", usage)
+			os.Exit(2)
+		}
+	case "preflight":
+		err = runPreflight(os.Args[2:])
+	case "failover":
+		err = runFailover(os.Args[2:])
+	case "dns":
+		if len(os.Args) < 3 || os.Args[2] != "init" {
+			fmt.Fprintf(os.Stderr, "paisans: dns takes one subcommand, init\n\n%s", usage)
+			os.Exit(2)
+		}
+		err = runDNSInit(os.Args[3:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
@@ -80,6 +177,12 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "paisans: %v\n", err)
+		// Not a failure: a gate is waiting on Garage, and the next run
+		// resumes there. EX_TEMPFAIL (sysexits.h), "try again later", so a
+		// script can tell it from one.
+		if errors.Is(err, storageadd.ErrWaiting) {
+			os.Exit(75)
+		}
 		os.Exit(1)
 	}
 }
@@ -226,6 +329,9 @@ func runRender(args []string) error {
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
 	}
+	if err := requireACMEToken(cfg, secrets, cfg.SiteNames()); err != nil {
+		return err
+	}
 
 	plan, err := render.Build(cfg, secrets)
 	if err != nil {
@@ -250,11 +356,23 @@ func runApply(args []string) error {
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	site := fs.String("site", "", "the site to apply, by the name it has in the configuration")
-	destination := fs.String("ssh", "", "ssh destination (default: the site's declared ssh address)")
+	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	execute := fs.Bool("execute", false, "actually write files and restart services")
+	var overwrite pathList
+	fs.Var(&overwrite, "overwrite", "replace this conflicting file although it differs from the last apply's record (repeatable)")
+	var recreate pathList
+	var only pathList
+	fs.Var(&only, "only", "apply only this stack's files and actions, and leave the rest of the site as it is (repeatable)")
+	fs.Var(&recreate, "recreate", "replace every container of this stack with `up -d --force-recreate`, even if nothing changed (repeatable)")
+	minFree := fs.String("min-free", "3G", "free space Docker's data root must have before a stack pulls an image, Eg: 2G")
+	keepImages := fs.Bool("keep-images", false, "leave the images this apply supersedes on the host, Eg: to keep one to roll back to")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	needFree, err := apply.ParseSize(*minFree)
+	if err != nil {
+		return fmt.Errorf("apply: --min-free: %w", err)
 	}
 	if *site == "" {
 		return fmt.Errorf("apply: --site is required. A site at a time is deliberate: a staged change that half succeeds across three machines is worse than one that failed on one")
@@ -273,12 +391,6 @@ func runApply(args []string) error {
 	if !ok {
 		return fmt.Errorf("apply: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
 	}
-	if *destination == "" {
-		*destination = declared.SSH
-	}
-	if *destination == "" {
-		return fmt.Errorf("apply: site %s has no ssh address and none was given with --ssh", *site)
-	}
 
 	if *secretsPath == "" {
 		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
@@ -296,21 +408,69 @@ func runApply(args []string) error {
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
 	}
+	if err := requireACMEToken(cfg, secrets, []string{*site}); err != nil {
+		return err
+	}
 
-	rendered, err := render.Build(cfg, secrets)
+	transport := siteTransport(declared, *destination, *sudo)
+
+	// An etcd member keeps the flags it was born with, read from its host,
+	// so that etcd.members growing never changes a running member's compose
+	// file. See render.EtcdInitialPath.
+	var renderOptions []render.Option
+	if contains(cfg.Etcd.Members, *site) {
+		initial, found, err := apply.ReadEtcdInitial(transport)
+		if err != nil {
+			return err
+		}
+		if found {
+			renderOptions = append(renderOptions, render.WithEtcdInitial(*site, initial))
+		}
+	}
+	rendered, err := render.Build(cfg, secrets, renderOptions...)
 	if err != nil {
 		return err
 	}
 
-	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
-	plan, err := apply.Build(*site, rendered, acme.Module(cfg.ACME.Provider), transport)
+	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...), apply.DatabaseApps(apply.ClusterDatabaseApps(cfg)...)}
+	if *keepImages {
+		options = append(options, apply.KeepImages())
+	}
+	plan, err := apply.Build(*site, rendered, acme.Module(cfg.ACME.Provider), transport, options...)
 	if err != nil {
 		return err
 	}
+	databases, err := apply.Databases(cfg, secrets, *site)
+	if err != nil {
+		return err
+	}
+	plan.WithDatabases(databases)
+	plan.Progress = os.Stdout
 	printPlan(plan)
 
+	// A site running etcd, or configured to, is checked against the live
+	// membership. Only this site is asked unless it is a configured member,
+	// so applying a site with nothing to do with etcd reaches no other host.
+	transports := map[string]apply.Transport{*site: transport}
+	if contains(cfg.Etcd.Members, *site) {
+		for _, name := range cfg.Etcd.Members {
+			if name != *site {
+				transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
+			}
+		}
+	}
+	members, found, err := apply.ProbeEtcdMembers(cfg, *site, transports)
+	if err != nil {
+		return err
+	}
+	if found {
+		if err := apply.EtcdRefusal(cfg, plan, members); err != nil {
+			return err
+		}
+	}
+
 	if !*execute {
-		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 {
+		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone {
 			return nil
 		}
 		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
@@ -335,7 +495,7 @@ func runStorageInit(args []string) error {
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	site := fs.String("site", "", "the site to provision, by the name it has in the configuration")
-	destination := fs.String("ssh", "", "ssh destination (default: the site's declared ssh address)")
+	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	execute := fs.Bool("execute", false, "actually create what is missing")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
 	if err := fs.Parse(args); err != nil {
@@ -358,12 +518,6 @@ func runStorageInit(args []string) error {
 	if !ok {
 		return fmt.Errorf("storage init: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
 	}
-	if *destination == "" {
-		*destination = declared.SSH
-	}
-	if *destination == "" {
-		return fmt.Errorf("storage init: site %s has no ssh address and none was given with --ssh", *site)
-	}
 
 	if *secretsPath == "" {
 		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
@@ -382,7 +536,7 @@ func runStorageInit(args []string) error {
 		return err
 	}
 
-	transport := apply.SSHTransport{Destination: *destination, Sudo: *sudo}
+	transport := siteTransport(declared, *destination, *sudo)
 	plan, err := garage.Build(*site, cfg, secrets, transport)
 	if err != nil {
 		return err
@@ -403,6 +557,58 @@ func runStorageInit(args []string) error {
 	return nil
 }
 
+// runHostPrepare takes one site's host to the state apply assumes. It is
+// modelled on runStorageInit: probe read only, print, and change the host only
+// with --execute. It needs no secrets; nothing it installs is a credential.
+func runHostPrepare(args []string) error {
+	fs := flag.NewFlagSet("host prepare", flag.ExitOnError)
+	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
+	site := fs.String("site", "", "the site to prepare, by the name it has in the configuration")
+	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
+	execute := fs.Bool("execute", false, "actually install and configure what is missing")
+	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since packages, the firewall and kernel modules are root's")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *site == "" {
+		return fmt.Errorf("host prepare: --site is required. A site at a time is deliberate, the same reason apply takes one")
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	result := validate.Check(cfg)
+	report(os.Stderr, *configPath, result)
+	if result.Refused() {
+		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+	}
+	declared, ok := cfg.Sites[*site]
+	if !ok {
+		return fmt.Errorf("host prepare: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
+	}
+
+	transport := siteTransport(declared, *destination, *sudo)
+	plan, err := hostprep.Build(*site, cfg, transport)
+	if err != nil {
+		return err
+	}
+	plan.Print(os.Stdout)
+
+	if !*execute {
+		if len(plan.Steps) == 0 {
+			return nil
+		}
+		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		return nil
+	}
+	if err := hostprep.Execute(plan, transport); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "\nprepared %s: %d step(s) on %s\n", *site, len(plan.Steps), transport.Describe())
+	return nil
+}
+
 func printGaragePlan(plan *garage.Plan) {
 	fmt.Fprintf(os.Stdout, "%s\n", plan.Site)
 	for _, step := range plan.Steps {
@@ -415,23 +621,50 @@ func printGaragePlan(plan *garage.Plan) {
 
 func printPlan(plan *apply.Plan) {
 	fmt.Fprintf(os.Stdout, "%s (%s)\n", plan.Site, plan.Transport)
+	if plan.Disk != nil {
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "check", plan.Disk.Describe())
+	}
 	var unchanged int
 	for _, change := range plan.Changes {
 		if change.Kind == apply.Unchanged {
 			unchanged++
 			continue
 		}
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", change.Kind, change.Path)
+		kind := change.Kind.String()
+		if change.Overwritten {
+			kind = "overwrite"
+		}
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", kind, change.Path)
 	}
 	if unchanged > 0 {
 		fmt.Fprintf(os.Stdout, "  %-9s %d file(s)\n", "unchanged", unchanged)
 	}
+	if plan.WireGuard != apply.WireGuardNone {
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "mesh", plan.WireGuard.Describe())
+	}
+	bootstrapped := plan.Bootstrap == nil
 	for _, action := range plan.Actions {
-		verb := "restart"
+		if action.Stack != "infra" && !bootstrapped {
+			printBootstrap(plan.Bootstrap)
+			bootstrapped = true
+		}
+		verb, stack := "restart", action.Stack
 		if action.Recreate {
 			verb = "recreate"
 		}
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n      %s\n", verb, action.Stack, action.Reason)
+		if action.Force {
+			stack += " (forced)"
+		}
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n      %s\n", verb, stack, action.Reason)
+		fmt.Fprintf(os.Stdout, "  %-9s %s: every container running, and healthy where it has a healthcheck, before anything after it moves\n", "check", action.Stack)
+		for _, prune := range plan.Prunes {
+			if prune.Stack == action.Stack {
+				fmt.Fprintf(os.Stdout, "  %-9s %s, superseded, once %s is healthy and if no container still uses it\n", "prune", prune.Ref, action.Stack)
+			}
+		}
+	}
+	if !bootstrapped {
+		printBootstrap(plan.Bootstrap)
 	}
 	if plan.GatewayChanging && plan.ACMEModule != "" {
 		fmt.Fprintf(os.Stdout, "  %-9s the gateway's Caddy carries %s, before anything moves\n", "check", plan.ACMEModule)
@@ -456,4 +689,122 @@ func report(w *os.File, path string, result validate.Result) {
 	}
 	fmt.Fprintf(w, "%s: %d refusal(s), %d warning(s)\n",
 		path, len(result.Refusals()), len(result.Warnings()))
+}
+
+// runDNSInit creates the public DNS records a deployment needs, at the
+// provider acme.provider names, using the token that already answers ACME
+// challenges. It is modelled on runStorageInit: a dry run by default, and
+// only what is missing is created.
+//
+// It reaches no host. The workstation talks to the provider's API and to
+// nothing else, so it takes no --site and no --ssh.
+func runDNSInit(args []string) error {
+	fs := flag.NewFlagSet("dns init", flag.ExitOnError)
+	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
+	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
+	execute := fs.Bool("execute", false, "actually create the missing records")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	result := validate.Check(cfg)
+	report(os.Stderr, *configPath, result)
+	if result.Refused() {
+		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+	}
+	// Worked out before the secrets are opened or the provider is contacted,
+	// so a configuration that cannot name its records is refused offline.
+	wants, err := dns.Desired(cfg)
+	if err != nil {
+		return err
+	}
+
+	if *secretsPath == "" {
+		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
+	}
+	secrets, err := config.LoadSecrets(*secretsPath)
+	if err != nil {
+		return err
+	}
+	if !secrets.Encrypted {
+		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+	}
+	provider, err := dns.For(cfg.ACME.Provider, secrets.External["acme_dns_token"])
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	plan, err := dns.Build(ctx, provider, wants)
+	if err != nil {
+		return err
+	}
+	plan.Write(os.Stdout)
+
+	if !*execute {
+		if len(plan.Creates()) == 0 {
+			return nil
+		}
+		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to create these.\n")
+		return nil
+	}
+	if err := dns.Execute(ctx, provider, plan); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "\ncreated %d record(s) at %s, each read back\n", len(plan.Creates()), plan.Provider)
+	return nil
+}
+
+// printBootstrap shows the database work where it happens: after the
+// infrastructure stack and before any app stack.
+func printBootstrap(b *apply.Bootstrap) {
+	fmt.Fprintf(os.Stdout, "  %-9s for a Patroni primary at %s, up to 3 minutes; a replica leaves the rest to the leader's site\n", "wait", b.Patroni)
+	for _, db := range b.Databases {
+		fmt.Fprintf(os.Stdout, "  %-9s database %s: role %s with its password, database owned by it, creating only what is missing\n", "bootstrap", db.App, db.Role)
+	}
+}
+
+// pathList collects a repeatable flag. --overwrite takes one path each time it
+// is given, so that every file replaced against its record was named on its
+// own: a pattern or a blanket switch would let one decision cover files the
+// operator never looked at. --recreate takes one stack each time, for the same
+// reason.
+type pathList []string
+
+func (l *pathList) String() string { return strings.Join(*l, ",") }
+
+func (l *pathList) Set(value string) error {
+	*l = append(*l, value)
+	return nil
+}
+
+// siteTransport is how a command reaches a site: its ssh section, or the
+// --ssh override verbatim. The override replaces the whole section rather
+// than one part of it, so what is used is always either everything the file
+// says or exactly what the operator typed, never a blend of the two.
+func siteTransport(site config.Site, override string, sudo bool) apply.SSHTransport {
+	if override != "" {
+		return apply.SSHTransport{Destination: override, Sudo: sudo}
+	}
+	// validate has already refused a bad key, so problems are empty here.
+	keys, _ := site.SSH.Keys()
+	lines := make([]string, len(keys))
+	for i, k := range keys {
+		lines[i] = k.Line
+	}
+	return apply.SSHTransport{User: site.SSH.User, Host: site.SSHHost(), Port: site.SSH.PortOrDefault(), PublicKeys: lines, Sudo: sudo}
+}
+
+func contains(list []string, s string) bool {
+	for _, item := range list {
+		if item == s {
+			return true
+		}
+	}
+	return false
 }

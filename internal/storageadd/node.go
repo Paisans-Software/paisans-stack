@@ -1,0 +1,246 @@
+package storageadd
+
+import (
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/paisans-software/paisans-stack/internal/apply"
+)
+
+// Paths on a Garage site, as infra-compose.yaml.tmpl mounts them.
+const (
+	garageToml = "/" + apply.GarageConfig
+	metaDir    = "/srv/infra/garage/meta"
+	// layoutFile is where Garage keeps its stored layout
+	// (src/rpc/layout/manager.rs:43-44). The reset sets it aside rather
+	// than deleting it, so a reset that went wrong can be undone by hand.
+	layoutFile = metaDir + "/cluster_layout"
+	// countsFile holds each bucket's object count from before a reset, on
+	// the anchor's host, until the provision gate has compared it.
+	countsFile = "/srv/infra/garage/replication-change.counts"
+
+	stopGarage  = "docker compose -f /srv/infra/compose.yaml stop garage"
+	startGarage = "docker compose -f /srv/infra/compose.yaml up -d garage"
+)
+
+// node is what one Garage site's node said when Build read it.
+type node struct {
+	site    string
+	address string
+	// id is the full node ID `node id -q` prints, without its address. Empty
+	// when the node did not answer.
+	id string
+	// answerErr is why `node id -q` failed, empty when it answered.
+	answerErr string
+	// deployed is whether the site has a garage.toml, and factor is the
+	// replication_factor in it.
+	deployed bool
+	factor   int
+	// version is the layout version this node reports, and hasRole whether
+	// its own ID is a row in that layout.
+	version int
+	hasRole bool
+	// setAside is whether an earlier reset already moved this node's stored
+	// layout aside, and hasLayout whether one is in place now.
+	setAside  bool
+	hasLayout bool
+}
+
+func (n *node) short() string {
+	if len(n.id) > 16 {
+		return n.id[:16]
+	}
+	return n.id
+}
+
+func (n *node) answers() bool { return n.id != "" }
+
+func (p *Plan) readNode(site string) (*node, error) {
+	t := p.transports[site]
+	n := &node{site: site, address: p.cfg.Sites[site].Address}
+
+	toml, found, err := t.ReadFile(garageToml)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", site, err)
+	}
+	if found {
+		n.deployed = true
+		n.factor, _ = apply.GarageReplication(toml)
+	}
+
+	listing, err := t.Run("ls -1 " + metaDir)
+	if err == nil {
+		for _, name := range strings.Fields(listing) {
+			switch {
+			case name == "cluster_layout":
+				n.hasLayout = true
+			case strings.HasPrefix(name, "cluster_layout.rf"):
+				n.setAside = true
+			}
+		}
+	}
+
+	if !n.deployed {
+		return n, nil
+	}
+	if err := n.refresh(t); err != nil {
+		n.answerErr = err.Error()
+	}
+	return n, nil
+}
+
+// refresh reads the node's ID and its view of the layout.
+func (n *node) refresh(t apply.Transport) error {
+	out, err := t.Run(gcmd("node id -q"))
+	if err != nil {
+		n.id = ""
+		return fmt.Errorf("`garage node id` failed: %s", lastLines(out, 3))
+	}
+	// The combined output can carry Garage's own log lines, so the ID is
+	// the line shaped like one rather than the first or the last.
+	id := ""
+	for _, line := range strings.Split(ansi.ReplaceAllString(out, ""), "\n") {
+		candidate := strings.TrimSpace(line)
+		if at := strings.Index(candidate, "@"); at >= 0 {
+			candidate = candidate[:at]
+		}
+		if nodeIDShape.MatchString(candidate) {
+			id = candidate
+		}
+	}
+	if id == "" {
+		n.id = ""
+		return fmt.Errorf("`garage node id` printed no node ID: %s", lastLines(out, 3))
+	}
+	n.id = id
+	layout, err := t.Run(gcmd("layout show"))
+	if err != nil {
+		return fmt.Errorf("`garage layout show` failed: %s", lastLines(layout, 3))
+	}
+	l, err := parseLayout(layout)
+	if err != nil {
+		return err
+	}
+	n.version = l.version
+	_, n.hasRole = l.rows[n.short()]
+	return nil
+}
+
+var nodeIDShape = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// layout is what `garage layout show` says about the current layout.
+type layout struct {
+	version int
+	// rows maps a node's short ID to its zone.
+	rows map[string]string
+}
+
+// ansi matches the colour codes Garage's log lines carry.
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
+var shortID = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
+// parseLayout reads `garage layout show` as dxflrs/garage:v1.0.1 prints it:
+// a "==== CURRENT CLUSTER LAYOUT ====" table of "ID Tags Zone Capacity
+// Usable" rows, the short ID first, then "Current cluster layout version: N".
+// Only rows between the banner and the version line count; the RPC client's
+// "Connection established to <ID>" log line before the banner names a node
+// whether or not it has a role.
+func parseLayout(out string) (layout, error) {
+	l := layout{rows: map[string]string{}}
+	text := ansi.ReplaceAllString(out, "")
+	const banner = "==== CURRENT CLUSTER LAYOUT ===="
+	const marker = "Current cluster layout version:"
+	start := strings.Index(text, banner)
+	end := strings.Index(text, marker)
+	if end < 0 {
+		return l, fmt.Errorf("could not find %q in `garage layout show`: %s", marker, lastLines(text, 3))
+	}
+	rest := strings.TrimSpace(text[end+len(marker):])
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[:nl]
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(rest))
+	if err != nil {
+		return l, fmt.Errorf("parsing the layout version %q: %w", rest, err)
+	}
+	l.version = v
+	if start < 0 || start > end {
+		return l, nil
+	}
+	for _, line := range strings.Split(text[start:end], "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !shortID.MatchString(fields[0]) {
+			continue
+		}
+		zone := fields[1]
+		if zone == "[]" && len(fields) > 2 {
+			zone = fields[2]
+		}
+		l.rows[fields[0]] = zone
+	}
+	return l, nil
+}
+
+// healthy reads the short IDs under `garage status`'s HEALTHY NODES heading,
+// and whether a FAILED NODES heading follows.
+func parseStatus(out string) (healthy map[string]bool, failed bool) {
+	healthy = map[string]bool{}
+	text := ansi.ReplaceAllString(out, "")
+	inHealthy := false
+	for _, line := range strings.Split(text, "\n") {
+		switch {
+		case strings.Contains(line, "==== HEALTHY NODES ===="):
+			inHealthy = true
+			continue
+		case strings.Contains(line, "==== FAILED NODES ===="):
+			inHealthy = false
+			failed = true
+			continue
+		}
+		if !inHealthy {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) > 0 && shortID.MatchString(fields[0]) {
+			healthy[fields[0]] = true
+		}
+	}
+	return healthy, failed
+}
+
+// stableLayout is `garage layout history`'s line for a cluster with one live
+// layout version: every node has synced the newest, and no metadata is
+// moving (src/garage/cli/layout.rs:401-406).
+const stableLayout = "stable state with a single live layout version"
+
+var (
+	resyncQueue  = regexp.MustCompile(`resync queue length:\s*(\d+)`)
+	resyncErrors = regexp.MustCompile(`blocks with resync errors:\s*(\d+)`)
+	objectsLine  = regexp.MustCompile(`(?m)^Objects:\s*(\d+)\s*$`)
+)
+
+// parseResync reads `garage stats`'s block manager lines
+// (src/garage/admin/mod.rs:184-240).
+func parseResync(out string) (queue, errs int, err error) {
+	text := ansi.ReplaceAllString(out, "")
+	q := resyncQueue.FindStringSubmatch(text)
+	e := resyncErrors.FindStringSubmatch(text)
+	if q == nil || e == nil {
+		return 0, 0, fmt.Errorf("`garage stats` printed no resync queue length: %s", lastLines(text, 3))
+	}
+	queue, _ = strconv.Atoi(q[1])
+	errs, _ = strconv.Atoi(e[1])
+	return queue, errs, nil
+}
+
+// parseObjects reads the "Objects: N" line of `garage bucket info`.
+func parseObjects(out string) (int, error) {
+	m := objectsLine.FindStringSubmatch(ansi.ReplaceAllString(out, ""))
+	if m == nil {
+		return 0, fmt.Errorf("`garage bucket info` printed no object count: %s", lastLines(out, 3))
+	}
+	return strconv.Atoi(m[1])
+}

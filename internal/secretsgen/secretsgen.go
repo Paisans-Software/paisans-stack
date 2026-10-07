@@ -164,6 +164,9 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 			entries = map[string]any{}
 		}
 		for _, key := range appSecretKeys(app) {
+			if key == oauthPrivateKey || key == oauthPublicKey {
+				continue // a pair, derived from the passphrase; see below
+			}
 			if existing, ok := entries[key].(string); ok && existing != "" {
 				note(false, "apps."+name+"."+key)
 				continue
@@ -174,6 +177,11 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 			}
 			entries[key] = value
 			note(true, "apps."+name+"."+key)
+		}
+		if app.Kind == config.KindMbin {
+			if err := fillOAuthKeypair(name, entries, note); err != nil {
+				return result, err
+			}
 		}
 		secrets.Apps[name] = entries
 	}
@@ -186,17 +194,42 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 
 // appSecretKeys is what one app's stanza needs, which depends on the kind:
 // the writefreely-wisp fork has a database role like any other Postgres
-// backed kind, and only Mbin runs a message broker and a cache of its own.
+// backed kind, and only Mbin runs a message broker, a cache and an OAuth2
+// server of its own.
 func appSecretKeys(app config.App) []string {
 	var keys []string
 	if kinds.UsesPostgres(app.Kind) {
 		keys = append(keys, "database_password")
 	}
 	if app.Kind == config.KindMbin {
-		keys = append(keys, "mercure_jwt_secret", "rabbitmq_password", "valkey_password")
+		// The broker, the cache and the Mercure hub each need one, and so do
+		// Symfony (APP_SECRET) and Mbin's own OAuth2 server for API clients
+		// (OAUTH_PASSPHRASE for its private key, OAUTH_ENCRYPTION_KEY for the
+		// tokens it issues). Upstream's .env.example_docker ships a
+		// placeholder for each of the last three, and the image bakes those
+		// placeholders in, so leaving one unset runs on a value anyone can
+		// read in upstream's repository.
+		keys = append(keys, "mercure_jwt_secret", "rabbitmq_password", "valkey_password",
+			"app_secret", "oauth_passphrase", "oauth_encryption_key",
+			oauthPrivateKey, oauthPublicKey)
 	}
 	if app.Kind == config.KindOAuth2Proxy {
 		keys = append(keys, "cookie_secret")
+	}
+	if app.Kind == config.KindPocketID {
+		// Pocket ID will not start without an ENCRYPTION_KEY of at least 16
+		// bytes (backend/internal/common/env_config.go:167-169 at tag
+		// v2.14.0). A generated password is 32 random bytes, base64 encoded.
+		// It encrypts stored secrets, so like every generated secret it is
+		// never replaced once set.
+		//
+		// static_api_key is how this toolkit administers Pocket ID without a
+		// browser: STATIC_API_KEY authenticates the X-API-Key header as a
+		// synthetic administrator (apikey/service.go:156-163 and :221-259,
+		// middleware/api_key_auth.go:38) and must be at least 16 characters
+		// (env_config.go:182-184). README, "The toolkit administers Pocket ID
+		// through its static API key", says why it is generated here.
+		keys = append(keys, "encryption_key", "static_api_key")
 	}
 	if app.Kind == config.KindSynapse {
 		// Three, because the homeserver no longer authenticates anyone and
@@ -283,6 +316,138 @@ func rsaPrivateKeyPEM() (string, error) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})), nil
 }
 
+// Mbin's OAuth2 server keypair, which signs the tokens it issues to API
+// clients and mobile apps. The image does not generate one and upstream's
+// install documents an operator running openssl by hand
+// (docs/02-admin/01-installation/02-docker.md, "Configure OAuth2 keys", at
+// tag v1.13.3+paisans). Generating it here means no host step, and keeping it
+// in the secrets file means every apps site under cluster placement renders
+// the same pair, so a token one site issues verifies on another.
+const (
+	oauthPrivateKey = "oauth_private_key"
+	oauthPublicKey  = "oauth_public_key"
+)
+
+// fillOAuthKeypair generates Mbin's keypair when the private key is unset.
+//
+// The private key is never replaced: every token Mbin has issued is signed by
+// it, so a new one logs out every API client and app at once. The public key
+// is derived, so a missing one is filled from the private key rather than
+// counted as a reason to make a new pair. Deriving it means opening the
+// private key, and one the passphrase beside it cannot open is refused rather
+// than regenerated, because Mbin would refuse it too, on the host.
+func fillOAuthKeypair(app string, entries map[string]any, note func(bool, string)) error {
+	passphrase, _ := entries["oauth_passphrase"].(string)
+	if passphrase == "" {
+		return fmt.Errorf("apps.%s.oauth_passphrase is empty, and the OAuth2 private key is encrypted with it", app)
+	}
+	privateName := "apps." + app + "." + oauthPrivateKey
+	publicName := "apps." + app + "." + oauthPublicKey
+
+	existing, _ := entries[oauthPrivateKey].(string)
+	if existing == "" {
+		private, public, err := oauthKeypairPEM(passphrase)
+		if err != nil {
+			return err
+		}
+		entries[oauthPrivateKey] = private
+		entries[oauthPublicKey] = public
+		note(true, privateName)
+		note(true, publicName)
+		return nil
+	}
+	note(false, privateName)
+	if current, _ := entries[oauthPublicKey].(string); current != "" {
+		note(false, publicName)
+		return nil
+	}
+
+	key, err := OpenOAuthPrivateKey(existing, passphrase)
+	if err != nil {
+		return fmt.Errorf("oauth-key-does-not-open: %s cannot be opened with apps.%s.oauth_passphrase, so its public half cannot be derived and Mbin could not sign a token with it either: %w", privateName, app, err)
+	}
+	public, err := publicKeyPEM(&key.PublicKey)
+	if err != nil {
+		return err
+	}
+	entries[oauthPublicKey] = public
+	note(true, publicName)
+	return nil
+}
+
+// oauthKeypairPEM is a 4096 bit RSA key, encrypted with the passphrase, and
+// its public half. Both choices are upstream's: its documented command is
+// `openssl genrsa -des3 -out ./storage/oauth/private.pem 4096`, and its
+// docker/setup.sh runs the same with -passout set to OAUTH_PASSPHRASE.
+//
+// The encryption is the traditional PEM form (Proc-Type and DEK-Info headers)
+// with AES-256-CBC, which OpenSSL, and so PHP's openssl_pkey_get_private that
+// league/oauth2-server calls with OAUTH_PASSPHRASE, reads. Go deprecates
+// writing it because decrypting it can be a padding oracle when an attacker
+// can submit ciphertexts to it; nothing here does. Encrypted PKCS#8 would need
+// a dependency outside the standard library for no difference to Mbin.
+//
+// It is encrypted, rather than left plain with an unused passphrase, because
+// it is rendered 0644: README, "Three kinds of secret", says why.
+func oauthKeypairPEM(passphrase string) (string, string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 4096)
+	if err != nil {
+		return "", "", fmt.Errorf("generating Mbin's OAuth2 key: %w", err)
+	}
+	//nolint:staticcheck // see above for why the deprecated form is the right one
+	block, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY",
+		x509.MarshalPKCS1PrivateKey(key), []byte(passphrase), x509.PEMCipherAES256)
+	if err != nil {
+		return "", "", fmt.Errorf("encrypting Mbin's OAuth2 key: %w", err)
+	}
+	public, err := publicKeyPEM(&key.PublicKey)
+	if err != nil {
+		return "", "", err
+	}
+	return string(pem.EncodeToMemory(block)), public, nil
+}
+
+// OpenOAuthPrivateKey decrypts and parses an OAuth2 private key the way Mbin
+// will, so a key that would fail there fails here first. An unencrypted key
+// is accepted, as OpenSSL accepts one with a passphrase supplied.
+func OpenOAuthPrivateKey(privatePEM, passphrase string) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(privatePEM))
+	if block == nil {
+		return nil, fmt.Errorf("not PEM")
+	}
+	der := block.Bytes
+	//nolint:staticcheck // reading the form oauthKeypairPEM writes
+	if x509.IsEncryptedPEMBlock(block) {
+		var err error
+		//nolint:staticcheck // reading the form oauthKeypairPEM writes
+		der, err = x509.DecryptPEMBlock(block, []byte(passphrase))
+		if err != nil {
+			return nil, err
+		}
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return key, nil
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(der)
+	if err != nil {
+		return nil, err
+	}
+	key, ok := parsed.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("not an RSA key")
+	}
+	return key, nil
+}
+
+// publicKeyPEM is the SubjectPublicKeyInfo form `openssl rsa -pubout` writes.
+func publicKeyPEM(key *rsa.PublicKey) (string, error) {
+	der, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		return "", fmt.Errorf("encoding Mbin's OAuth2 public key: %w", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), nil
+}
+
 // owed lists what this package will not invent, with the reason, so that an
 // operator finishing an install knows exactly what is left and who issues it.
 func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
@@ -321,6 +486,17 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 			why += ". Register its redirect URI as " +
 				kinds.MASRedirectURI(cfg.Apps[name].Hostname, name) +
 				", which is the authentication service's callback for this upstream provider and not the /oauth/callback every other kind uses"
+		}
+		if cfg.Apps[name].Kind == config.KindMbin {
+			// The toolkit creates this one itself, so the instruction is the
+			// command. The redirect URI and PKCE are still named, because they
+			// are what the command creates and what an operator checking an
+			// existing client needs to see: the fork's OidcClient extends
+			// KnpU's OAuth2PKCEClient and always sends a code challenge
+			// (src/Security/Oidc/OidcClient.php:18 at tag v1.13.3+paisans).
+			why = "created at the identity provider by `paisans oidc client create --app " + name +
+				"`, which records the client ID and secret here itself. It shows each Pocket ID mutation and changes nothing until it is re-run with --execute, and that re-run is the human approval. The client's redirect URI is " +
+				kinds.MbinRedirectURI(cfg.Apps[name].Hostname) + ", with PKCE enabled: Mbin always sends a code challenge"
 		}
 		out = append(out, Owed{Name: "oidc_clients." + name, Why: why})
 	}
@@ -459,4 +635,23 @@ func wireGuardPrivateKey() (string, error) {
 	raw[31] &= 127
 	raw[31] |= 64
 	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+// ClientSecret is a new OIDC client secret, in the same shape as every other
+// generated password: 43 characters of unpadded base64url, which is printable
+// ASCII and well over the 16 characters Pocket ID requires of a supplied
+// secret (dto/oidc_dto.go:80 at tag v2.14.0). It is generated here rather
+// than by the identity provider so that it can be recorded before the
+// provider is sent it.
+func ClientSecret() (string, error) { return password() }
+
+// OwedNames is the names Fill would report as owed, without generating
+// anything. `secrets set` uses it to accept exactly the keys an operator has
+// been told to supply.
+func OwedNames(cfg *config.Config, secrets *config.Secrets) []string {
+	var out []string
+	for _, o := range owed(cfg, secrets) {
+		out = append(out, o.Name)
+	}
+	return out
 }

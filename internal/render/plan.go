@@ -40,6 +40,11 @@ var appPort = map[config.Kind]int{
 	config.KindWriteFreely: 8080,
 }
 
+// AppPort is the port a kind listens on, which is also the port it publishes
+// on its site's mesh address. A command that calls an application's own API
+// from its host needs it, and reading it here keeps one number in one place.
+func AppPort(kind config.Kind) int { return appPort[kind] }
+
 // gateMembersPort is the oauth2-proxy kind's second instance, one port above
 // the primary. It is a literal here, not appPort[config.KindOAuth2Proxy]+1:
 // the kind ships exactly two fixed ports, both declared explicitly in
@@ -60,6 +65,19 @@ const masPort = 8009
 // patroniAPIPort is where Patroni answers the health check HAProxy uses to
 // find the primary. It is fixed by Spilo.
 const patroniAPIPort = 8008
+
+// bgMonPort is where Spilo's bg_mon extension serves its monitoring page.
+// bg_mon defaults to 8080, the most common application port there is, and on
+// the first real host it took 8080 on a data site before Mbin could publish
+// there. It is moved beside the Patroni API instead of moving every app.
+const bgMonPort = 8009
+
+// haproxyStatsPort is where HAProxy serves its statistics, on loopback only.
+// Nothing else the toolkit renders listens on 8404.
+const haproxyStatsPort = 8404
+
+// HAProxyStatsPort is haproxyStatsPort, for the command that reads it.
+const HAProxyStatsPort = haproxyStatsPort
 
 // postgresPort is the cluster's real Postgres port. Applications never use it:
 // they connect to the local HAProxy instead, from the first install, so that
@@ -97,6 +115,9 @@ type siteView struct {
 	IsGarage   bool
 	Apps       []plannedApp
 	NeedsProxy bool
+	// WatchdogOff renders Patroni without fencing and drops the device
+	// mapping, which compose would otherwise refuse to start without.
+	WatchdogOff bool
 }
 
 type planner struct {
@@ -105,13 +126,23 @@ type planner struct {
 	mesh    string
 	sites   map[string]*siteView
 	order   []string
+	// etcdInitial is how each etcd member was first started, by site, as
+	// read from its host. See EtcdInitialPath.
+	etcdInitial map[string]EtcdInitial
 }
 
 // Build produces the plan for a configuration. It assumes validation has
 // already refused anything incoherent: a planner that re-checks policy is a
 // second place for the rules to drift.
-func Build(cfg *config.Config, secrets *config.Secrets) (*Plan, error) {
+//
+// opts carry facts a caller read from the live deployment, such as the flags
+// an etcd member was born with. Without them every site renders as it would
+// on a fresh deployment.
+func Build(cfg *config.Config, secrets *config.Secrets, opts ...Option) (*Plan, error) {
 	p := &planner{cfg: cfg, secrets: secrets, mesh: cfg.Mesh.Subnet, sites: map[string]*siteView{}}
+	for _, opt := range opts {
+		opt(p)
+	}
 	for _, name := range cfg.SiteNames() {
 		site := cfg.Sites[name]
 		p.order = append(p.order, name)
@@ -126,6 +157,8 @@ func Build(cfg *config.Config, secrets *config.Secrets) (*Plan, error) {
 			IsWitness: site.Has(config.RoleWitness),
 			IsEtcd:    contains(cfg.Etcd.Members, name),
 			IsGarage:  contains(cfg.Storage.Garage.Sites, name),
+
+			WatchdogOff: site.WatchdogMode() == config.WatchdogOff,
 		}
 	}
 
@@ -243,3 +276,11 @@ func contains(list []string, want string) bool {
 	}
 	return false
 }
+
+// DBIdentifier is the role and database name an app's rendered connection
+// uses. apply creates them, and must name them exactly as the render did.
+func DBIdentifier(name string) string { return dbIdentifier(name) }
+
+// PatroniAPIPort is where the rendered Patroni serves its REST API, on the
+// site's mesh address.
+const PatroniAPIPort = patroniAPIPort

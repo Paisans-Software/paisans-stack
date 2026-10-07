@@ -13,16 +13,28 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 
 ## Run
 
-Four commands exist so far. Three touch nothing outside the working directory.
-`apply` is the exception and is the only code path here that reaches a machine.
+validate, init and render touch nothing outside the working directory.
+`host prepare`, `apply`, `site add`, `storage init`, `storage add`, `app admin
+create` and `oidc client create` reach a machine, and each changes it only with
+`--execute`. `preflight`
+reaches every site and never changes one; `failover test` changes which site
+is primary, only with `--execute`. `dns init` reaches no machine, only
+the DNS provider's API, and changes it only with `--execute`.
 
 ```
 paisans validate --config examples/paisans.example.yaml
 paisans init     --config examples/paisans.example.yaml
 paisans render   --config examples/paisans.example.yaml \
                  --secrets secrets.enc.yaml --out ./out
+paisans host prepare --site home-a        # shows what a blank host lacks
 paisans apply    --site home-a            # shows what would change
 paisans apply    --site home-a --execute  # does it
+paisans preflight --site home-b           # site add's read only checks
+paisans storage add                       # every Garage stage, from live state
+paisans failover test                     # checks, and prints the plan
+paisans dns init                          # shows which records it would create
+security find-generic-password -s acme -w \
+  | paisans secrets set external.acme_dns_token
 ```
 
 `validate` loads a declaration and prints every problem it finds, rather than
@@ -42,12 +54,78 @@ bearing:
   configuration later, and the second run of an unchanged deployment writes
   nothing at all.
 * **It generates only what it can.** A DNS token is issued by a provider and an
-  OIDC client secret is minted by a running identity provider, where creating
-  one is a mutation a human approves. Both are reported as owed, with the reason,
-  rather than invented or left silent.
+  OIDC client lives at a running identity provider, where creating one is a
+  mutation a human approves. Both are reported as owed, with the reason,
+  rather than invented or left silent. An owed Mbin client names the command
+  that creates it, `oidc client create`.
 * **Without an age recipient it writes plaintext and says so loudly.** Refusing
   would leave an operator holding generated secrets that went nowhere, and a
   first look at the tool must not require a key.
+
+`secrets set <dotted.key>` writes one value read from stdin into the secrets
+file, re-encrypted to the recipients in `.sops.yaml`, and prints only `set
+<key>`. It strips one trailing newline, refuses an empty value, refuses a
+terminal on stdin, and accepts a key only if it is already set, owed by `init`
+(`external.acme_dns_token`, `oidc_clients.<app>.*`), or under `external`. It
+exists so a credential issued elsewhere never touches a terminal or an editor:
+an argument is in shell history and `ps`, a prompt is in scrollback, and `sops`
+opens the whole decrypted file in an editor.
+
+`app admin create --app <name> --username <u> --email <e>` makes sure one user
+exists, is verified and is an administrator of one app, reading the password
+from stdin under the same rules as `secrets set`. It probes, prints `create
+user`, `verify`, `grant admin` or `present`, and changes nothing without
+`--execute`; an existing password changes only with `--reset-password`. Mbin
+and Pocket ID implement it. See *`app admin create` makes an app's first
+administrator* in `README.md` for why the password never reaches a command
+line.
+
+For `pocket-id` there is no password: the command creates the user as an
+administrator, with its email marked verified, through Pocket ID's API and prints a one-time login link once,
+on `--execute`, valid twenty minutes; `--login-link` issues a fresh one for an
+account that exists. It refuses a piped password rather than dropping it. It
+reads `apps.<app>.static_api_key` from the secrets file, so it takes
+`--secrets`, and it never uses sudo, because curl needs no root.
+
+`oidc client create --app <name>` creates an app's client at the deployment's
+Pocket ID, with the groups the app's `config` names and a launch URL so
+Pocket ID's dashboard lists it, and records its ID and
+secret under `oidc_clients.<app>`. Every step is printed with what it sends and
+nothing changes without `--execute`. The secret is generated on the
+workstation and written to the secrets file before Pocket ID is sent it, and is
+never printed. `--admin-user` adds a Pocket ID user to the app's admin group,
+and `--rotate-secret` adds a new secret, leaving the old one valid. Only Mbin's
+client is known so far (`kinds.OIDCClient`). The launch URL is the app's
+hostname plus the kind's dashboard path (`kinds.DashboardPath`, Mbin's
+`/oauth/oidc/connect` so the tile signs the member in, otherwise `/`), or
+`apps.<app>.settings.sso_dashboard_link`, which `validate` refuses unless it is
+a path. An existing client's launch URL is moved only when it is empty or a
+toolkit default (`kinds.ToolkitLaunchURLs`); any other value is left, with a
+warning if `sso_dashboard_link` asks for something else. See *`oidc client
+create` makes an app's client at Pocket ID* in `README.md`.
+
+`preflight --site <new>` makes every check `site add` makes before it changes
+anything, on the site being added and on every site already running, and
+prints each as `ok`, `WARNING` or `REFUSED`. It exits non zero on a refusal.
+It reaches every site through its ssh section and takes no `--ssh`, since one
+override cannot name several hosts. The table of checks and the reasoning for
+each are in *Preflight* in `README.md`.
+
+`failover test` switches the Patroni primary to another data site and back,
+and only with `--execute`; without it, it checks the cluster and every app and
+prints both switchover commands and the expected write interruption. Each
+switch is gated on the new leader, the old one streaming, and every app stack
+healthy and answering through the gateway, polled for three minutes. See
+*`failover test`: a switchover on purpose* in `README.md`.
+
+`render` and `apply` refuse a gateway site when `external.acme_dns_token` is
+empty. `init` lists it as owed, but rendering without it produced a Caddy that
+starts and then fails every DNS-01 challenge, which a visitor finds rather than
+the operator.
+
+A decryption failure names both `SOPS_AGE_KEY_FILE` and `SOPS_AGE_KEY_CMD`; the
+embedded sops (v3.13.3, `age/keysource.go`) reads either, and the second lets
+the age key live in a keychain rather than a file.
 
 `render` validates, then writes per site artifacts under `--out`. It writes
 files and stops: pushing them to a host is a later slice.
@@ -78,10 +156,103 @@ else's too, and is a conflict rather than something to adopt, which is the case
 on any host that was set up by hand before the toolkit existed.
 
 **The narrower action wins.** A changed bind mounted configuration file needs a
-restart at most, and the container keeps its identity. Only a changed `.env` or
-`compose.yaml` needs `up -d`, because Compose passes environment at start and a
-running container cannot be told about a new value. A recreate is an outage,
+restart at most, and the container keeps its identity. Only a changed `.env`, any
+other `*.env` handed over as an `env_file` (`patroni.env`, `caddy/caddy.env`),
+or `compose.yaml` needs `up -d`, because Compose passes environment at start and
+a running container cannot be told about a new value. `caddy.env` is not a
+routing file even though it sits beside the Caddyfile: a reload rereads the
+Caddyfile and never the environment, so a rotated DNS token arrives only by
+recreating the gateway, behind the same gates as an image change. A recreate is an outage,
 however brief, so it is not the default action for every change.
+
+**`wg0` is up before any container moves.** Every service binds the site's
+mesh address, so the mesh comes up right after the files are written and before
+the gateway checks and stack actions below. A first apply enables and starts
+`wg-quick@wg0`; a peer change is handed over with `wg syncconf` so the mesh
+stays up; a change to a line only wg-quick applies restarts it; and an
+unchanged file on a host whose interface is down starts it. A failure stops the
+apply there. `README.md` has the table under "`apply` brings `wg0` up before
+anything binds to it".
+
+**The infrastructure stack moves first, and app stacks only after their
+databases exist.** Sorted order alone started `blog` and `docs` before
+`infra`. Between the infrastructure stack and the first app stack, a site in
+`cluster.sites` waits for a Patroni primary and creates clustered apps' roles
+and databases; see "Every app has its own database credential" below.
+
+**A stopped apply resumes.** Files written before a gate stopped the apply
+already match the render, so the next apply would otherwise see nothing to do.
+`/srv/.paisans-pending.json` records the owed stack actions and gateway checks
+before the first write, drops each stack as its action finishes (the last one
+stays until the end, so a bootstrap failing after it is still owed), and is
+removed on success; `Build` folds it into the next plan.
+
+**An owed stack is force-recreated.** On a real host an `up -d` failed part way
+("failed to bind host port ... address already in use") and left Mbin's `app`
+container created with no network attached. The resumed apply ran a plain
+`up -d`, Compose saw an unchanged configuration and only started that
+container, which came up with no networks and an empty route table. So a stack
+the pending record owes runs `up -d --force-recreate`, and the plan shows it as
+`recreate <stack> (forced)`. `--recreate <stack>` does the same for a stack
+named by the operator when no record exists; it is repeatable, one stack per
+flag, a stack this site does not render is refused, and a named stack is
+planned even when nothing changed. Forcing every recreate was rejected: it
+would replace every container of every acted on stack on every apply, an
+outage each time for the one case that needs it.
+
+**Each stack must come up healthy before the next one moves.** An apply
+reported success while Mbin's app could not reach its database, because `up -d`
+and `restart` return as soon as containers start. After each stack's action,
+`apply` polls `docker compose ps --all --format json` every 5 seconds for up to
+5 minutes until every container of the project is running and every one with a
+healthcheck reports `healthy`; a container without one counts once running.
+A container exited, restarting or `unhealthy` stops the apply at once, a
+timeout stops it too, and either error names the stack and services and carries
+the last 30 log lines of each. The stack stays in the pending record, so the
+next apply resumes there and force-recreates it. The infrastructure stack is
+checked like any other, which covers the gateway's Caddy; Patroni's own wait
+still gates the database bootstrap. `ps` output is read in both shapes Compose
+has printed: one JSON object per line (current, `cmd/formatter/container.go`)
+and one JSON array (older v2 releases, `cmd/formatter/formatter.go`).
+
+**A pull onto a nearly full disk is refused before anything is written.** On
+the first real host (10 GB root disk) the deployed stacks left 1.8 GB free,
+and an Mbin upgrade pulls a 1.4 GB image beside the old one. `Build` probes
+every rendered image with `docker image inspect` in one loop that prints
+`present <id> <ref>` or `absent <ref>` per image; an output missing any image
+is an error rather than "present", so a garbled probe cannot skip the check.
+When a recreated stack names an absent image, `Build` reads Docker's data root
+and its free space, and `Plan.Disk` carries the numbers; the dry run prints
+them as `check disk:`, and `Execute` refuses first, before the pending record.
+The default is 3 GiB, `apply --min-free <size>` overrides it for one run, and
+the refusal quotes `docker system df`. README.md "`apply` checks free space
+before it pulls" has the rejected alternatives.
+
+**A healthy stack's superseded images are pruned.** After the health gate,
+`Execute` lists images (`docker image ls --no-trunc --format json`), reprobes
+the rendered images' IDs and what every container uses (`docker ps -a` names
+plus `docker container inspect` IDs), and runs `docker image rm <id>` for each
+image from that stack's repositories that no stack of the site renders and no
+container uses. A failed removal goes to `Progress` as a warning. `Build` lists
+the same candidates, without the container filter, as `Plan.Prunes`, printed
+as `prune` lines. `apply --keep-images` skips both. IDs are compared by
+prefix with `sha256:` stripped, since Docker prints them full or 12
+characters short. README.md "`apply` prunes the images it superseded" has the
+rejected alternatives (`docker image prune -a`, keeping N versions).
+
+**Files are recorded as soon as they land.** The manifest is written right
+after the files, and again at the end, not only on success. A manifest written
+only on success made every file of a failed first apply look like somebody
+else's: on the first real host, the next apply carried a fix to `patroni.env`
+and refused it as a host edit.
+
+**`--overwrite <path>` replaces one named conflict.** A conflict stops the
+apply, and the way out used to be deleting the file on the host by hand.
+Naming the path is the same decision made through the toolkit, and it is
+repeatable, one path per flag, so a single choice never covers files the
+operator did not look at. A path that is not a conflict is refused rather than
+ignored, so a typo cannot pass for consent. A blanket `--force` was rejected
+for that reason.
 
 **The assembled gateway configuration is validated before any reload, and a
 failure stops the reload.** It is built from per app snippets, so a wrong
@@ -102,6 +273,120 @@ is why `internal/acme` holds the exact lines for each provider rather than
 building one shared form (github.com/caddy-dns/cloudflare, README "Caddyfile"
 section; github.com/caddy-dns/desec, README "Caddyfile" section).
 
+## `site add`, and why it is not a loop of applies
+
+```
+paisans site add home-b             # every stage, its steps and its gate
+paisans site add home-b --execute
+```
+
+`internal/siteadd` builds the join from live state and runs it stage by stage;
+README.md's *`site add` is built for sites that dial each other* has the
+design. What the code relies on, and what is easy to undo:
+
+* **Existing sites are changed by scoped applies** (`apply.Scope`), never whole
+  ones. A whole apply of the primary's site would recreate Patroni for its
+  new `ETCD3_HOSTS`, a failover in the middle of a join. A scoped plan records
+  its files in the same manifest, keeping every other entry, so the next whole
+  apply sees them as its own, and `apply.Rollback` restores what one updated.
+* **Every etcd host has `/srv/infra/etcd-initial`**, the flags its member was
+  born with. `apply` and `site add` read it (`apply.ReadEtcdInitial`, falling
+  back to the compose file's own flags) and hand it to `render.Build` with
+  `render.WithEtcdInitial`; without it a member renders as a founder of
+  `etcd.members`. `isRecord` in `internal/apply` keeps its write from acting on
+  the stack.
+* **`apply` refuses a half grown etcd** (`apply.EtcdRefusal`), probing the
+  site and then the other configured members.
+* **Every wait is a count of polls**, the wait over the interval, so the tests
+  replace `sleep` with nothing (`SetFast` in `export_test.go`) and still end.
+* **`internal/preflight` is a stub here**, with the agreed signature, replaced
+  by the preflight branch.
+
+The tests in `internal/siteadd` run a three host world in maps: etcd's
+membership, Patroni's members, each HAProxy's served configuration and the
+handshakes implied by each `wg0.conf`. They cover the dry run changing nothing,
+a whole join leaving nothing to do, the mesh rollback, the promotion retry and
+its limit, resuming after a stopped learner and after a failed replica gate,
+and the stage 5 and 6 gates failing.
+
+## `storage add`, and what lives where
+
+`internal/storageadd` is shaped like `internal/siteadd`: Build reads every
+Garage site and the gateway and changes nothing, each stage carries its steps
+and a gate, and Execute runs the steps only when there are some and the gate
+always. `docs/specs/2026-10-07-multisite-garage.md` is the approved design and
+cites the Garage v1.0.1 source behind every gate. What is easy to undo by
+accident:
+
+* **Two gates wait on Garage, not on the toolkit** (`Stage.Waits`: settle and
+  sync). They return a `*Waiting`, which unwraps to `ErrWaiting`, and
+  `cmd/paisans` exits 75 on it rather than 1. A failure that is really a wait
+  makes an operator chase a problem that is not there; a wait that is really a
+  failure makes them wait for ever. Pick deliberately.
+* **Every piece of resume state is on a host.** The deployed factor in
+  `garage.toml`, `meta/cluster_layout.rf<N>` beside a set aside layout, and
+  the object counts in `/srv/infra/garage/replication-change.counts` on the
+  anchor's host. Nothing is kept on the operator's machine, so a run resumed
+  from another machine sees the same state.
+* **The reset stops every node at the old factor before it changes any.**
+  Garage exits a node that meets a peer at a higher factor
+  (`src/rpc/system.rs:583-587`), so stopping and rewriting one node at a time
+  takes the others down mid-run. A unit test asserts the order.
+* **`garage.toml` is rewritten through `apply`, scoped, with
+  `apply.ReplicationChange()`**, which is the only way past `apply`'s refusal
+  of another factor. Writing it any other way leaves the manifest stale and
+  makes the next `apply` call it somebody's edit.
+* **The probe's key goes to curl on stdin** (`curl -K -`), never in a command
+  line, and a failure is redacted. A unit test makes the fake host echo stdin
+  into the error, which is the worst case.
+* **The media routes are rendered after the join, not before.** A node with no
+  role answers every bucket as missing, and the routes prefer the first
+  listed node.
+
+The tests in `internal/storageadd` run a Garage cluster in maps: each host's
+files, its node, its copy of the layout and the peers it has met, with output
+shaped like `dxflrs/garage:v1.0.1`'s. They cover the refusal without
+`--change-replication`, a reset that waits at the sync and resumes, `--wait`,
+a reset interrupted between rewriting and starting, the order rule, a site
+with no `garage.toml`, a join without a reset, the probe's secret, and a
+shortfall in object counts.
+
+## `dns init`, and why it can only create
+
+`dns init` is the one command that talks to something other than a host or the
+local disk: the DNS provider's API, from the workstation. It is a dry run unless
+`--execute` is given, like `apply` and `storage init`, and it takes no `--site`
+because it reaches no site.
+
+```
+paisans dns init                 # shows present, create and conflict per record
+paisans dns init --execute       # creates what is missing, then reads each back
+```
+
+The rules are in `README.md` under *`dns init` creates the records a deployment
+needs*. Three things about the code are easy to undo by accident:
+
+* **`internal/dns.Provider` has no update and no delete.** A method that does
+  not exist cannot be called by mistake, and a conflict is reported for a human
+  to resolve rather than handed to an overwrite. Adding either is a design
+  change, not a convenience.
+* **The provider's base URL is a struct field, not a flag.** Tests point it at
+  an `httptest` server; an operator has no reason to send the zone token
+  anywhere but the provider. No test calls a real provider, and none may.
+* **The token never leaves the request header.** Every error from the
+  Cloudflare client passes through a redaction of the token, and a test
+  asserts it, including against a fake provider that echoes the header back.
+
+Cloudflare's request and response shapes are cited in
+`internal/dns/cloudflare.go` against its API reference. Nothing in this package
+has been run against the real API yet.
+
+A deployment that uses the challenge only zone arrangement described under
+*Certificates use DNS-01, everywhere* holds a token that cannot see the main
+zone. `dns init` then reports that no zone it can see holds the name, which is
+correct: that arrangement trades this command for a narrower credential on the
+gateway, and the records are created by hand.
+
 ### Why ssh is shelled out to and sops is not
 
 The opposite choice in each case, for the same reason: what the operator already
@@ -116,6 +401,22 @@ already knows things this toolkit should never learn: their agent, their keys,
 their `~/.ssh/config` with its jump hosts and per host users, their
 `known_hosts`. An embedded client would have to reimplement that or, far worse,
 invite a toolkit specific way to hand it a private key.
+
+What the toolkit adds to the operator's ssh comes from the site's `ssh`
+section, and is pinned by a test of the exact argument list
+(`internal/apply/transport_test.go`):
+
+```
+ssh -p 22 -o IdentitiesOnly=yes -i /tmp/paisans-ssh-XXXX/key-1.pub -i /tmp/paisans-ssh-XXXX/key-2.pub ubuntu@203.0.113.10 <command>
+```
+
+The `-i` files are the listed **public** keys, written per invocation into a
+0700 directory and removed after. With `IdentitiesOnly`, ssh offers exactly
+those and signs with whichever one's private half is in the operator's agent;
+README's *How the operator's ssh uses them* cites ssh(1) and ssh_config(5) for
+it. `paisans.yaml` never names a private key, because it is shared by every
+admin and a private key is one admin's. `--ssh <destination>` replaces the
+section whole and is passed verbatim, as it was before the section existed.
 
 File contents go to the host over stdin rather than in a command line, because a
 rendered file carries credentials and a command line is visible in `ps` to every
@@ -167,6 +468,20 @@ go test ./internal/render -update
 rendered may carry a timestamp or depend on map iteration order, or a diff
 between two renders stops meaning anything.
 
+**Docker tests** run real `dxflrs/garage:v1.0.1` containers, and are behind a
+build tag because they need Docker and take seconds rather than milliseconds:
+
+```
+go test -tags garage_integration ./internal/garage/ ./internal/storageadd/
+```
+
+`internal/garage`'s starts the rendered `garage.toml`, provisions a node, and
+routes media through the rendered snippet in the real gateway image,
+including a read with the first listed node stopped. `internal/storageadd`'s
+drives `storage add` from one node at replication 1 to two at replication 2,
+`dangerous`, through the reset, and reads an object written before it back
+through both nodes. It runs its probe in `curlimages/curl`, which it pulls.
+
 ## Fixtures and secrets
 
 `internal/render/testdata/secrets.fixture.yaml` is plaintext on purpose. Every
@@ -193,7 +508,16 @@ installed, on a workstation or anywhere else.
 | `internal/secretsgen` | what a deployment's secrets are, and which of them the toolkit may invent |
 | `internal/kinds` | what an application kind is: its compose services, and the image each runs by default |
 | `internal/render` | placement, templates, and the writer |
-| `internal/apply` | the only package that reaches a host: what to push, what to restart, and the gates before either |
+| `internal/dns` | which public records a deployment needs, and creating the missing ones at the DNS provider |
+| `internal/apply` | what to push to a host, what to restart, and the gates before either |
+| `internal/siteadd` | joining a new data site: six staged, gated, resumable stages |
+| `internal/appadmin` | an app's first administrator: probe, plan, and the per kind commands or API calls |
+| `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin |
+| `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
+| `internal/preflight` | `site add`'s first stage: read only checks on the new site and every running one, as a report |
+| `internal/failover` | `failover test`: its checks, the switchover and its gates |
+| `internal/patroni` | reading a Patroni cluster through the Spilo container: `/cluster`, the leader, lag, database size |
+| `internal/hostprep` | taking a blank host to what `apply` assumes; one profile per operating system, its shell under `profiles/<id>-<version>/` |
 | `internal/render/templates` | the infrastructure templates, plus one directory per kind |
 
 Templating is `text/template` from the standard library. No template engine is
@@ -204,9 +528,9 @@ inherited, per the language decision in `docs/decisions.md`.
 `internal/render/templates/<kind>/` is a set, and every file in it is rendered.
 Two conventions make a set need no code of its own.
 
-**A template's path is its destination.** `templates/mbin/config/packages/
-oneup_flysystem.yaml.tmpl` lands at
-`/srv/<stack>/config/packages/oneup_flysystem.yaml`, so where a file goes is
+**A template's path is its destination.** `templates/synapse/initdb.d/
+01-mas-database.sql.tmpl` lands at
+`/srv/<stack>/initdb.d/01-mas-database.sql`, so where a file goes is
 read off the tree rather than held in a mapping somewhere else. Adding a file
 to a set is adding a file.
 
@@ -260,8 +584,10 @@ set is checked against upstream before it is written, and the check is recorded
 in a comment where it is not obvious. Some of it is counter intuitive and does
 not survive being recalled: WriteFreely's `[oauth.generic]` endpoints are paths
 appended to `host` rather than URLs, upstream Mbin ships named OAuth providers
-and no generic OIDC one, and Spilo publishes a separate image repository per
-Postgres major version whose tags do not run in step.
+and no generic OIDC one (which is why the mbin kind's default image is the
+paisans fork, which adds one, and its callback is `/oauth/oidc/verify`), and
+Spilo publishes a separate image repository per Postgres major version whose
+tags do not run in step.
 
 ## Certificates use DNS-01, everywhere
 
@@ -303,9 +629,18 @@ one is missing. WriteFreely is the exception and needs none: it has never
 supported Postgres and runs on a SQLite file in its own data directory, which
 is what keeps one blog from adding a second database engine to operate.
 
-Creating those roles in Postgres is not implemented. Nothing in this slice
-touches a running database, so the credentials are rendered and the roles that
-use them are a job for `apply`.
+`apply` creates the roles and databases for clustered apps, on a site in
+`cluster.sites`, after the infrastructure stack and before any app stack. It
+waits up to three minutes for Patroni's `/cluster` to name a running leader,
+then sends one psql script on stdin to the Spilo container: create the role if
+missing, set its password every time (so rotation is editing the secret and
+applying), create the database owned by it if missing. A replica skips the work
+and says which site holds the leader; a leader that is not one of
+`cluster.sites` is not a replica and stops the apply. A timeout or a psql
+failure stops it too, before any app starts, and the next apply resumes there. `README.md` has
+the reasoning under "`apply` creates each clustered app's role and database".
+A pinned app's own Postgres creates its role from the image's environment, as
+before.
 
 ## Things the code enforces that are easy to undo by accident
 
@@ -320,9 +655,14 @@ use them are a job for `apply`.
 * **A pinned stack uses bind mounts under `/srv/<stack>/`**, never named
   volumes, so relocating it is one `tar`. A test walks every rendered compose
   file to confirm it.
-* **A clustered app has no Postgres service of its own** and connects to
-  `127.0.0.1:5000`. A pinned app gets its own container: an app that is pinned
-  must be pinned all the way down.
+* **A clustered app has no Postgres service of its own** and connects to the
+  HAProxy on its own site, at that site's mesh address and the cluster port
+  (Eg: `10.44.0.1:5000`), never `127.0.0.1`, which inside the app's container
+  is the container itself. A pinned app gets its own container: an app that is
+  pinned must be pinned all the way down.
+* **A published port binds the site's mesh address**, never every interface,
+  because Docker's iptables rules bypass a host firewall. A test walks every
+  rendered compose file to confirm it.
 * **Nothing rendered carries a floating image tag.** `latest` is refused in an
   operator's configuration, so a default that floated would be the toolkit
   refusing what it writes itself. A test walks every rendered compose file.
@@ -331,20 +671,42 @@ use them are a job for `apply`.
   reason a file configured application is the better case. A test asserts it
   against the fixture's placeholder credentials.
 * **Output is deterministic.** Sort before you iterate a map.
+* **host prepare removes only authorized keys it added**, as recorded in
+  `/etc/paisans/authorized_keys.<user>.owned`, and never rewrites a key's
+  comment to mark it. Removals run last, and a plan that would leave the user
+  with none of the listed keys is refused. Tests in
+  `internal/hostprep/hostprep_test.go` cover add, adopt, forget, remove, a
+  restricted key and that refusal.
+* **The SSH allow follows `ssh.port` and is never removed**, including the
+  allow for a port the site used before. A test moves the port and asserts the
+  old allow is kept and noted.
 
 ## What is not here yet
 
-No etcd, no preflight, and none of `site add`, `failover` or `backup`. `apply`
-pushes files and takes the narrowest action that makes them live; it does not
-bootstrap a site that has nothing on it, and it has never been run against a
-real host.
+No `backup`. `site add` exists for sites that all declare an endpoint; the
+relay for sites behind NAT is still design. `storage add` joins Garage nodes
+and changes the replication factor, and has run against containers but not
+yet against a real host; removing or replacing a Garage node, and a site with
+no role other than storage, are not built. Its first stage is `preflight`, and
+`failover test` exists; both are described above. `apply`
+pushes files, brings up `wg0`, creates clustered apps' roles and databases, and
+takes the narrowest action that makes the rest live. `site add` has never been
+run against a real host, so every command it sends is reasoned from upstream
+source and documentation, not observed.
 
-Mbin's media reverse proxy is not rendered either. Upstream advises one on a
-hostname of its own so media URLs survive a change of storage provider, and
-remote instances cache those URLs, so adding it later is a migration rather than
-an addition. It needs a hostname in the configuration and a site block of its
-own, which is a decision to take deliberately. If you find yourself writing a
-transport layer, that is the next slice and it wants its own review.
+Mbin's media reverse proxy, which this section used to list as missing, is
+rendered: `storage.media_hostname` becomes the gateway's `media.caddy`, and
+Mbin's `KBIN_STORAGE_URL` points at it.
+
+Mbin's own OAuth2 server keypair, which API clients and mobile apps need, is
+generated by `init` and rendered to `/srv/<app>/oauth/` on every site running
+Mbin; README's *Three kinds of secret* says why it is 0644. Nothing chowns any
+of the stack's bind mounted directories; the header of
+`templates/mbin/compose.yaml.tmpl` says which containers cope with a root
+owned directory and which do not.
+
+If you find yourself writing a transport layer, that is the next slice and it
+wants its own review.
 
 Two claims used to live in this section and are corrected here rather than
 left to go on being read. **Secret generation exists**: `internal/secretsgen`

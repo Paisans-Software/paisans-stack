@@ -131,6 +131,11 @@ func TestMissingKeyIsExplained(t *testing.T) {
 	if !strings.Contains(err.Error(), "SOPS_AGE_KEY_FILE") {
 		t.Fatalf("the error does not say what to do:\n%v", err)
 	}
+	// The embedded sops (v3.13.3, age/keysource.go) also reads a key from a
+	// command, which is how a key kept in a keychain is used.
+	if !strings.Contains(err.Error(), "set SOPS_AGE_KEY_CMD") {
+		t.Errorf("the error does not mention SOPS_AGE_KEY_CMD:\n%v", err)
+	}
 }
 
 // encryptForTest builds an encrypted fixture in memory. No encrypted file is

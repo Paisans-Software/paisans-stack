@@ -1,0 +1,18 @@
+# Written by paisans host prepare. Loads {{ .Module }} at boot, before Docker
+# starts the Patroni container that maps /dev/watchdog.
+#
+# A unit and not /etc/modules-load.d: Ubuntu's kernel package blacklists the
+# watchdog drivers, and systemd-modules-load applies that blacklist, so a
+# modules-load.d entry would be skipped at boot. modprobe named on a command
+# line does not apply it.
+[Unit]
+Description=Load the {{ .Module }} watchdog for Patroni
+Before=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/modprobe {{ .Module }}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

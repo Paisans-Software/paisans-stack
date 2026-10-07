@@ -43,6 +43,17 @@ func fixtureConfig(t *testing.T) *config.Config {
 	return cfg
 }
 
+// singleSiteConfig is the fixture with Garage on home-a alone, at replication
+// 1: the only shape in which storage init lays a node out itself. With more
+// than one Garage site, a node with no role is `storage add`'s to join.
+func singleSiteConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg := fixtureConfig(t)
+	cfg.Storage.Garage.Sites = []string{"home-a"}
+	cfg.Storage.Garage.Replication = 1
+	return cfg
+}
+
 func fixtureSecrets(t *testing.T) *config.Secrets {
 	t.Helper()
 	secrets, err := config.LoadSecrets(filepath.Join("..", "render", "testdata", "secrets.fixture.yaml"))
@@ -84,7 +95,7 @@ func TestAFreshNodeIsLaidOutBeforeAnyKeyIsImported(t *testing.T) {
 		"bucket info": {out: "Error: Bucket not found / several matching buckets: talk-uploads", err: errors.New("exit status 1")},
 	}}
 
-	plan, err := garage.Build("home-a", fixtureConfig(t), fixtureSecrets(t), transport)
+	plan, err := garage.Build("home-a", singleSiteConfig(t), fixtureSecrets(t), transport)
 	if err != nil {
 		t.Fatalf("building the plan: %v", err)
 	}
@@ -112,12 +123,10 @@ func TestAFreshNodeIsLaidOutBeforeAnyKeyIsImported(t *testing.T) {
 }
 
 // key import and bucket create both fail when the object exists, so a second
-// run must not plan them. The idempotent steps are planned every run and this
-// test asserts nothing about them: bucket allow for both of the fixture's
-// storage apps, and bucket website --allow for talk, which is mbin and
-// therefore serves its objects publicly. A fully provisioned node is
-// therefore not a node with an empty plan, which is what the old name of this
-// test claimed.
+// run must not plan them. This fixture's `bucket info` carries no website line
+// and no authorized keys, so the grant and website steps are planned as
+// unreadable and this test asserts nothing about them; the tests on
+// observedBucketInfo below cover reading them.
 //
 // `node id -q` returns the full 64 character node ID, but `layout show`'s
 // table prints only its first 16 characters, exactly as dxflrs/garage:v1.0.1
@@ -163,7 +172,7 @@ func TestAHalfProvisionedNodePlansOnlyWhatIsMissing(t *testing.T) {
 		"bucket info": {out: "Error: Bucket not found / several matching buckets: talk-uploads", err: errors.New("exit status 1")},
 	}}
 
-	plan, err := garage.Build("home-a", fixtureConfig(t), fixtureSecrets(t), transport)
+	plan, err := garage.Build("home-a", singleSiteConfig(t), fixtureSecrets(t), transport)
 	if err != nil {
 		t.Fatalf("building the plan: %v", err)
 	}
@@ -192,43 +201,29 @@ func TestAnUnreachableNodeIsAnErrorRatherThanAnEmptyPlan(t *testing.T) {
 	}
 }
 
-// This is the ruling that overrides the brief's literal wording: the fixture
-// deployment declares two Garage sites, home-a and home-b, at replication 2.
-// Layout detection has to be per node, not per cluster. A layout already at
-// version 1 (home-a's role was assigned by an earlier run) still leaves
-// home-b without a role, and home-b's node ID is absent from the "layout
-// show" rows. A planner that only checked the layout version against 0 would
-// see version 1, plan nothing, and leave home-b serving nothing while
-// reporting success.
-func TestASecondSiteIsAssignedEvenWhenTheLayoutIsAlreadyAtVersionOne(t *testing.T) {
+// The fixture declares two Garage sites, home-a and home-b, at replication 2,
+// and home-b's node is absent from a layout already at version 1. Layout
+// detection is still per node rather than per cluster, but a node joining a
+// cluster is now `storage add`'s job: it lays every site out in one version
+// and waits for the data to move. storage init used to assign home-b alone,
+// which either fails `layout apply` for having fewer nodes than the factor or,
+// at replication 1, starts a second cluster. It must refuse, name storage add,
+// and plan nothing.
+func TestASecondSiteIsLeftToStorageAdd(t *testing.T) {
 	transport := &fakeTransport{responses: map[string]response{
 		"layout show": {out: "==== CURRENT CLUSTER LAYOUT ====\nID        Tags  Zone    Capacity\n51494feb  []    home-a  100.0 GB\n\nCurrent cluster layout version: 1\n"},
 		"node id -q":  {out: "aabbccdd5444d466aaaabbbbccccddddeeeeffff00001111222233334444abcd@127.0.0.1:3901\n"},
-		"key info":    {out: "Key name: talk\nKey ID: GK00112233445566778899aabb\n"},
-		"bucket info": {out: "Bucket: cfc236316d4a81858f84f84c287f5a0d\nSize: 0 B\nObjects: 0\n"},
 	}}
 
 	plan, err := garage.Build("home-b", fixtureConfig(t), fixtureSecrets(t), transport)
-	if err != nil {
-		t.Fatalf("building the plan: %v", err)
+	if err == nil {
+		t.Fatalf("storage init planned a join for a node with no role in a two site cluster: %+v", plan)
 	}
-
-	var commands []string
-	for _, s := range plan.Steps {
-		commands = append(commands, s.Command)
+	if !strings.Contains(err.Error(), "storage add") {
+		t.Errorf("the refusal does not send the operator to storage add:\n%v", err)
 	}
-	joined := strings.Join(commands, "\n")
-	if !strings.Contains(joined, "layout assign") {
-		t.Fatalf("home-b has no role in a layout that only lists home-a's node, so it must be assigned, got:\n%s", joined)
-	}
-	if !strings.Contains(joined, "aabbccdd") {
-		t.Errorf("the assign step must carry home-b's own node ID, got:\n%s", joined)
-	}
-	if !strings.Contains(joined, "-z home-b") {
-		t.Errorf("the assign step must carry home-b's zone, got:\n%s", joined)
-	}
-	if !strings.Contains(joined, "layout apply --version 2") {
-		t.Errorf("a layout already at version 1 is applied as version 2, got:\n%s", joined)
+	if i := indexOfContaining(transport.ran, "key info"); i >= 0 {
+		t.Errorf("it went on to read keys after deciding the node cannot be provisioned: %v", transport.ran)
 	}
 }
 
@@ -305,7 +300,7 @@ func TestWebsiteAccessIsPlannedAfterTheBucketExists(t *testing.T) {
 		"bucket info": {out: "Error: Bucket not found / several matching buckets: talk-uploads", err: errors.New("exit status 1")},
 	}}
 
-	plan, err := garage.Build("home-a", fixtureConfig(t), fixtureSecrets(t), transport)
+	plan, err := garage.Build("home-a", singleSiteConfig(t), fixtureSecrets(t), transport)
 	if err != nil {
 		t.Fatalf("building the plan: %v", err)
 	}
@@ -365,7 +360,7 @@ func TestExecuteStopsAtTheFirstFailingStepAndNamesIt(t *testing.T) {
 // Garage also quotes an offending argument back in some of its messages, so
 // the command output is checked too rather than only the command text.
 func TestAFailingKeyImportDoesNotPutTheSecretInItsError(t *testing.T) {
-	cfg := fixtureConfig(t)
+	cfg := singleSiteConfig(t)
 	secrets := fixtureSecrets(t)
 	transport := &fakeTransport{responses: map[string]response{
 		"layout show": {out: "==== CURRENT CLUSTER LAYOUT ====\nno nodes\nCurrent cluster layout version: 0\n"},
@@ -429,4 +424,103 @@ func commandsOf(plan *garage.Plan) []string {
 		out = append(out, s.Command)
 	}
 	return out
+}
+
+// observedBucketInfo is `garage bucket info talk-uploads` exactly as
+// dxflrs/garage:v1.0.1 printed it on a provisioned node, with the RPC
+// client's ANSI coloured log line ahead of it, as the combined output of
+// `docker compose exec -T` carries it.
+const observedBucketInfo = "\x1b[2m2026-10-05T18:02:11.104Z\x1b[0m \x1b[32m INFO\x1b[0m \x1b[2mgarage_net::netapp\x1b[0m\x1b[2m:\x1b[0m Connection established to 51494feb5444d466\n" +
+	`Bucket: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
+
+Size: 0 B (0 B)
+Objects: 0
+Unfinished uploads (multipart and non-multipart): 0
+Unfinished multipart uploads: 0
+Size of unfinished multipart uploads: 0 B (0 B)
+
+Website access: true
+
+Global aliases:
+  talk-uploads
+
+Key-specific aliases:
+
+Authorized keys:
+  RWO  GK0123456789abcdef01234567  talk
+`
+
+// bucketInfoPlan builds a plan for a provisioned node whose talk-uploads
+// answers with the given `bucket info` output, and returns the steps for
+// talk's bucket.
+func bucketInfoPlan(t *testing.T, info string) (*garage.Plan, []string) {
+	t.Helper()
+	transport := &fakeTransport{responses: map[string]response{
+		"layout show":              {out: "==== CURRENT CLUSTER LAYOUT ====\nID  Tags  Zone  Capacity\n51494feb5444d466  []  home-a  100.0 GB\n\nCurrent cluster layout version: 1\n"},
+		"node id -q":               {out: "51494feb5444d466aaaabbbbccccddddeeeeffff00001111222233334444abcd@10.44.0.1:3901\n"},
+		"key info":                 {out: "Key name: talk\n"},
+		"bucket info talk-uploads": {out: info},
+	}}
+	plan, err := garage.Build("home-a", fixtureConfig(t), fixtureSecrets(t), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var talk []string
+	for _, s := range plan.Steps {
+		if strings.Contains(s.Command, "talk-uploads") {
+			talk = append(talk, s.Describe+" | "+s.Command)
+		}
+	}
+	return plan, talk
+}
+
+// The observed output: website access is on and talk's key holds RWO, so
+// neither step is planned, and the plan says both were found.
+func TestAGrantedPublicBucketPlansNothing(t *testing.T) {
+	plan, talk := bucketInfoPlan(t, observedBucketInfo)
+	if len(talk) != 0 {
+		t.Errorf("talk-uploads is granted and public, yet the plan has:\n%s", strings.Join(talk, "\n"))
+	}
+	present := strings.Join(plan.Present, "\n")
+	for _, want := range []string{"grant: talk's key already has read/write/owner on talk-uploads", "website: talk-uploads already allows website access"} {
+		if !strings.Contains(present, want) {
+			t.Errorf("the plan does not report %q:\n%s", want, present)
+		}
+	}
+}
+
+// Website access off is planned; the grant, still RWO, is not.
+func TestWebsiteAccessOffIsPlanned(t *testing.T) {
+	_, talk := bucketInfoPlan(t, strings.Replace(observedBucketInfo, "Website access: true", "Website access: false", 1))
+	if len(talk) != 1 || !strings.Contains(talk[0], "bucket website --allow talk-uploads") {
+		t.Errorf("want only the website step, got:\n%s", strings.Join(talk, "\n"))
+	}
+}
+
+// A key with only some of read, write and owner, or no row for the key at
+// all, is granted again.
+func TestAPartialOrMissingGrantIsPlanned(t *testing.T) {
+	for name, info := range map[string]string{
+		"read only": strings.Replace(observedBucketInfo, "  RWO  GK0123456789abcdef01234567  talk", "  R    GK0123456789abcdef01234567  talk", 1),
+		"no row":    strings.Replace(observedBucketInfo, "  RWO  GK0123456789abcdef01234567  talk\n", "", 1),
+		"other key": strings.Replace(observedBucketInfo, "GK0123456789abcdef01234567  talk", "GKffffffffffffffffffffffff  other", 1),
+	} {
+		_, talk := bucketInfoPlan(t, info)
+		if len(talk) != 1 || !strings.Contains(talk[0], "bucket allow --read --write --owner talk-uploads") {
+			t.Errorf("%s: want only the grant, got:\n%s", name, strings.Join(talk, "\n"))
+		}
+	}
+}
+
+// Output that cannot be read plans both, fail safe, and the plan says why.
+func TestUnreadableBucketInfoPlansBothAndSaysSo(t *testing.T) {
+	_, talk := bucketInfoPlan(t, "Bucket: 8ec10628da23f1cb\nSize: 0 B\n")
+	if len(talk) != 2 {
+		t.Fatalf("want the grant and the website step, got:\n%s", strings.Join(talk, "\n"))
+	}
+	for _, step := range talk {
+		if !strings.Contains(step, "could not be read") {
+			t.Errorf("the step does not say why it was planned: %s", step)
+		}
+	}
 }

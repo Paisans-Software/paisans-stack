@@ -13,8 +13,12 @@ services:
   app:
     image: ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea
     restart: unless-stopped
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says. The
+    # gateway, over the mesh, is the only thing that should reach it.
     ports:
-      - "8080:8080"
+      - "10.44.0.1:8080:8080"
     volumes:
       - /srv/blog/data:/data
       # WriteFreely reads a file, not an environment. Its SSO client secret is

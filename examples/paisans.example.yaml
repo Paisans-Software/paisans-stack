@@ -46,19 +46,47 @@ sites:
     roles: [data, apps]
     address: 10.44.0.1          # WireGuard address, stable forever
     endpoint: null              # residential, changing address: dials out
-    ssh: home-a.local           # bootstrap route, before the mesh exists
+    # How the toolkit reaches the site, and who may log in. Every site has
+    # one, the gateway included. The keys are public keys, one per line,
+    # every admin's: the file is shared, so it never names a private key.
+    # Each admin's own ssh offers these and finds its private half in that
+    # admin's agent. `host prepare` makes them the user's authorized keys.
+    ssh:
+      host: home-a.local        # optional: defaults to public_address
+      user: ubuntu              # must already exist on the host
+      port: 22                  # optional: defaults to 22
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB bob@example.org
 
   home-b:
     roles: [data, apps]
     address: 10.44.0.2
     endpoint: null
-    ssh: home-b.local
+    ssh:
+      host: home-b.local
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB bob@example.org
 
   vm:
     roles: [gateway, witness]
     address: 10.44.0.3
     endpoint: vm.example.org:51820   # stable: the homes dial here
-    ssh: vm.example.org
+    # What the internet reaches this site on, as the cloud provider reports it
+    # rather than as the host's own interface shows it. Optional, and read only
+    # by `paisans dns init`, which publishes every hostname below and the
+    # endpoint above as A records to it, and as the default ssh.host.
+    # Private, carrier grade NAT and mesh addresses are refused.
+    # public_address: 203.0.113.10
+    # public_address6: 2001:db8::10    # optional, adds AAAA records
+    ssh:
+      host: vm.example.org      # could be left out with public_address set
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB bob@example.org
 
 # One cluster. Multiple named clusters are out of scope: one cluster holds many
 # databases and replicates them together, so every app in it gets HA for free.
@@ -86,12 +114,22 @@ storage:
   # mesh address and a browser cannot reach one.
   media_hostname: media.example.org
   garage:
+    # Preference order, not a set. The first site serves every media read the
+    # gateway passes on and takes every app's writes; the rest serve only
+    # when the ones before them are down. Put the site with the best upload
+    # first: a home line's upload is its slow direction. A new site joins at
+    # the end and moves up only after `paisans storage add` has passed.
     sites: [home-a, home-b]
     # A factor of 2 across 2 sites means a write needs both of them: losing a
     # site keeps the database available through failover but stops uploads.
     # That is a trade, not a free win, and it is the reason a third Garage
-    # location is worth considering.
+    # location is worth considering. Validation warns about it on purpose.
     replication: 2
+    # consistent (the default), degraded or dangerous. dangerous keeps
+    # uploads working with a site down by confirming an upload once one copy
+    # exists. Changing replication on a running cluster is `paisans storage
+    # add --change-replication`; changing this is an ordinary apply.
+    consistency: consistent
     # What each node advertises to Garage's own layout, not a measurement of
     # the disk: the toolkit has no way to know how much of it is meant for
     # objects, so it takes your word and requires the unit suffix Garage

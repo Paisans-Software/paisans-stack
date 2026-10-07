@@ -1,0 +1,8 @@
+{{- /* Non interactive throughout: DEBIAN_FRONTEND stops debconf asking,
+        force-confold keeps a config file an operator already changed rather
+        than prompting about it, and the lock timeout waits out the
+        unattended-upgrades run a freshly booted cloud image often starts. */ -}}
+set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get -o DPkg::Lock::Timeout=300 update
+apt-get -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confold install -y{{ range .Packages }} {{ . }}{{ end }}

@@ -18,8 +18,14 @@ services:
       - --listen-client-urls=http://{{ .Site.Address }}:2379,http://127.0.0.1:2379
       - --initial-advertise-peer-urls=http://{{ .Site.Address }}:2380
       - --advertise-client-urls=http://{{ .Site.Address }}:2379
+{{- /* Both flags are read on this member's first start only, and are
+        repeated from /srv/infra/etcd-initial ever after, so a cluster that
+        grows never changes them on a member already running. A template
+        comment rather than a YAML one: a new line in this file would change
+        the compose file of every deployment applied before it, and apply
+        recreates the stack for that. */}}
       - --initial-cluster={{ .EtcdInitialCluster }}
-      - --initial-cluster-state=new
+      - --initial-cluster-state={{ .EtcdInitialState }}
       - --initial-cluster-token={{ .Scope }}
       # Measured from real round trip through the tunnel, not guessed. The
       # defaults assume one datacenter and produce phantom elections every
@@ -38,10 +44,20 @@ services:
       - patroni.env
     volumes:
       - /srv/infra/postgres:/home/postgres/pgdata
+{{- if not .Site.WatchdogOff }}
     # Fencing needs the watchdog, and there is exactly one Patroni per data
     # bearing host, so there is exactly one claimant for the device.
     devices:
       - /dev/watchdog:/dev/watchdog
+    # Spilo starts Patroni as postgres through chpst, which keeps only the
+    # primary group, so a root owned 0600 node is unusable and Patroni in
+    # required mode never takes the leader. Docker makes the container its own
+    # device node, so owning that copy changes nothing on the host. The image's
+    # own CMD follows unchanged. Widening the host's node instead (a udev
+    # rule) was tried first and rejected: chpst drops the group it relied on,
+    # and any mode wide enough would let every local user arm the timer.
+    command: ["/bin/sh", "-c", "chown postgres /dev/watchdog && exec /bin/sh /launch.sh init"]
+{{- end }}
 {{- end }}
 {{- if .Site.NeedsProxy }}
   haproxy:
@@ -66,8 +82,11 @@ services:
     image: {{ .CaddyImage }}
     restart: unless-stopped
     network_mode: host
+    # Relative to this file, so the path names the caddy/ directory the token
+    # is rendered into. The token stays out of this file because compose.yaml
+    # is 0644 and readable by anything that can list the stack.
     env_file:
-      - caddy.env
+      - caddy/caddy.env
     volumes:
       - /srv/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # One file per application, imported by that application's host block.

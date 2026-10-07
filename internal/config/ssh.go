@@ -1,0 +1,250 @@
+package config
+
+import (
+	"fmt"
+	"net"
+	"regexp"
+	"strings"
+
+	"golang.org/x/crypto/ssh"
+	"gopkg.in/yaml.v3"
+)
+
+// SSH is how the toolkit reaches a site, and who may.
+//
+// It is a section rather than a destination string because a destination says
+// where and as whom, and nothing about which keys. The keys are the part every
+// admin shares: paisans.yaml is one file for the whole deployment, so it lists
+// public keys, which are safe to share, and never a path to a private key,
+// which is one admin's and lives on one admin's machine. `host prepare` makes
+// the listed keys the user's authorized keys, so the file is also the record
+// of who can log in.
+type SSH struct {
+	// Host is a hostname or an IP address. Empty means the site's
+	// public_address; a site with neither is refused.
+	Host string `yaml:"host"`
+	// User is the login user. It must already exist on the host: creating
+	// users is not something host prepare does.
+	User string `yaml:"user"`
+	// Port is the SSH port. Zero means 22.
+	Port int `yaml:"port"`
+	// PublicKey is one or more authorized_keys lines, one key per line.
+	PublicKey string `yaml:"public_key"`
+
+	// declared records that the key was present at all, so a missing
+	// section and an empty one get different messages.
+	declared bool
+	// legacy is the retired `ssh: <destination>` string, kept only so the
+	// refusal can show it beside the section that replaces it.
+	legacy string
+	// legacyLine is where the string was, for the same message.
+	legacyLine int
+}
+
+// DefaultSSHPort is the port used when a site's ssh section names none.
+const DefaultSSHPort = 22
+
+var sshKeys = map[string]bool{"host": true, "user": true, "port": true, "public_key": true}
+
+// UnmarshalYAML reads the section, and reads the old string form only in order
+// to refuse it. Founder decision: the string form is dropped, not kept as a
+// shorthand, so there is one way to write a site's access.
+//
+// yaml.v3 does not carry KnownFields into a custom unmarshaller, so unknown
+// keys are checked here by hand: a misspelt `public_keys` that silently
+// authorised nobody would be found out only when the toolkit removed a key.
+func (s *SSH) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if node.Tag == "!!null" {
+			return nil
+		}
+		s.declared = true
+		s.legacy = node.Value
+		s.legacyLine = node.Line
+		return nil
+	case yaml.MappingNode:
+	default:
+		return fmt.Errorf("line %d: ssh must be a section with host, user, port and public_key", node.Line)
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if !sshKeys[key.Value] {
+			return fmt.Errorf("line %d: field %s not found in an ssh section. Its keys are host, user, port and public_key", key.Line, key.Value)
+		}
+	}
+	type plain SSH
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	*s = SSH(p)
+	s.declared = true
+	return nil
+}
+
+// PortOrDefault is the port to connect to: the declared one, or 22.
+func (s SSH) PortOrDefault() int {
+	if s.Port == 0 {
+		return DefaultSSHPort
+	}
+	return s.Port
+}
+
+// SSHHost is the address the toolkit connects to: ssh.host, or failing that
+// the site's public_address. Defaulting to public_address is because on most
+// sites they are the same address, written twice; a site reached some other
+// way (a LAN name, a VPN address) says so with ssh.host.
+func (s Site) SSHHost() string {
+	if s.SSH.Host != "" {
+		return s.SSH.Host
+	}
+	return s.PublicAddress
+}
+
+// AuthorizedKey is one public key, as an authorized_keys line carries it.
+type AuthorizedKey struct {
+	// Line is the key as written, without options: type, base64, comment.
+	Line string
+	// Type is the key's algorithm name, Eg: ssh-ed25519.
+	Type string
+	// Fingerprint is the SHA256 fingerprint ssh-keygen -l prints. It is the
+	// key's identity: two lines with the same key and different comments are
+	// the same key.
+	Fingerprint string
+	// Comment is whatever followed the key, usually user@machine.
+	Comment string
+}
+
+// ParseKeyLine reads one authorized_keys line. Options, if the line has any,
+// are returned rather than refused, because authorized_keys on a host may
+// carry them; paisans.yaml may not, and Keys refuses them there.
+func ParseKeyLine(line string) (AuthorizedKey, []string, error) {
+	pub, comment, options, rest, err := ssh.ParseAuthorizedKey([]byte(line))
+	if err != nil {
+		return AuthorizedKey{}, nil, err
+	}
+	if len(strings.TrimSpace(string(rest))) > 0 {
+		return AuthorizedKey{}, nil, fmt.Errorf("more than one key on the line")
+	}
+	marshalled := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
+	if comment != "" {
+		marshalled += " " + comment
+	}
+	return AuthorizedKey{
+		Line:        marshalled,
+		Type:        pub.Type(),
+		Fingerprint: ssh.FingerprintSHA256(pub),
+		Comment:     comment,
+	}, options, nil
+}
+
+// Keys parses public_key: one key per line, blank lines ignored. Every line
+// that is not a plain key is a problem, and so is a key listed twice.
+//
+// Options (`from=`, `command=`, `restrict` and the rest) are refused rather
+// than carried. They change what a key may do, and a line that host prepare
+// writes and later compares has to mean the same thing everywhere; a
+// restricted key belongs in authorized_keys by hand, where host prepare leaves
+// it alone.
+func (s SSH) Keys() ([]AuthorizedKey, []string) {
+	var keys []AuthorizedKey
+	var problems []string
+	seen := map[string]int{}
+	for i, raw := range strings.Split(s.PublicKey, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		key, options, err := ParseKeyLine(line)
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Sprintf("line %d is not an OpenSSH public key (%v). Paste the whole line of the .pub file, Eg: ssh-ed25519 AAAA... you@example.org", i+1, err))
+			continue
+		case len(options) > 0:
+			problems = append(problems, fmt.Sprintf("line %d carries options (%s). List plain keys only; a restricted key is added to authorized_keys by hand, where host prepare leaves it alone", i+1, strings.Join(options, ",")))
+			continue
+		}
+		if first, dup := seen[key.Fingerprint]; dup {
+			problems = append(problems, fmt.Sprintf("line %d is the same key as line %d (%s). List each key once", i+1, first, key.Fingerprint))
+			continue
+		}
+		seen[key.Fingerprint] = i + 1
+		keys = append(keys, key)
+	}
+	return keys, problems
+}
+
+// unixUser is a conservative login name: what the toolkit is willing to put in
+// a command line and a file name on the host without quoting surprises.
+var unixUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+// hostLabel is one label of a DNS name.
+var hostLabel = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+
+func isHostname(s string) bool {
+	if len(s) == 0 || len(s) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(s, ".") {
+		if !hostLabel.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
+
+// sshProblems is structural's check of one site's ssh section.
+func sshProblems(name string, site Site) []string {
+	s := site.SSH
+	var problems []string
+	add := func(format string, args ...any) {
+		problems = append(problems, fmt.Sprintf(format, args...))
+	}
+	if s.legacy != "" {
+		add("sites.%s.ssh: %q is the old destination form (line %d), which is no longer read. Declare a section instead:\n"+
+			"      ssh:\n"+
+			"        host: %s   # optional when public_address is set\n"+
+			"        user: <login user>\n"+
+			"        port: 22   # optional\n"+
+			"        public_key: |\n"+
+			"          ssh-ed25519 AAAA... you@example.org",
+			name, s.legacy, s.legacyLine, legacyHost(s.legacy))
+		return problems
+	}
+	if !s.declared {
+		add("sites.%s.ssh: required. Give the section with at least user and public_key: it is how the toolkit reaches the site and who may log in to it.", name)
+		return problems
+	}
+	switch {
+	case s.User == "":
+		add("sites.%s.ssh.user: required. Name the login user, which must already exist on the host.", name)
+	case !unixUser.MatchString(s.User):
+		add("sites.%s.ssh.user: %q is not a user name this toolkit accepts. Use a lowercase letter or underscore, then lowercase letters, digits, underscores or hyphens, at most 32 characters.", name, s.User)
+	}
+	if s.Port < 0 || s.Port > 65535 {
+		add("sites.%s.ssh.port: %d is not a port. Give 1 to 65535, or leave it out for 22.", name, s.Port)
+	}
+	switch {
+	case s.Host == "" && site.PublicAddress == "":
+		add("sites.%s.ssh.host: required, because the site has no public_address to default to. Give the hostname or address the site is reached on.", name)
+	case s.Host != "" && net.ParseIP(s.Host) == nil && !isHostname(s.Host):
+		add("sites.%s.ssh.host: %q is neither a hostname nor an IP address. Give only the host; the user and port have keys of their own.", name, s.Host)
+	}
+	keys, keyProblems := s.Keys()
+	for _, p := range keyProblems {
+		add("sites.%s.ssh.public_key: %s.", name, p)
+	}
+	if len(keys) == 0 && len(keyProblems) == 0 {
+		add("sites.%s.ssh.public_key: required. List at least one public key, one per line; host prepare makes these the user's authorized keys.", name)
+	}
+	return problems
+}
+
+// legacyHost is the host part of an old destination, for the example.
+func legacyHost(destination string) string {
+	if _, host, ok := strings.Cut(destination, "@"); ok {
+		return host
+	}
+	return destination
+}

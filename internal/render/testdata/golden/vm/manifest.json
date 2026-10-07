@@ -13,7 +13,7 @@
     },
     {
       "path": "srv/chat/compose.yaml",
-      "sha256": "a251f7aa01931514efd6af5e8783b31d49005807a9aadd6fa7aa540f4308d914",
+      "sha256": "c19ca63dec48f81928dabfecd62f0894e3b96e7e5ec77565f4beecb3b20da823",
       "mode": "0644"
     },
     {
@@ -78,12 +78,12 @@
     },
     {
       "path": "srv/infra/caddy/snippets/media.caddy",
-      "sha256": "2dd48455c0b20771be5eaa1a4f484f2dd4ac248845c08ee4c3d5c085a5942ae1",
+      "sha256": "db64ed7580f02fb4db4fd7eff1ecc71b4821b67096f319c8f60a062648f5f375",
       "mode": "0644"
     },
     {
       "path": "srv/infra/caddy/snippets/talk.caddy",
-      "sha256": "b7894b3b2bd77bfea32a8011b02e81ef50eb91a9e2da7474f9f2c2552350121a",
+      "sha256": "7fe39211c8e0eac65e4db5839dc3ccbc592d8bcbab2eb871c2c06e1220eec0e5",
       "mode": "0644"
     },
     {
@@ -93,7 +93,12 @@
     },
     {
       "path": "srv/infra/compose.yaml",
-      "sha256": "f467ad7326baa85b687a3aaec69444983db5b23406752f7e0ba6fd549a54ee62",
+      "sha256": "abca1f122be4c022f2e3abe4d14e8322526e05d17486a7e3790457a2ffa497bb",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/etcd-initial",
+      "sha256": "ba76b866cca9d84f06ab7bf484b87c06e2ccc96cbbbe83e063dd4ce73971b009",
       "mode": "0644"
     }
   ]

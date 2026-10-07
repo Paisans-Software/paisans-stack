@@ -139,7 +139,57 @@ type Site struct {
 	Roles    []Role `yaml:"roles"`
 	Address  string `yaml:"address"`
 	Endpoint string `yaml:"endpoint"`
-	SSH      string `yaml:"ssh"`
+	// SSH is how the toolkit reaches the site and who may log in to it. See
+	// the SSH type.
+	SSH SSH `yaml:"ssh"`
+
+	// PublicAddress is the IPv4 address the internet reaches this site on. It
+	// is optional, and only `paisans dns` reads it: it is the content of the A
+	// records that command creates. It is declared rather than discovered
+	// because the address a host sees on its own interface is often not the
+	// one the internet sees, behind NAT or a cloud provider's 1:1 mapping, and
+	// a guessed address published in DNS sends every visitor somewhere wrong.
+	PublicAddress string `yaml:"public_address"`
+	// PublicAddress6 is the IPv6 counterpart, for AAAA records. Optional even
+	// where PublicAddress is set.
+	PublicAddress6 string `yaml:"public_address6"`
+	// Watchdog is how `host prepare` gives Patroni a /dev/watchdog on this
+	// site. It only matters where the site holds the data role. Empty means
+	// auto; read it through WatchdogMode rather than directly.
+	Watchdog WatchdogMode `yaml:"watchdog"`
+}
+
+// WatchdogMode is how a data site's watchdog device is provided.
+//
+// It is declared per site because the answer is a property of the machine: a
+// board with an iTCO timer, a VM with an emulated i6300esb, and a small cloud
+// instance with nothing at all each want a different one, and the toolkit
+// cannot tell which from the configuration alone.
+type WatchdogMode string
+
+const (
+	// WatchdogAuto uses whatever device the host already has, whatever its
+	// driver, and falls back to loading softdog with a warning.
+	WatchdogAuto WatchdogMode = "auto"
+	// WatchdogRequired refuses a host whose only watchdog is softdog, or
+	// which has none.
+	WatchdogRequired WatchdogMode = "required"
+	// WatchdogSoftdog loads and persists softdog because the operator chose
+	// it, so no warning is printed.
+	WatchdogSoftdog WatchdogMode = "softdog"
+	// WatchdogOff leaves the host alone and renders Patroni without a
+	// watchdog at all.
+	WatchdogOff WatchdogMode = "off"
+)
+
+var knownWatchdogModes = map[WatchdogMode]bool{WatchdogAuto: true, WatchdogRequired: true, WatchdogSoftdog: true, WatchdogOff: true}
+
+// WatchdogMode returns the site's declared mode, auto when none is declared.
+func (s Site) WatchdogMode() WatchdogMode {
+	if s.Watchdog == "" {
+		return WatchdogAuto
+	}
+	return s.Watchdog
 }
 
 // Has reports whether the site declares a role.
@@ -188,7 +238,23 @@ type Garage struct {
 	// because the toolkit cannot know how much of that disk is meant for
 	// objects. Defaulted in Load when left unset.
 	Capacity string `yaml:"capacity"`
+	// Consistency is Garage's consistency_mode: consistent, degraded or
+	// dangerous. At replication 2 on two sites, dangerous is the only mode in
+	// which uploads continue while a site is down, at the price of an upload
+	// being confirmed once one copy exists (Garage v1.0.1,
+	// doc/book/reference-manual/configuration.md, "consistency_mode").
+	// Garage reads it at start and does not record it in the layout, so
+	// changing it is an ordinary apply. Defaulted in Load when left unset.
+	Consistency string `yaml:"consistency"`
 }
+
+// Garage consistency modes, as Garage v1.0.1 spells them
+// (src/rpc/replication_mode.rs).
+const (
+	GarageConsistent = "consistent"
+	GarageDegraded   = "degraded"
+	GarageDangerous  = "dangerous"
+)
 
 type App struct {
 	Kind      Kind      `yaml:"kind"`
@@ -325,6 +391,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Storage.Garage.Capacity == "" {
 		cfg.Storage.Garage.Capacity = "100G"
 	}
+	if cfg.Storage.Garage.Consistency == "" {
+		cfg.Storage.Garage.Consistency = GarageConsistent
+	}
 	if err := cfg.structural(); err != nil {
 		return nil, err
 	}
@@ -433,9 +502,10 @@ func (c *Config) structural() error {
 		} else if !isIPv4(site.Address) {
 			add("sites.%s.address: %q is not an IPv4 address. Use the site's WireGuard address, for example 10.44.0.1.", name, site.Address)
 		}
-		if site.SSH == "" {
-			add("sites.%s.ssh: required. It is the bootstrap route, used once before the mesh exists, so it must be an address you can already reach.", name)
+		if site.Watchdog != "" && !knownWatchdogModes[site.Watchdog] {
+			add("sites.%s.watchdog: unknown mode %q. Valid modes are auto, required, softdog and off.", name, site.Watchdog)
 		}
+		problems = append(problems, sshProblems(name, site)...)
 	}
 	for _, name := range c.AppNames() {
 		app := c.Apps[name]

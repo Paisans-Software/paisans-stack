@@ -1,8 +1,12 @@
 package render_test
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"flag"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -13,7 +17,9 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/validate"
+	"gopkg.in/yaml.v3"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden tree from the current output")
@@ -110,9 +116,21 @@ func TestPlacementShapesTheStack(t *testing.T) {
 	if strings.Contains(clustered, "postgres:") {
 		t.Error("a clustered app was given a Postgres service of its own")
 	}
-	env := files["home-a/srv/talk/.env"]
-	if !strings.Contains(env, "@127.0.0.1:5000/") {
-		t.Errorf("a clustered app does not connect to the local proxy:\n%s", env)
+	// Each instance connects to the HAProxy on its own site, at that site's
+	// mesh address. Not 127.0.0.1: inside the app's bridge networked
+	// container, loopback is the container itself.
+	for site, address := range map[string]string{"home-a": "10.44.0.1", "home-b": "10.44.0.2"} {
+		env := files[site+"/srv/talk/.env"]
+		if !strings.Contains(env, "@"+address+":5000/") {
+			t.Errorf("the clustered app on %s does not connect to its own site's proxy at %s:\n%s", site, address, env)
+		}
+		if strings.Contains(env, "127.0.0.1") {
+			t.Errorf("the clustered app on %s names a loopback address, which inside its container is the container itself:\n%s", site, env)
+		}
+		proxy := files[site+"/srv/infra/haproxy/haproxy.cfg"]
+		if !strings.Contains(proxy, "bind "+address+":5000") {
+			t.Errorf("the HAProxy on %s does not listen on the mesh address its apps are given:\n%s", site, proxy)
+		}
 	}
 
 	pinned, ok := files["vm/srv/chat/compose.yaml"]
@@ -127,6 +145,50 @@ func TestPlacementShapesTheStack(t *testing.T) {
 	}
 	if !strings.Contains(pinned, "/srv/chat/postgres:/var/lib/postgresql/data") {
 		t.Error("a pinned stack does not use bind mounts under /srv")
+	}
+}
+
+// Every published port binds the mesh address of the site it is rendered for
+// and nothing else. Docker's own iptables rules bypass a host firewall such as
+// ufw, so "8080:8080" on a host with a public address is reachable from the
+// internet whatever the firewall says, and with no gate in front of it. The
+// gateway reaches every app over the mesh, so the mesh is the only interface
+// a port needs.
+func TestPublishedPortsBindTheMeshAddress(t *testing.T) {
+	cfg := fixture(t)
+	checked := 0
+	for _, f := range build(t).Files {
+		if !strings.HasSuffix(f.Path, "compose.yaml") {
+			continue
+		}
+		site := strings.SplitN(f.Path, "/", 2)[0]
+		address := cfg.Sites[site].Address
+		inPorts := false
+		for _, line := range strings.Split(f.Content, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "ports:" {
+				inPorts = true
+				continue
+			}
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if !strings.HasPrefix(trimmed, "- ") {
+				inPorts = false
+				continue
+			}
+			if !inPorts {
+				continue
+			}
+			mapping := strings.Trim(strings.TrimPrefix(trimmed, "- "), `"`)
+			if !strings.HasPrefix(mapping, address+":") || strings.Count(mapping, ":") != 2 {
+				t.Errorf("%s publishes %q, which is not bound to %s's mesh address %s", f.Path, mapping, site, address)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no published port was found, so this test verified nothing")
 	}
 }
 
@@ -206,7 +268,7 @@ func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
 		{"home-a/srv/talk/.env", 0o600, "DATABASE_URL="},
 		{"home-a/srv/talk/compose.yaml", 0o644, "name: paisans-talk"},
 		// A template's path is its destination, nested directories included.
-		{"home-a/srv/talk/config/packages/oneup_flysystem.yaml", 0o644, "kbin.s3_adapter"},
+		{"vm/srv/chat/initdb.d/01-mas-database.sql", 0o644, "CREATE DATABASE"},
 	}
 	for _, tc := range cases {
 		f, ok := files[tc.path]
@@ -409,6 +471,47 @@ func TestTrustedProxiesAreTheMeshSubnet(t *testing.T) {
 	}
 }
 
+// Pocket ID spells its setting TRUST_PROXY and takes `true` as "trust every
+// address" (env_config.go:425-437 at v2.14.0), so the assertion above, which
+// looks for TRUSTED_PROXIES, cannot see it.
+func TestPocketIDTrustsTheMeshSubnetOnly(t *testing.T) {
+	env := build(t).Files
+	var saw int
+	for _, f := range env {
+		if !strings.HasSuffix(f.Path, "srv/auth/.env") {
+			continue
+		}
+		saw++
+		if !strings.Contains(f.Content, "\nTRUST_PROXY=10.44.0.0/24\n") {
+			t.Errorf("%s does not trust exactly the mesh subnet", f.Path)
+		}
+	}
+	if saw == 0 {
+		t.Fatal("no Pocket ID .env was rendered, so this proved nothing")
+	}
+}
+
+// A Pocket ID without its encryption key exits on the host after apply has
+// moved, so render refuses first and says how to fix it.
+//
+// The static API key is held to the same rule: without it Pocket ID starts,
+// but nothing in this toolkit can administer it.
+func TestPocketIDWithoutAnEncryptionKeyIsRefused(t *testing.T) {
+	for _, key := range []string{"encryption_key", "static_api_key"} {
+		secrets := fixtureSecrets(t)
+		delete(secrets.Apps["auth"], key)
+		_, err := render.Build(fixture(t), secrets)
+		if err == nil {
+			t.Fatalf("rendered a Pocket ID without %s", key)
+		}
+		for _, want := range []string{"apps.auth." + key, "paisans init"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal does not mention %q: %v", want, err)
+			}
+		}
+	}
+}
+
 // The mesh subnet is whatever the file declares, not a constant in the code.
 // It reaches both the trusted proxy list and the WireGuard interface address.
 func TestMeshSubnetComesFromTheConfiguration(t *testing.T) {
@@ -474,6 +577,61 @@ func TestNoNamedVolumes(t *testing.T) {
 				t.Errorf("%s mounts something that is not a bind mount under /srv: %s", f.Path, mount)
 			}
 		}
+	}
+}
+
+// Compose resolves an env_file path against the directory holding compose.yaml
+// and refuses to load the project when the file is not there, so a path that
+// names nothing stops the whole stack rather than one setting. The gateway's
+// caddy service shipped exactly that: `caddy.env` beside compose.yaml, while
+// the file was rendered into caddy/. Checking the parsed paths against the
+// rendered tree catches the next one without needing Docker in the test.
+func TestEveryEnvFileIsRendered(t *testing.T) {
+	files := map[string]bool{}
+	plan := build(t)
+	for _, f := range plan.Files {
+		files[f.Path] = true
+	}
+	checked := 0
+	for _, f := range plan.Files {
+		if !strings.HasSuffix(f.Path, "/compose.yaml") {
+			continue
+		}
+		var doc struct {
+			Services map[string]struct {
+				EnvFile yaml.Node `yaml:"env_file"`
+			} `yaml:"services"`
+		}
+		if err := yaml.Unmarshal([]byte(f.Content), &doc); err != nil {
+			t.Fatalf("%s does not parse: %v", f.Path, err)
+		}
+		dir := path.Dir(f.Path)
+		for name, service := range doc.Services {
+			var entries []string
+			switch service.EnvFile.Kind {
+			case 0:
+				continue
+			case yaml.ScalarNode:
+				entries = []string{service.EnvFile.Value}
+			case yaml.SequenceNode:
+				for _, item := range service.EnvFile.Content {
+					entries = append(entries, item.Value)
+				}
+			default:
+				t.Errorf("%s: service %s has an env_file this test does not understand", f.Path, name)
+				continue
+			}
+			for _, entry := range entries {
+				resolved := path.Join(dir, entry)
+				if !files[resolved] {
+					t.Errorf("%s: service %s reads env_file %s, which resolves to %s and is not rendered", f.Path, name, entry, resolved)
+				}
+				checked++
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no env_file was found in any rendered compose file, so this test checked nothing")
 	}
 }
 
@@ -1742,5 +1900,352 @@ services:
 		if got {
 			t.Errorf("%s is not set or read by the compose file, but was reported", key)
 		}
+	}
+}
+
+// Mbin is a stack, not a container. Upstream's compose.yaml runs the web
+// application beside messenger consumers, a broker behind an AMQP proxy and a
+// cache, and an app container on its own starts, migrates and then cannot
+// deliver a single federated activity. Every name checked here was read from
+// the paisans fork at tag v1.13.3+paisans.
+func TestMbinRendersItsWholeStack(t *testing.T) {
+	files := planFiles(build(t))
+	compose := files["home-a/srv/talk/compose.yaml"]
+	env := files["home-a/srv/talk/.env"]
+
+	for _, service := range []string{"  app:", "  messenger:", "  amqproxy:", "  rabbitmq:", "  valkey:"} {
+		if !strings.Contains(compose, "\n"+service+"\n") {
+			t.Errorf("the Mbin stack has no %s service:\n%s", strings.TrimSpace(service), compose)
+		}
+	}
+	if strings.Count(compose, "ports:") != 1 {
+		t.Errorf("only app may publish a port; the sidecars are reached over the project's own network:\n%s", compose)
+	}
+
+	// FrankenPHP listens plainly on the port the gateway routes to, and never
+	// asks for a certificate of its own: TLS ends at the gateway.
+	for _, want := range []string{`SERVER_NAME: ":8080"`, `CADDY_GLOBAL_OPTIONS: "auto_https off"`, `"10.44.0.1:8080:8080"`} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("the app service does not carry %s:\n%s", want, compose)
+		}
+	}
+	if strings.Contains(env, "SERVER_NAME=") {
+		t.Errorf("SERVER_NAME belongs to compose.yaml, where a hostname cannot replace the plain listener:\n%s", env)
+	}
+	snippet := files["vm/srv/infra/caddy/snippets/talk.caddy"]
+	if !strings.Contains(snippet, "10.44.0.1:8080") || !strings.Contains(snippet, "10.44.0.2:8080") {
+		t.Errorf("the gateway does not route to the port the app publishes:\n%s", snippet)
+	}
+
+	for _, want := range []string{
+		"\nMBIN_USER=1000:1000\n",
+		"\nAPP_SECRET=fixture-not-a-secret-talk-app\n",
+		"\nRABBITMQ_DEFAULT_USER=mbin\n",
+		"\nRABBITMQ_DEFAULT_PASS=fixture-not-a-secret-rabbitmq\n",
+		"\nMESSENGER_TRANSPORT_DSN=amqp://mbin:fixture-not-a-secret-rabbitmq@amqproxy:5673/%2f/messages\n",
+		"\nVALKEY_PASSWORD=fixture-not-a-secret-valkey\n",
+		"\nREDIS_DNS=redis://fixture-not-a-secret-valkey@valkey:6379\n",
+		"\nMERCURE_URL=http://app:8080/.well-known/mercure\n",
+		"\nMERCURE_PUBLIC_URL=https://talk.example.org/.well-known/mercure\n",
+		"\nMERCURE_PUBLISHER_JWT_KEY=fixture-not-a-secret-mercure\n",
+		"\nMERCURE_SUBSCRIBER_JWT_KEY=fixture-not-a-secret-mercure\n",
+		"\nOAUTH_PASSPHRASE=fixture-not-a-secret-talk-oauth-passphrase\n",
+		"\nOAUTH_ENCRYPTION_KEY=fixture-not-a-secret-talk-oauth-encryption\n",
+		"\nS3_VERSION=latest\n",
+		`CORS_ALLOW_ORIGIN='^https?://(talk\.example\.org|127\.0\.0\.1)(:[0-9]+)?$'`,
+		"@10.44.0.1:5000/talk?serverVersion=18&charset=utf8\n",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("the Mbin .env does not carry %q:\n%s", strings.TrimSpace(want), env)
+		}
+	}
+
+	if _, ok := files["home-a/srv/talk/valkey.conf"]; !ok {
+		t.Error("valkey.conf was not rendered, so the cache would run without upstream's memory limit and with snapshots on")
+	}
+	// The fork's docker/docker-entrypoint.sh (tag v1.13.3+paisans) runs
+	// `sed -i` on these three files at every start of app and messenger, under
+	// `set -e`. A bind mount over any of them makes that sed fail and the
+	// container exit, so the S3 switch is left to the entrypoint, which makes
+	// it whenever S3_KEY is set.
+	for _, edited := range []string{"liip_imagine.yaml", "monolog.yaml", "oneup_flysystem.yaml"} {
+		if strings.Contains(compose, ":/app/config/packages/"+edited) {
+			t.Errorf("compose.yaml mounts over config/packages/%s, which the image's entrypoint edits in place:\n%s", edited, compose)
+		}
+	}
+	if _, ok := files["home-a/srv/talk/config/packages/oneup_flysystem.yaml"]; ok {
+		t.Error("the oneup_flysystem.yaml shim is rendered again; the image's entrypoint switches the adapter itself")
+	}
+	if !strings.Contains(env, "\nS3_KEY=") {
+		t.Errorf("the Mbin .env does not set S3_KEY, so the entrypoint would leave uploads on local disk:\n%s", env)
+	}
+}
+
+// Pinned Mbin keeps its own database beside the rest of the stack, and the
+// application waits for it.
+func TestPinnedMbinRunsItsOwnDatabase(t *testing.T) {
+	cfg := fixture(t)
+	talk := cfg.Apps["talk"]
+	talk.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-b", Literal: "home-b"}
+	cfg.Apps["talk"] = talk
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+	compose := files["home-b/srv/talk/compose.yaml"]
+	env := files["home-b/srv/talk/.env"]
+	if !strings.Contains(compose, "\n  postgres:\n") {
+		t.Errorf("a pinned Mbin has no postgres service:\n%s", compose)
+	}
+	if strings.Count(compose, "      postgres:\n        condition: service_started") != 2 {
+		t.Errorf("app and messenger should both wait for the pinned database:\n%s", compose)
+	}
+	if !strings.Contains(env, "@postgres:5432/talk?serverVersion=18&charset=utf8\n") || !strings.Contains(env, "\nPOSTGRES_PASSWORD=") {
+		t.Errorf("a pinned Mbin does not connect to its own database:\n%s", env)
+	}
+	if !strings.Contains(compose, `"10.44.0.2:8080:8080"`) {
+		t.Errorf("a pinned Mbin does not publish on its own site's mesh address:\n%s", compose)
+	}
+}
+
+// Mbin's sign in comes back to the fork's verify route, and the .env says so,
+// because that comment is where an operator registering the client looks. It
+// used to say /oauth/oidc/verify while the value it was built from said
+// /oauth/callback, which no route in the fork serves.
+func TestMbinNamesTheCallbackItServes(t *testing.T) {
+	env := planFiles(build(t))["home-a/srv/talk/.env"]
+	want := kinds.MbinRedirectURI("talk.example.org")
+	if !strings.Contains(env, want) {
+		t.Errorf("the Mbin .env does not name %s as the callback to register:\n%s", want, env)
+	}
+	if strings.Contains(env, "/oauth/callback") {
+		t.Errorf("the Mbin .env names /oauth/callback, which the fork does not serve:\n%s", env)
+	}
+}
+
+// watchdog: off is the one mode that changes what is rendered. Patroni is told
+// not to want a device, and the compose file stops mapping one: compose refuses
+// to create a container whose device does not exist, so leaving the mapping in
+// would fail the very host that has no watchdog. Every other mode renders as
+// the golden tree does, required and mapped, and only the site that declared
+// off changes.
+func TestWatchdogOffRendersPatroniWithoutTheDevice(t *testing.T) {
+	cfg := fixture(t)
+	site := cfg.Sites["home-b"]
+	site.Watchdog = config.WatchdogOff
+	cfg.Sites["home-b"] = site
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+
+	if env := files["home-b/srv/infra/patroni.env"]; !strings.Contains(env, "watchdog: {mode: 'off'}") {
+		t.Errorf("home-b declared watchdog off and its patroni.env says otherwise:\n%s", env)
+	}
+	if compose := files["home-b/srv/infra/compose.yaml"]; strings.Contains(compose, "/dev/watchdog:") || strings.Contains(compose, "chown postgres") {
+		t.Errorf("home-b declared watchdog off and its compose still maps the device:\n%s", compose)
+	}
+	if env := files["home-a/srv/infra/patroni.env"]; !strings.Contains(env, "watchdog: {mode: required}") {
+		t.Errorf("home-a did not declare off and lost its watchdog:\n%s", env)
+	}
+	if compose := files["home-a/srv/infra/compose.yaml"]; !strings.Contains(compose, "- /dev/watchdog:/dev/watchdog") {
+		t.Errorf("home-a did not declare off and lost its device mapping:\n%s", compose)
+	}
+}
+
+// Mbin's OAuth2 keypair reaches every site that runs Mbin, as two files in the
+// directory compose.yaml mounts at /app/config/oauth2, which is where the
+// .env's OAUTH_PRIVATE_KEY and OAUTH_PUBLIC_KEY point.
+//
+// Both are 0644, the one private key this toolkit renders world readable, and
+// that is deliberate. apply writes every file as root, and Mbin reads the key
+// as uid 1000 after the entrypoint drops to it, so a 0600 key is a key Mbin
+// cannot open. What makes 0644 acceptable is that the key is encrypted with
+// OAUTH_PASSPHRASE, which is only in the 0600 .env, so the test opens it with
+// exactly that value.
+func TestMbinOAuthKeypairIsRenderedForEveryAppsSite(t *testing.T) {
+	plan := build(t)
+	files := map[string]render.File{}
+	for _, f := range plan.Files {
+		files[f.Path] = f
+	}
+
+	var privates []string
+	for path := range files {
+		if !strings.HasSuffix(path, "/srv/talk/compose.yaml") {
+			continue
+		}
+		dir := strings.TrimSuffix(path, "compose.yaml")
+		compose := files[path].Content
+		for _, service := range []string{"app", "messenger"} {
+			block := compose[strings.Index(compose, "\n  "+service+":\n"):]
+			block = block[:strings.Index(block[1:], "\n  amqproxy:\n")+1]
+			if service == "app" {
+				block = block[:strings.Index(block, "\n  messenger:\n")]
+			}
+			if !strings.Contains(block, "/srv/talk/oauth:/app/config/oauth2:ro") {
+				t.Errorf("%s: %s does not mount the keypair read only at /app/config/oauth2", path, service)
+			}
+		}
+
+		private, okPrivate := files[dir+"oauth/private.pem"]
+		public, okPublic := files[dir+"oauth/public.pem"]
+		if !okPrivate || !okPublic {
+			t.Errorf("%s has no rendered oauth/private.pem and oauth/public.pem beside it", path)
+			continue
+		}
+		for _, f := range []render.File{private, public} {
+			if f.Mode != 0o644 {
+				t.Errorf("%s is %04o; uid 1000 in the container cannot read a root owned file unless it is 0644", f.Path, f.Mode)
+			}
+		}
+
+		env := files[dir+".env"].Content
+		var passphrase string
+		for _, line := range strings.Split(env, "\n") {
+			if v, ok := strings.CutPrefix(line, "OAUTH_PASSPHRASE="); ok {
+				passphrase = v
+			}
+		}
+		if !strings.Contains(private.Content, "Proc-Type: 4,ENCRYPTED") {
+			t.Errorf("%s is 0644 and not encrypted", private.Path)
+		}
+		key, err := secretsgen.OpenOAuthPrivateKey(private.Content, passphrase)
+		if err != nil {
+			t.Errorf("%s does not open with the rendered OAUTH_PASSPHRASE: %v", private.Path, err)
+			continue
+		}
+		block, _ := pem.Decode([]byte(public.Content))
+		if block == nil {
+			t.Errorf("%s is not PEM", public.Path)
+			continue
+		}
+		parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			t.Errorf("%s does not parse: %v", public.Path, err)
+			continue
+		}
+		if pub, ok := parsed.(*rsa.PublicKey); !ok || !pub.Equal(&key.PublicKey) {
+			t.Errorf("%s is not the public half of %s", public.Path, private.Path)
+		}
+		privates = append(privates, private.Content)
+	}
+	if len(privates) < 2 {
+		t.Fatalf("the fixture's clustered Mbin rendered a keypair on %d sites; this test needs at least two to check they agree", len(privates))
+	}
+	for _, p := range privates[1:] {
+		if p != privates[0] {
+			t.Error("two apps sites rendered different private keys, so a token one issues fails on the other")
+		}
+	}
+}
+
+// Spilo writes Patroni's configuration from its own variables, and it starts
+// Patroni with almost no environment, so a PATRONI_* variable never arrives.
+// The first real host ran with an embedded etcd, its hostname as member name,
+// every listener on every interface and no watchdog, all because of that. What
+// must arrive goes in Spilo's variables or in SPILO_CONFIGURATION.
+func TestPatroniEnvSpeaksSpilosVocabulary(t *testing.T) {
+	env := planFiles(build(t))["home-a/srv/infra/patroni.env"]
+	if strings.Contains(env, "\nPATRONI_") {
+		t.Errorf("patroni.env carries PATRONI_* variables, which Spilo unsets before Patroni starts:\n%s", env)
+	}
+	for _, want := range []string{"\nSCOPE=", "\nETCD3_HOSTS=10.44.0.", "\nPGPASSWORD_SUPERUSER=", "\nPGPASSWORD_STANDBY=", "\nPGPASSWORD_ADMIN="} {
+		if !strings.Contains(env, want) {
+			t.Errorf("patroni.env lacks %q:\n%s", strings.TrimSpace(want), env)
+		}
+	}
+	var line string
+	for _, l := range strings.Split(env, "\n") {
+		if strings.HasPrefix(l, "SPILO_CONFIGURATION=") {
+			line = strings.TrimPrefix(l, "SPILO_CONFIGURATION=")
+		}
+	}
+	var doc struct {
+		Name    string `yaml:"name"`
+		RestAPI struct {
+			Listen string `yaml:"listen"`
+		} `yaml:"restapi"`
+		PostgreSQL struct {
+			Listen     string         `yaml:"listen"`
+			Parameters map[string]any `yaml:"parameters"`
+		} `yaml:"postgresql"`
+		Watchdog struct {
+			Mode string `yaml:"mode"`
+		} `yaml:"watchdog"`
+		Bootstrap struct {
+			DCS map[string]any `yaml:"dcs"`
+		} `yaml:"bootstrap"`
+	}
+	if err := yaml.Unmarshal([]byte(line), &doc); err != nil {
+		t.Fatalf("SPILO_CONFIGURATION is not YAML: %v\n%s", err, line)
+	}
+	if doc.Name != "home-a" {
+		t.Errorf("the member name is %q, not the site's name, so apply cannot find the leader", doc.Name)
+	}
+	if doc.RestAPI.Listen != "10.44.0.1:8008" || doc.PostgreSQL.Listen != "10.44.0.1,127.0.0.1:5432" {
+		t.Errorf("listeners are not pinned to the mesh: %+v", doc)
+	}
+	if doc.PostgreSQL.Parameters["bg_mon.port"] != 8009 {
+		t.Errorf("bg_mon is left on 8080, where applications publish: %v", doc.PostgreSQL.Parameters)
+	}
+	if doc.Watchdog.Mode != "required" {
+		t.Errorf("watchdog mode is %q", doc.Watchdog.Mode)
+	}
+	if doc.Bootstrap.DCS["synchronous_mode"] != true {
+		t.Errorf("synchronous_mode did not reach the bootstrap DCS: %v", doc.Bootstrap.DCS)
+	}
+}
+
+// The container's watchdog node is owned by Spilo's postgres before Spilo
+// starts, because Patroni runs without the supplementary groups a host side
+// permission could have used. On the first real host Patroni reported the
+// device "not usable" and, in required mode, never became leader.
+func TestPatroniOwnsItsWatchdogNode(t *testing.T) {
+	compose := planFiles(build(t))["home-a/srv/infra/compose.yaml"]
+	if !strings.Contains(compose, `chown postgres /dev/watchdog && exec /bin/sh /launch.sh init`) {
+		t.Errorf("Patroni's container does not take ownership of its watchdog node:\n%s", compose)
+	}
+}
+
+// Mbin's app container starts only if its Mercure configuration loads. The
+// 1.13.3 image's Caddyfile uses directives its Mercure module accepts only in
+// compatibility mode, and on the first real host the app restarted forever.
+func TestMbinOptsMercureIntoCompatibilityMode(t *testing.T) {
+	compose := planFiles(build(t))["home-a/srv/talk/compose.yaml"]
+	if !strings.Contains(compose, `MERCURE_EXTRA_DIRECTIVES: "protocol_version_compatibility 8"`) {
+		t.Errorf("Mbin's app does not opt Mercure into compatibility mode:\n%s", compose)
+	}
+}
+
+// A member handed the flags it was born with renders them, whatever
+// etcd.members says now, and records them for the next render.
+func TestEtcdRendersTheFlagsItWasBornWith(t *testing.T) {
+	cfg := fixture(t)
+	secrets := fixtureSecrets(t)
+	born := render.EtcdInitial{State: render.EtcdStateNew, Cluster: "home-a=http://10.44.0.1:2380"}
+	joined := render.EtcdInitial{State: render.EtcdStateExisting, Cluster: "home-a=http://10.44.0.1:2380,vm=http://10.44.0.3:2380"}
+	plan, err := render.Build(cfg, secrets, render.WithEtcdInitial("home-a", born), render.WithEtcdInitial("vm", joined))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{}
+	for _, f := range plan.Files {
+		files[f.Path] = f.Content
+	}
+	if c := files["home-a/srv/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster=home-a=http://10.44.0.1:2380\n") || !strings.Contains(c, "--initial-cluster-state=new") {
+		t.Errorf("a founder lost its founding flags:\n%s", c)
+	}
+	if c := files["vm/srv/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster-state=existing") || !strings.Contains(c, joined.Cluster+"\n") {
+		t.Errorf("a joined member does not render existing:\n%s", c)
+	}
+	if got, ok := render.ParseEtcdInitial(files["vm/"+render.EtcdInitialPath]); !ok || got != joined {
+		t.Errorf("the record does not round trip: %+v", got)
+	}
+	// Without the option, the fresh deployment's flags, as before the record.
+	if c := files["home-b/srv/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster-state=new") || !strings.Contains(c, "home-b=http://10.44.0.2:2380,vm=") {
+		t.Errorf("an unrecorded member does not render as a founder:\n%s", c)
 	}
 }
