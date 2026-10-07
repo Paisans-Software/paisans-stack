@@ -24,6 +24,7 @@ var (
 // unless the container is running and defines a healthcheck
 // (pkg/compose/ps.go, containerHealthAndExitCode).
 type container struct {
+	ID       string `json:"ID"`
 	Service  string `json:"Service"`
 	Name     string `json:"Name"`
 	State    string `json:"State"`

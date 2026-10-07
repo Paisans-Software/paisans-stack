@@ -90,6 +90,13 @@ type Action struct {
 	// for a new garage.toml restarted Patroni, which on the primary is a
 	// failover, and HAProxy, which drops every app's database connection.
 	Services []string
+	// Refresh names the infrastructure services whose bind mounted files
+	// changed, for an `up -d` that was not forced. `up -d` replaces only a
+	// container whose configuration changed, and a bind mounted file is not
+	// configuration to Compose, so a haproxy.cfg changed beside a
+	// patroni.env left HAProxy running on the old file. Execute restarts
+	// each of these that `up -d` left in place, and none it replaced.
+	Refresh []string
 }
 
 // Command is what the action runs on the host.
@@ -437,6 +444,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	// which case a restart is of the whole stack. See infraService.
 	infraServices := map[string]bool{}
 	infraWhole := false
+	// The same services, less the gateway's Caddy where only its routing
+	// moved: a reload picks that up whatever happens to the container, so
+	// restarting it as well would be a second action for one change.
+	refresh := map[string]bool{}
 	// Whether this site runs the gateway at all, and which of the two ways its
 	// Caddy is about to change. render only emits a Caddyfile for a site
 	// holding the gateway role, so its presence in the rendered tree is the
@@ -523,6 +534,9 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 				} else if change.Stack == infraStack {
 					if service := infraService(rel); service != "" {
 						infraServices[service] = true
+						if !isRouting(rel) {
+							refresh[service] = true
+						}
 					} else {
 						infraWhole = true
 					}
@@ -612,6 +626,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		} else if envChanged[stack] {
 			action.Recreate = true
 			action.Reason = "an environment or compose file changed, and Compose passes environment at start, so a running container cannot be told about a new value"
+			if stack == infraStack && len(refresh) > 0 {
+				action.Refresh = sortedKeys(refresh)
+				action.Reason += "; " + strings.Join(action.Refresh, ", ") + " is restarted after it if `up -d` leaves its container in place, since a changed bind mounted file is not a reason Compose recreates one"
+			}
 		} else {
 			action.Reason = "only bind mounted configuration changed, so the container keeps its identity"
 			if stack == infraStack && !infraWhole && len(infraServices) > 0 {
@@ -873,7 +891,7 @@ func Execute(plan *Plan, t Transport) error {
 		if action.Recreate {
 			previous = recordAnonymousVolumes(plan, action.Stack, t)
 		}
-		if _, err := t.Run(action.Command()); err != nil {
+		if err := runAction(action, t); err != nil {
 			return err
 		}
 		// `up -d` and `restart` return once the containers start, which says

@@ -2166,6 +2166,22 @@ rejected.** It gives the same answer for every file the templates render, with
 a YAML parser in the path of every apply, and the templates are the toolkit's
 own.
 
+**A bind mounted file changed beside a recreate is restarted after it.** The
+recreate is `up -d`, and Compose replaces only a container whose configuration
+changed; a bind mounted file is not configuration to Compose. So a
+`haproxy.cfg` changed in the same apply as a `patroni.env` left HAProxy running
+on the old file, and since `haproxy.cfg` is a single file bind mount that a new
+file is renamed over, the running container keeps the old inode
+(moby/moby#15793). After the `up -d`, `apply` restarts each service whose
+bind mounted file changed and whose container `up -d` left in place, and none
+it replaced. Which is which comes from the container IDs `docker compose ps`
+reports before and after, not from `up -d`'s progress lines, which are for
+people. Restarting those services unconditionally was rejected: a container
+`up -d` has just replaced would be restarted a second time, and for Patroni on
+the primary that is a second failover. A forced recreate (`--recreate`, or a
+stack a stopped apply owes) replaces every container, so it needs none of
+this.
+
 ### A stopped apply force-recreates what it still owes
 
 A stack whose action did not finish is in an unknown state, and Compose cannot
