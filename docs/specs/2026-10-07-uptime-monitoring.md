@@ -1,0 +1,345 @@
+# Uptime and health monitoring
+
+Status: approved in session on 2026-10-07, not implemented.
+
+A deployment watches itself. A new `uptime` kind runs the
+`josephquigley/uptime` fork, pinned to one site like any other app, and the
+toolkit seeds its monitors from `paisans.yaml`: two HTTP checks per app and a
+ping per site. Admins sign in through Pocket ID, and only admins can.
+
+## What it must catch
+
+* **An unhealthy app**: a container crashed, crash looping, or answering 5xx,
+  including one that sits behind a gate and one that is down on only one of
+  the sites a clustered app runs on.
+* **A site or host that is gone**: power, ISP, a machine that stopped.
+
+What it does not have to catch: the death of the machine the monitor runs on.
+On a single site that is the only machine, and a monitor cannot report its own
+host dying. This was accepted in session: the software stacks are what go down
+in practice, and a single site losing everything at once is the expected
+behaviour of having one site.
+
+## The software
+
+`josephquigley/uptime` is a fork of `codewizdevs/uptime`, a Node.js monitor
+with HTTP, TCP, ping, DNS, heartbeat and domain checks, email channels, and
+SQLite storage. The fork adds OIDC sign in with group based roles.
+
+The image is `ghcr.io/josephquigley/uptime:1.1.0-oidc.1`. Checked against
+ghcr.io on 2026-10-07 by requesting the manifest for that exact tag
+anonymously: 200, an OCI image index for linux/amd64 and linux/arm64 (plus two
+attestation manifests). **The image tag has no `v`; the git tag does**
+(`v1.1.0-oidc.1`), because `docker/metadata-action`'s semver pattern strips
+it. `latest` and `sha-c087f3d` point at the same image. The kind's default
+moves to the first release carrying the fork changes below.
+
+Choosing this program to fill the capability is the founder's decision and was
+made in session.
+
+## Kind and placement
+
+`uptime` is an ordinary app with a new kind, not a site role. Roles say what a
+site provides to the deployment; placement says where an app runs.
+
+```yaml
+apps:
+  status:
+    kind: uptime
+    hostname: status.example.org
+    placement: { pinned: vm }
+    settings:
+      admin_group: admins
+```
+
+* **Pinned only.** It keeps SQLite on a local volume, so `kinds.UsesPostgres`
+  is false and the existing `cluster-placement-without-a-cluster` refusal
+  applies with no new rule.
+* **Any declared site.** A single site's only machine, the gateway VM of a
+  multi-site deployment, a home, or a dedicated VM. Pinned placement already
+  accepts a site whatever its roles.
+* **No `placement: gateway`.** It was considered, so the monitor would follow
+  a gateway move without an edit, and rejected. During a move two sites hold
+  the gateway role, and two monitors would send every alert twice. Pinning
+  makes the location explicit, and a gateway move is already a sequence of
+  config edits.
+* **One instance.** Nothing stops two `uptime` apps being declared, but
+  nothing coordinates them either, so each alerts on its own.
+* **A move loses history.** A newly placed instance starts with an empty
+  database and is reseeded. Monitors come back; check history and incidents
+  do not. History is not worth migrating.
+
+### A site may have no roles, if something is pinned to it
+
+`structural` refuses `roles: []` today (`internal/config/config.go`, "required.
+Give the site at least one of data, apps, gateway, witness"). A dedicated
+monitor VM has no role that fits:
+
+* `apps` does not mean "may host an app". It means "runs every clustered app":
+  `render/plan.go` places each `cluster` app on every `apps` site, and the role
+  also brings HAProxy, container rules to the database proxy and Garage, and a
+  place in `failover`. A monitor VM with `apps` would start Mbin and Outline.
+* `witness` fits only if the operator also wants the VM as etcd's tiebreaker.
+
+So: **`roles: []` is accepted for a site that at least one app is pinned to.**
+A role-less site that nothing is pinned to is still refused, because it is
+almost certainly a mistake. A new role meaning "something is pinned here" was
+rejected: it would restate what placement already says, and could disagree
+with it.
+
+Matrix is the precedent for one-off apps: the `synapse` kind is forced to be
+pinned and the example pins it onto `vm`, `[gateway, witness]`, with no `apps`
+role. Placement was already the mechanism; only the "a site with no other job"
+case was missing.
+
+### Beside etcd
+
+Pinned onto a witness the existing `pinned-app-on-witness` warning fires. It
+stays as written: the risk is real and the rule is generic.
+
+What makes uptime a quiet enough neighbour is turning off its VACUUM. The fork
+runs retention every six hours (`RETENTION_RUN_INTERVAL_HOURS`, default 6) and
+then a full `VACUUM` (`RETENTION_VACUUM`, default true). Estimated, not
+measured: about 15 monitors at 60 s kept 90 days is about 1.9 million `checks`
+rows and a 200–250 MB file. `VACUUM` rewrites the whole file and in WAL mode
+passes it through the WAL and back, so roughly 0.5–0.75 GB of writes with
+fsyncs in one burst, every six hours, beside an etcd whose heartbeat is
+measured in hundreds of milliseconds. It also buys nothing: each run deletes
+about six hours of rows and SQLite reuses the freed pages, so the file
+plateaus without it.
+
+**The kind renders `RETENTION_VACUUM=false`.** An operator who wants the space
+back after a large one-off deletion can set it through `config:`. Without the
+VACUUM, steady state is a few dirtied pages per check, and with
+`synchronous = NORMAL` SQLite fsyncs only at a WAL checkpoint, about every
+4 MB of WAL.
+
+## What gets checked
+
+Seeded from `paisans.yaml` on every apply. Every seeded monitor is tagged
+`managed`. Defaults: 60 s interval, `failure_threshold: 2`.
+
+**Per app, two HTTP checks.**
+
+1. **Public**: `https://<hostname>/`, through DNS, the gateway's Caddy and its
+   certificate. Follows no redirects and accepts `200,302`, because a gated
+   app's gate redirects to sign in. Catches a dead gateway, a bad Caddy
+   reload, an expired certificate (the fork tracks certificate expiry on
+   HTTPS checks and warns at 14 days, which covers the DNS-01 renewal worry
+   recorded in `2026-09-15-acme-dns-provider.md`).
+2. **Direct**: `http://<site mesh address>:<app port><health path>`, straight
+   to the container, past Caddy and any gate. One per site the app runs on,
+   so a clustered app has one per `apps` site.
+
+Neither check alone is enough, and that was settled with a failure table in
+session:
+
+| Failure | Public only | Both |
+|---|---|---|
+| Mbin (gated, clustered) crashes everywhere | nothing: the gate's redirect stays green | 2 alerts |
+| Mbin crashes on one site | nothing: Caddy routes to the other | 1 alert |
+| Ungated pinned app crashes | 1 alert | 2 alerts |
+| Gateway Caddy down | every public check | the same, and green direct checks say it is the edge |
+| A certificate stops renewing | 14 day warning | the same |
+
+The cost is duplicate alerts for an ungated app and a larger burst when a site
+goes. Muting public checks that have a direct partner was considered and
+deferred until alert volume is shown to be a problem.
+
+**Per site other than the monitor's own:** an ICMP ping to its mesh address.
+A single site therefore gets none. Needs `cap_add: NET_RAW`, which the fork's
+own compose file already sets.
+
+**Not seeded:**
+
+* **Heartbeats.** The toolkit runs no scheduled jobs to ping one. Admins add
+  their own (a backup job, a cron) by hand; see ownership below.
+* **Domain expiry.** A WHOIS dependency, and DNS is already exercised by every
+  public check.
+
+### Health paths
+
+`kinds.HealthPath(kind)` returns the direct check's path. **Every value is
+established against the pinned image before it enters the catalogue**, the same
+standard as the image references: run the image, request the path, record the
+status and the date in the comment. None is taken from memory or upstream
+documentation. A kind with no health route of its own uses `/` and says so in
+its comment.
+
+### The monitor reaching its own site
+
+`hostprep` lets `wg0` in whole, so pings and direct checks to other sites
+work. A check to an app on the monitor's own site leaves the container on a
+Docker bridge and arrives at the host's mesh address on `br-+`, where the
+default deny drops it. That is the defect recorded in
+`internal/hostprep/firewall.go` for Mbin and its database proxy, and on a
+single site it would fail every direct check.
+
+`ContainerRules` gains, for the site an `uptime` app is pinned to, one rule
+per app port on that site: `br-+` to the site's mesh address, that port, tcp.
+
+## Seeding
+
+### Mechanism: a rendered file, read at boot
+
+The toolkit renders `srv/<app>/monitors.json` (template
+`uptime/monitors.json.secret.tmpl`, so written 0600 and bind mounted
+read only) and sets `SEED_FILE` to its path in the container. The fork
+reconciles from it on every start.
+
+`apply` already restarts a stack when a non-environment file in it changes
+(`internal/apply/apply.go`, `isEnvironment`: only `*.env` and `compose.yaml`
+force a recreate), and a restart reruns the fork's boot, so a topology change
+reaches the monitor with no new apply behaviour.
+
+Rejected:
+
+* **`apply` calling the fork's `/api/v1/sites` with a write token.** Tokens
+  are created in the UI, so a bootstrap token would still need a fork change;
+  `apply` would need a post-start phase talking to a running app, which no
+  kind has; and it is more moving parts for the same result.
+* **Writing the SQLite file directly.** Couples the toolkit to the fork's
+  schema.
+
+### The file (abbreviated)
+
+```json
+{
+  "settings": {
+    "smtp_host": "smtp.example.org",
+    "smtp_port": 587,
+    "smtp_secure": false,
+    "smtp_user": "...",
+    "smtp_pass": "...",
+    "smtp_from_address": "status@example.org",
+    "smtp_from_name": "Example Status",
+    "status_page_enabled": false
+  },
+  "monitors": [
+    { "name": "talk — public", "monitor_type": "active", "url": "https://talk.example.org/", "...": "..." },
+    { "name": "talk — direct (home-a)", "...": "..." },
+    { "name": "home-b — ping", "...": "..." }
+  ]
+}
+```
+
+SMTP comes from the same values Pocket ID is rendered with; the password is
+`external.smtp_password`, which is already one deployment wide pasted secret,
+so no second credential is introduced.
+
+Monitor names are derived from app and site keys, never from hostnames, so
+renaming a hostname updates a monitor rather than replacing it.
+
+**No channels are seeded and no recipients are declared in YAML.** Admins
+create their own email channel in the UI.
+
+### Ownership rules
+
+| Monitor | On boot |
+|---|---|
+| In the seed and in the database | check fields updated; **channel links untouched** |
+| In the seed only (a new app or site) | created, and attached to every channel flagged "attach to new managed monitors" |
+| In the database only, tagged `managed` (app or site removed) | deleted; its channel links go with it |
+| In the database only, not tagged `managed` (made by hand) | untouched |
+
+So an apply that removes nothing never changes a subscription, and a newly
+added app is not silently unalerted for an admin who opted in.
+
+## Exposure and sign in
+
+**Routing.** The app has a `hostname` like any other, and the gateway's Caddy
+routes it to the pinned site. Publishing a hostname to the public internet
+stays a human decision; the kind changes nothing about that.
+
+**Caddy snippet.** Allowed: the UI, sign in, the OIDC callback, and `/ping/*`
+(heartbeat URLs). Refused with 404 at the edge: `/status*`, `/badge/*`,
+`/metrics`, `/api/*`. The refusal does not depend on any setting in the app.
+
+Why each matters: the fork's status page is enabled and public by default when
+its settings row is unset (`src/routes/status.js`), and would list every
+monitor, mesh addresses included; `/metrics` is public whenever no API token
+exists (`src/routes/api.js`), which under this design is always.
+
+**In the app as well**, the seed sets `status_page_enabled` false.
+
+**Mesh.** The container's port is published on its site's mesh address like
+every app's, so a mesh peer reaching it directly can read `/metrics`. That is
+the existing trust model (the gate is enforced at the gateway and only there)
+and is accepted rather than special-cased.
+
+**Sign in.**
+
+* `OIDC_ISSUER` is the Pocket ID app's URL, from the planner's existing
+  `identityProviderURL`, not declared twice.
+* `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` from `oidc_clients.<app>`, captured
+  after a human approves and runs the mint, as for every OIDC app.
+* `OIDC_ADMIN_GROUP` from `settings.admin_group`, **required** (group names are
+  community specific, so there is no default). `OIDC_EDITOR_GROUP` and
+  `OIDC_VIEWER_GROUP` unset, so the fork refuses anyone outside the group
+  ("Your account is not authorised for Uptime").
+* The Pocket ID client is also restricted to that group. A Pocket ID client
+  mutation: approval required, done by a human.
+* `PUBLIC_BASE_URL` is `https://<hostname>`.
+
+**Break glass: password sign in stays enabled.** Pocket ID is one of the
+monitored apps; with OIDC only, an admin is locked out of the monitor exactly
+when it matters. `ADMIN_USER` is `admin`; `ADMIN_PASS` and `SESSION_SECRET`
+are generated at init. `OIDC_DISABLE_PASSWORD_LOGIN=false`.
+
+**`gate:`** is allowed and pointless: the fork checks the admin group itself.
+No rule is added against it.
+
+## Changes to the fork
+
+Each its own pull request on `josephquigley/uptime`, then a release tag.
+
+1. **Seed at boot.** When `SEED_FILE` is set, reconcile settings and monitors
+   by the ownership rules above. Reuses `importConfig`'s parts (`importSmtp`,
+   `insertSite`), but not its `replace` path: that calls `setSiteChannels`
+   with the seed's channel list and would reset every admin's subscriptions on
+   every restart.
+2. **Settings in the seed.** SMTP fields and `status_page_enabled`, applied on
+   every boot so the file stays the source of truth for them.
+3. **Channel flag "attach to new managed monitors".** Migration, a checkbox on
+   the channel form, and the lookup step 1 uses.
+4. **Tests** for every row of the ownership table, plus: a hand made monitor
+   survives; channel links survive an update; a seed with no monitors deletes
+   only `managed` ones.
+
+## Changes to the toolkit
+
+* `config`: `KindUptime`; `roles: []` no longer a structural error.
+* `kinds`: catalogue entry (`app`, the image above); `HealthPath`; config
+  file `.env`.
+* `validate`: refuse a role-less site that nothing is pinned to; require
+  `settings.admin_group` for `uptime`.
+* `render`: `uptime/compose.yaml.tmpl` (`NET_RAW`, `/data` volume, the seed
+  mount), `uptime/.env.secret.tmpl` (including `RETENTION_VACUUM=false`),
+  `uptime/caddy.snippet.tmpl`, `uptime/monitors.json.secret.tmpl`, and the
+  planner code that builds the monitor list.
+* `hostprep`: the `ContainerRules` addition above.
+* Secrets: `admin_password` and `session_secret` under the app, generated at
+  init.
+* README and `examples/paisans.example.yaml`.
+
+## Testing
+
+* Golden render: an `uptime` app in `internal/render/testdata/deployment.yaml`.
+* Seed generation: every app has a public and a direct check; a clustered app
+  has a direct check per `apps` site; every site but the monitor's own gets a
+  ping; a single site gets none; monitor names are stable across a hostname
+  change.
+* Validate: role-less site with and without a pinned app; missing
+  `admin_group`; `cluster` placement refused for `uptime`.
+* `hostprep`: `ContainerRules` for the monitor's site.
+* Health paths established against the pinned images, with the record in
+  each comment.
+
+## Open
+
+* Whether the certificate expiry warning still sends when a monitor's
+  notifications are muted. Only matters if muting public checks is ever
+  adopted.
+* The `apps` role reads as "may host an app" and means "runs every clustered
+  app". Renaming it is its own change across the configuration surface and is
+  out of scope here.
