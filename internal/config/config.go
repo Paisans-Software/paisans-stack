@@ -24,9 +24,16 @@ const (
 	RoleApps    Role = "apps"
 	RoleGateway Role = "gateway"
 	RoleWitness Role = "witness"
+	// RoleStorage is a host that runs Garage and nothing else. A data or apps
+	// site that also runs Garage needs no such role: storage.garage.sites is
+	// what places Garage, and this role only names a host that exists for it,
+	// so its purpose reads in its own entry. Validation refuses it on a site
+	// that list does not name. Founder decision, over accepting an empty
+	// role list for such a site.
+	RoleStorage Role = "storage"
 )
 
-var knownRoles = map[Role]bool{RoleData: true, RoleApps: true, RoleGateway: true, RoleWitness: true}
+var knownRoles = map[Role]bool{RoleData: true, RoleApps: true, RoleGateway: true, RoleWitness: true, RoleStorage: true}
 
 // Kind is an application the toolkit knows how to render.
 type Kind string
@@ -490,11 +497,11 @@ func (c *Config) structural() error {
 	for _, name := range c.SiteNames() {
 		site := c.Sites[name]
 		if len(site.Roles) == 0 {
-			add("sites.%s.roles: required. Give the site at least one of data, apps, gateway, witness.", name)
+			add("sites.%s.roles: required. Give the site at least one of data, apps, gateway, witness, storage.", name)
 		}
 		for _, role := range site.Roles {
 			if !knownRoles[role] {
-				add("sites.%s.roles: unknown role %q. Valid roles are data, apps, gateway, witness.", name, role)
+				add("sites.%s.roles: unknown role %q. Valid roles are data, apps, gateway, witness, storage.", name, role)
 			}
 		}
 		if site.Address == "" {

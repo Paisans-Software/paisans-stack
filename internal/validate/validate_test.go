@@ -37,6 +37,7 @@ func TestRulesFire(t *testing.T) {
 		{"cluster-app-without-apps-site", "cluster-app-without-apps-site", validate.Refuse},
 		{"garage-replication-exceeds-sites", "garage-replication-exceeds-sites", validate.Refuse},
 		{"garage-consistency-unknown", "garage-consistency-unknown", validate.Refuse},
+		{"storage-role-without-garage", "storage-role-without-garage", validate.Refuse},
 		{"garage-consistency-dangerous", "garage-consistency-dangerous", validate.Warn},
 		{"garage-consistency-degraded-is-consistent", "garage-consistency-degraded-is-consistent", validate.Warn},
 		{"garage-single-copy", "garage-single-copy", validate.Warn},
