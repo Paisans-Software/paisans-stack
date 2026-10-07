@@ -88,7 +88,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/status.caddy",
-      "sha256": "b1e9d9a0fa285040261b1ae13b9af170e69ce340564d8fda623336bc075e7c01",
+      "sha256": "6723004fdc43103c153c9ce97c6303cca62491f958e276c9e9ac76661e713d84",
       "mode": "0644"
     },
     {
@@ -128,7 +128,7 @@
     },
     {
       "path": "srv/status/monitors.json",
-      "sha256": "58667483f9c4a2a2007e39251f171dd18b680639dc0085fdf1c03c23b7f7d26f",
+      "sha256": "71c709278adae4e1685931142022bb4110281ea5656ae690f2cc16709de8c5aa",
       "mode": "0600"
     }
   ]

@@ -75,7 +75,7 @@
     {
       "name": "chat — public",
       "monitor_type": "active",
-      "url": "https://chat.example.org/health",
+      "url": "https://chat.example.org/_matrix/client/versions",
       "method": "GET",
       "check_type": "status",
       "expected_status": "200",
@@ -87,7 +87,7 @@
     {
       "name": "chat — direct (vm)",
       "monitor_type": "active",
-      "url": "http://10.44.0.3:8008/health",
+      "url": "http://10.44.0.3:8008/_matrix/client/versions",
       "method": "GET",
       "check_type": "status",
       "expected_status": "200",
@@ -178,7 +178,7 @@
       "url": "https://talk.example.org/",
       "method": "GET",
       "check_type": "status",
-      "expected_status": "200,302",
+      "expected_status": "401",
       "follow_redirects": false,
       "interval_seconds": 60,
       "timeout_ms": 10000,

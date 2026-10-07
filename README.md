@@ -412,7 +412,10 @@ from this configuration and the fork reconciles it at every start:
   which redirects to sign in without asking the app, nor a clustered app dead
   on one site while Caddy routes round it.
 * both ask the kind's own health route (`kinds.HealthFor`), established from
-  each pinned image's source and, where possible, by running it.
+  each pinned image's source and, where possible, by running it, and chosen so
+  the gateway routes it to the same service the direct check reaches. A gated
+  app's public check expects the gate's `401` to a request with no session:
+  it proves the edge and the gate, and the direct check proves the app.
 * every site but the monitor's own gets a **ping** over the mesh.
 * the monitor does not watch itself.
 
@@ -429,7 +432,9 @@ reuse anyway. `pinned-app-on-witness` still warns, because the rule is generic
 and the risk is real.
 
 **At the edge** the gateway refuses `/status*`, `/badge/*`, `/metrics` and
-`/api/*` with 404 whatever the app's own settings say. The status page would
+the token API `/api/v1/*` with 404 whatever the app's own settings say. The
+UI's own session authenticated JSON under `/api/sites` passes, because the
+dashboard's live refresh and the response time chart fetch it. The status page would
 list every monitor, mesh addresses included, and `/metrics` is public whenever
 no API token exists, which here is always. `/ping/*` stays open for heartbeat
 monitors added by hand.

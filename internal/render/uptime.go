@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
@@ -57,9 +56,13 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 			return "", fmt.Errorf("apps.%s: kind %s has no health route recorded in internal/kinds, so the monitor cannot check it", name, app.Kind)
 		}
 		public := health.Expect
-		if app.Gate != "" && app.Gate != "none" && !containsCode(public, "302") {
-			// The gate redirects to sign in before the app is reached.
-			public += ",302"
+		if app.Gate != "" && app.Gate != "none" {
+			// The gate answers before the app is asked: oauth2-proxy's
+			// /oauth2/auth refuses a request with no session with 401
+			// (oauthproxy.go:1018-1022 at v7.15.4) and Caddy's forward_auth
+			// copies that back. So this check proves the edge and the gate,
+			// and the direct check below proves the app.
+			public = "401"
 		}
 		monitors = append(monitors, seedMonitor{
 			Name: name + " — public", MonitorType: "active", Method: "GET", CheckType: "status",
@@ -133,14 +136,4 @@ type smtpValues struct {
 	Password    string
 	FromAddress string
 	FromName    string
-}
-
-// containsCode reports whether a comma separated status list names code.
-func containsCode(list, code string) bool {
-	for _, c := range strings.Split(list, ",") {
-		if c == code {
-			return true
-		}
-	}
-	return false
 }

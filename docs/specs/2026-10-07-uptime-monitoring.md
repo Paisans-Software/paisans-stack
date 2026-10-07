@@ -473,3 +473,35 @@ unchanged elsewhere) and the kind renders the mesh subnet, as Pocket ID's does.
 
 **OIDC redirect URI** for the client: `https://<hostname>/login/oidc/callback`
 (`src/lib/oidc.js:26`), named by `paisans init` when the client is owed.
+
+## Amendment, 2026-10-07: corrections from the whole-branch review
+
+A fresh reviewer read both branches against this spec. Four corrections:
+
+* **A gated app's public check expects `401`, not `200,302`.** The toolkit's
+  gate is `forward_auth` to oauth2-proxy's `/oauth2/auth`, which refuses a
+  request with no session with 401 (`oauthproxy.go:1018-1022` at v7.15.4), and
+  Caddy copies that back. Nothing here redirects; the 302 came from the live
+  deployment's older gate, which redirects browsers only. The public check of a
+  gated app therefore proves the edge and the gate, and the direct check proves
+  the app, which is the split "What gets checked" argued for anyway.
+* **The homeserver is checked at `/_matrix/client/versions`**, not `/health`.
+  The gateway sends only `/_matrix/*` and `/_synapse/*` to Synapse and the rest
+  to MAS, which has no health resource, so `/health` at the public hostname
+  asked the wrong service. The versions endpoint answers without a token
+  (`synapse/rest/client/versions.py:40,50-60` at v1.160.0) on both routes.
+  The rule this generalises: a health route is chosen so the gateway routes it
+  to the same service the direct check reaches.
+* **The edge refuses `/api/v1/*`, not `/api/*`.** The fork's own pages fetch
+  session authenticated JSON under `/api/sites` (`public/js/dashboard.js:115`,
+  `site-detail.js:20`), so refusing the whole prefix broke the dashboard's live
+  refresh and the response time chart. The token API, the one the reason above
+  was about, is `/api/v1/*`.
+* **A role-less site renders no infra stack.** It runs no infrastructure, and
+  rendering `srv/infra/compose.yaml` with an empty `services:` map would hand
+  `apply` a project with nothing to start.
+
+And one on the fork, fixed before its release: a reseed no longer resets what
+an admin set in the UI on a managed monitor (pause, mute, renotify, notes,
+display name, status page placement, double verify) unless the file names the
+field. "Check fields updated" in the ownership table means exactly that.

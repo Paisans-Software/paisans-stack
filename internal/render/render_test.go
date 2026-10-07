@@ -2367,3 +2367,37 @@ func TestEveryDeclaredImageVolumeIsMounted(t *testing.T) {
 		}
 	}
 }
+
+// A site with no roles exists only to host what is pinned to it, so it runs
+// no infrastructure at all. Rendering an infra stack with an empty services
+// map would hand apply a compose project with nothing in it to recreate.
+func TestARolelessSiteRendersItsPinnedAppAndNoInfraStack(t *testing.T) {
+	cfg := fixture(t)
+	cfg.Sites["mon"] = config.Site{Address: "10.44.0.9", SSH: cfg.Sites["vm"].SSH}
+	status := cfg.Apps["status"]
+	status.Placement = config.Placement{Mode: config.PlacementPinned, Site: "mon"}
+	cfg.Apps["status"] = status
+	secrets := fixtureSecrets(t)
+	if _, err := secretsgen.Fill(cfg, secrets); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, f := range plan.Files {
+		have[f.Path] = true
+	}
+	for _, want := range []string{"mon/etc/wireguard/wg0.conf", "mon/srv/status/compose.yaml", "mon/srv/status/monitors.json"} {
+		if !have[want] {
+			t.Errorf("%s was not rendered", want)
+		}
+	}
+	if have["mon/srv/infra/compose.yaml"] {
+		t.Error("a role-less site was given an infra stack with no services in it")
+	}
+	if !have["vm/srv/infra/compose.yaml"] {
+		t.Error("the gateway lost its infra stack")
+	}
+}

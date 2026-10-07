@@ -33,8 +33,13 @@ var health = map[config.Kind]Health{
 	// 204 No Content, not 200 (backend/internal/controller/
 	// healthz_controller.go:18,30-31 at v2.14.0); ran the image.
 	config.KindPocketID: {"/healthz", "204"},
-	// synapse/rest/health.py:38-50 at v1.160.0; ran the image: 200 OK.
-	config.KindSynapse: {"/health", "200"},
+	// Not /health, although Synapse has one (synapse/rest/health.py:38-50 at
+	// v1.160.0): the gateway sends only /_matrix/* and /_synapse/* to the
+	// homeserver and everything else to MAS, whose listener has no health
+	// resource, so the public check would ask the wrong service. The client
+	// versions endpoint answers without a token
+	// (synapse/rest/client/versions.py:40,50-60) on both routes.
+	config.KindSynapse: {"/_matrix/client/versions", "200"},
 	// No health route at sha-ff9dceb (routes.go). / renders sign in on a
 	// private instance.
 	config.KindWriteFreely: {"/", "200,302"},

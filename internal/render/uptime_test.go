@@ -73,8 +73,9 @@ func TestTheSeedChecksEveryAppTwiceAndPingsEveryOtherSite(t *testing.T) {
 	if talk == nil || talk["url"] != "https://talk.example.org/" || talk["follow_redirects"] != false {
 		t.Fatalf("talk's public check: %v", talk)
 	}
-	// talk is behind the members gate, which redirects to sign in.
-	if talk["expected_status"] != "200,302" {
+	// talk is behind the members gate: forward_auth answers 401 to a request
+	// with no session, before the app is asked.
+	if talk["expected_status"] != "401" {
 		t.Errorf("talk public expects %v", talk["expected_status"])
 	}
 	auth := monitors["auth — public"]
@@ -112,21 +113,28 @@ func TestTheSeedChecksEveryAppTwiceAndPingsEveryOtherSite(t *testing.T) {
 	}
 }
 
-// A gated app's public check also accepts the gate's redirect, once; an
-// ungated one does not.
-func TestOnlyAGatedAppsPublicCheckAcceptsTheRedirect(t *testing.T) {
+// A gated app's public check expects the gate's own answer to a request with
+// no session, 401 (oauth2-proxy AuthOnly, oauthproxy.go:1018-1022 at v7.15.4,
+// copied back by Caddy's forward_auth): it proves the edge and the gate, and
+// the direct check proves the app. An ungated app's expects the kind's codes.
+func TestAGatedAppsPublicCheckExpectsTheGatesRefusal(t *testing.T) {
 	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
 	monitors := byName(renderSeed(t, cfg, secrets))
-	if got := monitors["talk — public"]["expected_status"]; got != "200,302" {
-		t.Errorf("gated mbin, whose own codes already include 302, public expects %v", got)
+	if got := monitors["talk — public"]["expected_status"]; got != "401" {
+		t.Errorf("gated mbin public expects %v", got)
 	}
 	if got := monitors["docs — public"]["expected_status"]; got != "200" {
 		t.Errorf("ungated outline public expects %v", got)
 	}
 	docs := cfg.Apps["docs"]
-	docs.Gate = "members"
+	docs.Gate = "none"
 	cfg.Apps["docs"] = docs
-	if got := byName(renderSeed(t, cfg, secrets))["docs — public"]["expected_status"]; got != "200,302" {
+	if got := byName(renderSeed(t, cfg, secrets))["docs — public"]["expected_status"]; got != "200" {
+		t.Errorf("gate: none is no gate, yet outline public expects %v", got)
+	}
+	docs.Gate = "provisional"
+	cfg.Apps["docs"] = docs
+	if got := byName(renderSeed(t, cfg, secrets))["docs — public"]["expected_status"]; got != "401" {
 		t.Errorf("gated outline public expects %v", got)
 	}
 	if got := monitors["docs — direct (home-a)"]["url"]; got != "http://"+cfg.Sites["home-a"].Address+":3000/_health" {
@@ -178,5 +186,51 @@ func TestMonitorNamesSurviveAHostnameChange(t *testing.T) {
 	}
 	if after["talk — public"]["url"] != "https://forum.example.org/" {
 		t.Errorf("the renamed check still points at %v", after["talk — public"]["url"])
+	}
+}
+
+// The homeserver's public check must reach Synapse through the gateway, which
+// routes only /_matrix/* and /_synapse/* to it and everything else to MAS,
+// whose listener has no health resource.
+func TestTheHomeserversChecksUseARouteTheGatewaySendsToSynapse(t *testing.T) {
+	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+	monitors := byName(renderSeed(t, cfg, secrets))
+	if got := monitors["chat — public"]["url"]; got != "https://chat.example.org/_matrix/client/versions" {
+		t.Errorf("chat public url %v", got)
+	}
+	if got := monitors["chat — direct (vm)"]["url"]; got != "http://"+cfg.Sites["vm"].Address+":8008/_matrix/client/versions" {
+		t.Errorf("chat direct url %v", got)
+	}
+}
+
+// The edge refuses the token API, not the monitor's own UI: the dashboard's
+// live refresh and the response time chart are session authenticated JSON
+// under /api/sites (public/js/dashboard.js:115, site-detail.js:20 in the
+// fork), while the token API is /api/v1/*.
+func TestTheEdgeRefusesTheTokenAPIButNotTheUIsOwnJSON(t *testing.T) {
+	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snippet string
+	for _, f := range plan.Files {
+		if f.Path == "vm/srv/infra/caddy/snippets/status.caddy" {
+			snippet = f.Content
+		}
+	}
+	matcher := ""
+	for _, line := range strings.Split(snippet, "\n") {
+		if strings.HasPrefix(line, "@refused ") {
+			matcher = line
+		}
+	}
+	for _, want := range []string{"/api/v1/*", "/metrics", "/status*", "/badge/*"} {
+		if !strings.Contains(matcher, " "+want) {
+			t.Errorf("the edge does not refuse %s: %q", want, matcher)
+		}
+	}
+	if strings.Contains(matcher, " /api/*") {
+		t.Errorf("the edge refuses the UI's own /api/sites JSON: %q", matcher)
 	}
 }
