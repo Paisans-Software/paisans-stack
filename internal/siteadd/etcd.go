@@ -178,8 +178,29 @@ func (p *Plan) joinEtcd(j string) error {
 	if m == nil {
 		url := render.EtcdPeerURL(p.cfg.Sites[j].Address)
 		p.say("  %-9s %s as an etcd learner\n", "add", j)
-		if out, err := control.Run(apply.Etcdctl(fmt.Sprintf("member add %s --peer-urls=%s --learner", j, url))); err != nil {
-			return fmt.Errorf("%s: adding %s as a learner: %s", p.control, j, lastLines(out, 3))
+		// etcd's strict reconfiguration check refuses a membership change
+		// with "unhealthy cluster" until every voter has been connected for
+		// its health interval, five seconds in v3.5.16
+		// (server/etcdserver/server.go, mayAddMember and
+		// isConnectedToQuorumSince). On the first real join the second
+		// learner was added moments after the first was promoted and was
+		// refused for exactly that, so the add is retried on that answer
+		// alone, the way promotion is retried while a learner catches up.
+		command := apply.Etcdctl(fmt.Sprintf("member add %s --peer-urls=%s --learner", j, url))
+		delay := promoteFirstDelay
+		for i := 0; ; i++ {
+			out, err := control.Run(command)
+			if err == nil {
+				break
+			}
+			if !strings.Contains(out, "unhealthy cluster") || i >= promoteAttempts-1 {
+				return fmt.Errorf("%s: adding %s as a learner: %s", p.control, j, lastLines(out, 3))
+			}
+			sleep(delay)
+			delay *= 2
+			if delay > promoteMaxDelay {
+				delay = promoteMaxDelay
+			}
 		}
 		if members, err = p.members(); err != nil {
 			return err

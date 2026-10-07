@@ -273,3 +273,15 @@ func TestAJoinOutsideTheScopeIsRefused(t *testing.T) {
 		t.Error("an existing data and apps site was accepted as a new data site")
 	}
 }
+
+// etcd refuses a learner add as an "unhealthy cluster" until every voter has
+// been connected for five seconds, so the second learner, added right after the
+// first is promoted, is refused at first. The first real join stopped there.
+func TestALearnerAddRefusedAsUnhealthyIsRetried(t *testing.T) {
+	defer siteadd.SetFast()()
+	w := newWorld(t)
+	w.addRefusals = 2
+	if err := siteadd.Execute(build(t, w)); err != nil {
+		t.Fatalf("a transient unhealthy cluster stopped the join: %v", err)
+	}
+}

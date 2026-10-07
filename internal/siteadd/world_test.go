@@ -39,6 +39,9 @@ type world struct {
 	// Knobs that break one thing.
 	noPing          bool
 	promoteRefusals int
+	// addRefusals is how many learner adds etcd refuses as an unhealthy
+	// cluster, as it does until every voter has been connected five seconds.
+	addRefusals int
 	lags            []float64
 	noSyncStandby   bool
 	replicaUp       bool
@@ -130,6 +133,9 @@ func (h *host) Run(command string) (string, error) {
 		return w.memberList(), nil
 	case strings.Contains(command, "member list -w json"):
 		return w.memberList(), nil
+	case memberAdd.MatchString(command) && w.addRefusals > 0:
+		w.addRefusals--
+		return "Error: etcdserver: unhealthy cluster", fmt.Errorf("exit status 1")
 	case memberAdd.MatchString(command):
 		m := memberAdd.FindStringSubmatch(command)
 		w.nextID++
