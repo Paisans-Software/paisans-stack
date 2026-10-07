@@ -1219,6 +1219,41 @@ Garage does not track block migration, and a dead one needs `layout
 skip-dead-nodes`, possibly with `--allow-missing-data`. Both are decisions
 about losing data, and will get their own gates.
 
+#### Replacing an app's key: `storage rotate-key`
+
+An app's S3 key is replaced when it may have leaked, Eg: a key ID committed to
+a public history. **`paisans storage rotate-key --app <app>`** does it, dry run
+by default and in gated stages, like `storage add`:
+
+| Stage | What it does | Gate |
+|---|---|---|
+| 1. secrets | generates a new pair, the way `init` does, keeps the current one as `apps.<app>.s3_previous_access_key_id` and `s3_previous_secret_access_key`, and writes the file encrypted to its recipients | the file holds both pairs |
+| 2. Garage | imports the new key under the app's name and grants it read, write and owner on the app's bucket, beside the old key; website access is the bucket's and is left as it is | `bucket info` lists the new key ID with `RWO` |
+| 3. switch | applies the app alone, as `apply --site <site> --only <app>`, on every site running it | `apply --only` has nothing left to do, and the app passed apply's health gate |
+| 4. prove | from each of those sites, writes a probe with the new key through the S3 address the app is rendered with, reads it back, deletes it | byte for byte |
+| 5. retire | deletes the old key from Garage, then removes the previous pair from the secrets | Garage no longer holds the old key ID |
+
+The plan prints both key IDs, so an operator can see which one is retired, and
+never a secret key. **It is staged because the app must keep a working key
+the whole time.** The secrets are written before Garage hears of the new key,
+so Garage never holds a key the secrets file does not; the old key stays in
+Garage and granted until the app has been switched and the new key proven, so
+a run that stops anywhere before stage 5 leaves the app running on whichever
+key it was last started with. A previous pair in the secrets file is what says
+a rotation is in progress, and a re-run plans from it rather than generating a
+second key. Every gate runs on every execute, so the old key is deleted only by
+a run that has just seen stages 3 and 4 pass. Garage never lets a deleted key's
+ID be imported again (`handle_import_key` in v1.0.1's
+`src/garage/admin/key.rs`), which is one more reason the deletion is last.
+
+Rejected: deleting the old key and importing the new one in its place, which
+is an outage between the two and leaves the app with no key at all if the
+import fails. Rejected: finding an app's keys by the name they were imported
+under. Both keys carry the app's name while a rotation runs, Garage does not
+keep names unique, and `storage init` used to read a grant as present when
+only the name matched, which would have left the new key without access. Keys
+are found, granted and deleted by ID alone.
+
 ### `dns init` creates the records a deployment needs
 
 Every public name a deployment answers on needs a DNS record, and the toolkit
