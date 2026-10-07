@@ -67,3 +67,31 @@ func OIDCClient(kind config.Kind, hostname string) (OIDCClientSpec, bool) {
 	}
 	return OIDCClientSpec{}, false
 }
+
+// MbinQueueSetting is the app setting that picks where an Mbin app's
+// Messenger queues live: MbinQueuePostgres, the default, or MbinQueueRabbitMQ.
+// README, "Mbin's queues are in Postgres by default", has the reasoning.
+const MbinQueueSetting = "queue"
+
+const (
+	// MbinQueuePostgres keeps the queues as rows in the app's own database,
+	// through Symfony Messenger's Doctrine transport. They survive losing an
+	// apps site, and every site's consumers share them. It needs a paisans
+	// fork image that carries the Doctrine transport decorator (fork spec 12,
+	// feat/doctrine_transport_queue_names): the shipped messenger.yaml's AMQP
+	// options are otherwise refused by the Doctrine transport.
+	MbinQueuePostgres = "postgres"
+	// MbinQueueRabbitMQ runs a broker per stack, behind amqproxy, as upstream
+	// does. Faster under load, and lost with its site.
+	MbinQueueRabbitMQ = "rabbitmq"
+)
+
+// MbinQueue is the queue backend an Mbin app's settings choose, the default
+// when they choose none. A value that is neither is returned as given, for
+// validate to refuse by name.
+func MbinQueue(settings map[string]any) string {
+	if s, ok := settings[MbinQueueSetting].(string); ok && s != "" {
+		return s
+	}
+	return MbinQueuePostgres
+}

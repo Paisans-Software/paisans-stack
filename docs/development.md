@@ -758,6 +758,13 @@ before.
   until a fork release reads it. `TestMbinSplitsItsLocks` asserts both for
   clustered and pinned placement. `README.md` has the reasoning under "Mbin's
   locks are split: flock by default, Postgres for the few that cross sites".
+* **Mbin's queues default to Postgres** (`settings.queue`, `kinds.MbinQueue`),
+  with no broker in the stack; `queue: rabbitmq` renders the broker stack as
+  before. `TestMbinQueuesInPostgresByDefault` and `TestMbinRabbitMQIsAnOptIn`
+  hold both, and `validate` refuses an unknown value and warns for RabbitMQ on
+  more than one apps site. The default needs a paisans fork image with the
+  Doctrine transport decorator. README: "Mbin's queues are in Postgres by
+  default".
 * **A published port binds the site's mesh address**, never every interface,
   because Docker's iptables rules bypass a host firewall. A test walks every
   rendered compose file to confirm it.

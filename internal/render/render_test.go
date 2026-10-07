@@ -1936,7 +1936,7 @@ func TestMbinRendersItsWholeStack(t *testing.T) {
 	compose := files["home-a/srv/talk/compose.yaml"]
 	env := files["home-a/srv/talk/.env"]
 
-	for _, service := range []string{"  app:", "  messenger:", "  amqproxy:", "  rabbitmq:", "  valkey:"} {
+	for _, service := range []string{"  app:", "  messenger:", "  valkey:"} {
 		if !strings.Contains(compose, "\n"+service+"\n") {
 			t.Errorf("the Mbin stack has no %s service:\n%s", strings.TrimSpace(service), compose)
 		}
@@ -1963,9 +1963,6 @@ func TestMbinRendersItsWholeStack(t *testing.T) {
 	for _, want := range []string{
 		"\nMBIN_USER=1000:1000\n",
 		"\nAPP_SECRET=fixture-not-a-secret-talk-app\n",
-		"\nRABBITMQ_DEFAULT_USER=mbin\n",
-		"\nRABBITMQ_DEFAULT_PASS=fixture-not-a-secret-rabbitmq\n",
-		"\nMESSENGER_TRANSPORT_DSN=amqp://mbin:fixture-not-a-secret-rabbitmq@amqproxy:5673/%2f/messages\n",
 		"\nVALKEY_PASSWORD=fixture-not-a-secret-valkey\n",
 		"\nREDIS_DNS=redis://fixture-not-a-secret-valkey@valkey:6379\n",
 		"\nMERCURE_URL=http://app:8080/.well-known/mercure\n",
@@ -2001,6 +1998,71 @@ func TestMbinRendersItsWholeStack(t *testing.T) {
 	}
 	if !strings.Contains(env, "\nS3_KEY=") {
 		t.Errorf("the Mbin .env does not set S3_KEY, so the entrypoint would leave uploads on local disk:\n%s", env)
+	}
+}
+
+// Mbin's queues are rows in its own database by default, clustered or pinned,
+// so work a site has accepted survives the site: no broker, no amqproxy, no
+// broker credential, and nothing waits on either.
+func TestMbinQueuesInPostgresByDefault(t *testing.T) {
+	pinnedCfg := fixture(t)
+	talk := pinnedCfg.Apps["talk"]
+	talk.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-b", Literal: "home-b"}
+	pinnedCfg.Apps["talk"] = talk
+	pinnedPlan, err := render.Build(pinnedCfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clustered, pinned := planFiles(build(t)), planFiles(pinnedPlan)
+	for _, c := range []struct{ name, env, compose string }{
+		{"clustered", clustered["home-a/srv/talk/.env"], clustered["home-a/srv/talk/compose.yaml"]},
+		{"pinned", pinned["home-b/srv/talk/.env"], pinned["home-b/srv/talk/compose.yaml"]},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got, want := envValue(c.env, "MESSENGER_TRANSPORT_DSN"), "doctrine://default?check_delayed_interval=1000&redeliver_timeout=900"; got != want {
+				t.Errorf("MESSENGER_TRANSPORT_DSN = %q, want %q", got, want)
+			}
+			if strings.Contains(c.env, "\nRABBITMQ_") {
+				t.Errorf("the .env carries a broker credential with no broker:\n%s", c.env)
+			}
+			for _, absent := range []string{"\n  amqproxy:\n", "\n  rabbitmq:\n", "      amqproxy:\n"} {
+				if strings.Contains(c.compose, absent) {
+					t.Errorf("compose.yaml carries %q with the queues in Postgres:\n%s", strings.TrimSpace(absent), c.compose)
+				}
+			}
+		})
+	}
+}
+
+// queue: rabbitmq renders the broker stack exactly as before, for an operator
+// on one large site who wants its throughput.
+func TestMbinRabbitMQIsAnOptIn(t *testing.T) {
+	cfg := fixture(t)
+	talk := cfg.Apps["talk"]
+	talk.Settings = map[string]any{"queue": "rabbitmq"}
+	cfg.Apps["talk"] = talk
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+	env, compose := files["home-a/srv/talk/.env"], files["home-a/srv/talk/compose.yaml"]
+	for _, want := range []string{
+		"\nRABBITMQ_DEFAULT_USER=mbin\n",
+		"\nRABBITMQ_DEFAULT_PASS=fixture-not-a-secret-rabbitmq\n",
+		"\nMESSENGER_TRANSPORT_DSN=amqp://mbin:fixture-not-a-secret-rabbitmq@amqproxy:5673/%2f/messages\n",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("the .env does not carry %q:\n%s", strings.TrimSpace(want), env)
+		}
+	}
+	for _, want := range []string{"\n\n  amqproxy:\n", "\n\n  rabbitmq:\n"} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose.yaml has no %s service set off by a blank line:\n%s", strings.TrimSpace(want), compose)
+		}
+	}
+	if n := strings.Count(compose, "      amqproxy:\n        condition: service_started\n"); n != 2 {
+		t.Errorf("app and messenger should both wait for amqproxy, %d do:\n%s", n, compose)
 	}
 }
 
@@ -2222,7 +2284,7 @@ func TestMbinOAuthKeypairIsRenderedForEveryAppsSite(t *testing.T) {
 		compose := files[path].Content
 		for _, service := range []string{"app", "messenger"} {
 			block := compose[strings.Index(compose, "\n  "+service+":\n"):]
-			block = block[:strings.Index(block[1:], "\n  amqproxy:\n")+1]
+			block = block[:strings.Index(block[1:], "\n  valkey:\n")+1]
 			if service == "app" {
 				block = block[:strings.Index(block, "\n  messenger:\n")]
 			}

@@ -108,8 +108,10 @@ services:
       # adapter because S3_KEY is set in .env), and `sed -i` over a bind mount
       # fails and stops the container.
     depends_on:
+{{- if eq .MbinQueue "rabbitmq" }}
       amqproxy:
         condition: service_started
+{{- end }}
       valkey:
         condition: service_healthy
 {{- if .App.Pinned }}
@@ -142,14 +144,17 @@ services:
       # the web container in which keys it can see.
       - {{ .DataPath }}/oauth:/app/config/oauth2:ro
     depends_on:
+{{- if eq .MbinQueue "rabbitmq" }}
       amqproxy:
         condition: service_started
+{{- end }}
       valkey:
         condition: service_healthy
 {{- if .App.Pinned }}
       postgres:
         condition: service_started
 {{- end }}
+{{- if eq .MbinQueue "rabbitmq" }}
 
   amqproxy:
     image: {{ .Image "amqproxy" }}
@@ -182,6 +187,7 @@ services:
       # entrypoint chowns only the data directory, so a root owned log mount
       # would be a directory the broker cannot write to.
       - {{ .DataPath }}/rabbitmq_data:/var/lib/rabbitmq
+{{- end }}
 
   valkey:
     image: {{ .Image "valkey" }}

@@ -51,6 +51,8 @@ func TestRulesFire(t *testing.T) {
 		{"pinned-app-on-witness", "pinned-app-on-witness", validate.Warn},
 		{"gateway-on-data-site", "gateway-on-data-site", validate.Warn},
 		{"pocket-id-file-backend", "pocket-id-file-backend", validate.Warn},
+		{"mbin-queue-unknown", "mbin-queue-unknown", validate.Refuse},
+		{"mbin-rabbitmq-across-sites", "mbin-rabbitmq-across-sites", validate.Warn},
 		{"image-for-absent-postgres", "image-for-absent-postgres", validate.Warn},
 		{"watchdog-off-on-data-site", "watchdog-off-on-data-site", validate.Warn},
 		{"acme-provider-needs-an-image", "acme-provider-needs-an-image", validate.Refuse},
