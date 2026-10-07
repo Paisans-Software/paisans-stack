@@ -2032,6 +2032,64 @@ func TestPinnedMbinRunsItsOwnDatabase(t *testing.T) {
 	}
 }
 
+// When no apps site can serve, the gateway answers 503 with Retry-After, the
+// status a fediverse server takes as "come back later". Caddy's own failures
+// are 502 (a dial refused or timed out, or a site dying mid request), 503 (no
+// upstream left) or 504, and a server receiving 502 for an inbox POST may drop
+// the delivery for good. Every host block imports the same handler, so no app,
+// media hostname included, is left out.
+func TestEveryHostBlockAnswers503WhenNoSiteCan(t *testing.T) {
+	caddyfile := planFiles(build(t))["vm/srv/infra/caddy/Caddyfile"]
+	for _, want := range []string{
+		"(upstream_unavailable) {",
+		"handle_errors 502 503 504 {",
+		"header Retry-After 120",
+		`respond "Service temporarily unavailable" 503`,
+	} {
+		if !strings.Contains(caddyfile, want) {
+			t.Errorf("the gateway Caddyfile does not carry %q:\n%s", want, caddyfile)
+		}
+	}
+	blocks := strings.Count(caddyfile, "\timport /etc/caddy/snippets/")
+	if blocks == 0 {
+		t.Fatalf("the gateway Caddyfile imports no app snippet:\n%s", caddyfile)
+	}
+	if n := strings.Count(caddyfile, "\timport upstream_unavailable\n"); n != blocks {
+		t.Errorf("%d host blocks import upstream_unavailable, want all %d:\n%s", n, blocks, caddyfile)
+	}
+}
+
+// An app on more than one apps site fails over with the gateway's one set of
+// settings, and a pinned app, with nowhere to fail over to, does not import
+// them. The settings themselves are what make failover invisible to a client:
+// a refused dial is retried on the next site inside the same request.
+func TestMultiSiteAppsShareOneFailoverSetting(t *testing.T) {
+	files := planFiles(build(t))
+	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	for _, want := range []string{"(upstream_failover) {", "lb_policy first", "lb_try_duration 5s", "fail_duration 30s", "dial_timeout 2s"} {
+		if !strings.Contains(caddyfile, want) {
+			t.Errorf("the gateway Caddyfile's upstream_failover does not carry %q:\n%s", want, caddyfile)
+		}
+	}
+	for _, app := range []string{"talk", "docs", "auth"} {
+		snippet := files["vm/srv/infra/caddy/snippets/"+app+".caddy"]
+		if !strings.Contains(snippet, "10.44.0.1:") || !strings.Contains(snippet, "10.44.0.2:") {
+			t.Fatalf("%s is not on both apps sites in the fixture, so it proves nothing:\n%s", app, snippet)
+		}
+		if !strings.Contains(snippet, "\timport upstream_failover\n") {
+			t.Errorf("%s's snippet does not import upstream_failover:\n%s", app, snippet)
+		}
+		if strings.Contains(snippet, "lb_policy") {
+			t.Errorf("%s's snippet sets its own lb_policy rather than the shared one:\n%s", app, snippet)
+		}
+	}
+	for _, app := range []string{"blog", "chat", "web", "gate"} {
+		if snippet := files["vm/srv/infra/caddy/snippets/"+app+".caddy"]; strings.Contains(snippet, "upstream_failover") {
+			t.Errorf("pinned %s imports upstream_failover with one upstream:\n%s", app, snippet)
+		}
+	}
+}
+
 // Mbin's sign in comes back to the fork's verify route, and the .env says so,
 // because that comment is where an operator registering the client looks. It
 // used to say /oauth/oidc/verify while the value it was built from said

@@ -33,7 +33,7 @@
     },
     {
       "path": "srv/infra/caddy/Caddyfile",
-      "sha256": "ca41dd4ed61427aab97ff2f154beec172bd493e33f97340b8b528528b4770367",
+      "sha256": "0bb0c439eb7f8e207c57a7e8f39592ac15b0a4974c1da7aaec2b518cf1d6aff6",
       "mode": "0644"
     },
     {
@@ -43,7 +43,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/auth.caddy",
-      "sha256": "3c80e9376267aefbf991e261a3b957f94711cecb90974302b4932895d67fa79f",
+      "sha256": "91079871caa725979ee5165a4f3cf3a102ac124e8b306fcb10cc34806adef861",
       "mode": "0644"
     },
     {
@@ -73,7 +73,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/docs.caddy",
-      "sha256": "7785654743fe6347de3895686346af6da5ee7cfde231789fcdcb7aead6ea7740",
+      "sha256": "4c49411067ecfb863e2b45b1182fb75576a26ff305e4437431c7260ebae0dc1c",
       "mode": "0644"
     },
     {
@@ -93,7 +93,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/talk.caddy",
-      "sha256": "4dbb8bd26fe15ff40acbbd046a443e96d218d1f0335218bea7f1c43b1eda1466",
+      "sha256": "2c7f8467f68fcdf1a0fe235dddb20b3e89c3ef0c9f7a2f290dbed75c31d78715",
       "mode": "0644"
     },
     {

@@ -4,8 +4,8 @@
 # {{ .Hostname }}. A static client needs nothing but the proxy.
 reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
 {{- if gt (len .Upstreams) 1 }}
-	lb_policy first
-	fail_duration 10s
+	# Failover across apps sites; see upstream_failover in the Caddyfile.
+	import upstream_failover
 {{- end }}
 	header_up X-Forwarded-Proto https
 }

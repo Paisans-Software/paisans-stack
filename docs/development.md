@@ -706,6 +706,13 @@ before.
   (Eg: `10.44.0.1:5000`), never `127.0.0.1`, which inside the app's container
   is the container itself. A pinned app gets its own container: an app that is
   pinned must be pinned all the way down.
+* **Failover and the 503 live in the gateway file**, as the named snippets
+  `upstream_failover` and `upstream_unavailable`, not in each kind. A kind's
+  snippet imports `upstream_failover` when it has more than one upstream and
+  never sets `lb_policy` itself; every host block imports
+  `upstream_unavailable`. `TestMultiSiteAppsShareOneFailoverSetting` and
+  `TestEveryHostBlockAnswers503WhenNoSiteCan` hold both. README's "Failing
+  over, and saying so when nothing can serve" has the reasoning.
 * **A published port binds the site's mesh address**, never every interface,
   because Docker's iptables rules bypass a host firewall. A test walks every
   rendered compose file to confirm it.

@@ -32,52 +32,97 @@
 	}
 }
 
+# Every host block below imports this. When no site can serve an application,
+# Caddy answers 502 (a refused or timed out dial, or a site that died mid
+# request), 503 (every upstream already marked down) or 504, and a fediverse
+# server receiving 502 for an inbox POST may count the delivery as failed for
+# good. A 503 with Retry-After is the status that asks it to come back. Only
+# errors Caddy raised itself reach handle_errors: an application's own 502, 503
+# or 504 response is passed through untouched, so this never masks one.
+(upstream_unavailable) {
+	handle_errors 502 503 504 {
+		header Retry-After 120
+		respond "Service temporarily unavailable" 503
+	}
+}
+
+# Imported inside the proxy directive of every application on more than one apps
+# site, so the failover behaviour is set once rather than in each kind.
+#
+# first, not round robin: the apps sites are not interchangeable during a
+# failover, and a dead one must simply be skipped. A dial that fails is retried
+# on the next site within lb_try_duration, in the same request, for any method:
+# Caddy retries a POST only when the connection never opened, so no body has
+# been sent. A dead site on the mesh answers nothing, not even a reset, so
+# dial_timeout is the whole price of trying it; lb_try_duration covers a full
+# dial to each site. fail_duration is how long a failed site is skipped before
+# one request tries it again.
+(upstream_failover) {
+	lb_policy first
+	lb_try_duration 5s
+	fail_duration 30s
+	transport http {
+		dial_timeout 2s
+	}
+}
+
 # Named Caddy snippets, not a hostname's routing: imported here, at the top
 # level, so that a site block below can import a name this file defines. See
 # templates/oauth2-proxy/caddy.snippet.gates.tmpl for what it declares.
 import /etc/caddy/snippets/gate-gates.caddy
 
 blog-media.example.org {
+	import upstream_unavailable
 	import /etc/caddy/snippets/blog-media.caddy
 }
 
 blog.example.org {
+	import upstream_unavailable
 	import /etc/caddy/snippets/blog.caddy
 }
 
 chat.example.org {
+	import upstream_unavailable
 	import /etc/caddy/snippets/chat.caddy
 }
 
 docs-media.example.org {
+	import upstream_unavailable
 	import /etc/caddy/snippets/docs-media.caddy
 }
 
 docs.example.org {
+	import upstream_unavailable
 	import /etc/caddy/snippets/docs.caddy
 }
 
 example.org {
+	import upstream_unavailable
 	import /etc/caddy/snippets/chat-wellknown.caddy
 }
 
 gate.example.org {
+	import upstream_unavailable
 	import /etc/caddy/snippets/gate.caddy
 }
 
 id.example.org {
+	import upstream_unavailable
 	import /etc/caddy/snippets/auth.caddy
 }
 
 talk-media.example.org {
+	import upstream_unavailable
 	import /etc/caddy/snippets/talk-media.caddy
 }
 
 talk.example.org {
+	import upstream_unavailable
 	import gate_members
 	import /etc/caddy/snippets/talk.caddy
 }
 
 web.example.org {
+	import upstream_unavailable
 	import /etc/caddy/snippets/web.caddy
 }

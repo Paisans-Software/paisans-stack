@@ -5,9 +5,7 @@
 # beyond the proxy itself, which is worth stating: a snippet that is plain is a
 # fact about the application, not a file waiting to be filled in.
 reverse_proxy 10.44.0.1:3000 10.44.0.2:3000 {
-	# first, not round robin: the apps sites are not interchangeable during a
-	# failover, and a dead one must simply be skipped.
-	lb_policy first
-	fail_duration 10s
+	# Failover across apps sites; see upstream_failover in the Caddyfile.
+	import upstream_failover
 	header_up X-Forwarded-Proto https
 }
