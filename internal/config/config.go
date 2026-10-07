@@ -39,10 +39,11 @@ const (
 	KindPocketID    Kind = "pocket-id"
 	KindSynapse     Kind = "synapse"
 	KindWriteFreely Kind = "writefreely"
+	KindUptime      Kind = "uptime"
 )
 
 var knownKinds = map[Kind]bool{
-	KindElement: true, KindMbin: true, KindOAuth2Proxy: true, KindOutline: true, KindPocketID: true, KindSynapse: true, KindWriteFreely: true,
+	KindElement: true, KindMbin: true, KindOAuth2Proxy: true, KindOutline: true, KindPocketID: true, KindSynapse: true, KindWriteFreely: true, KindUptime: true,
 }
 
 // Kinds returns every kind this toolkit knows, sorted. It exists so that a
@@ -73,7 +74,10 @@ type Config struct {
 	Cluster Cluster         `yaml:"cluster"`
 	Etcd    Etcd            `yaml:"etcd"`
 	Storage Storage         `yaml:"storage"`
-	Apps    map[string]App  `yaml:"apps"`
+	// SMTP is how apps send mail, the default for every app that sends any.
+	// An app's own smtp block overrides it field by field: see SMTPFor.
+	SMTP SMTP           `yaml:"smtp"`
+	Apps map[string]App `yaml:"apps"`
 
 	// Path is where this configuration was read from. Error messages use it.
 	Path string `yaml:"-"`
@@ -302,6 +306,86 @@ type App struct {
 	// gated Matrix hostname authenticates a browser and breaks every client,
 	// because a client will not follow a redirect to a passkey prompt.
 	Gate string `yaml:"gate"`
+
+	// SMTP overrides the deployment's smtp block for this app, field by
+	// field: a field left out is inherited. Only kinds that send mail read
+	// it, and validate refuses it on any other (smtp-on-a-kind-without-mail).
+	SMTP *SMTP `yaml:"smtp"`
+}
+
+// SMTP is how an app sends mail. The deployment's block is the default for
+// every app that sends any; an app's own block overrides it field by field, so
+// one app can use a different sender or a different account without
+// repeating the rest. The password is not here: it is a secret, under
+// apps.<app>.smtp_password or else external.smtp_password.
+type SMTP struct {
+	Host        string `yaml:"host"`
+	Port        int    `yaml:"port"`
+	Security    string `yaml:"security"`
+	Username    string `yaml:"username"`
+	FromAddress string `yaml:"from_address"`
+	FromName    string `yaml:"from_name"`
+}
+
+// SMTP security modes. There is no "none": no consumer needs it, and the
+// uptime fork cannot express it, since its smtp_secure is nodemailer's
+// boolean `secure` and false already means STARTTLS.
+const (
+	SMTPStartTLS = "starttls"
+	SMTPTLS      = "tls"
+)
+
+// PortOrDefault is the declared port, or the conventional one for the
+// security mode: 465 for implicit TLS, 587 for STARTTLS.
+func (s SMTP) PortOrDefault() int {
+	if s.Port != 0 {
+		return s.Port
+	}
+	if s.Security == SMTPTLS {
+		return 465
+	}
+	return 587
+}
+
+// SMTPFor is an app's effective SMTP settings: the deployment's block with
+// every field the app declares replacing the deployment's.
+func (c *Config) SMTPFor(app string) SMTP {
+	out := c.SMTP
+	o := c.Apps[app].SMTP
+	if o == nil {
+		return out
+	}
+	if o.Host != "" {
+		out.Host = o.Host
+	}
+	if o.Port != 0 {
+		out.Port = o.Port
+	}
+	if o.Security != "" {
+		out.Security = o.Security
+	}
+	if o.Username != "" {
+		out.Username = o.Username
+	}
+	if o.FromAddress != "" {
+		out.FromAddress = o.FromAddress
+	}
+	if o.FromName != "" {
+		out.FromName = o.FromName
+	}
+	return out
+}
+
+// smtpProblems checks one smtp block's shape, wherever it is declared.
+func smtpProblems(key string, s SMTP) []string {
+	var out []string
+	if s.Security != "" && s.Security != SMTPStartTLS && s.Security != SMTPTLS {
+		out = append(out, fmt.Sprintf("%s.security: unknown mode %q. Valid modes are starttls and tls.", key, s.Security))
+	}
+	if s.Port < 0 || s.Port > 65535 {
+		out = append(out, fmt.Sprintf("%s.port: %d is not a port. Give one from 1 to 65535, or leave it out for 587 with starttls and 465 with tls.", key, s.Port))
+	}
+	return out
 }
 
 // PlacementMode is where an app runs. There are exactly two, and pinned is the
@@ -443,6 +527,17 @@ func (c *Config) AppsSites() []string {
 	return out
 }
 
+// PinnedTo returns the apps pinned to a site, sorted.
+func (c *Config) PinnedTo(site string) []string {
+	var out []string
+	for _, name := range c.AppNames() {
+		if p := c.Apps[name].Placement; p.Mode == PlacementPinned && p.Site == site {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // GatewaySites returns the sites holding the gateway role, sorted.
 func (c *Config) GatewaySites() []string {
 	var out []string
@@ -489,8 +584,8 @@ func (c *Config) structural() error {
 	}
 	for _, name := range c.SiteNames() {
 		site := c.Sites[name]
-		if len(site.Roles) == 0 {
-			add("sites.%s.roles: required. Give the site at least one of data, apps, gateway, witness.", name)
+		if len(site.Roles) == 0 && len(c.PinnedTo(name)) == 0 {
+			add("sites.%s.roles: required. Give the site at least one of data, apps, gateway, witness. A site may have none only when an app is pinned to it, because then it exists to host that app.", name)
 		}
 		for _, role := range site.Roles {
 			if !knownRoles[role] {
@@ -512,7 +607,7 @@ func (c *Config) structural() error {
 		if app.Kind == "" {
 			add("apps.%s.kind: required. Say which application this is, for example mbin or outline.", name)
 		} else if !knownKinds[app.Kind] {
-			add("apps.%s.kind: unknown kind %q. This toolkit renders element, mbin, oauth2-proxy, outline, pocket-id, synapse and writefreely.", name, app.Kind)
+			add("apps.%s.kind: unknown kind %q. This toolkit renders element, mbin, oauth2-proxy, outline, pocket-id, synapse, uptime and writefreely.", name, app.Kind)
 		}
 		if app.Hostname == "" {
 			add("apps.%s.hostname: required. It is the public name the gateway routes to.", name)
@@ -530,10 +625,14 @@ func (c *Config) structural() error {
 				add("apps.%s.hostnames.%s: empty. Give a hostname, or remove the role.", name, role)
 			}
 		}
+		if app.SMTP != nil {
+			problems = append(problems, smtpProblems("apps."+name+".smtp", *app.SMTP)...)
+		}
 		if app.Gate != "" && app.Gate != "none" && app.Gate != "provisional" && app.Gate != "members" {
 			add("apps.%s.gate: unknown gate %q. Valid values are none, provisional and members.", name, app.Gate)
 		}
 	}
+	problems = append(problems, smtpProblems("smtp", c.SMTP)...)
 	if len(c.GatewaySites()) > 0 && c.ACME.Provider == "" {
 		// The providers are deliberately not listed here. This package does not
 		// import internal/acme, by design, so any list written out would be a
