@@ -45,6 +45,7 @@ Usage:
                [--ssh <destination>] [--execute]
   paisans storage add [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--change-replication] [--wait <duration>] [--execute]
+  paisans prune    --site <name> [--config paisans.yaml] [--ssh <destination>] [--execute]
   paisans preflight --site <new site> [--config paisans.yaml]
   paisans failover test [--config paisans.yaml] [--execute]
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
@@ -83,6 +84,10 @@ Commands:
              stage waiting on Garage (status 75) and resumes on the next
              run. Both create only what is missing, and write nothing
              without --execute.
+  prune      List one site's dangling Docker volumes, with size and top level
+             entries, and say which are a paisans container's leftovers.
+             Removes those with --execute; a volume another compose project
+             labelled, or one somebody named, is kept.
   preflight  The read only checks site add runs first, for the site being
              added and every site already running. Changes nothing.
   failover   test: switch the Patroni primary to another data site and
@@ -107,9 +112,9 @@ Commands:
              secret in the secrets file. The secret is never printed.
              Writes nothing without --execute. Mbin only, so far.
 
-host prepare, apply, site add, storage init, storage add, app admin create,
-oidc client create, preflight and failover test are the only commands that
-reach a host.
+host prepare, apply, prune, site add, storage init, storage add, app admin
+create, oidc client create, preflight and failover test are the only commands
+that reach a host.
 Each reads it to plan, and changes it only with --execute. dns init reaches no
 host, only the DNS provider's API, and changes it only with --execute.
 Everything else writes files locally and stops.
@@ -158,6 +163,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init or add\n\n%s", usage)
 			os.Exit(2)
 		}
+	case "prune":
+		err = runPrune(os.Args[2:])
 	case "preflight":
 		err = runPreflight(os.Args[2:])
 	case "failover":
