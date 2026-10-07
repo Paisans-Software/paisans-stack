@@ -1,6 +1,12 @@
 package siteadd
 
-import "time"
+import (
+	"time"
+
+	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/preflight"
+)
 
 // SetFast makes every wait three polls with no sleep, so a gate that fails
 // fails at once and one that passes passes on the first poll it can.
@@ -23,3 +29,13 @@ func SetFast() func() {
 
 // PromoteAttempts is how many times a promotion is tried.
 func PromoteAttempts() int { return promoteAttempts }
+
+// PassPreflight replaces stage 1 with a passing report for the rest of the
+// test binary's run, and returns a function that restores it.
+func PassPreflight() func() {
+	saved := runPreflight
+	runPreflight = func(*config.Config, string, map[string]apply.Transport) (preflight.Report, error) {
+		return preflight.Report{}, nil
+	}
+	return func() { runPreflight = saved }
+}

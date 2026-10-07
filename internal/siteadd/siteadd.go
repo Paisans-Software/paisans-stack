@@ -173,7 +173,7 @@ func Build(cfg *config.Config, secrets *config.Secrets, newSite string, transpor
 	if started {
 		p.preflightSkipped = why
 	} else {
-		report, err := preflight.Run(cfg, newSite, transports)
+		report, err := runPreflight(cfg, newSite, transports)
 		if err != nil {
 			return nil, fmt.Errorf("preflight: %w", err)
 		}
@@ -427,3 +427,9 @@ func lastLines(s string, n int) string {
 	}
 	return strings.Join(lines, " / ")
 }
+
+// runPreflight is stage 1. It is a variable so that this package's tests, which
+// drive stages 2 to 6 against fake hosts, can stand in a passing report:
+// preflight's own checks are tested in internal/preflight, against hosts shaped
+// for them.
+var runPreflight = preflight.Run
