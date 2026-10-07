@@ -1227,8 +1227,9 @@ address inside `mesh.subnet`. A missing `public_address` is not refused by
 `validate`, because a deployment may manage its DNS some other way. `dns init`
 refuses it, naming the site, wherever a record would need it.
 
-**It only creates. It never updates and never deletes.** For each record it
-needs, the provider holds one of three things:
+**`dns init` only creates. It never updates and never deletes.** Removing a
+record the configuration no longer implies is `dns prune`, below, under rules
+of its own. For each record it needs, the provider holds one of three things:
 
 | Provider holds | Plan |
 |----------------|------|
@@ -1274,6 +1275,50 @@ although both answer ACME challenges. Answering a challenge and managing
 ordinary records are different code, and `dns init` refuses an unimplemented
 provider by name rather than pretending. Until one is implemented, create the
 records it would have created by hand, unproxied.
+
+**`dns prune` removes what `dns init` made and nothing wants any more.** A
+deployment that moved from one shared media hostname to one per app is left
+holding the old name's A record: `dns init` created it, and no line of the
+configuration implies it now. Founder decision: the toolkit removes such a
+record, not an operator in the provider's console, which amends the earlier
+rule that the toolkit never deletes a record. A deletion by hand is exactly the
+unchecked edit to the zone that `dns init` exists to replace, and the next one
+deletes the wrong name.
+
+```sh
+paisans dns prune               # lists remove and keep, with reasons
+paisans dns prune --execute     # deletes the removes, then confirms each is gone
+```
+
+A record is deleted only when every one of these holds:
+
+| Rule | Why |
+|------|-----|
+| it carries exactly the comment `dns init` writes, `created by paisans dns init` | a record without it was never the toolkit's |
+| it is an A or AAAA record | those are the only types `dns init` creates |
+| its name is `community.domain`, a name under it, or a name the configuration produces now | every media hostname, derived or declared, is under the domain, and so was the shared one per app hostnames replaced |
+| its address is a site's `public_address` or `public_address6` | it pointed at this deployment's own host |
+| no record of its type is wanted at its name | prune removes names, it does not repoint them |
+
+**The comment is necessary and never sufficient.** Deleting every record that
+carries it was rejected: a comment is free text that anyone with the zone can
+write, on a record the toolkit never made, and a rule that trusted it would let
+one edit in a console steer a deletion. The name and address rules tie a record
+to this deployment by things a comment cannot forge. The cost is that a stale
+record outside `community.domain`, at a name the configuration no longer names,
+is kept: nothing left in the configuration says it was ever this deployment's.
+
+A wanted name still pointing at an old address is kept too. Replacing its
+address would be an update, which nothing in the toolkit does; `dns init`
+reports it as a conflict for a human to resolve.
+
+Every record that carries the comment and fails a rule is listed as `keep`
+with each rule it fails, so a record that was expected to go says why it did
+not. Prune lists every record in each zone the deployment's names live in,
+every page of the listing, because it decides from what is missing from the
+configuration as well as from what is in it. After `--execute` it lists each
+zone again and fails if any deleted record is still there; a run that stopped
+partway plans again from a fresh listing, so a re-run resumes.
 
 ### A data site's watchdog is declared, not assumed
 
