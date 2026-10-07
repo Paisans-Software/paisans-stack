@@ -178,10 +178,12 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			return nil, err
 		}
 	}
+	initial := p.etcdInitialFor(site.Name)
 	infra, err := p.renderTemplate("infra-compose.yaml.tmpl", map[string]any{
 		"Site":               site,
 		"Scope":              p.scope(),
-		"EtcdInitialCluster": p.etcdInitialCluster(),
+		"EtcdInitialCluster": initial.Cluster,
+		"EtcdInitialState":   initial.State,
 		"HeartbeatMS":        p.heartbeatMS(),
 		"ElectionTimeoutMS":  p.electionTimeoutMS(),
 		"PostgresVersion":    p.postgresVersion(),
@@ -192,6 +194,9 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		return nil, err
 	}
 	files = append(files, File{Path: base + "srv/infra/compose.yaml", Content: infra, Mode: 0o644})
+	if site.IsEtcd {
+		files = append(files, File{Path: base + EtcdInitialPath, Content: FormatEtcdInitial(initial), Mode: 0o644})
+	}
 
 	if site.IsData {
 		env, err := p.renderTemplate("patroni.env.tmpl", map[string]any{

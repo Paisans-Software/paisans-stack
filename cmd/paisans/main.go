@@ -365,12 +365,26 @@ func runApply(args []string) error {
 		return err
 	}
 
-	rendered, err := render.Build(cfg, secrets)
+	transport := siteTransport(declared, *destination, *sudo)
+
+	// An etcd member keeps the flags it was born with, read from its host,
+	// so that etcd.members growing never changes a running member's compose
+	// file. See render.EtcdInitialPath.
+	var renderOptions []render.Option
+	if contains(cfg.Etcd.Members, *site) {
+		initial, found, err := apply.ReadEtcdInitial(transport)
+		if err != nil {
+			return err
+		}
+		if found {
+			renderOptions = append(renderOptions, render.WithEtcdInitial(*site, initial))
+		}
+	}
+	rendered, err := render.Build(cfg, secrets, renderOptions...)
 	if err != nil {
 		return err
 	}
 
-	transport := siteTransport(declared, *destination, *sudo)
 	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree)}
 	if *keepImages {
 		options = append(options, apply.KeepImages())
@@ -716,4 +730,13 @@ func siteTransport(site config.Site, override string, sudo bool) apply.SSHTransp
 		lines[i] = k.Line
 	}
 	return apply.SSHTransport{User: site.SSH.User, Host: site.SSHHost(), Port: site.SSH.PortOrDefault(), PublicKeys: lines, Sudo: sudo}
+}
+
+func contains(list []string, s string) bool {
+	for _, item := range list {
+		if item == s {
+			return true
+		}
+	}
+	return false
 }

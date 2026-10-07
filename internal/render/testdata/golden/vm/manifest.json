@@ -95,6 +95,11 @@
       "path": "srv/infra/compose.yaml",
       "sha256": "abca1f122be4c022f2e3abe4d14e8322526e05d17486a7e3790457a2ffa497bb",
       "mode": "0644"
+    },
+    {
+      "path": "srv/infra/etcd-initial",
+      "sha256": "ba76b866cca9d84f06ab7bf484b87c06e2ccc96cbbbe83e063dd4ce73971b009",
+      "mode": "0644"
     }
   ]
 }

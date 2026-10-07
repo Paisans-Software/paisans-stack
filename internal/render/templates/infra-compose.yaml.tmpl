@@ -18,8 +18,14 @@ services:
       - --listen-client-urls=http://{{ .Site.Address }}:2379,http://127.0.0.1:2379
       - --initial-advertise-peer-urls=http://{{ .Site.Address }}:2380
       - --advertise-client-urls=http://{{ .Site.Address }}:2379
+{{- /* Both flags are read on this member's first start only, and are
+        repeated from /srv/infra/etcd-initial ever after, so a cluster that
+        grows never changes them on a member already running. A template
+        comment rather than a YAML one: a new line in this file would change
+        the compose file of every deployment applied before it, and apply
+        recreates the stack for that. */}}
       - --initial-cluster={{ .EtcdInitialCluster }}
-      - --initial-cluster-state=new
+      - --initial-cluster-state={{ .EtcdInitialState }}
       - --initial-cluster-token={{ .Scope }}
       # Measured from real round trip through the tunnel, not guessed. The
       # defaults assume one datacenter and produce phantom elections every

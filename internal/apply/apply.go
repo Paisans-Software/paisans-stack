@@ -400,7 +400,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 			rendered[change.Stack] = true
 		}
 		out.Changes = append(out.Changes, change)
-		if change.Kind == Create || change.Kind == Update {
+		if (change.Kind == Create || change.Kind == Update) && !isRecord(rel) {
 			if change.Stack != "" {
 				stacks[change.Stack] = true
 				if isEnvironment(rel) {
@@ -874,6 +874,15 @@ func isEnvironment(rel string) bool {
 // caddy.env as routing reloaded a Caddy that still held the old DNS token.
 func isRouting(rel string) bool {
 	return strings.Contains(rel, "/caddy/") && !isEnvironment(rel)
+}
+
+// isRecord reports whether a file is a record the toolkit keeps for itself
+// beside a stack, which no container mounts or reads. Writing one changes
+// nothing that runs, so it is never a reason to restart or recreate the
+// stack: on a deployment applied before the etcd record existed, treating its
+// first write as a change restarted etcd and Patroni for a file neither reads.
+func isRecord(rel string) bool {
+	return rel == render.EtcdInitialPath
 }
 
 func sum(content string) string {

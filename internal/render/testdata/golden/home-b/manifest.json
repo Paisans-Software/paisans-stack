@@ -32,6 +32,11 @@
       "mode": "0644"
     },
     {
+      "path": "srv/infra/etcd-initial",
+      "sha256": "ba76b866cca9d84f06ab7bf484b87c06e2ccc96cbbbe83e063dd4ce73971b009",
+      "mode": "0644"
+    },
+    {
       "path": "srv/infra/garage/garage.toml",
       "sha256": "f331579f4c8f2624a4c6155ed6c1a0c92eae76830f1331d329dcfb72f2b04206",
       "mode": "0600"
