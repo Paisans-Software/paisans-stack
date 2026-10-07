@@ -68,7 +68,7 @@
     },
     {
       "path": "srv/infra/haproxy/haproxy.cfg",
-      "sha256": "23eea0ef6c45d5fc220999a22382c5e9268eba1d0fddd4e1359d575beecd7540",
+      "sha256": "cf1119a2e05f7cbc59e808efde5a0be1bad66931056c1e7f8130287f03b17b2e",
       "mode": "0644"
     },
     {

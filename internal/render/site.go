@@ -225,6 +225,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"ClusterMembers": p.clusterMembers(),
 			"PostgresPort":   postgresPort,
 			"PatroniAPIPort": patroniAPIPort,
+			"StatsPort":      haproxyStatsPort,
 		})
 		if err != nil {
 			return nil, err

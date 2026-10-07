@@ -72,6 +72,13 @@ const patroniAPIPort = 8008
 // there. It is moved beside the Patroni API instead of moving every app.
 const bgMonPort = 8009
 
+// haproxyStatsPort is where HAProxy serves its statistics, on loopback only.
+// Nothing else the toolkit renders listens on 8404.
+const haproxyStatsPort = 8404
+
+// HAProxyStatsPort is haproxyStatsPort, for the command that reads it.
+const HAProxyStatsPort = haproxyStatsPort
+
 // postgresPort is the cluster's real Postgres port. Applications never use it:
 // they connect to the local HAProxy instead, from the first install, so that
 // adding a site changes a backend list rather than application configuration.
