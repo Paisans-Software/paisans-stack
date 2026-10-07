@@ -99,6 +99,7 @@ func Run(cfg *config.Config, newSite string, transports map[string]apply.Transpo
 		r.ports(t)
 		r.routes(t)
 		r.disk(t)
+		r.storage(t)
 		r.rtt(t)
 	}
 	return Report{Checks: r.checks}, nil
@@ -318,10 +319,10 @@ type port struct {
 
 // wanted is every port the site will bind, by role.
 func (r *runner) wanted() []port {
-	ports := []port{{"udp", 51820, "WireGuard"}}
+	ports := []port{{"udp", render.WireGuardPort, "WireGuard"}}
 	for _, m := range r.cfg.Etcd.Members {
 		if m == r.newSite {
-			ports = append(ports, port{"tcp", 2379, "etcd client"}, port{"tcp", 2380, "etcd peer"})
+			ports = append(ports, port{"tcp", render.EtcdClientPort, "etcd client"}, port{"tcp", render.EtcdPeerPort, "etcd peer"})
 		}
 	}
 	if r.site.Has(config.RoleData) {
@@ -466,6 +467,84 @@ func (r *runner) disk(t apply.Transport) {
 	}
 	r.pass(r.newSite, "disk", "%s free, %s needed (%s's databases, %s, plus %s)",
 		apply.FormatSize(free), apply.FormatSize(need), from, apply.FormatSize(size), apply.FormatSize(diskHeadroom))
+}
+
+// networkFilesystems are filesystem types that live on another machine.
+// Postgres and etcd both make durability promises on fsync: a commit is
+// acknowledged, and an etcd write is agreed, once the bytes are on stable
+// storage. Over NFS, SMB, GlusterFS, CephFS or a FUSE mount of a remote, what
+// fsync means depends on the server, the mount options and the cache, and a
+// network blip stalls fsync for as long as it lasts, which is a missed etcd
+// heartbeat and a failover for nothing. A Docker root there also holds every
+// container's writable layer. Ceph's RBD is a block device and reads as the
+// local filesystem on top of it, so it is not listed and not caught.
+var networkFilesystems = map[string]bool{
+	"nfs": true, "nfs4": true,
+	"cifs": true, "smb3": true, "smbfs": true,
+	"glusterfs": true, "fuse.glusterfs": true,
+	"ceph": true, "fuse.ceph": true, "fuse.cephfs": true,
+	"fuse.sshfs": true, "9p": true, "afs": true, "lustre": true,
+	"beegfs": true, "gpfs": true, "fuse.s3fs": true, "fuse.rclone": true,
+}
+
+// localFilesystems are the block filesystems a host's own disk carries.
+var localFilesystems = map[string]bool{
+	"ext4": true, "ext3": true, "xfs": true, "btrfs": true, "zfs": true,
+	"f2fs": true,
+}
+
+// dockerRootProbe reads Docker's root directory from the daemon, since an
+// operator may have moved it from /var/lib/docker.
+const dockerRootProbe = `docker info --format '{{.DockerRootDir}}'`
+
+// fsProbe names the filesystem holding path, or the deepest directory on the
+// way to it that exists: on a blank host /srv may not exist yet, and its
+// parent is where it will be made.
+func fsProbe(path string) string {
+	return fmt.Sprintf(`d=%s; while [ ! -d "$d" ]; do d=$(dirname "$d"); done; findmnt -no FSTYPE,SOURCE --target "$d"`, quote(path))
+}
+
+// storage checks the new site keeps its state on a local filesystem: Docker's
+// root, which holds every container's writable layer, and /srv, where every
+// stack bind mounts its data. A
+// network filesystem is refused; a type in neither list is warned about,
+// since it is not known to be wrong and refusing it would stop a join over a
+// filesystem this list has not heard of.
+func (r *runner) storage(t apply.Transport) {
+	out, err := t.Run(dockerRootProbe)
+	root := strings.TrimSpace(out)
+	if err != nil || root == "" || !strings.HasPrefix(root, "/") {
+		r.refuse(r.newSite, "storage", "could not read Docker's root directory: %s", firstLine(errText(out, err)))
+		return
+	}
+	var found []string
+	var unknown []string
+	for _, path := range []string{root, "/srv"} {
+		out, err := t.Run(fsProbe(path))
+		fields := strings.Fields(out)
+		if err != nil || len(fields) < 1 {
+			r.refuse(r.newSite, "storage", "could not read the filesystem under %s: %s", path, firstLine(errText(out, err)))
+			return
+		}
+		fstype, source := fields[0], ""
+		if len(fields) > 1 {
+			source = fields[1]
+		}
+		detail := fmt.Sprintf("%s on %s (%s)", path, fstype, source)
+		switch {
+		case networkFilesystems[fstype]:
+			r.refuse(r.newSite, "storage", "%s is network attached. Postgres and etcd acknowledge a write once fsync returns, and over a network filesystem that promise depends on the server and stalls with the network. Put %s on a local disk", detail, path)
+			return
+		case !localFilesystems[fstype]:
+			unknown = append(unknown, detail)
+		}
+		found = append(found, detail)
+	}
+	if len(unknown) > 0 {
+		r.warn(r.newSite, "storage", "%s: not a filesystem known to be local or network attached. Confirm it is a local disk", strings.Join(unknown, ", "))
+		return
+	}
+	r.pass(r.newSite, "storage", "local: %s", strings.Join(found, ", "))
 }
 
 // leaderSize finds the leader through any existing cluster member's /cluster

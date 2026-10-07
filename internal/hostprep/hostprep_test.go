@@ -1071,10 +1071,9 @@ func TestContainerRulesLetTheMonitorReachLocalApps(t *testing.T) {
 		}
 	}
 	// home-a runs the clustered mbin (8080), outline (3000) and pocket-id
-	// (1411), and the pinned writefreely (8080) and oauth2-proxy (4180):
-	// 8080 twice, listed once. 3001 is absent: the monitor does not check
-	// itself.
-	if want := "1411,3000,4180,8080"; strings.Join(got, ",") != want {
+	// (1411), and the pinned writefreely (8081) and oauth2-proxy (4180).
+	// 3001 is absent: the monitor does not check itself.
+	if want := "1411,3000,4180,8080,8081"; strings.Join(got, ",") != want {
 		t.Fatalf("got %v, want %s", got, want)
 	}
 	for _, r := range hostprep.ContainerRules(cfg, "home-b") {

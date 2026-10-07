@@ -74,7 +74,9 @@ apps:
   chat:
     kind: synapse
     hostname: chat.example.org
-    placement: { pinned: home-a }
+    # On vm: a homeserver on a data site collides with Patroni's API on
+    # 8008, which is a different refusal.
+    placement: { pinned: vm }
     gate: members
   # Present only so that the gate the homeserver names exists: an app naming a
   # gate no app renders is a different refusal, and a fixture must break one

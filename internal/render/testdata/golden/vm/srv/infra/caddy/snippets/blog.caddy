@@ -4,6 +4,6 @@
 # blog.example.org. Nothing about this application needs routing
 # beyond the proxy itself, which is worth stating: a snippet that is plain is a
 # fact about the application, not a file waiting to be filled in.
-reverse_proxy 10.44.0.1:8080 {
+reverse_proxy 10.44.0.1:8081 {
 	header_up X-Forwarded-Proto https
 }

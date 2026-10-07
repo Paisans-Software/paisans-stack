@@ -156,13 +156,46 @@ func TestPlacementShapesTheStack(t *testing.T) {
 // a port needs.
 func TestPublishedPortsBindTheMeshAddress(t *testing.T) {
 	cfg := fixture(t)
-	checked := 0
-	for _, f := range build(t).Files {
+	published := publishedPorts(build(t))
+	for _, p := range published {
+		address := cfg.Sites[p.site].Address
+		if !strings.HasPrefix(p.mapping, address+":") || strings.Count(p.mapping, ":") != 2 {
+			t.Errorf("%s publishes %q, which is not bound to %s's mesh address %s", p.path, p.mapping, p.site, address)
+		}
+	}
+	if len(published) == 0 {
+		t.Fatal("no published port was found, so this test verified nothing")
+	}
+}
+
+// No two stacks on one site publish the same address and port. Every app
+// publishes on its site's mesh address, so two kinds sharing a port cannot
+// both start on one site, and the second fails only when its container does.
+// The fixture puts every kind beside every clustered one, so a kind given a
+// port another already uses fails here.
+func TestPublishedPortsAreDistinctPerSite(t *testing.T) {
+	seen := map[string]string{}
+	for _, p := range publishedPorts(build(t)) {
+		host := p.mapping[:strings.LastIndex(p.mapping, ":")]
+		key := p.site + " " + host
+		if other, ok := seen[key]; ok {
+			t.Errorf("%s and %s both publish %s", other, p.path, host)
+		}
+		seen[key] = p.path
+	}
+}
+
+// publishedPort is one ports: entry of a rendered compose file.
+type publishedPort struct{ path, site, mapping string }
+
+// publishedPorts reads every ports: entry from the plan's compose files.
+func publishedPorts(plan *render.Plan) []publishedPort {
+	var out []publishedPort
+	for _, f := range plan.Files {
 		if !strings.HasSuffix(f.Path, "compose.yaml") {
 			continue
 		}
 		site := strings.SplitN(f.Path, "/", 2)[0]
-		address := cfg.Sites[site].Address
 		inPorts := false
 		for _, line := range strings.Split(f.Content, "\n") {
 			trimmed := strings.TrimSpace(line)
@@ -180,16 +213,10 @@ func TestPublishedPortsBindTheMeshAddress(t *testing.T) {
 			if !inPorts {
 				continue
 			}
-			mapping := strings.Trim(strings.TrimPrefix(trimmed, "- "), `"`)
-			if !strings.HasPrefix(mapping, address+":") || strings.Count(mapping, ":") != 2 {
-				t.Errorf("%s publishes %q, which is not bound to %s's mesh address %s", f.Path, mapping, site, address)
-			}
-			checked++
+			out = append(out, publishedPort{f.Path, site, strings.Trim(strings.TrimPrefix(trimmed, "- "), `"`)})
 		}
 	}
-	if checked == 0 {
-		t.Fatal("no published port was found, so this test verified nothing")
-	}
+	return out
 }
 
 // A declared image reaches the compose file, and a service nobody declared
@@ -2450,6 +2477,39 @@ func TestEtcdRendersTheFlagsItWasBornWith(t *testing.T) {
 	// Without the option, the fresh deployment's flags, as before the record.
 	if c := files["home-b/srv/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster-state=new") || !strings.Contains(c, "home-b=http://10.44.0.2:2380,vm=") {
 		t.Errorf("an unrecorded member does not render as a founder:\n%s", c)
+	}
+}
+
+// Every etcd member compacts its history and states its backend quota.
+// Without compaction etcd keeps every revision of Patroni's leader key until
+// the quota raises NOSPACE and writes stop. Both are runtime flags, so a
+// member already running keeps the initial-cluster flags it was born with and
+// its record is untouched: adding them is a recreate of etcd, not a rejoin.
+func TestEtcdCompactsAndStatesItsQuota(t *testing.T) {
+	cfg := fixture(t)
+	born := render.EtcdInitial{State: render.EtcdStateNew, Cluster: "home-a=http://10.44.0.1:2380"}
+	plan, err := render.Build(cfg, fixtureSecrets(t), render.WithEtcdInitial("home-a", born))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+	for _, site := range cfg.Etcd.Members {
+		compose := files[site+"/srv/infra/compose.yaml"]
+		for _, flag := range []string{
+			"- --auto-compaction-mode=periodic\n",
+			"- --auto-compaction-retention=1h\n",
+			"- --quota-backend-bytes=2147483648\n",
+		} {
+			if !strings.Contains(compose, flag) {
+				t.Errorf("%s's etcd lacks %q", site, strings.TrimSpace(flag))
+			}
+		}
+	}
+	if got, ok := render.ParseEtcdFlags(files["home-a/srv/infra/compose.yaml"]); !ok || got != born {
+		t.Errorf("the compose file's initial flags read back as %+v, want %+v", got, born)
+	}
+	if got, ok := render.ParseEtcdInitial(files["home-a/"+render.EtcdInitialPath]); !ok || got != born {
+		t.Errorf("the record changed: %+v", got)
 	}
 }
 

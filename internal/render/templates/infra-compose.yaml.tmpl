@@ -14,10 +14,10 @@ services:
       - /usr/local/bin/etcd
       - --name={{ .Site.Name }}
       - --data-dir=/var/lib/etcd
-      - --listen-peer-urls=http://{{ .Site.Address }}:2380
-      - --listen-client-urls=http://{{ .Site.Address }}:2379,http://127.0.0.1:2379
-      - --initial-advertise-peer-urls=http://{{ .Site.Address }}:2380
-      - --advertise-client-urls=http://{{ .Site.Address }}:2379
+      - --listen-peer-urls=http://{{ .Site.Address }}:{{ .EtcdPeerPort }}
+      - --listen-client-urls=http://{{ .Site.Address }}:{{ .EtcdClientPort }},http://127.0.0.1:{{ .EtcdClientPort }}
+      - --initial-advertise-peer-urls=http://{{ .Site.Address }}:{{ .EtcdPeerPort }}
+      - --advertise-client-urls=http://{{ .Site.Address }}:{{ .EtcdClientPort }}
 {{- /* Both flags are read on this member's first start only, and are
         repeated from /srv/infra/etcd-initial ever after, so a cluster that
         grows never changes them on a member already running. A template
@@ -32,6 +32,13 @@ services:
       # time a home connection hiccups.
       - --heartbeat-interval={{ .HeartbeatMS }}
       - --election-timeout={{ .ElectionTimeoutMS }}
+{{- /* Runtime flags, read on every start, unlike the initial-cluster pair
+        above: changing them recreates this member and nothing else. See
+        etcdCompactionRetention and etcdQuotaBackendBytes in
+        internal/render/etcd.go for the values and their reasons. */}}
+      - --auto-compaction-mode=periodic
+      - --auto-compaction-retention={{ .EtcdCompactionRetention }}
+      - --quota-backend-bytes={{ .EtcdQuotaBackendBytes }}
     volumes:
       - /srv/infra/etcd:/var/lib/etcd
 {{- end }}

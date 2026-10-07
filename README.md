@@ -1175,6 +1175,27 @@ claims it is. It also means `wg0` has to be up before the app stacks start,
 because Docker cannot publish on an address the host does not have yet; that
 is the ordering that step 4 under *`init`, one site, no mesh* already requires.
 
+**Two things on one site binding the same port is refused (`port-collision`).**
+Infrastructure runs with host networking and every app publishes on its site's
+mesh address, so on one site they all share one set of ports, and whichever
+starts second fails only when its container does. That is how it was found on
+a real data and apps site: Spilo's bg_mon took 8080 before Mbin could publish
+there. `validate` lists what each site binds (WireGuard's 51820/udp, etcd's
+2379 and 2380, Postgres, the Patroni API and bg_mon on a data site, HAProxy's
+cluster and stats ports where it runs, Garage's 3900 to 3903, Caddy's 80 and
+443 on every address of the gateway, and every app's published ports, counting
+a clustered app on every apps site and a pinned one on its own) and refuses
+any two that overlap, naming both and the port. The list is read from the same
+constants the rendered files use, so the check cannot drift from what lands on
+a host. It is a refusal rather than a warning because the configuration cannot
+work as written. The fix is the operator's: pin one of the two elsewhere, or
+move the role that brings the other. The alternative, giving the renderer
+freedom to pick a free port, was rejected: a port that depends on what else is
+on the site changes when an app is added, and the gateway's routes with it.
+Some combinations are refused by this today, and a homeserver pinned to a data
+site is the one worth knowing: Synapse's 8008 is the Patroni API's, and MAS's
+8009 is bg_mon's.
+
 **Leaving `gate` out of an app's stanza means the same thing as `gate: none`:
 ungated, reachable by anyone who can resolve the hostname.** That default has
 to be stated here, not only in a doc comment, because it is the one setting
@@ -2195,6 +2216,31 @@ people. Restarting those services unconditionally was rejected: a container
 the primary that is a second failover. A forced recreate (`--recreate`, or a
 stack a stopped apply owes) replaces every container, so it needs none of
 this.
+
+### etcd compacts its history and states its quota
+
+etcd keeps every revision of every key until it is compacted, and its auto
+compaction is off by default. Patroni rewrites its leader key on every loop, so
+an uncompacted store grows until it reaches the backend quota, raises a
+`NOSPACE` alarm and refuses writes; Patroni then cannot renew the leader lock
+and the primary demotes itself. Every member is rendered with
+`--auto-compaction-mode=periodic --auto-compaction-retention=1h` and
+`--quota-backend-bytes=2147483648` (flag names from etcd v3.5.16,
+`server/etcdmain/help.go`). An hour is far more history than anything reads.
+The quota is etcd's own default, 2 GiB (`DefaultQuotaBytes` in
+`server/etcdserver/quota.go`), made explicit so that a later etcd changing its
+default does not move it silently. A smaller one was rejected: compaction
+frees pages for reuse but the file never shrinks without a defrag, which
+nothing schedules, so a tight quota is an alarm waiting on a burst.
+
+These are runtime flags, read on every start, unlike `--initial-cluster` and
+`--initial-cluster-state`, which etcd reads only on a member's first start and
+which `/srv/infra/etcd-initial` keeps fixed. Changing them is an ordinary
+change to the infrastructure compose file: `apply` recreates the `etcd`
+service on the site it is applying and leaves the record alone. On a live
+deployment that is one member at a time, one site per apply, and with three
+voters a member down for its recreate leaves the other two as quorum. Apply
+the sites one after another, not at once.
 
 ### A stopped apply force-recreates what it still owes
 
@@ -3295,6 +3341,7 @@ at, and "could not look" is not "looked and it was fine".
 | Ports | new site | `ss -Hltnu` | anything listens on 51820/udp; on 2379 or 2380 for an etcd member; on 5432, 8008 or 8009 for a data site; on the cluster port where the site runs HAProxy |
 | Routes | new site | `ip -j route` | a route overlaps `mesh.subnet`, other than one through `wg0` |
 | Disk | new data site | the leader's `sum(pg_database_size(...))`, through its Patroni container's `psql`; `df` on the deepest existing directory towards `/srv/infra/postgres` | free space is under that plus 2 GiB |
+| Storage | new site | `docker info --format '{{.DockerRootDir}}'`, then `findmnt -no FSTYPE,SOURCE --target` on Docker's root and on `/srv` (or the deepest directory towards it that exists) | either is a network filesystem (`nfs`, `nfs4`, `cifs`, `smb3`, `glusterfs`, `ceph`, `fuse.sshfs` and the others preflight lists); a type that is neither that nor a local block filesystem (`ext4`, `xfs`, `btrfs`, `zfs`, `f2fs`) warns |
 | Round trip | new site to every other site | three TCP connects to the site's `public_address` on its ssh port, timed with bash's `/dev/tcp` and `$EPOCHREALTIME`; the median is used | `etcd.election_timeout_ms` is under five round trips |
 
 Three of these need a word.
@@ -3314,10 +3361,21 @@ spec (`docs/specs/2026-10-07-site-add.md`) checks them instead, because a
 derived value would change the rendered etcd flags on every member, and
 changing those on a running cluster is an operation of its own.
 
-**Two items above are covered indirectly or not at all.** Docker's presence
-is part of `host prepare`'s plan, so "prepared" covers it. Whether storage is
-local rather than network attached is not checked: nothing on a host says so
-reliably.
+**Docker's presence is covered indirectly**: it is part of `host prepare`'s
+plan, so "prepared" covers it.
+
+**Storage is judged by filesystem type, and a network one is refused.**
+Postgres acknowledges a commit, and etcd agrees a write, once fsync returns.
+On NFS, SMB, GlusterFS, CephFS or a FUSE mount of a remote, what fsync
+promises depends on the server, its export options and the client's cache,
+and a network blip stalls it for as long as the blip lasts, which for etcd is
+a missed heartbeat and an election for nothing. Docker's root is checked as
+well as `/srv`, because it holds every container's writable layer and an
+operator may have moved it. A type in neither list warns rather than refuses:
+it is not known to be wrong, and a list of every filesystem is not one this
+toolkit can keep. The check cannot see through a block device: an iSCSI LUN
+or a Ceph RBD image carries an ordinary `ext4` or `xfs` and passes, so a
+network disk presented as a local one is still the operator's to know about.
 
 The ports check reads listeners, not owners. After the mesh stage the new
 site's own `wg0` holds 51820/udp, so preflight is the gate for a join that

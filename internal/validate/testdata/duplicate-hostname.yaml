@@ -75,7 +75,9 @@ apps:
     hostname: chat.example.org
     hostnames:
       wellknown: example.org
-    placement: { pinned: home-b }
+    # On vm: a homeserver on a data site collides with Patroni's API on
+    # 8008, which is a different refusal.
+    placement: { pinned: vm }
     gate: none
   blog:
     kind: writefreely

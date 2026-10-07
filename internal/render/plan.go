@@ -37,7 +37,10 @@ var appPort = map[config.Kind]int{
 	config.KindOutline:     3000,
 	config.KindPocketID:    1411,
 	config.KindSynapse:     8008,
-	config.KindWriteFreely: 8080,
+	// Not WriteFreely's default 8080: Mbin publishes 8080, and a pinned blog
+	// on an apps site sits beside a clustered Mbin. WriteFreely reads its
+	// port from the config.ini this toolkit renders, so the number is ours.
+	config.KindWriteFreely: 8081,
 	// Not the fork's default 3000: Outline publishes 3000, and two apps on
 	// one site publish on the same mesh address.
 	config.KindUptime: 3001,

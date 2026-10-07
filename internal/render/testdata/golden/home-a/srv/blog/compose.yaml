@@ -18,7 +18,7 @@ services:
     # public address is reachable from the internet whatever ufw says. The
     # gateway, over the mesh, is the only thing that should reach it.
     ports:
-      - "10.44.0.1:8080:8080"
+      - "10.44.0.1:8081:8081"
     volumes:
       - /srv/blog/data:/data
       # WriteFreely reads a file, not an environment. Its SSO client secret is

@@ -25,6 +25,9 @@ services:
       # time a home connection hiccups.
       - --heartbeat-interval=200
       - --election-timeout=2000
+      - --auto-compaction-mode=periodic
+      - --auto-compaction-retention=1h
+      - --quota-backend-bytes=2147483648
     volumes:
       - /srv/infra/etcd:/var/lib/etcd
   patroni:

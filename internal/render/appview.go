@@ -287,7 +287,7 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	garage := garageEndpointHost(p)
 	var s3Endpoint string
 	if garage != "" {
-		s3Endpoint = fmt.Sprintf("http://%s:3900", garage)
+		s3Endpoint = fmt.Sprintf("http://%s:%d", garage, garageS3Port)
 	}
 	v.S3 = s3Values{
 		// Mbin and the blog write to this address themselves, server side,

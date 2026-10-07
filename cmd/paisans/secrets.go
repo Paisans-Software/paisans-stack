@@ -55,10 +55,8 @@ func runSecretsSet(args []string, stdin io.Reader) error {
 		return fmt.Errorf("secrets set: the value is read from stdin and never from an argument, which shell history and `ps` would both keep. Got extra argument(s)")
 	}
 
-	if file, ok := stdin.(*os.File); ok {
-		if info, err := file.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
-			return fmt.Errorf("secrets set: stdin is a terminal, so the value would be typed where it can be seen and kept in scrollback. Pipe it in, as in `security find-generic-password -s <item> -w | paisans secrets set %s`", key)
-		}
+	if stdinIsTerminal(stdin) {
+		return fmt.Errorf("secrets set: stdin is a terminal, so the value would be typed where it can be seen and kept in scrollback. Pipe it in, as in `security find-generic-password -s <item> -w | paisans secrets set %s`", key)
 	}
 
 	cfg, err := config.Load(*configPath)

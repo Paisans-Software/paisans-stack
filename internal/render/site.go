@@ -181,15 +181,19 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	}
 	initial := p.etcdInitialFor(site.Name)
 	infra, err := p.renderTemplate("infra-compose.yaml.tmpl", map[string]any{
-		"Site":               site,
-		"Scope":              p.scope(),
-		"EtcdInitialCluster": initial.Cluster,
-		"EtcdInitialState":   initial.State,
-		"HeartbeatMS":        p.heartbeatMS(),
-		"ElectionTimeoutMS":  p.electionTimeoutMS(),
-		"PostgresVersion":    p.postgresVersion(),
-		"SpiloTag":           spilo,
-		"CaddyImage":         caddy,
+		"Site":                    site,
+		"Scope":                   p.scope(),
+		"EtcdInitialCluster":      initial.Cluster,
+		"EtcdInitialState":        initial.State,
+		"HeartbeatMS":             p.heartbeatMS(),
+		"ElectionTimeoutMS":       p.electionTimeoutMS(),
+		"PostgresVersion":         p.postgresVersion(),
+		"SpiloTag":                spilo,
+		"CaddyImage":              caddy,
+		"EtcdClientPort":          etcdClientPort,
+		"EtcdPeerPort":            etcdPeerPort,
+		"EtcdCompactionRetention": etcdCompactionRetention,
+		"EtcdQuotaBackendBytes":   etcdQuotaBackendBytes,
 	})
 	if err != nil {
 		return nil, err
@@ -257,6 +261,10 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"Consistency": p.consistency(),
 			"RPCSecret":   rpcSecret,
 			"AdminToken":  p.secrets.Storage.Garage.AdminToken,
+			"S3Port":      garageS3Port,
+			"RPCPort":     garageRPCPort,
+			"WebPort":     garageWebPort,
+			"AdminPort":   garageAdminPort,
 		})
 		if err != nil {
 			return nil, err
@@ -602,6 +610,7 @@ func (p *planner) renderWireGuard(site *siteView) (string, error) {
 		"MeshPrefix": p.cfg.Mesh.Prefix(),
 		"IsRelay":    isRelay,
 		"Peers":      peers,
+		"ListenPort": wireguardPort,
 	})
 }
 
@@ -754,7 +763,7 @@ func (p *planner) etcdInitialCluster() string {
 		if !ok {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s=http://%s:2380", name, site.Address))
+		parts = append(parts, name+"="+EtcdPeerURL(site.Address))
 	}
 	return strings.Join(parts, ",")
 }
@@ -768,7 +777,7 @@ func (p *planner) etcdClientHosts() string {
 		if !ok {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s:2379", site.Address))
+		parts = append(parts, fmt.Sprintf("%s:%d", site.Address, etcdClientPort))
 	}
 	return strings.Join(parts, ",")
 }
