@@ -248,6 +248,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"Site":        site,
 			"Domain":      p.cfg.Community.Domain,
 			"Replication": p.replication(),
+			"Consistency": p.consistency(),
 			"RPCSecret":   rpcSecret,
 			"AdminToken":  p.secrets.Storage.Garage.AdminToken,
 		})
@@ -284,8 +285,8 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 				return nil, err
 			}
 			media, err := p.renderTemplate("media.caddy.snippet.tmpl", map[string]any{
-				"GarageAddress": garageEndpointHost(p),
-				"PublicBuckets": publicBuckets,
+				"GarageAddresses": garageAddresses(p),
+				"PublicBuckets":   publicBuckets,
 			})
 			if err != nil {
 				return nil, err
@@ -787,6 +788,13 @@ func (p *planner) replication() int {
 		return 1
 	}
 	return p.cfg.Storage.Garage.Replication
+}
+
+func (p *planner) consistency() string {
+	if p.cfg.Storage.Garage.Consistency == "" {
+		return config.GarageConsistent
+	}
+	return p.cfg.Storage.Garage.Consistency
 }
 
 func (p *planner) heartbeatMS() int {

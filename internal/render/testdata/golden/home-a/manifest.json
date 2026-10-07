@@ -63,7 +63,7 @@
     },
     {
       "path": "srv/infra/garage/garage.toml",
-      "sha256": "cba1cde1a7257a66a70314168c4591b0d84f1583443dc298991c4cd7d1ca8b31",
+      "sha256": "aed1744033462e79f5b7136cb2d4069d815fb704373ba1c76f145897da4c21fd",
       "mode": "0600"
     },
     {

@@ -9,7 +9,17 @@ data_dir = "/var/lib/garage/data"
 db_engine = "lmdb"
 
 replication_factor = {{ .Replication }}
+# consistent, degraded or dangerous. dangerous confirms an upload once one copy
+# exists, so uploads continue while a site is down. Garage refuses to start if
+# replication_factor differs from the one its stored layout was built with, so
+# it changes only through `paisans storage add --change-replication`; this one
+# is read at every start and changes with an ordinary apply.
+consistency_mode = "{{ .Consistency }}"
 
+# No bootstrap_peers: an entry is <node public key>@<address>, and a node makes
+# its key on first start, so no configuration can name it in advance. `paisans
+# storage add` connects the nodes once, and each keeps the peers it has met in
+# meta/peer_list, redialled after a restart.
 rpc_bind_addr = "{{ .Site.Address }}:3901"
 rpc_public_addr = "{{ .Site.Address }}:3901"
 rpc_secret = "{{ .RPCSecret }}"
