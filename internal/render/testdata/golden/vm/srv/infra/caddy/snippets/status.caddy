@@ -1,0 +1,13 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Routing for status, imported by the gateway's block for
+# status.example.org. The UI, sign in, the OIDC callback and heartbeat URLs
+# (/ping/*) pass. The status page, badges, /metrics and the API are refused
+# here whatever the app's own settings say: the status page lists every
+# monitor, mesh addresses included, and /metrics is public whenever no API
+# token exists, which under this toolkit is always.
+@refused path /status* /badge/* /metrics /api/*
+respond @refused 404
+reverse_proxy 10.44.0.3:3001 {
+	header_up X-Forwarded-Proto https
+}

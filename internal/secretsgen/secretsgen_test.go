@@ -457,14 +457,15 @@ func TestMbinOAuthKeypairIsGeneratedOnceAndOpens(t *testing.T) {
 	}
 }
 
-// withUptime is the fixture deployment plus an uptime app and, when smtp is
-// non-nil, a deployment wide smtp block.
+// withUptime is the fixture deployment with its uptime app replaced by a
+// plain one and its smtp block replaced by smtp, or removed when nil.
 func withUptime(t *testing.T, smtp *config.SMTP) *config.Config {
 	t.Helper()
 	cfg := load(t)
 	cfg.Apps["status"] = config.App{Kind: config.KindUptime, Hostname: "status.example.org",
 		Placement: config.Placement{Mode: config.PlacementPinned, Site: "vm"},
 		Settings:  map[string]any{"admin_group": "admins"}}
+	cfg.SMTP = config.SMTP{}
 	if smtp != nil {
 		cfg.SMTP = *smtp
 	}

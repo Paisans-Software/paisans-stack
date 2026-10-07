@@ -69,6 +69,10 @@ id.example.org {
 	import /etc/caddy/snippets/auth.caddy
 }
 
+status.example.org {
+	import /etc/caddy/snippets/status.caddy
+}
+
 talk-media.example.org {
 	import /etc/caddy/snippets/talk-media.caddy
 }

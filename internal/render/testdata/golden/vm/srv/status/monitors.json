@@ -1,0 +1,274 @@
+{
+  "monitors": [
+    {
+      "name": "auth — public",
+      "monitor_type": "active",
+      "url": "https://id.example.org/healthz",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "204",
+      "follow_redirects": false,
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "auth — direct (home-a)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.1:1411/healthz",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "204",
+      "follow_redirects": false,
+      "request_headers": {
+        "Host": "id.example.org",
+        "X-Forwarded-Proto": "https"
+      },
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "auth — direct (home-b)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.2:1411/healthz",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "204",
+      "follow_redirects": false,
+      "request_headers": {
+        "Host": "id.example.org",
+        "X-Forwarded-Proto": "https"
+      },
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "blog — public",
+      "monitor_type": "active",
+      "url": "https://blog.example.org/",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200,302",
+      "follow_redirects": false,
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "blog — direct (home-a)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.1:8080/",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200,302",
+      "follow_redirects": false,
+      "request_headers": {
+        "Host": "blog.example.org",
+        "X-Forwarded-Proto": "https"
+      },
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "chat — public",
+      "monitor_type": "active",
+      "url": "https://chat.example.org/health",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200",
+      "follow_redirects": false,
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "chat — direct (vm)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.3:8008/health",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200",
+      "follow_redirects": false,
+      "request_headers": {
+        "Host": "chat.example.org",
+        "X-Forwarded-Proto": "https"
+      },
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "docs — public",
+      "monitor_type": "active",
+      "url": "https://docs.example.org/_health",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200",
+      "follow_redirects": false,
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "docs — direct (home-a)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.1:3000/_health",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200",
+      "follow_redirects": false,
+      "request_headers": {
+        "Host": "docs.example.org",
+        "X-Forwarded-Proto": "https"
+      },
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "docs — direct (home-b)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.2:3000/_health",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200",
+      "follow_redirects": false,
+      "request_headers": {
+        "Host": "docs.example.org",
+        "X-Forwarded-Proto": "https"
+      },
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "gate — public",
+      "monitor_type": "active",
+      "url": "https://gate.example.org/ping",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200",
+      "follow_redirects": false,
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "gate — direct (home-a)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.1:4180/ping",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200",
+      "follow_redirects": false,
+      "request_headers": {
+        "Host": "gate.example.org",
+        "X-Forwarded-Proto": "https"
+      },
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "talk — public",
+      "monitor_type": "active",
+      "url": "https://talk.example.org/",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200,302",
+      "follow_redirects": false,
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "talk — direct (home-a)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.1:8080/",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200,302",
+      "follow_redirects": false,
+      "request_headers": {
+        "Host": "talk.example.org",
+        "X-Forwarded-Proto": "https"
+      },
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "talk — direct (home-b)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.2:8080/",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200,302",
+      "follow_redirects": false,
+      "request_headers": {
+        "Host": "talk.example.org",
+        "X-Forwarded-Proto": "https"
+      },
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "web — public",
+      "monitor_type": "active",
+      "url": "https://web.example.org/version",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200",
+      "follow_redirects": false,
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "web — direct (home-b)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.2:80/version",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200",
+      "follow_redirects": false,
+      "request_headers": {
+        "Host": "web.example.org",
+        "X-Forwarded-Proto": "https"
+      },
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "home-a — ping",
+      "monitor_type": "ping",
+      "ping_host": "10.44.0.1",
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "home-b — ping",
+      "monitor_type": "ping",
+      "ping_host": "10.44.0.2",
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    }
+  ],
+  "settings": {
+    "smtp_from_address": "hello@example.org",
+    "smtp_from_name": "Example Status",
+    "smtp_host": "smtp.example.org",
+    "smtp_pass": "fixture-not-a-secret-smtp",
+    "smtp_port": 587,
+    "smtp_secure": false,
+    "smtp_user": "robot@example.org",
+    "status_page_enabled": false
+  }
+}

@@ -1,0 +1,33 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# The uptime monitor, pinned to {{ .App.Site }}. Its monitors are not configured
+# here or in its UI: they are seeded from monitors.json, which `apply` renders
+# from paisans.yaml, at every start.
+#
+# OWNERSHIP. It starts as root on purpose. data/ is a bind mount Docker
+# creates as root, and monitors.json is a root owned 0600 file because it
+# carries the SMTP password. The fork's entrypoint hands both to `node` and
+# drops to it for good. An image older than that entrypoint (1.1.0-oidc.1)
+# ignores the seed and simply runs as root.
+name: paisans-{{ .App.Name }}
+
+services:
+  app:
+    image: {{ .Image "app" }}
+    restart: unless-stopped
+    user: "0:0"
+    # The image declares its own healthcheck on /healthz (Dockerfile at
+    # 1.1.0-oidc.1), which apply's health gate reads.
+    env_file:
+      - .env
+    # ICMP for the per site ping checks.
+    cap_add:
+      - NET_RAW
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says.
+    ports:
+      - "{{ .MeshAddress }}:{{ .App.Port }}:{{ .App.Port }}"
+    volumes:
+      - {{ .DataPath }}/data:/data
+      - {{ .DataPath }}/monitors.json:/seed/monitors.json:ro
