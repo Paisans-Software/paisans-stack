@@ -38,6 +38,8 @@ Usage:
   paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                    [--ssh <destination>] [--overwrite <path>]... [--recreate <stack>]...
                    [--min-free <size>] [--keep-images] [--execute]
+  paisans site add <site> [--config paisans.yaml] [--secrets secrets.enc.yaml]
+               [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
   paisans preflight --site <new site> [--config paisans.yaml]
@@ -64,6 +66,11 @@ Commands:
              Installs only what is missing. Writes nothing without --execute.
   apply      Compare one site's rendered artifacts with what is on that host
              and show what would change. Writes nothing without --execute.
+  site       add: join a new data site to the running cluster in six gated
+             stages: preflight, mesh, etcd (learners, then promoted), the
+             Patroni replica, synchronous mode, HAProxy. Reads every site
+             and plans only what differs, so a re-run resumes. Writes
+             nothing without --execute.
   storage    Provision object storage on a site: the cluster layout, each
              app's key, and its bucket. Creates only what is missing.
              Writes nothing without --execute.
@@ -91,8 +98,8 @@ Commands:
              secret in the secrets file. The secret is never printed.
              Writes nothing without --execute. Mbin only, so far.
 
-host prepare, apply, storage init, app admin create, oidc client create,
-preflight and failover test are the only commands that reach a host.
+host prepare, apply, site add, storage init, app admin create, oidc client
+create, preflight and failover test are the only commands that reach a host.
 Each reads it to plan, and changes it only with --execute. dns init reaches no
 host, only the DNS provider's API, and changes it only with --execute.
 Everything else writes files locally and stops.
@@ -119,6 +126,12 @@ func main() {
 			os.Exit(2)
 		}
 		err = runHostPrepare(os.Args[3:])
+	case "site":
+		if len(os.Args) < 3 || os.Args[2] != "add" {
+			fmt.Fprintf(os.Stderr, "paisans: site takes one subcommand, add\n\n%s", usage)
+			os.Exit(2)
+		}
+		err = runSiteAdd(os.Args[3:])
 	case "secrets":
 		err = runSecrets(os.Args[2:])
 	case "app":
@@ -377,12 +390,26 @@ func runApply(args []string) error {
 		return err
 	}
 
-	rendered, err := render.Build(cfg, secrets)
+	transport := siteTransport(declared, *destination, *sudo)
+
+	// An etcd member keeps the flags it was born with, read from its host,
+	// so that etcd.members growing never changes a running member's compose
+	// file. See render.EtcdInitialPath.
+	var renderOptions []render.Option
+	if contains(cfg.Etcd.Members, *site) {
+		initial, found, err := apply.ReadEtcdInitial(transport)
+		if err != nil {
+			return err
+		}
+		if found {
+			renderOptions = append(renderOptions, render.WithEtcdInitial(*site, initial))
+		}
+	}
+	rendered, err := render.Build(cfg, secrets, renderOptions...)
 	if err != nil {
 		return err
 	}
 
-	transport := siteTransport(declared, *destination, *sudo)
 	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree)}
 	if *keepImages {
 		options = append(options, apply.KeepImages())
@@ -398,6 +425,27 @@ func runApply(args []string) error {
 	plan.WithDatabases(databases)
 	plan.Progress = os.Stdout
 	printPlan(plan)
+
+	// A site running etcd, or configured to, is checked against the live
+	// membership. Only this site is asked unless it is a configured member,
+	// so applying a site with nothing to do with etcd reaches no other host.
+	transports := map[string]apply.Transport{*site: transport}
+	if contains(cfg.Etcd.Members, *site) {
+		for _, name := range cfg.Etcd.Members {
+			if name != *site {
+				transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
+			}
+		}
+	}
+	members, found, err := apply.ProbeEtcdMembers(cfg, *site, transports)
+	if err != nil {
+		return err
+	}
+	if found {
+		if err := apply.EtcdRefusal(cfg, plan, members); err != nil {
+			return err
+		}
+	}
 
 	if !*execute {
 		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone {
@@ -728,4 +776,13 @@ func siteTransport(site config.Site, override string, sudo bool) apply.SSHTransp
 		lines[i] = k.Line
 	}
 	return apply.SSHTransport{User: site.SSH.User, Host: site.SSHHost(), Port: site.SSH.PortOrDefault(), PublicKeys: lines, Sudo: sudo}
+}
+
+func contains(list []string, s string) bool {
+	for _, item := range list {
+		if item == s {
+			return true
+		}
+	}
+	return false
 }

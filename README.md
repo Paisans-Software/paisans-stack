@@ -2244,16 +2244,114 @@ So a join is staged, and every stage is a gate:
 |-------|------------------------|
 | 1. Preflight | every check passes |
 | 2. WireGuard pushed and up | **handshake verified in both directions, from both sides** |
-| 3. etcd one → three, atomically | all three members report healthy |
+| 3. etcd one to three, one learner at a time | all three members report healthy |
 | 4. Spilo joins, clones, streams | replication lag converging |
-| 5. HAProxy backends, watchdog, Garage | smoke test passes |
+| 5. Synchronous mode, when configured | a `Sync Standby` exists |
+| 6. HAProxy backends | HAProxy routes only to the primary |
 
 Failing at stage 2 rolls back cleanly: drop the peer entries, leave the running
 cluster untouched. Failing at stage 3 or later is harder to undo, which is
 exactly why stage 2's gate must be strict.
 
-`site add` must be **idempotent** — re-running after a fixed network problem
+`site add` must be **idempotent**: re-running after a fixed network problem
 resumes rather than restarting.
+
+### `site add` is built for sites that dial each other
+
+`paisans site add <site>` implements the table above for one case: a new site
+with `roles: [data]` joining a running cluster of one, an existing site gaining
+the witness role in the same join, and **every site declaring an `endpoint`**.
+A site without one is refused, naming the relay design above, which is still a
+design: the first deployment that needs it builds it. Apps on the new site, a
+second Garage node and removing a site are out of scope too, each refused or
+left alone. `docs/specs/2026-10-07-site-add.md` is the approved specification.
+
+```
+paisans site add home-b             # every stage, its steps and its gate
+paisans site add home-b --execute   # runs them, stopping at the first failed gate
+```
+
+The configuration is the end state, and `site add` plans only what differs
+from the live deployment: the `wg0.conf` on each site, `etcdctl member list`,
+`patronictl list` and `show-config`, and HAProxy's statistics. A stage the live
+state already satisfies plans no steps, and its gate is still checked, so a
+re-run proves each stage again and resumes at the first gate that fails.
+Preflight is the exception: it checks a host the join has not touched, and once
+stage 2 has run the new site's own `wg0` holds 51820/udp, which the ports check
+refuses. A join is recognised as started from what only stage 2 or later leaves
+(the new site's `wg0.conf`, or its etcd member), and the plan says preflight is
+skipped and why.
+
+| Stage | What runs | Gate |
+|-------|-----------|------|
+| 2. Mesh | each site's `wg0.conf`, as a scoped `apply`, then `wg syncconf` (the new site's `wg0` is started) | a handshake younger than two minutes for every pair, read on both ends, and a ping of the new mesh address from every site |
+| 3. etcd | for each joiner, witness first: `member add --learner`, its compose file and record written, `up -d etcd` alone, `member promote` retried until etcd accepts it | `endpoint health --cluster` all healthy, and the voters are exactly `etcd.members` |
+| 4. Replica | the new site's remaining files by a whole `apply`, then `up -d`, which starts Patroni beside the running etcd | the member `streaming`, its replay lag zero or falling over three samples five seconds apart |
+| 5. Cluster configuration | `patronictl edit-config --force -q -s synchronous_mode=true -s synchronous_mode_strict=<value>` when the live values differ | a member with the role `Sync Standby` |
+| 6. HAProxy | `haproxy.cfg` as a scoped `apply`, then HAProxy alone restarted | the statistics list every cluster site, the leader `UP` and every replica `DOWN` |
+
+**Learners, one at a time.** A full voter added to a cluster of one makes the
+quorum two before it has started; if it then fails to start, the cluster stops.
+A learner does not vote, so the cluster keeps its quorum while it catches up,
+and etcd refuses the promotion until it has (`ErrLearnerNotReady`, etcd
+v3.5.16), which is why the promotion is retried with a doubling delay rather
+than timed. Rejected: both new members added as voters at once, where any
+failure costs quorum, and a re-bootstrap at three, which is an outage for a
+routine growth step. Between the witness's promotion and the new site's, the
+cluster has two voters; that is the price of one learner at a time, and it
+lasts one stage.
+
+**A member keeps the flags it was born with.** etcd reads
+`--initial-cluster` and `--initial-cluster-state` only on a member's first
+start and ignores them once its data directory exists. They are inert on a
+running member, so the only thing changing them can do is make `apply` see a
+new compose file and recreate a healthy member. Each etcd host therefore has
+`/srv/infra/etcd-initial`, a rendered file holding the two flags its member
+started with, which every later render repeats. A founder records `new` and the
+founding set. A joiner records `existing` and the membership **right after its
+own `member add`**, which etcd requires exactly: a joiner whose
+`--initial-cluster` counts a different number of members than the cluster has
+is refused with "member count is unequal" (etcd v3.5.16,
+`membership/cluster.go`, `ValidateClusterAndAssignIDs`). When the witness joins
+first, the new data site is not a member yet, so the two joiners' flags differ.
+A host applied before the record existed has its compose file's own flags read
+instead, so its first apply under this rule changes nothing it runs. Writing
+the record never acts on a stack, because no container reads it.
+
+The specification named the file `etcd-founders` and gave every joiner all of
+`etcd.members`; both were corrected here for the reason above. Rejected:
+deciding `new` or `existing` from whether a data directory is non empty, which
+flips a running founder's flag on its first apply and recreates it.
+
+**`apply` refuses a half grown cluster.** While the live membership (learners
+included) differs from `etcd.members`, `apply` on a site that is, or is
+configured to be, an etcd member refuses to write or act on its infrastructure
+stack, and says to run `site add`. An operator who edited the configuration
+and ran `apply` first would otherwise start an etcd the cluster never admitted.
+An app only change on the same site is let through.
+
+**Existing sites move one file each.** A whole `apply` of the primary's site
+would recreate its Patroni, because `patroni.env` now lists every etcd member:
+a failover in the middle of a join. So stages 2 and 6 use a scoped `apply`,
+which compares, refuses on conflict, writes and records exactly like a whole
+one, but only for the named file, and runs only the one command that file
+needs. The primary's `patroni.env` is left, and the plan says so: its Patroni
+keeps working against its own etcd member, which stays a voter throughout, and
+a later `apply` of that site, when a primary restart is acceptable, brings it
+up to date.
+
+**HAProxy is restarted, not reloaded.** Its configuration is a single file bind
+mount, `apply` replaces a file by renaming a new one over it, and a bind mount
+of a single file keeps the inode it started with (moby/moby#15793), so a
+reloaded HAProxy would read the old file. Restarting HAProxy alone remounts it;
+`apply`'s own restart action would restart etcd and Patroni with it. The gate
+reads HAProxy's statistics from a listener on `127.0.0.1:8404`, as CSV. That
+listener is new in every rendered `haproxy.cfg`, so a deployment that applies
+before growing restarts its infrastructure stack once for it. Rejected: a
+stats socket, which needs a client the image may not carry, and a query
+through HAProxy for `pg_is_in_recovery()`, which needs the superuser password
+over TCP and shows only that a primary answered, not that a replica is out of
+the rotation.
 
 ### Preflight
 

@@ -57,13 +57,18 @@
       "mode": "0644"
     },
     {
+      "path": "srv/infra/etcd-initial",
+      "sha256": "ba76b866cca9d84f06ab7bf484b87c06e2ccc96cbbbe83e063dd4ce73971b009",
+      "mode": "0644"
+    },
+    {
       "path": "srv/infra/garage/garage.toml",
       "sha256": "cba1cde1a7257a66a70314168c4591b0d84f1583443dc298991c4cd7d1ca8b31",
       "mode": "0600"
     },
     {
       "path": "srv/infra/haproxy/haproxy.cfg",
-      "sha256": "23eea0ef6c45d5fc220999a22382c5e9268eba1d0fddd4e1359d575beecd7540",
+      "sha256": "cf1119a2e05f7cbc59e808efde5a0be1bad66931056c1e7f8130287f03b17b2e",
       "mode": "0644"
     },
     {

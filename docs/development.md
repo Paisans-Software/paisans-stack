@@ -14,7 +14,7 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 ## Run
 
 validate, init and render touch nothing outside the working directory.
-`host prepare`, `apply`, `storage init`, `app admin create` and `oidc client
+`host prepare`, `apply`, `site add`, `storage init`, `app admin create` and `oidc client
 create` reach a machine, and each changes it only with `--execute`. `preflight`
 reaches every site and never changes one; `failover test` changes which site
 is primary, only with `--execute`. `dns init` reaches no machine, only
@@ -271,6 +271,42 @@ is why `internal/acme` holds the exact lines for each provider rather than
 building one shared form (github.com/caddy-dns/cloudflare, README "Caddyfile"
 section; github.com/caddy-dns/desec, README "Caddyfile" section).
 
+## `site add`, and why it is not a loop of applies
+
+```
+paisans site add home-b             # every stage, its steps and its gate
+paisans site add home-b --execute
+```
+
+`internal/siteadd` builds the join from live state and runs it stage by stage;
+README.md's *`site add` is built for sites that dial each other* has the
+design. What the code relies on, and what is easy to undo:
+
+* **Existing sites are changed by scoped applies** (`apply.Scope`), never whole
+  ones. A whole apply of the primary's site would recreate Patroni for its
+  new `ETCD3_HOSTS`, a failover in the middle of a join. A scoped plan records
+  its files in the same manifest, keeping every other entry, so the next whole
+  apply sees them as its own, and `apply.Rollback` restores what one updated.
+* **Every etcd host has `/srv/infra/etcd-initial`**, the flags its member was
+  born with. `apply` and `site add` read it (`apply.ReadEtcdInitial`, falling
+  back to the compose file's own flags) and hand it to `render.Build` with
+  `render.WithEtcdInitial`; without it a member renders as a founder of
+  `etcd.members`. `isRecord` in `internal/apply` keeps its write from acting on
+  the stack.
+* **`apply` refuses a half grown etcd** (`apply.EtcdRefusal`), probing the
+  site and then the other configured members.
+* **Every wait is a count of polls**, the wait over the interval, so the tests
+  replace `sleep` with nothing (`SetFast` in `export_test.go`) and still end.
+* **`internal/preflight` is a stub here**, with the agreed signature, replaced
+  by the preflight branch.
+
+The tests in `internal/siteadd` run a three host world in maps: etcd's
+membership, Patroni's members, each HAProxy's served configuration and the
+handshakes implied by each `wg0.conf`. They cover the dry run changing nothing,
+a whole join leaving nothing to do, the mesh rollback, the promotion retry and
+its limit, resuming after a stopped learner and after a failed replica gate,
+and the stage 5 and 6 gates failing.
+
 ## `dns init`, and why it can only create
 
 `dns init` is the one command that talks to something other than a host or the
@@ -416,6 +452,7 @@ installed, on a workstation or anywhere else.
 | `internal/render` | placement, templates, and the writer |
 | `internal/dns` | which public records a deployment needs, and creating the missing ones at the DNS provider |
 | `internal/apply` | what to push to a host, what to restart, and the gates before either |
+| `internal/siteadd` | joining a new data site: six staged, gated, resumable stages |
 | `internal/appadmin` | an app's first administrator: probe, plan, and the per kind commands or API calls |
 | `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin |
 | `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
@@ -588,12 +625,13 @@ before.
 
 ## What is not here yet
 
-No etcd growth and no `backup`. Of `site add`, only its first stage,
-`preflight`, is described here. `failover test` exists and is described above. `apply`
+No `backup`. `site add` exists for sites that all declare an endpoint; the
+relay for sites behind NAT is still design. Its first stage is `preflight`, and
+`failover test` exists; both are described above. `apply`
 pushes files, brings up `wg0`, creates clustered apps' roles and databases, and
-takes the narrowest action that makes the rest live. It has never been run
-against a real host, so every command it sends is reasoned from upstream source
-and documentation, not observed.
+takes the narrowest action that makes the rest live. `site add` has never been
+run against a real host, so every command it sends is reasoned from upstream
+source and documentation, not observed.
 
 Mbin's media reverse proxy, which this section used to list as missing, is
 rendered: `storage.media_hostname` becomes the gateway's `media.caddy`, and

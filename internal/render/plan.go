@@ -72,6 +72,13 @@ const patroniAPIPort = 8008
 // there. It is moved beside the Patroni API instead of moving every app.
 const bgMonPort = 8009
 
+// haproxyStatsPort is where HAProxy serves its statistics, on loopback only.
+// Nothing else the toolkit renders listens on 8404.
+const haproxyStatsPort = 8404
+
+// HAProxyStatsPort is haproxyStatsPort, for the command that reads it.
+const HAProxyStatsPort = haproxyStatsPort
+
 // postgresPort is the cluster's real Postgres port. Applications never use it:
 // they connect to the local HAProxy instead, from the first install, so that
 // adding a site changes a backend list rather than application configuration.
@@ -119,13 +126,23 @@ type planner struct {
 	mesh    string
 	sites   map[string]*siteView
 	order   []string
+	// etcdInitial is how each etcd member was first started, by site, as
+	// read from its host. See EtcdInitialPath.
+	etcdInitial map[string]EtcdInitial
 }
 
 // Build produces the plan for a configuration. It assumes validation has
 // already refused anything incoherent: a planner that re-checks policy is a
 // second place for the rules to drift.
-func Build(cfg *config.Config, secrets *config.Secrets) (*Plan, error) {
+//
+// opts carry facts a caller read from the live deployment, such as the flags
+// an etcd member was born with. Without them every site renders as it would
+// on a fresh deployment.
+func Build(cfg *config.Config, secrets *config.Secrets, opts ...Option) (*Plan, error) {
 	p := &planner{cfg: cfg, secrets: secrets, mesh: cfg.Mesh.Subnet, sites: map[string]*siteView{}}
+	for _, opt := range opts {
+		opt(p)
+	}
 	for _, name := range cfg.SiteNames() {
 		site := cfg.Sites[name]
 		p.order = append(p.order, name)

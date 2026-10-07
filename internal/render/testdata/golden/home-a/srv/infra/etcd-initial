@@ -1,0 +1,7 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# The flags this etcd member was first started with. etcd ignores both once
+# its data directory exists, so they never change after the first start, and
+# every later render repeats them from here rather than from etcd.members.
+initial-cluster-state=new
+initial-cluster=home-a=http://10.44.0.1:2380,home-b=http://10.44.0.2:2380,vm=http://10.44.0.3:2380

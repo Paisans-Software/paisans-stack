@@ -2219,3 +2219,33 @@ func TestMbinOptsMercureIntoCompatibilityMode(t *testing.T) {
 		t.Errorf("Mbin's app does not opt Mercure into compatibility mode:\n%s", compose)
 	}
 }
+
+// A member handed the flags it was born with renders them, whatever
+// etcd.members says now, and records them for the next render.
+func TestEtcdRendersTheFlagsItWasBornWith(t *testing.T) {
+	cfg := fixture(t)
+	secrets := fixtureSecrets(t)
+	born := render.EtcdInitial{State: render.EtcdStateNew, Cluster: "home-a=http://10.44.0.1:2380"}
+	joined := render.EtcdInitial{State: render.EtcdStateExisting, Cluster: "home-a=http://10.44.0.1:2380,vm=http://10.44.0.3:2380"}
+	plan, err := render.Build(cfg, secrets, render.WithEtcdInitial("home-a", born), render.WithEtcdInitial("vm", joined))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{}
+	for _, f := range plan.Files {
+		files[f.Path] = f.Content
+	}
+	if c := files["home-a/srv/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster=home-a=http://10.44.0.1:2380\n") || !strings.Contains(c, "--initial-cluster-state=new") {
+		t.Errorf("a founder lost its founding flags:\n%s", c)
+	}
+	if c := files["vm/srv/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster-state=existing") || !strings.Contains(c, joined.Cluster+"\n") {
+		t.Errorf("a joined member does not render existing:\n%s", c)
+	}
+	if got, ok := render.ParseEtcdInitial(files["vm/"+render.EtcdInitialPath]); !ok || got != joined {
+		t.Errorf("the record does not round trip: %+v", got)
+	}
+	// Without the option, the fresh deployment's flags, as before the record.
+	if c := files["home-b/srv/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster-state=new") || !strings.Contains(c, "home-b=http://10.44.0.2:2380,vm=") {
+		t.Errorf("an unrecorded member does not render as a founder:\n%s", c)
+	}
+}

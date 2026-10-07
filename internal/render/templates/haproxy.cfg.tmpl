@@ -30,3 +30,12 @@ listen postgres
 {{- range .ClusterMembers }}
     server {{ .Name }} {{ .Address }}:{{ $.PostgresPort }} maxconn 100 check port {{ $.PatroniAPIPort }}
 {{- end }}
+
+# Which backend HAProxy routes to, as CSV at /stats;csv, for `paisans site
+# add` to check that only the primary is UP. Loopback only, and this is
+# HAProxy's host network, so nothing off the machine can read it.
+listen stats
+    mode http
+    bind 127.0.0.1:{{ .StatsPort }}
+    stats enable
+    stats uri /stats
