@@ -166,10 +166,8 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 // refusePipedPassword refuses a password piped to a passwordless kind. A
 // terminal on stdin is left unread, so an interactive run never waits.
 func refusePipedPassword(stdin io.Reader, kind config.Kind) error {
-	if file, ok := stdin.(*os.File); ok {
-		if info, err := file.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
-			return nil
-		}
+	if stdinIsTerminal(stdin) {
+		return nil
 	}
 	data, err := io.ReadAll(io.LimitReader(stdin, maxPassword+1))
 	if err != nil {
@@ -266,10 +264,8 @@ func pocketIDSite(cfg *config.Config, appName, override, command string) (string
 // set` applies to a credential. Nothing it returns as an error carries the
 // value.
 func readPassword(stdin io.Reader) (string, error) {
-	if file, ok := stdin.(*os.File); ok {
-		if info, err := file.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
-			return "", fmt.Errorf("app admin create: stdin is a terminal, so the password would be typed where it can be seen and kept in scrollback. Pipe it in, as in `security find-generic-password -s <item> -w | paisans app admin create ...`")
-		}
+	if stdinIsTerminal(stdin) {
+		return "", fmt.Errorf("app admin create: stdin is a terminal, so the password would be typed where it can be seen and kept in scrollback. Pipe it in, as in `security find-generic-password -s <item> -w | paisans app admin create ...`")
 	}
 	data, err := io.ReadAll(io.LimitReader(stdin, maxPassword+1))
 	if err != nil {
