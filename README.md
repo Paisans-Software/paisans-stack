@@ -1732,6 +1732,24 @@ polled out like a missing leader: a running member's name does not change.
 `/primary` returns the same 503 to a replica as to a node still running initdb,
 while `/cluster` names the leader (Patroni v4.1.0, `docs/rest_api.rst`).
 
+### `apply` restarts only the infrastructure service whose file changed
+
+The infrastructure stack is one compose project holding etcd, Patroni, HAProxy,
+Garage and the gateway's Caddy. A change to a bind mounted file there used to
+restart the whole project, so a new `garage.toml` restarted Patroni, which on
+the primary is a failover, and HAProxy, which drops every app's database
+connection. Each service's bind mounted files live in a directory named for
+it (`haproxy/`, `garage/`, `caddy/`), so a restart now names the services
+whose directories changed: `docker compose -f /srv/infra/compose.yaml restart
+garage`. A file at the top of the stack still restarts the whole project, and
+an environment or compose change is still a recreate, which Compose limits to
+the services whose configuration changed.
+
+**Mapping files to services by parsing each compose file's volumes was
+rejected.** It gives the same answer for every file the templates render, with
+a YAML parser in the path of every apply, and the templates are the toolkit's
+own.
+
 ### A stopped apply force-recreates what it still owes
 
 A stack whose action did not finish is in an unknown state, and Compose cannot
@@ -2343,8 +2361,9 @@ up to date.
 **HAProxy is restarted, not reloaded.** Its configuration is a single file bind
 mount, `apply` replaces a file by renaming a new one over it, and a bind mount
 of a single file keeps the inode it started with (moby/moby#15793), so a
-reloaded HAProxy would read the old file. Restarting HAProxy alone remounts it;
-`apply`'s own restart action would restart etcd and Patroni with it. The gate
+reloaded HAProxy would read the old file. Restarting HAProxy alone remounts it,
+and is what `apply` itself does for a changed `haproxy.cfg` (see "`apply`
+restarts only the infrastructure service whose file changed"). The gate
 reads HAProxy's statistics from a listener on `127.0.0.1:8404`, as CSV. That
 listener is new in every rendered `haproxy.cfg`, so a deployment that applies
 before growing restarts its infrastructure stack once for it. Rejected: a

@@ -82,6 +82,12 @@ type Action struct {
 	// Reason is quoted back to the operator, so that "why is it recreating"
 	// never needs guessing.
 	Reason string
+	// Services narrows a restart to these compose services, empty for every
+	// service of the stack. Only the infrastructure stack sets it: its
+	// services share one compose project, and restarting the whole project
+	// for a new garage.toml restarted Patroni, which on the primary is a
+	// failover, and HAProxy, which drops every app's database connection.
+	Services []string
 }
 
 // Command is what the action runs on the host.
@@ -91,6 +97,8 @@ func (a Action) Command() string {
 		return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml up -d --force-recreate", a.Stack)
 	case a.Recreate:
 		return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml up -d", a.Stack)
+	case len(a.Services) > 0:
+		return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml restart %s", a.Stack, strings.Join(a.Services, " "))
 	default:
 		return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml restart", a.Stack)
 	}
@@ -397,6 +405,11 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	// --recreate may name.
 	rendered := map[string]bool{}
 	envChanged := map[string]bool{}
+	// The infrastructure services whose bind mounted files changed, and
+	// whether some changed infrastructure file belongs to no one service, in
+	// which case a restart is of the whole stack. See infraService.
+	infraServices := map[string]bool{}
+	infraWhole := false
 	// Whether this site runs the gateway at all, and which of the two ways its
 	// Caddy is about to change. render only emits a Caddyfile for a site
 	// holding the gateway role, so its presence in the rendered tree is the
@@ -475,6 +488,12 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 				stacks[change.Stack] = true
 				if isEnvironment(rel) {
 					envChanged[change.Stack] = true
+				} else if change.Stack == infraStack {
+					if service := infraService(rel); service != "" {
+						infraServices[service] = true
+					} else {
+						infraWhole = true
+					}
 				}
 			}
 			if isRouting(rel) {
@@ -563,6 +582,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 			action.Reason = "an environment or compose file changed, and Compose passes environment at start, so a running container cannot be told about a new value"
 		} else {
 			action.Reason = "only bind mounted configuration changed, so the container keeps its identity"
+			if stack == infraStack && !infraWhole && len(infraServices) > 0 {
+				action.Services = sortedKeys(infraServices)
+				action.Reason += ", and only " + strings.Join(action.Services, ", ") + " is restarted, since the rest of the stack reads none of it"
+			}
 		}
 		out.Actions = append(out.Actions, action)
 	}
@@ -970,6 +993,20 @@ func stackOf(rel string) string {
 		return ""
 	}
 	return parts[1]
+}
+
+// infraService returns the compose service a file of the infrastructure stack
+// is mounted into, empty when it is not one service's. The templates put each
+// service's bind mounted files in a directory named for the service
+// (infra-compose.yaml.tmpl: haproxy/haproxy.cfg, garage/garage.toml, caddy/),
+// so the directory is the answer. A file at the top of the stack, such as
+// compose.yaml, belongs to the whole stack.
+func infraService(rel string) string {
+	parts := strings.Split(rel, "/")
+	if len(parts) < 4 || parts[0] != "srv" || parts[1] != infraStack {
+		return ""
+	}
+	return parts[2]
 }
 
 // isEnvironment reports whether a change to this file needs the container

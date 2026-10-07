@@ -18,8 +18,8 @@ const haproxyFile = "srv/infra/haproxy/haproxy.cfg"
 // renaming a new one over it, and a bind mount of a single file keeps the
 // inode it was started with (moby/moby#15793), so a reloaded HAProxy would
 // read the old file.
-// A restart mounts the path again. Not the whole stack either, which is what
-// apply's restart action does and which would restart etcd and Patroni.
+// A restart mounts the path again. Not the whole stack either, which would
+// restart etcd and Patroni with it.
 const restartHAProxy = "docker compose -f /srv/infra/compose.yaml restart haproxy"
 
 // statsProbe reads HAProxy's statistics as CSV from its loopback listener
