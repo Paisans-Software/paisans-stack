@@ -317,7 +317,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 			unread = ", planned because `bucket info` could not be read"
 		}
 
-		if info.parsed && info.grants(keyID, name) {
+		if info.parsed && info.grants(keyID) {
 			plan.Present = append(plan.Present, fmt.Sprintf("grant: %s's key already has read/write/owner on %s", name, bucket))
 		} else {
 			plan.Steps = append(plan.Steps, Step{
@@ -363,11 +363,18 @@ type bucketInfo struct {
 	keys [][3]string
 }
 
-// grants reports whether the key, by ID or by the name it was imported
-// under, holds all of read, write and owner.
-func (b bucketInfo) grants(keyID, name string) bool {
+// grants reports whether the key with this ID holds all of read, write and
+// owner.
+//
+// The ID is the only thing matched. A key's name is a label Garage does not
+// keep unique, and `storage rotate-key` imports the new key under the app's
+// name while the old one still holds its grant under the same name; matching
+// either would read the new key as granted and leave the app with no access
+// once the old key is deleted. `bucket info` prints the ID in every row, so
+// nothing is lost by ignoring the name.
+func (b bucketInfo) grants(keyID string) bool {
 	for _, row := range b.keys {
-		if row[1] != keyID && row[2] != name {
+		if row[1] != keyID {
 			continue
 		}
 		if strings.Contains(row[0], "R") && strings.Contains(row[0], "W") && strings.Contains(row[0], "O") {
