@@ -2290,3 +2290,34 @@ func TestAMediaURLCannotBeOverriddenThroughConfig(t *testing.T) {
 		}
 	}
 }
+
+// Mbin's image declares VOLUME /app/var/, and a real apps site collected 18
+// abandoned anonymous volumes there, one per container replaced. Both
+// services running the image mount a tmpfs at exactly that path, which is
+// what stops Docker creating one: a mount at a parent or a child path does
+// not. The log bind mounts stay, inside the tmpfs.
+func TestMbinKeepsItsVarDirectoryInMemory(t *testing.T) {
+	compose := planFiles(build(t))["home-a/srv/talk/compose.yaml"]
+	var doc struct {
+		Services map[string]struct {
+			Tmpfs   []string `yaml:"tmpfs"`
+			Volumes []string `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal([]byte(compose), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for service, log := range map[string]string{"app": "/srv/talk/php_logs:/app/var/log", "messenger": "/srv/talk/messenger_logs:/app/var/log"} {
+		s := doc.Services[service]
+		if len(s.Tmpfs) != 1 || s.Tmpfs[0] != "/app/var:size=256m,mode=0755,uid=1000,gid=1000" {
+			t.Errorf("%s does not mount /app/var as tmpfs, so every recreate leaves an anonymous volume behind: %v", service, s.Tmpfs)
+		}
+		found := false
+		for _, v := range s.Volumes {
+			found = found || v == log
+		}
+		if !found {
+			t.Errorf("%s lost its log bind mount %s: %v", service, log, s.Volumes)
+		}
+	}
+}

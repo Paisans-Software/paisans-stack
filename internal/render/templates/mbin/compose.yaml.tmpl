@@ -70,6 +70,23 @@ services:
     # gateway, over the mesh, is the only thing that should reach it.
     ports:
       - "{{ .MeshAddress }}:{{ .App.Port }}:{{ .App.Port }}"
+    # The image declares VOLUME /app/var/ (docker/Dockerfile:9 at the fork's
+    # tag v1.13.3+paisans). Left unmounted, Docker gives every new container a
+    # fresh anonymous volume there and abandons the old one when the container
+    # is replaced: a real apps site collected 18 of them, about 830 MB, each
+    # holding cache/ and log/. What lives there is Symfony's compiled cache,
+    # which the entrypoint rebuilds with `cache:clear` on every start, so
+    # memory is the right place for it. The application cache is in Valkey
+    # (config/packages/cache.yaml), not here. 53 MB after a cache:clear, so
+    # 256m is room to grow, and tmpfs takes memory only as it fills. Owned by
+    # MBIN_USER's default, though the entrypoint chowns var/ to MBIN_USER
+    # anyway. The log bind mount below sits inside it: Docker mounts in path
+    # order, so /app/var/log lands on top of the tmpfs, which was checked with
+    # a probe container writing through both. A bind at {{ .DataPath }}/var was
+    # rejected because the two messenger replicas would share, and race, one
+    # cache directory.
+    tmpfs:
+      - /app/var:size=256m,mode=0755,uid=1000,gid=1000
     volumes:
       # Caddy's own state, including the Mercure hub's bolt database.
       - {{ .DataPath }}/caddy_data:/data
@@ -115,6 +132,9 @@ services:
       test: ["CMD-SHELL", "ps aux | grep 'messenger[:]consume' || exit 1"]
     env_file:
       - .env
+    # Per container, so each replica has its own cache. See app.
+    tmpfs:
+      - /app/var:size=256m,mode=0755,uid=1000,gid=1000
     volumes:
       - {{ .DataPath }}/media:/app/public/media
       - {{ .DataPath }}/messenger_logs:/app/var/log
