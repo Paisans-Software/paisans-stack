@@ -40,6 +40,7 @@ Usage:
                    [--min-free <size>] [--keep-images] [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
+  paisans preflight --site <new site> [--config paisans.yaml]
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
   paisans secrets set <dotted.key> [--config paisans.yaml] [--secrets secrets.enc.yaml] < value
   paisans app admin create --app <name> --username <u> --email <e> [--site <name>]
@@ -65,6 +66,8 @@ Commands:
   storage    Provision object storage on a site: the cluster layout, each
              app's key, and its bucket. Creates only what is missing.
              Writes nothing without --execute.
+  preflight  The read only checks site add runs first, for the site being
+             added and every site already running. Changes nothing.
   dns        Create the public DNS records the configuration implies, at the
              provider named by acme.provider. Creates only what is missing,
              never updates or deletes, and refuses if any record conflicts.
@@ -83,8 +86,8 @@ Commands:
              secret in the secrets file. The secret is never printed.
              Writes nothing without --execute. Mbin only, so far.
 
-host prepare, apply, storage init, app admin create and oidc client create are
-the only commands that reach a host.
+host prepare, apply, storage init, app admin create, oidc client create and
+preflight are the only commands that reach a host.
 Each reads it to plan, and changes it only with --execute. dns init reaches no
 host, only the DNS provider's API, and changes it only with --execute.
 Everything else writes files locally and stops.
@@ -123,6 +126,8 @@ func main() {
 			os.Exit(2)
 		}
 		err = runStorageInit(os.Args[3:])
+	case "preflight":
+		err = runPreflight(os.Args[2:])
 	case "dns":
 		if len(os.Args) < 3 || os.Args[2] != "init" {
 			fmt.Fprintf(os.Stderr, "paisans: dns takes one subcommand, init\n\n%s", usage)

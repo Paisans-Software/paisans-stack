@@ -15,7 +15,8 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 
 validate, init and render touch nothing outside the working directory.
 `host prepare`, `apply`, `storage init`, `app admin create` and `oidc client
-create` reach a machine, and each changes it only with `--execute`. `dns init` reaches no machine, only
+create` reach a machine, and each changes it only with `--execute`. `preflight`
+reaches every site and never changes one. `dns init` reaches no machine, only
 the DNS provider's API, and changes it only with `--execute`.
 
 ```
@@ -26,6 +27,7 @@ paisans render   --config examples/paisans.example.yaml \
 paisans host prepare --site home-a        # shows what a blank host lacks
 paisans apply    --site home-a            # shows what would change
 paisans apply    --site home-a --execute  # does it
+paisans preflight --site home-b           # site add's read only checks
 paisans dns init                          # shows which records it would create
 security find-generic-password -s acme -w \
   | paisans secrets set external.acme_dns_token
@@ -97,6 +99,13 @@ a path. An existing client's launch URL is moved only when it is empty or a
 toolkit default (`kinds.ToolkitLaunchURLs`); any other value is left, with a
 warning if `sso_dashboard_link` asks for something else. See *`oidc client
 create` makes an app's client at Pocket ID* in `README.md`.
+
+`preflight --site <new>` makes every check `site add` makes before it changes
+anything, on the site being added and on every site already running, and
+prints each as `ok`, `WARNING` or `REFUSED`. It exits non zero on a refusal.
+It reaches every site through its ssh section and takes no `--ssh`, since one
+override cannot name several hosts. The table of checks and the reasoning for
+each are in *Preflight* in `README.md`.
 
 `render` and `apply` refuse a gateway site when `external.acme_dns_token` is
 empty. `init` lists it as owed, but rendering without it produced a Caddy that
@@ -401,6 +410,8 @@ installed, on a workstation or anywhere else.
 | `internal/appadmin` | an app's first administrator: probe, plan, and the per kind commands or API calls |
 | `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin |
 | `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
+| `internal/preflight` | `site add`'s first stage: read only checks on the new site and every running one, as a report |
+| `internal/patroni` | reading a Patroni cluster through the Spilo container: `/cluster`, the leader, lag, database size |
 | `internal/hostprep` | taking a blank host to what `apply` assumes; one profile per operating system, its shell under `profiles/<id>-<version>/` |
 | `internal/render/templates` | the infrastructure templates, plus one directory per kind |
 
@@ -567,7 +578,8 @@ before.
 
 ## What is not here yet
 
-No etcd, no preflight, and none of `site add`, `failover` or `backup`. `apply`
+No etcd growth and no `backup`. Of `site add`, only its first stage,
+`preflight`, is described here. `apply`
 pushes files, brings up `wg0`, creates clustered apps' roles and databases, and
 takes the narrowest action that makes the rest live. It has never been run
 against a real host, so every command it sends is reasoned from upstream source
