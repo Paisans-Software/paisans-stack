@@ -149,6 +149,9 @@ type Plan struct {
 	// scoped marks a plan built with Scope: it writes its files and syncs
 	// the mesh, and leaves every stack, gate and other file to its caller.
 	scoped bool
+	// partial marks a plan built with Only: like a scoped one, its manifest
+	// write keeps every entry outside the named stacks.
+	partial bool
 	// recorded is the manifest as Build read it, which a scoped plan's own
 	// manifest write keeps for every file outside its scope.
 	recorded map[string]render.ManifestFile
@@ -283,6 +286,7 @@ type options struct {
 	minFree    int64
 	minFreeSet bool
 	keepImages bool
+	only       []string
 }
 
 // KeepImages leaves superseded images on the host for this run, as
@@ -307,6 +311,18 @@ func Overwrite(paths ...string) Option {
 // changed, as --recreate does.
 func Recreate(stacks ...string) Option {
 	return func(o *options) { o.recreate = append(o.recreate, stacks...) }
+}
+
+// Only restricts an apply to the named stacks, as `apply --only` does: their
+// files are compared and written, their actions and health gates run, and
+// nothing else on the site moves. The first real `site add` needed it: its
+// HAProxy restart broke Mbin's database connections, and the only way to
+// recreate Mbin through the toolkit was a whole apply, which would also have
+// recreated the primary's Patroni for an unrelated pending change. The
+// manifest keeps every entry outside the named stacks as it was, as a scoped
+// plan's does.
+func Only(stacks ...string) Option {
+	return func(o *options) { o.only = append(o.only, stacks...) }
 }
 
 // Scope restricts an apply to the named files, as paths relative to the
@@ -363,6 +379,15 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	}
 	if len(o.scope) > 0 {
 		out.scoped = true
+		out.recorded = entries
+	}
+	var onlySet map[string]bool
+	if len(o.only) > 0 {
+		onlySet = map[string]bool{}
+		for _, stack := range o.only {
+			onlySet[stack] = true
+		}
+		out.partial = true
 		out.recorded = entries
 	}
 
@@ -441,6 +466,9 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		if change.Stack != "" {
 			rendered[change.Stack] = true
 		}
+		if onlySet != nil && !onlySet[change.Stack] {
+			continue
+		}
 		out.Changes = append(out.Changes, change)
 		if (change.Kind == Create || change.Kind == Update) && !isRecord(rel) {
 			if change.Stack != "" {
@@ -508,6 +536,20 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		stacks[stack] = true
 	}
 
+	if onlySet != nil {
+		for stack := range onlySet {
+			if !rendered[stack] {
+				return nil, fmt.Errorf("%s: --only %s names no stack this site renders. Its stacks are %s", site, stack, strings.Join(sortedKeys(rendered), ", "))
+			}
+		}
+		for stack := range stacks {
+			if !onlySet[stack] {
+				delete(stacks, stack)
+			}
+		}
+		wireguard = nil
+	}
+
 	for _, stack := range stackOrder(stacks) {
 		action := Action{Stack: stack}
 		if owed[stack] {
@@ -538,6 +580,9 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 
 	out.GatewayReload = isGateway && (routingChanged || resumed.GatewayReload)
 	out.GatewayChanging = isGateway && (routingChanged || gatewayComposeChanged || resumed.GatewayChanging)
+	if onlySet != nil && !onlySet[infraStack] {
+		out.GatewayReload, out.GatewayChanging = false, false
+	}
 	if out.GatewayChanging {
 		out.ACMEModule = acmeModule
 	}
@@ -888,7 +933,7 @@ func readManifestFiles(t Transport) (map[string]render.ManifestFile, error) {
 // site is still what the last whole apply wrote.
 func writeManifest(plan *Plan, t Transport) error {
 	entries := map[string]render.ManifestFile{}
-	if plan.scoped {
+	if plan.scoped || plan.partial {
 		for path, entry := range plan.recorded {
 			entries[path] = entry
 		}

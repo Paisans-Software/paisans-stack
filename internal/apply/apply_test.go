@@ -1763,3 +1763,65 @@ func TestAnUnpullableGatewayImageSaysSo(t *testing.T) {
 		t.Error("the module check ran after the pull failed")
 	}
 }
+
+// --only moves the named stack and nothing else, and keeps the manifest's
+// record of every other file as it was. On the first real join, Mbin had to be
+// recreated while site1's patroni.env was stale, and a whole apply would have
+// recreated the primary's Patroni with it.
+func TestOnlyMovesTheNamedStackAndKeepsTheRestRecorded(t *testing.T) {
+	host := newHost()
+	first, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := plan(t)
+	for i, file := range changed.Files {
+		if file.Path == "home-a/srv/infra/patroni.env" {
+			changed.Files[i].Content = file.Content + "# a later change\n"
+		}
+	}
+	host.commands = nil
+	p, err := apply.Build("home-a", changed, acmeModule(t), host, apply.Only("talk"), apply.Recreate("talk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range p.Writes() {
+		if c.Stack != "talk" {
+			t.Errorf("--only talk would write %s", c.Path)
+		}
+	}
+	if len(p.Actions) != 1 || p.Actions[0].Stack != "talk" {
+		t.Fatalf("--only talk plans %v", p.Actions)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if host.ran("/srv/infra/compose.yaml up -d") || host.ran("/srv/infra/compose.yaml restart") {
+		t.Error("--only talk moved the infrastructure stack")
+	}
+
+	whole, err := apply.Build("home-a", changed, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(whole.Conflicts()) != 0 {
+		t.Fatalf("files outside --only lost their record: %v", whole.Conflicts())
+	}
+	var pending bool
+	for _, c := range whole.Writes() {
+		if c.Path == "/srv/infra/patroni.env" && c.Kind == apply.Update {
+			pending = true
+		}
+	}
+	if !pending {
+		t.Error("the stale patroni.env is no longer planned for a later whole apply")
+	}
+
+	if _, err := apply.Build("home-a", changed, acmeModule(t), host, apply.Only("nope")); err == nil {
+		t.Error("--only accepted a stack the site does not render")
+	}
+}
