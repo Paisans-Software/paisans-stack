@@ -156,6 +156,7 @@ func Check(cfg *config.Config) Result {
 	c.gatewayOnDataSite()
 	c.pocketIDFileBackend()
 	c.uptimeWithoutSMTP()
+	c.pocketIDStandbyMarkerUnknown()
 	c.mbinRabbitMQAcrossSites()
 	c.imageForAbsentPostgres()
 	c.publicAddress()
@@ -766,6 +767,33 @@ func (c *checker) pocketIDFileBackend() {
 		c.warn("pocket-id-file-backend", fmt.Sprintf("apps.%s.settings.file_backend", name),
 			"is %s. Prefer `database`: the uploads are about a megabyte of avatars and branding, in Postgres they ride streaming replication with no sync job, and sign in then does not depend on object storage being up. On filesystem, a promoted site serves broken avatars and stock branding mid incident.",
 			shown)
+	}
+}
+
+// pocketIDStandbyMarkerUnknown warns when a Pocket ID on more than one apps
+// site runs an image whose refusal text the toolkit has not recorded. Every
+// site but one stands by on that text (kinds.PocketIDStandbyMarker); an
+// unknown image gets the default image's, which may not match. A warning,
+// not a refusal: a marker that does not match fails safe, the standby site's
+// container restarting under Docker's policy rather than running twice, and
+// apply's gate says so.
+func (c *checker) pocketIDStandbyMarkerUnknown() {
+	sites := len(c.cfg.AppsSites())
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Kind != config.KindPocketID || app.Placement.Mode == config.PlacementPinned || sites < 2 {
+			continue
+		}
+		image := app.Images["app"]
+		if image == "" {
+			continue
+		}
+		if _, known := kinds.StandbyMarker(image); known {
+			continue
+		}
+		c.warn("pocket-id-standby-marker-unknown", fmt.Sprintf("apps.%s.images.app", name),
+			"is %s, whose refusal text is not recorded, on %d apps sites. Every site but one stands by when Pocket ID logs that another instance holds the database, and this image is assumed to log what the default does. If it does not, the standby sites restart in a loop instead of standing by, and apply's health gate fails there. Check its backend/internal/bootstrap/bootstrap.go.",
+			image, sites)
 	}
 }
 
