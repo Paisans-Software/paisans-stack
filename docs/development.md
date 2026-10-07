@@ -169,6 +169,15 @@ Caddyfile and never the environment, so a rotated DNS token arrives only by
 recreating the gateway, behind the same gates as an image change. A recreate is an outage,
 however brief, so it is not the default action for every change.
 
+The gateway's routing files make a reload and no stack action, so Caddy gets
+one action per apply (README, *A routing change gets exactly one action on
+Caddy*). When the infrastructure stack is also an `up -d`, `runAction` in
+`internal/apply/refresh.go` reads the container IDs before and after, reloads
+a Caddy `up -d` left in place, and restarts any other service whose bind
+mounted file changed and whose container was left in place (`Action.Refresh`).
+`gatewayaction_test.go` and `infraservices_test.go` pin both with a fake whose
+`up -d` replaces only the containers a test names.
+
 **`wg0` is up before any container moves.** Every service binds the site's
 mesh address, so the mesh comes up right after the files are written and before
 the gateway checks and stack actions below. A first apply enables and starts

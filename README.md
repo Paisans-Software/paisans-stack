@@ -1071,6 +1071,20 @@ reloading it, and refuses to reload one that does not validate.** A rendered
 snippet that is wrong should cost the operator an error message on the
 workstation, not the public address of every application at once.
 
+**A routing change gets exactly one action on Caddy.** When only the Caddyfile
+or its snippets changed, that action is a reload, which drops no connection;
+the infrastructure stack is not acted on at all. A routing change used to be a
+reload and then a restart of Caddy as well, because the same files also made
+an infrastructure action: two actions for one change, the second the one that
+drops connections. When Caddy's compose file, environment or image also
+changed, the stack's `up -d` is the action, and the reload waits for it: a
+Caddy `up -d` replaced started on the new routing and is not reloaded, and one
+`up -d` left in place (because only another service's configuration changed)
+is reloaded afterwards, told apart by its container ID. A stopped Caddy has
+nothing to reload and is started instead. Reloading first and recreating
+afterwards was the rejected order: the reload is wasted whenever the recreate
+follows, and it reloads a container about to be replaced.
+
 #### An app may answer on more than one hostname
 
 ```yaml
