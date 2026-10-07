@@ -22,7 +22,15 @@ services:
     ports:
       - "{{ .MeshAddress }}:{{ .App.Port }}:{{ .App.Port }}"
     volumes:
-      - {{ .DataPath }}/data:/data
+      # Where the image keeps local file storage, and the path it declares as
+      # a VOLUME: FILE_STORAGE_LOCAL_ROOT_DIR, read from the 1.10.0 image with
+      # `docker image inspect`. It used to be mounted at /data, which nothing
+      # in the image reads, so every container got an anonymous volume here
+      # as well. FILE_STORAGE is s3 in .env and Outline then never
+      # opens this directory (build/server/storage/files/index.js:22), but it
+      # is a bind rather than a tmpfs: switched to local storage, it would
+      # hold every attachment.
+      - {{ .DataPath }}/data:/var/lib/outline/data
 {{- if .App.Pinned }}
     depends_on:
       - postgres
@@ -35,5 +43,5 @@ services:
       POSTGRES_USER: {{ .DBUser }}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
     volumes:
-      - {{ .DataPath }}/postgres:/var/lib/postgresql/data
+      - {{ .DataPath }}/postgres:{{ .PostgresDataMount }}
 {{- end }}

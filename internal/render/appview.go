@@ -213,6 +213,13 @@ func (v appValues) SettingBool(key string, fallback bool) bool {
 // decides for itself.
 func (v appValues) Image(service string) string { return v.App.Images[service] }
 
+// PostgresDataMount is where a pinned app's Postgres container mounts its data
+// directory, which moved in the official image's 18. See
+// kinds.PostgresDataMount.
+func (v appValues) PostgresDataMount() string {
+	return kinds.PostgresDataMount(v.Image(kinds.PostgresService), v.PostgresVersion)
+}
+
 // values assembles what the template set is given.
 func (p *planner) values(planned plannedApp, app config.App) (appValues, error) {
 	var password string
