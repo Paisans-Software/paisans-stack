@@ -2275,6 +2275,98 @@ will eventually be violated:
 That last one turns a documented manual step into an automatic one, which is the
 difference between a tuning rule people follow and one they read once.
 
+#### What `paisans preflight` checks, and how
+
+`paisans preflight --site <new>` runs the checks on their own and changes
+nothing; `site add` runs the same checks as its first stage. Each finding is
+`ok`, `WARNING` or `REFUSED`, and any refusal stops the join. A check that
+could not be made (a host that did not answer, output that did not parse) is
+a refusal, not a skip: preflight exists so that every assumption was looked
+at, and "could not look" is not "looked and it was fine".
+
+| Check | Where | How | Refused when |
+|---|---|---|---|
+| SSH and sudo | every site | `sudo -n true` | the host does not answer, or sudo wants a password |
+| Clock | every site | `timedatectl show -p NTPSynchronized --value` | not `yes` |
+| Prepared | new site | `host prepare`'s own plan | it has any step left |
+| Platform | new data site, against each existing data site | `/etc/os-release` `ID` and `VERSION_ID`, and the release at the end of `ldd --version`'s first line | any of the three differs |
+| WireGuard | new site | `/sys/module/wireguard`, else `modprobe -n wireguard` | neither |
+| Watchdog | new data site, unless its mode is `off` | `/dev/watchdog` exists | it does not |
+| Ports | new site | `ss -Hltnu` | anything listens on 51820/udp; on 2379 or 2380 for an etcd member; on 5432, 8008 or 8009 for a data site; on the cluster port where the site runs HAProxy |
+| Routes | new site | `ip -j route` | a route overlaps `mesh.subnet`, other than one through `wg0` |
+| Disk | new data site | the leader's `sum(pg_database_size(...))`, through its Patroni container's `psql`; `df` on the deepest existing directory towards `/srv/infra/postgres` | free space is under that plus 2 GiB |
+| Round trip | new site to every other site | three TCP connects to the site's `public_address` on its ssh port, timed with bash's `/dev/tcp` and `$EPOCHREALTIME`; the median is used | `etcd.election_timeout_ms` is under five round trips |
+
+Three of these need a word.
+
+**glibc's "major version" is its 2.N release.** glibc has been 2.x since 1997
+and numbers releases by the second part, and collation changes ride on that
+(2.28 is the notorious one). Comparing the leading `2` would compare nothing.
+
+**The round trip warns as well as refusing.** It warns when `etcd.heartbeat_ms`
+is under one round trip, and when the election timeout is under ten: etcd's own
+tuning guide (v3.5 docs, *Tuning*) puts the heartbeat at "around 0.5-1.5x the
+round-trip time" and says election timeouts "must be at least 10 times the
+round-trip time". The refusal sits at five, the spec's number, so a deployment
+that tuned close to etcd's guidance is warned rather than stopped. The list
+above asks for the timings to be derived from the measurement; the site add
+spec (`docs/specs/2026-10-07-site-add.md`) checks them instead, because a
+derived value would change the rendered etcd flags on every member, and
+changing those on a running cluster is an operation of its own.
+
+**Two items above are covered indirectly or not at all.** Docker's presence
+is part of `host prepare`'s plan, so "prepared" covers it. Whether storage is
+local rather than network attached is not checked: nothing on a host says so
+reliably.
+
+The ports check reads listeners, not owners. After the mesh stage the new
+site's own `wg0` holds 51820/udp, so preflight is the gate for a join that
+has not begun, and a join resumed past stage 1 must not be sent back through
+it.
+
+### `failover test`: a switchover on purpose
+
+A cluster that has never failed over has an untested failover, and the first
+test should not be an outage. `paisans failover test` moves the Patroni
+primary to another data site and back, and it is gated like `site add`: it
+checks before it moves anything, every switch ends at a gate, and a gate that
+does not pass stops it where it is rather than switching back blind.
+
+1. **Checks.** Every member of `cluster.sites` is in the cluster, the leader
+   is `running` and every other member `streaming` with lag zero; a Sync
+   Standby exists when `cluster.synchronous` is true; every app stack is
+   healthy on every site it runs on, by the same judgement as `apply`'s health
+   gate; and every app answers through the gateway, an HTTPS request from the
+   workstation to its hostname answering under 500 (a redirect to a login page
+   counts). Pocket ID is asked for `/.well-known/openid-configuration`, the
+   document every client of it fetches first. Lag is looked at up to three
+   times, because Patroni compares a replica with the leader's last reported
+   position and a busy moment shows bytes that are gone on the next look.
+2. **Switch.** In the leader's Patroni container, `patronictl -c
+   /home/postgres/postgres.yml switchover --leader <current> --candidate
+   <other> --force`. The candidate is the Sync Standby where there is one,
+   since that is who Patroni would promote on a real failure. The flags are
+   Patroni v4.1.0's (`patroni/ctl.py`): `--leader` is checked against the
+   live leader, so a plan made against a leader that has since changed fails
+   rather than switching the wrong way, and `--force` with no `--scheduled`
+   means now. The config path is the one Spilo runs Patroni with
+   (`postgres-appliance/runit/patroni/run`, at every Spilo tag the toolkit
+   pins), a link to the `/run/postgres.yml` Spilo writes at start.
+3. **Gate.** Polled for up to three minutes: the candidate leads, the old
+   leader is `streaming`, and every app is healthy and answering again. The
+   gate reads `/cluster` rather than trusting patronictl's exit status,
+   because when Patroni refuses a switchover patronictl prints `Switchover
+   failed` and exits normally.
+4. **Switch back**, the same way, through the same gate.
+
+It is a dry run by default, which prints the checks, both commands and the
+expected interruption: writes fail from the old primary's demotion until each
+site's HAProxy marks the new one up, which with the rendered `inter 3s` and
+`rise 2` is several seconds after promotion, twice. Connections to the old
+primary are closed when it is marked down (`on-marked-down
+shutdown-sessions`), and reads through HAProxy pause too, since it routes only
+to the primary.
+
 ## Moving the gateway
 
 A single site runs `roles: [data, apps, gateway]` — the same machine serving the

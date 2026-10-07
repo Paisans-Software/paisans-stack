@@ -178,3 +178,28 @@ func unhealthy(plan *Plan, stack, compose, what string, names []string, t Transp
 	}
 	return fmt.Errorf("%s", b.String())
 }
+
+// StackHealthy is the health gate's judgement from one look, for a command
+// that checks a running stack rather than one it just started: nil when every
+// container of /srv/<stack> runs and passes its healthcheck, and otherwise an
+// error naming the services that do not. It does not wait; a caller that
+// expects a stack to recover polls it.
+func StackHealthy(stack string, t Transport) error {
+	compose := fmt.Sprintf("docker compose -f /srv/%s/compose.yaml", stack)
+	out, err := t.Run(compose + " ps --all --format json")
+	if err != nil {
+		return fmt.Errorf("stack %s: %v", stack, err)
+	}
+	list, err := parseContainers(out)
+	if err != nil {
+		return fmt.Errorf("stack %s: unreadable `ps` output: %v", stack, err)
+	}
+	switch v, names := judge(list); {
+	case v == healthy:
+		return nil
+	case len(list) == 0:
+		return fmt.Errorf("stack %s: no containers", stack)
+	default:
+		return fmt.Errorf("stack %s: %s", stack, strings.Join(names, ", "))
+	}
+}
