@@ -2045,6 +2045,90 @@ was rejected** because of the disk this is for: on a 10 GB host one extra Mbin
 image is 1.4 GB, and `--keep-images` covers the rollback case when an operator
 actually wants it.
 
+### Every volume an image declares is mounted, and `apply` checks it
+
+An image's `VOLUME` is a path Docker gives every new container an anonymous
+volume for, unless the container has a mount at exactly that path. Compose
+replaces containers on every recreate, and each new one gets a new volume;
+the old one stays on disk, unused, with no label saying whose it was. A real
+apps site collected 18 that way, about 830 MB: the Mbin image declares
+`VOLUME /app/var/`, the template mounted only `/app/var/log` beneath it, and
+every recreate of `app` and of each messenger replica left one behind holding
+`cache/` and `log/`. An anonymous volume is also outside `/srv/<stack>/`, so
+it breaks the bind mount rule above in a second way: `app move`'s tar would
+not carry it.
+
+Two facts about Docker decide the design, both observed on Engine 29.7.2 with
+Compose 5.4.0: a plain, a forced and an image changing recreate each made a
+fresh anonymous volume and abandoned the old one, and a bind at a parent path
+(`/app`) did not stop Docker making one at the declared path (`/app/var`)
+beneath it. So **only a mount at exactly the declared path counts**, and a
+trailing slash is not a difference.
+
+**Every kind's template mounts every path its images declare.** State gets a
+bind under `/srv/<stack>/`; throwaway gets a tmpfs. Each pinned image was
+pulled for linux/amd64 and inspected on 2026-10-07:
+
+| Image | Declares | Mounted as |
+|-------|----------|------------|
+| mbin 1.13.3-paisans (app, messenger) | `/app/var/` | tmpfs, 256m. Symfony's compiled cache, rebuilt by the entrypoint's `cache:clear` on every start; the app cache is in Valkey. The log bind mounts stay inside it |
+| rabbitmq 3.13.7-management-alpine | `/var/lib/rabbitmq` | bind, `rabbitmq_data` (already) |
+| outline 1.10.0 | `/var/lib/outline/data` | bind, `/srv/<app>/data`, which was mounted at `/data`, a path nothing reads |
+| postgres 16-alpine, 17-alpine | `/var/lib/postgresql/data` | bind, `/srv/<app>/postgres` (already) |
+| postgres 18-alpine | `/var/lib/postgresql` | bind, `/srv/<app>/postgres`, moved from `/var/lib/postgresql/data` |
+| amqproxy, valkey, pocket-id, synapse, MAS, element-web, writefreely-wisp, oauth2-proxy, spilo 16 to 18, etcd, haproxy, garage, caddy | nothing | |
+
+Postgres 18 was worse than a leak. Its image sets `PGDATA` to
+`/var/lib/postgresql/18/docker` and its entrypoint refuses to start when
+something is mounted at the old `/var/lib/postgresql/data`, so a pinned app at
+the default `postgres_version` could not start its database at all. The mount
+now follows the official image's own tag (an app may pin an older Postgres than
+the cluster runs) and the cluster's version otherwise.
+
+**Mbin's cache is a tmpfs rather than a bind under `/srv`.** The two messenger
+replicas would share one bind and race over one cache directory, and the cache
+has no value across a restart: the entrypoint clears it each time.
+
+Three things keep it from happening again:
+
+* **A test table.** `kinds.ImageVolumes` records what each pinned reference
+  declares, with the date, and a render test fails when a rendered service
+  runs an image missing from it or leaves a recorded path unmounted. Bumping an
+  image changes its reference, so the bump fails until somebody inspects it.
+* **A refusal in `apply`.** The table cannot see an operator's own `images`
+  override, or a tag that moved on the registry. So `apply` inspects every image
+  of every stack it acts on (`docker image inspect --format '{{json
+  .Config.Volumes}}'`) and compares each declared path with the binds, named
+  volumes and tmpfs mounts of that service's rendered compose file. An
+  unmounted path refuses the apply before anything is written or started, and
+  names the stack, service, image, path and the fix. An image the host does not
+  have yet is pulled first, after the free space check, which is the pull `up
+  -d` would make anyway. The dry run prints it as `check volumes:`.
+* **A cleanup after each recreate.** Before a recreate, `apply` records the
+  anonymous volumes the stack's containers mount; once the stack passes its
+  health gate, it removes those nothing mounts now. A failure is a warning, as
+  for images, and a failed health gate removes nothing.
+
+Refuse, not warn: the leak is certain, and a warning is the state the real site
+was already in with nobody reading it. Only stacks the apply acts on are
+checked, because a stack left alone creates no container and so no volume.
+
+For what accumulated before any of this, `paisans prune --site <site>` lists
+every dangling volume with its size and top level entries, and `--execute`
+removes the ones that are this deployment's: anonymous volumes, and any a
+`paisans-*` compose project labelled. One labelled by another compose project,
+or one somebody named, is kept. That verdict rests on the host being dedicated
+to the deployment, which `host prepare` already assumes, and the plan says so
+at the top.
+
+**`docker volume prune` was rejected** for the reason `docker image prune -a`
+was: it removes what is unused whoever made it, with no list first, and its
+default changed in Engine 23.0 from every unused volume to anonymous ones only,
+so the same command does different things on different hosts. **Leaving the
+volumes declared and unmounted was rejected** because each recreate costs a
+volume, and **a bind under `/srv` for throwaway paths** because a shared cache
+directory between replicas is a race, not state.
+
 ### `app admin create` makes an app's first administrator
 
 An app whose registrations are closed has no way to make its first account

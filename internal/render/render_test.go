@@ -2290,3 +2290,80 @@ func TestAMediaURLCannotBeOverriddenThroughConfig(t *testing.T) {
 		}
 	}
 }
+
+// Mbin's image declares VOLUME /app/var/, and a real apps site collected 18
+// abandoned anonymous volumes there, one per container replaced. Both
+// services running the image mount a tmpfs at exactly that path, which is
+// what stops Docker creating one: a mount at a parent or a child path does
+// not. The log bind mounts stay, inside the tmpfs.
+func TestMbinKeepsItsVarDirectoryInMemory(t *testing.T) {
+	compose := planFiles(build(t))["home-a/srv/talk/compose.yaml"]
+	var doc struct {
+		Services map[string]struct {
+			Tmpfs   []string `yaml:"tmpfs"`
+			Volumes []string `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal([]byte(compose), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for service, log := range map[string]string{"app": "/srv/talk/php_logs:/app/var/log", "messenger": "/srv/talk/messenger_logs:/app/var/log"} {
+		s := doc.Services[service]
+		if len(s.Tmpfs) != 1 || s.Tmpfs[0] != "/app/var:size=256m,mode=0755,uid=1000,gid=1000" {
+			t.Errorf("%s does not mount /app/var as tmpfs, so every recreate leaves an anonymous volume behind: %v", service, s.Tmpfs)
+		}
+		found := false
+		for _, v := range s.Volumes {
+			found = found || v == log
+		}
+		if !found {
+			t.Errorf("%s lost its log bind mount %s: %v", service, log, s.Volumes)
+		}
+	}
+}
+
+// Every image the toolkit renders by default has its declared volumes mounted
+// at exactly those paths, for every Postgres major it knows and with every app
+// pinned as well as clustered, so each kind's own database is rendered too. An
+// image missing from kinds.ImageVolumes fails here as well: a bump has to be
+// inspected before it ships. An operator's own image is not in the table and
+// is checked by `paisans apply` against the host's copy instead, so the
+// fixture's overrides are dropped here.
+func TestEveryDeclaredImageVolumeIsMounted(t *testing.T) {
+	for _, major := range []string{"16", "17", "18"} {
+		for _, pinned := range []bool{false, true} {
+			cfg := fixture(t)
+			cfg.Cluster.PostgresVersion = major
+			for name, app := range cfg.Apps {
+				app.Images = nil
+				if pinned && app.Placement.Mode != config.PlacementPinned {
+					app.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-a", Literal: "home-a"}
+				}
+				cfg.Apps[name] = app
+			}
+			plan, err := render.Build(cfg, fixtureSecrets(t))
+			if err != nil {
+				t.Fatalf("postgres %s, pinned %v: %v", major, pinned, err)
+			}
+			for path, content := range planFiles(plan) {
+				if !strings.HasSuffix(path, "/compose.yaml") {
+					continue
+				}
+				services, err := kinds.ComposeMounts(content)
+				if err != nil {
+					t.Fatalf("%s: %v", path, err)
+				}
+				for name, s := range services {
+					declared, ok := kinds.ImageVolumes[s.Image]
+					if !ok {
+						t.Errorf("%s service %s runs %s, which kinds.ImageVolumes does not record. Inspect it and record what it declares", path, name, s.Image)
+						continue
+					}
+					if u := kinds.Uncovered(declared, s.Targets); len(u) > 0 {
+						t.Errorf("postgres %s, pinned %v: %s service %s runs %s, which declares %v, and nothing is mounted at exactly that path, so every container would get an anonymous volume there", major, pinned, path, name, s.Image, u)
+					}
+				}
+			}
+		}
+	}
+}

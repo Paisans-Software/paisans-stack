@@ -23,7 +23,7 @@
     },
     {
       "path": "srv/docs/compose.yaml",
-      "sha256": "cb021e390004a897d4039a8009d3f74c1da56f9af47cea2c5020cd5634d11bbf",
+      "sha256": "ed10d663b223ba63c3c55794707a35eeaf8a6508eeef4a161ef1dcb358c83f74",
       "mode": "0644"
     },
     {
@@ -58,7 +58,7 @@
     },
     {
       "path": "srv/talk/compose.yaml",
-      "sha256": "0d0101acb2ba347568cb6097849c0550f8c3f57c00103a76caf65e4bf22f698f",
+      "sha256": "d1206971041387f0aef7f690089af9d1141b495096b6a1ce681379a3a562af2b",
       "mode": "0644"
     },
     {

@@ -17,4 +17,12 @@ services:
     ports:
       - "10.44.0.2:3000:3000"
     volumes:
-      - /srv/docs/data:/data
+      # Where the image keeps local file storage, and the path it declares as
+      # a VOLUME: FILE_STORAGE_LOCAL_ROOT_DIR, read from the 1.10.0 image with
+      # `docker image inspect`. It used to be mounted at /data, which nothing
+      # in the image reads, so every container got an anonymous volume here
+      # as well. FILE_STORAGE is s3 in .env and Outline then never
+      # opens this directory (build/server/storage/files/index.js:22), but it
+      # is a bind rather than a tmpfs: switched to local storage, it would
+      # hold every attachment.
+      - /srv/docs/data:/var/lib/outline/data

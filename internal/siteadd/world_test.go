@@ -99,6 +99,14 @@ func (h *host) Run(command string) (string, error) {
 		return "failed by the test", fmt.Errorf("exit status 1")
 	}
 	switch {
+	case strings.HasPrefix(command, "for r in ") && strings.Contains(command, ".Config.Volumes"):
+		// What each image declares: nothing, for every image in this world.
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			fmt.Fprintf(&b, "volumes %s null\n", strings.Trim(q, "'"))
+		}
+		return b.String(), nil
 	case strings.HasPrefix(command, "for r in "):
 		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")
 		var b strings.Builder

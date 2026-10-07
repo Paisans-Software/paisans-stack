@@ -43,5 +43,5 @@ services:
       POSTGRES_USER: {{ .DBUser }}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
     volumes:
-      - {{ .DataPath }}/postgres:/var/lib/postgresql/data
+      - {{ .DataPath }}/postgres:{{ .PostgresDataMount }}
 {{- end }}

@@ -152,6 +152,10 @@ type Plan struct {
 	// as Build saw them. Execute reads the host again after each stack is
 	// healthy, and removes only what no container uses by then.
 	Prunes []Prune
+	// Volumes is the check of every acted on image's declared volumes
+	// against what its service mounts, nil when no stack moves. Any uncovered
+	// path refuses the apply before anything is written. See VolumeCheck.
+	Volumes *VolumeCheck
 	// KeepImages skips pruning for this run, as --keep-images does.
 	KeepImages bool
 	// images is what each stack of this site renders, from its compose file.
@@ -721,6 +725,20 @@ func Execute(plan *Plan, t Transport) error {
 		return diskRefusal(plan)
 	}
 
+	// An image declaring a volume its service does not mount leaks an
+	// anonymous volume on every recreate. Refuse before the first write, and
+	// pull what Build could not inspect first, which is the one pull `up -d`
+	// would have made anyway.
+	if plan.Volumes != nil && len(plan.Volumes.Uncovered) > 0 {
+		return volumeRefusal(plan)
+	}
+	if err := settleOwedVolumes(plan, t); err != nil {
+		return err
+	}
+	if plan.Volumes != nil && len(plan.Volumes.Uncovered) > 0 {
+		return volumeRefusal(plan)
+	}
+
 	// Record what this apply owes before writing anything. Files that land
 	// before a gate stops the apply already match the render, so without
 	// this record the next apply would see nothing to do, and an app stack
@@ -849,6 +867,12 @@ func Execute(plan *Plan, t Transport) error {
 			}
 			bootstrapped = true
 		}
+		// The anonymous volumes the containers about to be replaced mount,
+		// read before they are gone. See removeAbandonedVolumes.
+		var previous []string
+		if action.Recreate {
+			previous = recordAnonymousVolumes(plan, action.Stack, t)
+		}
 		if _, err := t.Run(action.Command()); err != nil {
 			return err
 		}
@@ -864,6 +888,10 @@ func Execute(plan *Plan, t Transport) error {
 		if !plan.KeepImages {
 			pruneStack(plan, action.Stack, t)
 		}
+		// Not tied to --keep-images: a volume the new containers do not
+		// mount is no way back to the old image, which is what that flag
+		// keeps.
+		removeAbandonedVolumes(plan, action.Stack, previous, t)
 		// The stack is done, so it leaves the record. Left in, a later stack
 		// failing would have the next apply force-recreate this one too, an
 		// outage for a stack that was fine. The last stack stays until the
