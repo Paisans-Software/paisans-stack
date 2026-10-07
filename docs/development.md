@@ -713,6 +713,14 @@ before.
   `upstream_unavailable`. `TestMultiSiteAppsShareOneFailoverSetting` and
   `TestEveryHostBlockAnswers503WhenNoSiteCan` hold both. README's "Failing
   over, and saying so when nothing can serve" has the reasoning.
+* **Mbin's `LOCK_DSN` is its `DATABASE_URL` under `postgresql+advisory://`**,
+  never the image's `flock`, so every messenger consumer on every site locks
+  in one place. The scheme selects the store: a plain `postgresql://` is
+  symfony/lock's table store, not its advisory one. `AdvisoryLockDSN` in
+  `internal/render/appview.go` cites the lines, and
+  `TestMbinLocksInItsOwnDatabase` asserts the form for clustered and pinned
+  placement. `README.md` has the reasoning under "Mbin's locks are Postgres
+  advisory locks on its own database".
 * **A published port binds the site's mesh address**, never every interface,
   because Docker's iptables rules bypass a host firewall. A test walks every
   rendered compose file to confirm it.

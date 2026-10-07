@@ -2090,6 +2090,67 @@ func TestMultiSiteAppsShareOneFailoverSetting(t *testing.T) {
 	}
 }
 
+// Mbin's locks live in Postgres advisory locks on the app's own database, so
+// every messenger consumer on every site contends for the same lock. The image
+// bakes LOCK_DSN=flock, a file inside each container, which coordinates
+// nothing. The lock DSN is DATABASE_URL with the +advisory scheme, which is
+// what selects symfony/lock's advisory store rather than its table store, so
+// it reaches the database the same way: the site's HAProxy for a clustered
+// app, the postgres container for a pinned one.
+func TestMbinLocksInItsOwnDatabase(t *testing.T) {
+	pinnedCfg := fixture(t)
+	talk := pinnedCfg.Apps["talk"]
+	talk.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-b", Literal: "home-b"}
+	pinnedCfg.Apps["talk"] = talk
+	pinnedPlan, err := render.Build(pinnedCfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clustered := planFiles(build(t))
+	for _, c := range []struct{ name, env, host string }{
+		{"clustered on home-a", clustered["home-a/srv/talk/.env"], "@10.44.0.1:5000/talk?"},
+		{"clustered on home-b", clustered["home-b/srv/talk/.env"], "@10.44.0.2:5000/talk?"},
+		{"pinned", planFiles(pinnedPlan)["home-b/srv/talk/.env"], "@postgres:5432/talk?"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			database, lock := envValue(c.env, "DATABASE_URL"), envValue(c.env, "LOCK_DSN")
+			if lock == "" {
+				t.Fatalf("the Mbin .env does not set LOCK_DSN, so the image's flock default applies:\n%s", c.env)
+			}
+			if !strings.HasPrefix(lock, "postgresql+advisory://") {
+				t.Errorf("LOCK_DSN = %q; only a +advisory scheme selects the advisory lock store", lock)
+			}
+			if want := strings.Replace(database, "postgresql://", "postgresql+advisory://", 1); lock != want {
+				t.Errorf("LOCK_DSN = %q, want DATABASE_URL with the advisory scheme, %q", lock, want)
+			}
+			if !strings.Contains(lock, c.host) {
+				t.Errorf("LOCK_DSN = %q does not reach the database at %s", lock, c.host)
+			}
+			// The template's comment explains why flock is wrong, so only
+			// settings are checked: no line may set anything to it.
+			for _, line := range strings.Split(c.env, "\n") {
+				if !strings.HasPrefix(line, "#") && strings.Contains(line, "flock") {
+					t.Errorf("the Mbin .env sets flock, which locks only inside one container: %s", line)
+				}
+			}
+			if n := strings.Count(c.env, "\nLOCK_DSN="); n != 1 {
+				t.Errorf("the Mbin .env sets LOCK_DSN %d times, want once", n)
+			}
+		})
+	}
+}
+
+// envValue is the value of key in a rendered .env, or empty when it is unset.
+func envValue(env, key string) string {
+	for _, line := range strings.Split(env, "\n") {
+		if v, ok := strings.CutPrefix(line, key+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 // Mbin's sign in comes back to the fork's verify route, and the .env says so,
 // because that comment is where an operator registering the client looks. It
 // used to say /oauth/oidc/verify while the value it was built from said

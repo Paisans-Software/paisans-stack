@@ -2072,6 +2072,87 @@ rejected too:** each restart is an outage, however brief, and most
 infrastructure changes (a Garage setting, a Caddy route, an etcd timing) never
 touch the database path.
 
+### Mbin's locks are Postgres advisory locks on its own database
+
+Mbin takes its Symfony Lock store from `LOCK_DSN`
+(`config/packages/lock.yaml` in the paisans fork at `v1.13.3+paisans`), and
+the image bakes in `LOCK_DSN=flock`. A `flock` store is a lock file inside one
+container's filesystem, so it coordinates nothing between containers. That
+matters because the locks exist to stop two messenger consumers doing the same
+work at once: `UpdateActorHandler` takes an `update_actor_<hash>` lock so two
+consumers do not update the same remote actor together, and the toolkit runs
+two consumers per apps site, on every apps site. Under `flock` that lock
+protects nothing even on one site.
+
+The toolkit therefore renders `LOCK_DSN` as the app's own database under the
+`+advisory` scheme:
+
+```
+DATABASE_URL=postgresql://talk:...@10.44.0.1:5000/talk?serverVersion=18&charset=utf8
+LOCK_DSN=postgresql+advisory://talk:...@10.44.0.1:5000/talk?serverVersion=18&charset=utf8
+```
+
+The scheme is the whole choice, and it is easy to get wrong. In
+`symfony/lock` v7.4.14, the version Mbin's `composer.lock` pins at that tag,
+`Store/StoreFactory.php` hands a plain `postgresql://` URL to
+`DoctrineDbalStore`, which keeps expiring rows in a `lock_keys` table, and only
+`postgresql+advisory://` to `DoctrineDbalPostgreSqlStore`, which takes
+`pg_try_advisory_lock`. That store strips `+advisory` and passes the rest to
+Doctrine DBAL's `DsnParser`, the same parser `DATABASE_URL` goes through, so the
+same query string is accepted. It is reached the same way too: through the
+site's HAProxy on its mesh address for a clustered app (rule 2), and the
+`postgres` container beside it for a pinned one, in each case as the app's own
+role.
+
+**Why advisory locks fit.** An advisory lock is held by a database session and
+is visible to every session on the same server, so every consumer on every site
+contends for the one lock, because every site's HAProxy routes to the one
+primary. It is released when its session ends, which covers the failures a lock
+table handles badly: a consumer that dies, or a whole site that drops off the
+mesh, takes its sessions and therefore its locks with it, with no expiry to
+wait out.
+
+**Why they work through HAProxy.** HAProxy runs Postgres in `mode tcp`, so a
+client's session is one TCP connection to the primary for as long as HAProxy
+keeps it open, and an advisory lock needs exactly that: a session that lasts
+for the life of the lock. A switchover ends it: HAProxy closes sessions to a
+member marked down (`on-marked-down shutdown-sessions`), and the old primary
+stops taking connections anyway, so every lock is released. That is the
+behaviour wanted. The new primary has no record of the old locks, and a lock
+whose holder can no longer reach the database should not outlive it.
+
+**What it costs.** The advisory store opens its own connection rather than
+sharing Mbin's, so each process that takes a lock holds one more connection
+through HAProxy. HAProxy also closes a session idle for `timeout client` (30
+minutes), and Doctrine DBAL 4.4.3 reconnects on its own only after an error it
+classes as a lost connection, which for Postgres is a `terminating connection`
+message, not a socket closed under it. A lock taken on a connection HAProxy has
+closed therefore throws `LockAcquiringException`, and the message that wanted it
+fails and goes to Messenger's retry (five attempts in Mbin's `messenger.yaml`),
+until the consumer starts again. That is bounded: the consumers run with
+`--time-limit=3600`, and `apply`, `site add` and `failover test` restart the
+apps whenever they move the database path (see "`apply` restarts the apps whose
+database path changed"). It is the same failure Mbin's own connection has, not
+a new one.
+
+Rejected:
+
+* **`flock`, the image's default.** Per container, so it locks nothing between
+  the two consumers on one site, let alone between sites.
+* **`semaphore`.** A System V semaphore is per host, which is better than per
+  container only if the consumers share an IPC namespace, and still says
+  nothing about the other site.
+* **A `redis://` store on Valkey.** Valkey is per stack, one on each apps site
+  with nothing replicating between them, so it coordinates the consumers on one
+  site and not across sites. Making it work would mean one Valkey every site
+  reaches, which is a new shared service with its own failover to operate,
+  where Postgres is already the one shared, highly available thing.
+* **A plain `postgresql://` DSN**, the table store. It would work across
+  sites, but a lock is a row with an expiry, so a dead holder blocks others
+  until it expires rather than until its session ends, and it creates a
+  `lock_keys` table in the app's database that the app's own schema does not
+  declare.
+
 ### `apply` checks free space before it pulls
 
 A small host fills up with images. The first real host had a 10 GB root disk,

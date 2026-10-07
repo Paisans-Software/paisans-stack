@@ -344,6 +344,26 @@ func dsn(planned plannedApp, password, host string, port int) string {
 	return fmt.Sprintf("postgresql://%s:%s@%s:%d/%s", planned.DBUser, password, host, port, planned.DBName)
 }
 
+// AdvisoryLockDSN is DSN under the scheme symfony/lock reads as a PostgreSQL
+// advisory lock store, so a lock reaches the same database, through the same
+// HAProxy or container, as the app's own connection.
+//
+// The scheme is the whole choice. In symfony/lock v7.4.14 (the version Mbin
+// v1.13.3+paisans locks in composer.lock), Store/StoreFactory.php:96-101 hands
+// a plain postgresql:// URL to DoctrineDbalStore, which keeps expiring rows in
+// a lock_keys table, and only postgresql+advisory:// at lines 110-113 reaches
+// DoctrineDbalPostgreSqlStore and pg_try_advisory_lock. That store strips the
+// +advisory suffix (filterDsn, DoctrineDbalPostgreSqlStore.php:263-276) and
+// hands the rest to Doctrine DBAL's DsnParser, the parser DATABASE_URL goes
+// through, so the same query string is accepted.
+func (v appValues) AdvisoryLockDSN() string {
+	rest, ok := strings.CutPrefix(v.DSN, "postgresql://")
+	if !ok {
+		return ""
+	}
+	return "postgresql+advisory://" + rest
+}
+
 // oidcFor builds the app's identity provider client.
 //
 // The issuer is the Pocket ID app declared in this same configuration, because
