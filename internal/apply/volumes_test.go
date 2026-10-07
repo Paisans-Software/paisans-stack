@@ -3,6 +3,7 @@ package apply_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 )
@@ -137,5 +138,70 @@ func TestAnUnansweredVolumeProbeIsAnError(t *testing.T) {
 	host.fail = ".Config.Volumes"
 	if _, err := apply.Build("home-a", plan(t), acmeModule(t), host); err == nil {
 		t.Error("a failed volume probe was read as nothing declared")
+	}
+}
+
+// After a recreate's health gate passes, the anonymous volumes its previous
+// containers mounted and nothing mounts now are removed, so an image that
+// slipped past the guard still does not leak. A named volume is never a
+// candidate, and an anonymous one the new containers took over is not
+// dangling, so it stays.
+func TestARecreateRemovesTheVolumesItsOldContainersLeft(t *testing.T) {
+	const (
+		left  = "3a37a98261c4f658850d43b3d0ddc746ae25d9ec6bb58e83132662b7ea646191"
+		taken = "4e69f2bcb465d8db8ce062bb7928930be85a8324d7829d34be34fc3b5b4bf68f"
+		other = "8cce176c65a4f3a4a255ca46dc4588b38d917bffc8f0c13fd4d5335d4fc8f830"
+	)
+	host := newHost()
+	host.stackVolumes = map[string]string{"talk": left + "\n" + taken + "\npaisans-talk_named\n"}
+	host.dangling = left + "\n" + other + "\npaisans-talk_named\n"
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.removedVolumes) != 1 || host.removedVolumes[0] != left {
+		t.Errorf("removed %v, want only %s: not the one the new containers mount, not another stack's, not a named one", host.removedVolumes, left)
+	}
+	// The record is taken before the recreate, and the removal after the
+	// health gate.
+	var record, up, health, rm int
+	for i, c := range host.commands {
+		switch {
+		case strings.Contains(c, "/srv/talk/compose.yaml ps -aq"):
+			record = i
+		case c == "docker compose -f /srv/talk/compose.yaml up -d":
+			up = i
+		case strings.Contains(c, "/srv/talk/compose.yaml ps --all --format json"):
+			health = i
+		case strings.HasPrefix(c, "docker volume rm "):
+			rm = i
+		}
+	}
+	if !(record < up && up < health && health < rm) {
+		t.Errorf("order is record %d, up %d, health %d, rm %d", record, up, health, rm)
+	}
+}
+
+// A stack that fails its health gate keeps its old volumes: the apply stops
+// there, and what the old containers held may be wanted.
+func TestAnUnhealthyRecreateRemovesNoVolumes(t *testing.T) {
+	restore := apply.SetHealthWait(0, 1, func(time.Duration) {})
+	defer restore()
+	host := newHost()
+	host.stackVolumes = map[string]string{"talk": "3a37a98261c4f658850d43b3d0ddc746ae25d9ec6bb58e83132662b7ea646191\n"}
+	host.dangling = "3a37a98261c4f658850d43b3d0ddc746ae25d9ec6bb58e83132662b7ea646191\n"
+	host.ps = map[string]string{"talk": `{"Service":"app","Name":"talk-app-1","State":"exited","Health":""}`}
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err == nil {
+		t.Fatal("an exited container passed the health gate")
+	}
+	if len(host.removedVolumes) != 0 {
+		t.Errorf("an unhealthy stack's old volumes were removed: %v", host.removedVolumes)
 	}
 }

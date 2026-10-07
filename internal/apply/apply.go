@@ -867,6 +867,12 @@ func Execute(plan *Plan, t Transport) error {
 			}
 			bootstrapped = true
 		}
+		// The anonymous volumes the containers about to be replaced mount,
+		// read before they are gone. See removeAbandonedVolumes.
+		var previous []string
+		if action.Recreate {
+			previous = recordAnonymousVolumes(plan, action.Stack, t)
+		}
 		if _, err := t.Run(action.Command()); err != nil {
 			return err
 		}
@@ -882,6 +888,10 @@ func Execute(plan *Plan, t Transport) error {
 		if !plan.KeepImages {
 			pruneStack(plan, action.Stack, t)
 		}
+		// Not tied to --keep-images: a volume the new containers do not
+		// mount is no way back to the old image, which is what that flag
+		// keeps.
+		removeAbandonedVolumes(plan, action.Stack, previous, t)
 		// The stack is done, so it leaves the record. Left in, a later stack
 		// failing would have the next apply force-recreate this one too, an
 		// outage for a stack that was fine. The last stack stays until the

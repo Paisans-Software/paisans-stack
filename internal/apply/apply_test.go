@@ -61,6 +61,13 @@ type fakeHost struct {
 	// pulled is every image `docker pull` was asked for. A pulled image is
 	// present from then on.
 	pulled []string
+	// stackVolumes is what a stack's containers mount, by stack, as the
+	// record taken before a recreate prints it.
+	stackVolumes map[string]string
+	// dangling is what `docker volume ls -qf dangling=true` prints.
+	dangling string
+	// removedVolumes is every volume `docker volume rm` was asked for.
+	removedVolumes []string
 }
 
 func newHost() *fakeHost { return &fakeHost{files: map[string]string{}, leader: "home-a"} }
@@ -82,6 +89,17 @@ func (h *fakeHost) Run(command string) (string, error) {
 	h.commands = append(h.commands, command)
 	if h.fail != "" && strings.Contains(command, h.fail) {
 		return "refused by the fake host", fmt.Errorf("exit status 1")
+	}
+	if strings.Contains(command, "ps -aq | xargs -r docker inspect") {
+		stack := strings.TrimSuffix(strings.TrimPrefix(command, "docker compose -f /srv/"), command[strings.Index(command, "/compose.yaml"):])
+		return h.stackVolumes[stack], nil
+	}
+	if command == "docker volume ls -qf dangling=true" {
+		return h.dangling, nil
+	}
+	if name, ok := strings.CutPrefix(command, "docker volume rm "); ok {
+		h.removedVolumes = append(h.removedVolumes, strings.Trim(name, "'"))
+		return "", nil
 	}
 	if strings.Contains(command, ".Config.Volumes") {
 		return h.volumeProbe(command), nil
