@@ -135,6 +135,11 @@ storage:
     # objects, so it takes your word and requires the unit suffix Garage
     # does. Defaults to 100G when left unset.
     capacity: 100G
+    # Per-site overrides, for nodes of different sizes. A host that exists
+    # only for Garage takes `roles: [storage]` and is listed above, at the
+    # end until `paisans storage add` has joined it.
+    # capacities:
+    #   store: 2T
 
 # Every app is rendered with trusted proxies set to the mesh subnet, never to a
 # specific host. That is what lets the gateway role move between machines later
