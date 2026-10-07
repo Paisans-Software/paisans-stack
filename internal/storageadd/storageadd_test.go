@@ -1,3 +1,9 @@
+//go:build !garage_integration
+
+// The fake-cluster tests. They run without the garage_integration tag, at
+// fast timing; under the tag the real-container tests run alone, at real
+// timing.
+
 package storageadd_test
 
 import (
@@ -98,7 +104,7 @@ func TestAResetJoinWaitsAndResumes(t *testing.T) {
 	if a.factor() != 2 || b.factor() != 2 {
 		t.Errorf("garage.toml factors after the reset: home-a %d, home-b %d", a.factor(), b.factor())
 	}
-	if a.roles[a.short()] != "home-a" || a.roles[b.short()] != "home-b" || a.version != 1 {
+	if zoneOf(a, a) != "home-a" || zoneOf(a, b) != "home-b" || a.version != 1 {
 		t.Errorf("the layout after the reset is version %d with roles %v", a.version, a.roles)
 	}
 	if _, ok := a.files[storageadd.CountsFile]; !ok {
@@ -244,7 +250,7 @@ func TestAJoinWithoutAReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, b := w.hosts["home-a"], w.hosts["home-b"]
-	if b.roles[b.short()] != "home-b" || a.version != 2 {
+	if zoneOf(b, b) != "home-b" || a.version != 2 {
 		t.Errorf("home-b has no role in a layout at version 2: version %d, roles %v", a.version, a.roles)
 	}
 	for _, h := range w.hosts {
@@ -301,5 +307,117 @@ func TestFewerObjectsAfterAResetWaits(t *testing.T) {
 	err := storageadd.Execute(w.build(storageadd.Options{ChangeReplication: true}))
 	if !errors.Is(err, storageadd.ErrWaiting) || !strings.Contains(err.Error(), "held 7 before the reset") {
 		t.Fatalf("expected a wait on the object counts, got %v", err)
+	}
+}
+
+// Each node takes its own capacity, and changing one later reassigns that
+// node alone, in one new layout version. A change smaller than layout show's
+// rounding is not a change.
+func TestCapacitiesAreAssignedAndResized(t *testing.T) {
+	cfg, secrets := fixture(t)
+	cfg.Storage.Garage.Replication = 1
+	cfg.Storage.Garage.Capacities = map[string]string{"home-b": "2T"}
+	w := newWorld(t, cfg, secrets)
+	w.provisioned(1, "home-a")
+	w.deployGarage("home-b", 1)
+
+	if err := storageadd.Execute(w.build(storageadd.Options{})); err != nil {
+		t.Fatal(err)
+	}
+	a, b := w.hosts["home-a"], w.hosts["home-b"]
+	if a.roles[b.short()] != "home-b 2.0 TB" || a.roles[a.short()] != "home-a 100.0 GB" {
+		t.Fatalf("roles after the join: %v", a.roles)
+	}
+
+	// Within the rounding: nothing to do.
+	cfg.Storage.Garage.Capacities["home-b"] = "2010G"
+	if p := w.build(storageadd.Options{}); p.Pending() {
+		t.Errorf("a change hidden by layout show's rounding planned a rebalance:\n%s", printed(p))
+	}
+
+	// A real change: home-b alone is reassigned, in one version.
+	cfg.Storage.Garage.Capacities["home-b"] = "500G"
+	p := w.build(storageadd.Options{})
+	if !strings.Contains(printed(p), "resize") {
+		t.Fatalf("a capacity change was not planned:\n%s", printed(p))
+	}
+	before := a.version
+	if err := storageadd.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+	if a.version != before+1 || a.roles[b.short()] != "home-b 500.0 GB" || a.roles[a.short()] != "home-a 100.0 GB" {
+		t.Errorf("after the resize: version %d (was %d), roles %v", a.version, before, a.roles)
+	}
+}
+
+// The stop test is refused where uploads would fail with one node down, and
+// refused before anything is read or stopped.
+func TestTheStopTestIsRefusedWhereUploadsWouldStop(t *testing.T) {
+	cfg, secrets := fixture(t)
+	w := newWorld(t, cfg, secrets)
+	w.provisioned(2, "home-a", "home-b")
+	_, err := storageadd.Build(w.cfg, w.secrets, w.transports(), storageadd.Options{StopTest: true})
+	if err == nil || !strings.Contains(err.Error(), "consistency dangerous") {
+		t.Fatalf("expected the stop test refused at replication 2, consistent, got %v", err)
+	}
+	for _, h := range w.hosts {
+		for _, c := range h.commands {
+			if strings.Contains(c, "stop garage") {
+				t.Fatalf("a refused stop test stopped Garage on %s", h.name)
+			}
+		}
+	}
+}
+
+// At replication 2, dangerous, the stop test stops the last listed node,
+// proves reads and an upload through the rest, and starts it again; both
+// probes are gone afterwards.
+func TestTheStopTestStopsTheLastNodeAndStartsItAgain(t *testing.T) {
+	cfg, secrets := fixture(t)
+	cfg.Storage.Garage.Consistency = "dangerous"
+	w := newWorld(t, cfg, secrets)
+	w.provisioned(2, "home-a", "home-b")
+
+	p := w.build(storageadd.Options{StopTest: true})
+	if !strings.Contains(printed(p), "uploads must survive") {
+		t.Fatalf("the plan does not show the stop test:\n%s", printed(p))
+	}
+	if err := storageadd.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+	a, b := w.hosts["home-a"], w.hosts["home-b"]
+	if a.ran("stop garage") != 0 {
+		t.Error("the stop test stopped the first listed site, which serves media")
+	}
+	if b.ran("stop garage") != 1 || !b.running {
+		t.Errorf("home-b was stopped %d time(s) and is running: %v", b.ran("stop garage"), b.running)
+	}
+	if len(w.objects) != 0 {
+		t.Errorf("probes left behind: %v", w.objects)
+	}
+}
+
+// A failure while the node is down still starts it again, so the failure is
+// the only thing left to fix.
+func TestTheStopTestStartsTheNodeAfterAFailure(t *testing.T) {
+	cfg, secrets := fixture(t)
+	cfg.Storage.Garage.Consistency = "dangerous"
+	w := newWorld(t, cfg, secrets)
+	w.provisioned(2, "home-a", "home-b")
+	p := w.build(storageadd.Options{StopTest: true})
+	// The first probe's write and reads pass; fail the second write, made
+	// with home-b stopped.
+	w.failOnce = "-stopped"
+	err := storageadd.Execute(p)
+	if err == nil || !strings.Contains(err.Error(), "with home-b stopped") {
+		t.Fatalf("expected the second probe's failure, got %v", err)
+	}
+	if !w.hosts["home-b"].running {
+		t.Error("home-b was left stopped after the stop test failed")
+	}
+	for _, app := range cfg.AppNames() {
+		if secret, ok := secrets.Apps[app]["s3_secret_access_key"].(string); ok && secret != "" && strings.Contains(err.Error(), secret) {
+			t.Fatalf("the stop test's error carries %s's S3 secret", app)
+		}
 	}
 }

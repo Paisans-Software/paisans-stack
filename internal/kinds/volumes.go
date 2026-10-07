@@ -42,7 +42,7 @@ var ImageVolumes = map[string][]string{
 	"ghcr.io/element-hq/matrix-authentication-service:1.24.0": nil,
 	"ghcr.io/element-hq/element-web:v1.12.27":                 nil,
 	"ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea": nil,
-	"quay.io/oauth2-proxy/oauth2-proxy:v7.15.4": nil,
+	"quay.io/oauth2-proxy/oauth2-proxy:v7.15.4":    nil,
 	"ghcr.io/paisans-software/uptime:1.1.0-oidc.3": {"/data"},
 	// A pinned app's own database, one per postgres_version the toolkit
 	// knows. The path moved in 18; see PostgresDataMount.

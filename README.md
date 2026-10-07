@@ -1298,11 +1298,42 @@ rebuilding Garage empty (loses data, and contradicts rule 3's growth from one
 node), and a second cluster plus an S3 copy (not in Garage's documentation,
 twice the disk, and a cutover of every app's endpoint).
 
-**Removing or replacing a node is not built.** After `garage layout remove`
-the old node must stay online until its data directory is empty, because
-Garage does not track block migration, and a dead one needs `layout
-skip-dead-nodes`, possibly with `--allow-missing-data`. Both are decisions
-about losing data, and will get their own gates.
+**A host that exists only for Garage has the `storage` role.** A third copy
+on a third host is what keeps uploads working with a site down, and that host
+need not be a data, apps, gateway or witness site. It renders WireGuard and an
+infrastructure stack with Garage alone. Garage is still placed by
+`storage.garage.sites`, so the role on a site that list does not name is
+refused; a data or apps site that runs Garage needs no such role. Rejected: an
+empty role list for such a site, which keeps one source of truth but makes "no
+roles" mean something. Founder decision.
+
+**Each site can advertise its own capacity.** `storage.garage.capacities` maps
+a site to a size and overrides `storage.garage.capacity` for it, so a small
+host can share a layout with large ones: Garage spreads partitions in
+proportion to capacity, and at replication 3 on three nodes every node still
+holds a full copy, so the smallest bounds what the cluster can store. A changed
+capacity reassigns that node alone, in one new layout version, and the sync
+gate waits for the rebalance. `layout show` prints capacity in decimal units to
+one decimal place (`3GiB` shows as `3.2 GB`), so the two are compared in bytes
+within 2%, and a change the rounding hides plans nothing.
+
+**`storage add --stop-test` proves a node can go.** In the smoke stage it stops
+Garage on the last listed site, never the first, reads the probe through the
+rest and the media hostname, writes and reads a second probe, and starts the
+node again whatever happened. It runs only where uploads survive one node
+down: replication 3 on three or more sites, or replication 2 or more at
+`dangerous`, where it opens the single-copy window that setting accepts, for
+about a minute. Elsewhere it is refused before anything stops. Founder
+decision.
+
+**Removing or replacing a node is not built**, by founder decision. After
+`garage layout remove` the old node must stay online until its data has moved,
+because Garage does not track block migration: a removed node's blocks become
+deletable only ten minutes after their references drop, and were observed
+leaving between about 10 and 20 minutes after the apply. A dead node needs
+`layout skip-dead-nodes`, possibly with `--allow-missing-data`. Both are
+decisions about losing data, and will get their own gates;
+`docs/specs/2026-10-07-garage-gaps.md` records what was learned.
 
 #### Replacing an app's key: `storage rotate-key`
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
@@ -361,29 +362,33 @@ func (p *Plan) buildConnect() *Stage {
 		}
 		return nil
 	}
-	st.gate = func() error {
-		return poll(attempts(connectWait, connectPoll), connectPoll, func() error {
-			for _, n := range p.nodes {
-				if err := n.refresh(p.transports[n.site]); err != nil {
-					return fmt.Errorf("%s: %w", n.site, err)
-				}
-			}
-			for _, n := range p.nodes {
-				out, err := p.transports[n.site].Run(gcmd("status"))
-				if err != nil {
-					return fmt.Errorf("%s: `garage status` failed: %s", n.site, lastLines(out, 3))
-				}
-				healthy, _ := parseStatus(out)
-				for _, other := range p.nodes {
-					if !healthy[other.short()] {
-						return fmt.Errorf("%s does not list %s (%s) as healthy", n.site, other.site, other.short())
-					}
-				}
-			}
-			return nil
-		})
-	}
+	st.gate = p.everyNodeHealthy
 	return st
+}
+
+// everyNodeHealthy waits until `garage status` on every node lists every
+// configured node as healthy.
+func (p *Plan) everyNodeHealthy() error {
+	return poll(attempts(connectWait, connectPoll), connectPoll, func() error {
+		for _, n := range p.nodes {
+			if err := n.refresh(p.transports[n.site]); err != nil {
+				return fmt.Errorf("%s: %w", n.site, err)
+			}
+		}
+		for _, n := range p.nodes {
+			out, err := p.transports[n.site].Run(gcmd("status"))
+			if err != nil {
+				return fmt.Errorf("%s: `garage status` failed: %s", n.site, lastLines(out, 3))
+			}
+			healthy, _ := parseStatus(out)
+			for _, other := range p.nodes {
+				if !healthy[other.short()] {
+					return fmt.Errorf("%s does not list %s (%s) as healthy", n.site, other.site, other.short())
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // buildLayout is stage 5: every node gets a role in the zone named after its
@@ -395,23 +400,30 @@ func (p *Plan) buildConnect() *Stage {
 func (p *Plan) buildLayout() *Stage {
 	st := &Stage{
 		Name: "layout",
-		Gate: "`garage layout show` on every node reports the same version, with a role for every Garage site in the zone named after it",
+		Gate: "`garage layout show` on every node reports the same version, with a role for every Garage site in the zone named after it, at its configured capacity",
 	}
-	capacity := p.cfg.Storage.Garage.Capacity
+	garageCfg := p.cfg.Storage.Garage
 	version := 0
+	var shown layout
 	if a := p.node(p.anchor); a.answers() && !p.reset {
 		version = a.version
-	}
-	var missing []*node
-	for _, n := range p.nodes {
-		if p.reset || !n.hasRole {
-			missing = append(missing, n)
+		if out, err := p.transports[p.anchor].Run(gcmd("layout show")); err == nil {
+			shown, _ = parseLayout(out)
 		}
 	}
-	for _, n := range missing {
-		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "assign", Text: fmt.Sprintf("%s: garage layout assign -z %s -c %s <its node ID>", n.site, n.site, capacity)})
+	changes := 0
+	for _, n := range p.nodes {
+		want := garageCfg.CapacityFor(n.site)
+		switch {
+		case p.reset || !n.hasRole:
+			st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "assign", Text: fmt.Sprintf("%s: garage layout assign -z %s -c %s <its node ID>", n.site, n.site, want)})
+			changes++
+		case !p.capacityMatches(shown, n):
+			st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "resize", Text: fmt.Sprintf("%s: garage layout assign -c %s <its node ID>, from %s; Garage rebalances to match", n.site, want, humanBytes(shown.capacity[n.short()]))})
+			changes++
+		}
 	}
-	if len(missing) > 0 {
+	if changes > 0 {
 		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "apply", Text: fmt.Sprintf("garage layout apply --version %d", version+1)})
 	}
 	st.run = func() error {
@@ -429,10 +441,11 @@ func (p *Plan) buildLayout() *Stage {
 			if err := n.refresh(p.transports[n.site]); err != nil {
 				return fmt.Errorf("%s: %w", n.site, err)
 			}
-			if zone, ok := current.rows[n.short()]; ok && zone == n.site {
+			if zone, ok := current.rows[n.short()]; ok && zone == n.site && p.capacityMatches(current, n) {
 				continue
 			}
-			p.say("  %-9s %s a role in zone %s\n", "assign", n.site, n.site)
+			capacity := garageCfg.CapacityFor(n.site)
+			p.say("  %-9s %s a role in zone %s at %s\n", "assign", n.site, n.site, capacity)
 			cmd := fmt.Sprintf("layout assign -z %s -c %s %s", n.site, capacity, n.id)
 			if out, err := anchor.Run(gcmd(cmd)); err != nil {
 				return fmt.Errorf("%s: assigning %s: %s", p.anchor, n.site, lastLines(out, 3))
@@ -469,6 +482,9 @@ func (p *Plan) buildLayout() *Stage {
 					}
 					if zone != other.site {
 						return fmt.Errorf("%s's layout puts %s in zone %s, not %s, so its copies may not land on another site", n.site, other.site, zone, other.site)
+					}
+					if !p.capacityMatches(l, other) {
+						return fmt.Errorf("%s's layout gives %s %s, not %s", n.site, other.site, humanBytes(l.capacity[other.short()]), p.cfg.Storage.Garage.CapacityFor(other.site))
 					}
 				}
 			}
@@ -574,4 +590,30 @@ func (p *Plan) buildProvision() (*Stage, error) {
 		return nil
 	}
 	return st, nil
+}
+
+// capacityMatches reports whether a layout gives node its configured
+// capacity, within capacityTolerance. A layout that shows no capacity for it
+// is not a match.
+func (p *Plan) capacityMatches(l layout, n *node) bool {
+	shown, ok := l.capacity[n.short()]
+	if !ok {
+		return false
+	}
+	want, err := config.ParseSize(p.cfg.Storage.Garage.CapacityFor(n.site))
+	if err != nil {
+		return true
+	}
+	return sameCapacity(shown, want)
+}
+
+func humanBytes(n int64) string {
+	units := []string{"B", "KB", "MB", "GB", "TB", "PB"}
+	f := float64(n)
+	i := 0
+	for f >= 1000 && i < len(units)-1 {
+		f /= 1000
+		i++
+	}
+	return fmt.Sprintf("%.1f %s", f, units[i])
 }

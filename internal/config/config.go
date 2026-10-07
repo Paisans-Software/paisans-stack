@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -24,9 +26,16 @@ const (
 	RoleApps    Role = "apps"
 	RoleGateway Role = "gateway"
 	RoleWitness Role = "witness"
+	// RoleStorage is a host that runs Garage and nothing else. A data or apps
+	// site that also runs Garage needs no such role: storage.garage.sites is
+	// what places Garage, and this role only names a host that exists for it,
+	// so its purpose reads in its own entry. Validation refuses it on a site
+	// that list does not name. Founder decision, over accepting an empty
+	// role list for such a site.
+	RoleStorage Role = "storage"
 )
 
-var knownRoles = map[Role]bool{RoleData: true, RoleApps: true, RoleGateway: true, RoleWitness: true}
+var knownRoles = map[Role]bool{RoleData: true, RoleApps: true, RoleGateway: true, RoleWitness: true, RoleStorage: true}
 
 // Kind is an application the toolkit knows how to render.
 type Kind string
@@ -238,6 +247,11 @@ type Garage struct {
 	// because the toolkit cannot know how much of that disk is meant for
 	// objects. Defaulted in Load when left unset.
 	Capacity string `yaml:"capacity"`
+	// Capacities overrides Capacity for the sites it names, so nodes of
+	// different sizes can share a layout: Garage spreads partitions in
+	// proportion to capacity. Founder decision, over a field on each site,
+	// which would spread Garage's configuration across site entries.
+	Capacities map[string]string `yaml:"capacities"`
 	// Consistency is Garage's consistency_mode: consistent, degraded or
 	// dangerous. At replication 2 on two sites, dangerous is the only mode in
 	// which uploads continue while a site is down, at the price of an upload
@@ -585,11 +599,11 @@ func (c *Config) structural() error {
 	for _, name := range c.SiteNames() {
 		site := c.Sites[name]
 		if len(site.Roles) == 0 && len(c.PinnedTo(name)) == 0 {
-			add("sites.%s.roles: required. Give the site at least one of data, apps, gateway, witness. A site may have none only when an app is pinned to it, because then it exists to host that app.", name)
+			add("sites.%s.roles: required. Give the site at least one of data, apps, gateway, witness, storage. A site may have none only when an app is pinned to it, because then it exists to host that app.", name)
 		}
 		for _, role := range site.Roles {
 			if !knownRoles[role] {
-				add("sites.%s.roles: unknown role %q. Valid roles are data, apps, gateway, witness.", name, role)
+				add("sites.%s.roles: unknown role %q. Valid roles are data, apps, gateway, witness, storage.", name, role)
 			}
 		}
 		if site.Address == "" {
@@ -670,4 +684,41 @@ func (e *LoadError) Error() string {
 		out += "\n  " + p
 	}
 	return out
+}
+
+// CapacityFor is the capacity a Garage site advertises: its entry in
+// Capacities, or the deployment's Capacity.
+func (g Garage) CapacityFor(site string) string {
+	if c := strings.TrimSpace(g.Capacities[site]); c != "" {
+		return c
+	}
+	return g.Capacity
+}
+
+// sizeShape is a size as Garage's -c flag takes it: a number, then a unit.
+var sizeShape = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*([KMGTP]?)(I?)(B?)$`)
+
+// ParseSize reads a size such as 100G, 3GB, 3GiB or 1.5T into bytes. K, M, G,
+// T and P are decimal and Ki, Mi, Gi, Ti and Pi binary, with or without a
+// trailing B, matching what dxflrs/garage:v1.0.1 accepts for a capacity and
+// how it displays one (observed: 3G and 3GB show as 3.0 GB, 3GiB as 3.2 GB).
+// A bare number is refused: Garage requires the unit, and so does this.
+func ParseSize(s string) (int64, error) {
+	m := sizeShape.FindStringSubmatch(strings.ToUpper(strings.TrimSpace(s)))
+	if m == nil || m[2] == "" {
+		return 0, fmt.Errorf("%q is not a size with a unit, Eg: 100G, 3GiB or 1.5T", s)
+	}
+	n, err := strconv.ParseFloat(m[1], 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%q is not a positive size", s)
+	}
+	base := 1000.0
+	if m[3] == "I" {
+		base = 1024
+	}
+	power := strings.Index("KMGTP", m[2]) + 1
+	for i := 0; i < power; i++ {
+		n *= base
+	}
+	return int64(n), nil
 }

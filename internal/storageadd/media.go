@@ -9,6 +9,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
@@ -175,6 +176,15 @@ func (p *Plan) buildSmoke() *Stage {
 	if p.gateway != "" && pr.media != "" {
 		st.Steps = append(st.Steps, Step{Site: p.gateway, Verb: "read", Text: fmt.Sprintf("https://%s/%s, %s's media hostname, through the gateway's own Caddy", pr.media, pr.key, pr.app)})
 	}
+	if p.opts.StopTest {
+		victim := p.nodes[len(p.nodes)-1]
+		st.Steps = append(st.Steps,
+			Step{Site: victim.site, Verb: "stop", Text: "Garage, the last listed site, to prove the rest serve without it: " + stopGarage},
+			Step{Site: first.site, Verb: "read", Text: "the probe through every other node and the media hostname, with " + victim.site + " stopped"},
+			Step{Site: first.site, Verb: "write", Text: "a second probe through " + first.site + ", and read it back, with " + victim.site + " stopped: uploads must survive"},
+			Step{Site: victim.site, Verb: "start", Text: "Garage again, whatever the reads said: " + startGarage},
+		)
+	}
 	st.Steps = append(st.Steps, Step{Site: first.site, Verb: "delete", Text: "the probe"})
 
 	// Every S3 and web request runs on the first listed node's host, which
@@ -188,40 +198,12 @@ func (p *Plan) buildSmoke() *Stage {
 		return nil
 	}
 	st.gate = func() error {
-		for _, n := range p.nodes {
-			// At consistency dangerous a node may not have the probe yet,
-			// so a read is retried for a while before it counts as failed.
-			err := poll(attempts(probeWait, probePoll), probePoll, func() error {
-				got, err := t.RunInput(curlStdin, pr.s3Config("GET", n.address))
-				if err != nil {
-					return fmt.Errorf("reading the probe through %s's S3 API: %s", n.site, pr.redact(lastLines(got, 3)))
-				}
-				if got != pr.body {
-					return fmt.Errorf("%s's S3 API returned %q, not the probe", n.site, pr.redact(lastLines(got, 1)))
-				}
-				web := fmt.Sprintf("curl -fsS --max-time 20 -H 'Host: %s%s' http://%s:3902/%s", pr.bucket, webSuffix, n.address, pr.key)
-				got, err = t.Run(web)
-				if err != nil {
-					return fmt.Errorf("reading the probe through %s's web endpoint: %s", n.site, lastLines(got, 3))
-				}
-				if got != pr.body {
-					return fmt.Errorf("%s's web endpoint returned %q, not the probe", n.site, lastLines(got, 1))
-				}
-				return nil
-			})
-			if err != nil {
-				return err
-			}
+		if err := p.readProbe(pr, p.nodes); err != nil {
+			return err
 		}
-		if p.gateway != "" && pr.media != "" {
-			host := pr.media
-			cmd := fmt.Sprintf("curl -fsS --max-time 20 --resolve %s:443:127.0.0.1 https://%s/%s", host, host, pr.key)
-			got, err := p.transports[p.gateway].Run(cmd)
-			if err != nil {
-				return fmt.Errorf("reading the probe through https://%s on %s: %s", host, p.gateway, lastLines(got, 3))
-			}
-			if got != pr.body {
-				return fmt.Errorf("https://%s returned %q, not the probe", host, lastLines(got, 1))
+		if p.opts.StopTest {
+			if err := p.stopTest(pr); err != nil {
+				return err
 			}
 		}
 		if out, err := t.RunInput(curlStdin, pr.s3Config("DELETE", first.address)); err != nil {
@@ -230,4 +212,103 @@ func (p *Plan) buildSmoke() *Stage {
 		return nil
 	}
 	return st
+}
+
+// readProbe reads the probe back through each given node's S3 API and web
+// endpoint, from the first listed site's host, then through its app's media
+// hostname on the gateway.
+func (p *Plan) readProbe(pr *probe, nodes []*node) error {
+	for _, n := range nodes {
+		// At consistency dangerous a node may not have the probe yet,
+		// so a read is retried for a while before it counts as failed.
+		err := poll(attempts(probeWait, probePoll), probePoll, func() error {
+			got, err := p.transports[p.nodes[0].site].RunInput(curlStdin, pr.s3Config("GET", n.address))
+			if err != nil {
+				return fmt.Errorf("reading the probe through %s's S3 API: %s", n.site, pr.redact(lastLines(got, 3)))
+			}
+			if got != pr.body {
+				return fmt.Errorf("%s's S3 API returned %q, not the probe", n.site, pr.redact(lastLines(got, 1)))
+			}
+			web := fmt.Sprintf("curl -fsS --max-time 20 -H 'Host: %s%s' http://%s:3902/%s", pr.bucket, webSuffix, n.address, pr.key)
+			got, err = p.transports[p.nodes[0].site].Run(web)
+			if err != nil {
+				return fmt.Errorf("reading the probe through %s's web endpoint: %s", n.site, lastLines(got, 3))
+			}
+			if got != pr.body {
+				return fmt.Errorf("%s's web endpoint returned %q, not the probe", n.site, lastLines(got, 1))
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if p.gateway != "" && pr.media != "" {
+		host := pr.media
+		cmd := fmt.Sprintf("curl -fsS --max-time 20 --resolve %s:443:127.0.0.1 https://%s/%s", host, host, pr.key)
+		got, err := p.transports[p.gateway].Run(cmd)
+		if err != nil {
+			return fmt.Errorf("reading the probe through https://%s on %s: %s", host, p.gateway, lastLines(got, 3))
+		}
+		if got != pr.body {
+			return fmt.Errorf("https://%s returned %q, not the probe", host, lastLines(got, 1))
+		}
+	}
+	return nil
+}
+
+// stopTestAllowed reports whether uploads survive one Garage node down, the
+// only case in which --stop-test may stop one (founder decision): replication
+// 3 or more with at least three nodes, or replication 2 or more at
+// consistency dangerous. Garage v1.0.1's write quorum is 2 of 3 at
+// replication 3 and 1 at dangerous (src/rpc/replication_mode.rs:45-59).
+func (p *Plan) stopTestAllowed() error {
+	rf, n := p.replication(), len(p.nodes)
+	switch {
+	case n < 2:
+		return fmt.Errorf("--stop-test needs at least two Garage sites; there is %d", n)
+	case rf >= 3 && n >= 3:
+		return nil
+	case rf >= 2 && p.consistency() == config.GarageDangerous:
+		return nil
+	}
+	return fmt.Errorf("--stop-test stops one Garage node, and at replication %d on %d site(s) at consistency %s every upload would fail while it is down. It runs at replication 3 or more on three or more sites, or at replication 2 or more at consistency dangerous", rf, n, p.consistency())
+}
+
+// stopTest stops Garage on the last listed site, proves reads and an upload
+// still work through the rest, and starts it again whatever happened, so a
+// failure is the only thing left to fix. The last listed site is never the
+// first, which serves media and takes the apps' writes.
+func (p *Plan) stopTest(pr *probe) (err error) {
+	first, victim := p.nodes[0], p.nodes[len(p.nodes)-1]
+	vt := p.transports[victim.site]
+	p.say("  %-9s Garage on %s\n", "stop", victim.site)
+	if out, err := vt.Run(stopGarage); err != nil {
+		return fmt.Errorf("%s: stopping Garage for the stop test: %s", victim.site, lastLines(out, 5))
+	}
+	defer func() {
+		p.say("  %-9s Garage on %s\n", "start", victim.site)
+		if out, startErr := vt.Run(startGarage); startErr != nil {
+			err = fmt.Errorf("%v\n%s: starting Garage again after the stop test failed too: %s", err, victim.site, lastLines(out, 5))
+			return
+		}
+		if healthErr := p.everyNodeHealthy(); healthErr != nil && err == nil {
+			err = fmt.Errorf("%s did not rejoin after the stop test: %w", victim.site, healthErr)
+		}
+	}()
+	if err := p.readProbe(pr, p.nodes[:len(p.nodes)-1]); err != nil {
+		return fmt.Errorf("with %s stopped: %w", victim.site, err)
+	}
+	second := *pr
+	second.key = pr.key + "-stopped"
+	second.body = pr.body + " (written with " + victim.site + " stopped)"
+	t := p.transports[first.site]
+	if out, err := t.RunInput(curlStdin, second.s3Config("PUT", first.address)); err != nil {
+		return fmt.Errorf("with %s stopped, an upload through %s failed: %s", victim.site, first.site, second.redact(lastLines(out, 3)))
+	}
+	defer t.RunInput(curlStdin, second.s3Config("DELETE", first.address))
+	if err := p.readProbe(&second, p.nodes[:len(p.nodes)-1]); err != nil {
+		return fmt.Errorf("with %s stopped, the upload made then: %w", victim.site, err)
+	}
+	return nil
 }

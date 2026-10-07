@@ -2548,6 +2548,47 @@ func TestEveryDeclaredImageVolumeIsMounted(t *testing.T) {
 	}
 }
 
+// A site with the storage role runs Garage and nothing else: it is on the
+// mesh, and its infrastructure stack holds Garage alone, because every
+// service in infra-compose.yaml.tmpl is rendered from the site's own flags.
+func TestAStorageSiteRendersGarageAlone(t *testing.T) {
+	cfg := fixture(t)
+	cfg.Sites["store"] = config.Site{Roles: []config.Role{config.RoleStorage}, Address: "10.44.0.4", Endpoint: "203.0.113.40:51820"}
+	cfg.Storage.Garage.Sites = append(cfg.Storage.Garage.Sites, "store")
+	secrets := fixtureSecrets(t)
+	secrets.Sites["store"] = config.SiteSecrets{WireGuardPrivateKey: "Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0M="}
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+	var mine []string
+	for path := range files {
+		if rest, ok := strings.CutPrefix(path, "store/"); ok && rest != render.ManifestName {
+			mine = append(mine, rest)
+		}
+	}
+	sort.Strings(mine)
+	want := "etc/wireguard/wg0.conf,srv/infra/compose.yaml,srv/infra/garage/garage.toml"
+	if got := strings.Join(mine, ","); got != want {
+		t.Fatalf("a storage site renders %s, want %s", got, want)
+	}
+	compose := files["store/srv/infra/compose.yaml"]
+	if !strings.Contains(compose, "\n  garage:\n") {
+		t.Errorf("a storage site's infrastructure stack has no Garage:\n%s", compose)
+	}
+	for _, other := range []string{"\n  etcd:\n", "\n  patroni:\n", "\n  haproxy:\n", "\n  caddy:\n"} {
+		if strings.Contains(compose, other) {
+			t.Errorf("a storage site runs %s:\n%s", strings.TrimSpace(other), compose)
+		}
+	}
+	// It is a peer on the mesh like any other site; which sites dial it
+	// directly is the mesh's rule, not this role's.
+	if !strings.Contains(files["vm/etc/wireguard/wg0.conf"], "# store\n") {
+		t.Errorf("the gateway's mesh has no peer for the storage site:\n%s", files["vm/etc/wireguard/wg0.conf"])
+	}
+}
+
 // A site with no roles exists only to host what is pinned to it, so it runs
 // no infrastructure at all. Rendering an infra stack with an empty services
 // map would hand apply a compose project with nothing in it to recreate.

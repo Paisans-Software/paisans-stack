@@ -224,7 +224,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		// every key and bucket command needs a role to reach quorum.
 		return nil, fmt.Errorf("garage: %s has no role in the cluster layout, and storage.garage.sites lists %d sites. Joining a node is `paisans storage add`, which lays out every site at once; run it, then storage init has nothing left to do", site, len(cfg.Storage.Garage.Sites))
 	default:
-		capacity := cfg.Storage.Garage.Capacity
+		capacity := cfg.Storage.Garage.CapacityFor(site)
 		plan.Steps = append(plan.Steps, Step{
 			Describe: fmt.Sprintf("assign %s a role in the cluster layout", site),
 			Command:  fmt.Sprintf("%s layout assign -z %s -c %s %s", Command, site, capacity, nodeID),
