@@ -166,8 +166,12 @@ func TestACaddyChangeRestartsNoApp(t *testing.T) {
 			t.Errorf("a routing change restarts %s", a.Stack)
 		}
 	}
-	if a, ok := actionOn(p, "infra"); !ok || a.Command() != "docker compose -f /srv/infra/compose.yaml restart caddy" {
-		t.Errorf("infra plans %q", a.Command())
+	// The routing change is the gateway's reload, and no infra action.
+	if a, ok := actionOn(p, "infra"); ok {
+		t.Errorf("infra plans %q as well as the reload", a.Command())
+	}
+	if !p.GatewayReload {
+		t.Error("a routing change planned no reload")
 	}
 }
 

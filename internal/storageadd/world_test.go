@@ -47,6 +47,14 @@ type world struct {
 	resync, resyncing  int
 	// failOnce makes the first command containing it fail.
 	failOnce string
+	// unreachable makes every command or read containing it fail the way
+	// ssh does when it cannot connect, after its retries.
+	unreachable string
+}
+
+// sshDown is what SSHTransport returns when every attempt timed out.
+func sshDown(host string) error {
+	return fmt.Errorf("%s: %w after 3 attempts: exit status 255\nssh: connect to host 203.0.113.10 port 22: Operation timed out", host, apply.ErrUnreachable)
 }
 
 type host struct {
@@ -79,6 +87,9 @@ type host struct {
 func (h *host) Describe() string { return h.name }
 
 func (h *host) ReadFile(path string) (string, bool, error) {
+	if h.w.unreachable != "" && strings.Contains(path, h.w.unreachable) {
+		return "", false, sshDown(h.name)
+	}
 	c, ok := h.files[path]
 	return c, ok, nil
 }
@@ -126,6 +137,9 @@ func (h *host) run(command, stdin string) (string, error) {
 		w.failOnce = ""
 		return "failed by the test", fmt.Errorf("exit status 1")
 	}
+	if w.unreachable != "" && strings.Contains(command, w.unreachable) {
+		return "ssh: connect to host 203.0.113.10 port 22: Operation timed out\n", sshDown(h.name)
+	}
 	if g, ok := strings.CutPrefix(command, garage.Command+" "); ok {
 		return h.garage(g)
 	}
@@ -136,7 +150,7 @@ func (h *host) run(command, stdin string) (string, error) {
 	case command == "docker compose -f /srv/infra/compose.yaml up -d garage":
 		h.start()
 		return "", nil
-	case strings.HasPrefix(command, "ls -1 /srv/infra/garage/meta"):
+	case strings.Contains(command, "ls -1 /srv/infra/garage/meta"):
 		var names []string
 		if h.hasLayout {
 			names = append(names, "cluster_layout")
@@ -151,7 +165,7 @@ func (h *host) run(command, stdin string) (string, error) {
 		aside := strings.TrimSuffix(fields[3], ";")
 		if h.hasLayout {
 			if h.asides[aside] {
-				return "", fmt.Errorf("exit status 1")
+				return "__PAISANS_LAYOUT_LEFT__\n__PAISANS_ASIDE_PRESENT__\n", fmt.Errorf("exit status 3")
 			}
 			h.asides[aside] = true
 			h.hasLayout = false

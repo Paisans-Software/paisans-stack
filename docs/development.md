@@ -169,6 +169,15 @@ Caddyfile and never the environment, so a rotated DNS token arrives only by
 recreating the gateway, behind the same gates as an image change. A recreate is an outage,
 however brief, so it is not the default action for every change.
 
+The gateway's routing files make a reload and no stack action, so Caddy gets
+one action per apply (README, *A routing change gets exactly one action on
+Caddy*). When the infrastructure stack is also an `up -d`, `runAction` in
+`internal/apply/refresh.go` reads the container IDs before and after, reloads
+a Caddy `up -d` left in place, and restarts any other service whose bind
+mounted file changed and whose container was left in place (`Action.Refresh`).
+`gatewayaction_test.go` and `infraservices_test.go` pin both with a fake whose
+`up -d` replaces only the containers a test names.
+
 **`wg0` is up before any container moves.** Every service binds the site's
 mesh address, so the mesh comes up right after the files are written and before
 the gateway checks and stack actions below. A first apply enables and starts
@@ -517,6 +526,23 @@ rendered file carries credentials and a command line is visible in `ps` to every
 user on the host. Each write lands in a temporary file that is then moved, so a
 failed transfer leaves the previous file intact rather than a truncated one an
 application would happily read.
+
+A connection that never opened is retried, twice, inside `SSHTransport` itself
+(README, *A connection that never opened is tried again*), so every caller gets
+it without asking. Running the ssh binary is a package variable, `runSSH`, and
+the tests in `transport_test.go` replace it with a fake that chooses the output
+and exit status, which is how the "255 and a connection error, nothing else"
+rule is pinned. When every attempt fails the error wraps `apply.ErrUnreachable`,
+which is what a caller tests with `errors.Is` before it reads a failed probe as
+anything at all.
+
+The fakes in `internal/storageadd` and `internal/siteadd` have an
+`unreachable` knob that fails matching commands with that error, and the tests
+using it pin README's *Never infer host state from a failed probe*: each probe
+stops with "could not read host state", and none is read as an answer. A new
+probe that ignores an error, or reads `err != nil` as "absent", is the pattern
+to avoid; check `apply.ErrUnreachable` first, or make the remote script print
+a marker for every answer it can give, as the set aside script does.
 
 ## Refuse and warn
 

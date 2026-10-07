@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
 )
 
@@ -418,6 +419,65 @@ func TestTheStopTestStartsTheNodeAfterAFailure(t *testing.T) {
 	for _, app := range cfg.AppNames() {
 		if secret, ok := secrets.Apps[app]["s3_secret_access_key"].(string); ok && secret != "" && strings.Contains(err.Error(), secret) {
 			t.Fatalf("the stop test's error carries %s's S3 secret", app)
+		}
+	}
+}
+
+// A set aside whose ssh timed out says the host could not be read, and never
+// that the aside name exists from an earlier attempt: the first real storage
+// add said exactly that about a timeout.
+func TestAnUnreachableSetAsideClaimsNothingAboutFiles(t *testing.T) {
+	w := growing(t)
+	p := w.build(storageadd.Options{ChangeReplication: true})
+	w.unreachable = "mv -n"
+	err := storageadd.Execute(p)
+	if err == nil {
+		t.Fatal("a set aside that never reached the host succeeded")
+	}
+	if !strings.Contains(err.Error(), "could not read host state") || strings.Contains(err.Error(), "earlier attempt") {
+		t.Errorf("want the transport error and no claim about files, got:\n%v", err)
+	}
+	if !strings.Contains(err.Error(), "Operation timed out") {
+		t.Errorf("the transport error was not carried: %v", err)
+	}
+}
+
+// The claim stays for the case it is true: the aside name is taken.
+func TestATakenAsideNameIsStillNamed(t *testing.T) {
+	w := growing(t)
+	w.hosts["home-a"].asides[storageadd.LayoutFile+".rf1"] = true
+	p := w.build(storageadd.Options{ChangeReplication: true})
+	err := storageadd.Execute(p)
+	if err == nil || !strings.Contains(err.Error(), "already exists there from an earlier attempt") {
+		t.Fatalf("want the taken name reported, got %v", err)
+	}
+}
+
+// Every probe Build makes stops on a host it could not read, rather than
+// reading the failure as an answer: no counts file (which skips resuming a
+// reset, or counts again after the stop), no stored layout, a silent node.
+func TestBuildStopsOnAProbeThatNeverReachedTheHost(t *testing.T) {
+	for _, tc := range []struct {
+		name, unreachable string
+		resetDone         bool
+	}{
+		{"counts file before a reset", storageadd.CountsFile, false},
+		{"counts file after a rewrite", storageadd.CountsFile, true},
+		{"metadata listing", "ls -1", false},
+		{"node id", "node id -q", false},
+	} {
+		w := growing(t)
+		if tc.resetDone {
+			w.hosts["home-a"].files[storageadd.GarageToml] = strings.Replace(w.hosts["home-a"].files[storageadd.GarageToml], "replication_factor = 1", "replication_factor = 2", 1)
+		}
+		w.unreachable = tc.unreachable
+		_, err := storageadd.Build(w.cfg, w.secrets, w.transports(), storageadd.Options{ChangeReplication: true})
+		if err == nil {
+			t.Errorf("%s: a probe that never reached the host was read as an answer", tc.name)
+			continue
+		}
+		if !errors.Is(err, apply.ErrUnreachable) || !strings.Contains(err.Error(), "could not read host state") {
+			t.Errorf("%s: want the transport error, got %v", tc.name, err)
 		}
 	}
 }

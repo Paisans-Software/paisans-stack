@@ -46,6 +46,9 @@ type world struct {
 	noSyncStandby bool
 	replicaUp     bool
 	failOnce      string
+	// unreachable makes every command containing it fail as ssh does when
+	// it cannot connect, after its retries.
+	unreachable string
 	// unhealthy names an app stack whose container has exited, once it has
 	// been started.
 	unhealthy string
@@ -97,6 +100,10 @@ func (h *host) Run(command string) (string, error) {
 	if w.failOnce != "" && strings.Contains(command, w.failOnce) {
 		w.failOnce = ""
 		return "failed by the test", fmt.Errorf("exit status 1")
+	}
+	if w.unreachable != "" && strings.Contains(command, w.unreachable) {
+		return "ssh: connect to host 203.0.113.10 port 22: Operation timed out\n",
+			fmt.Errorf("%s: %w after 3 attempts: exit status 255", h.name, apply.ErrUnreachable)
 	}
 	switch {
 	case strings.HasPrefix(command, "for r in ") && strings.Contains(command, ".Config.Volumes"):

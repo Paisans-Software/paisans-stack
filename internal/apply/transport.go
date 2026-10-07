@@ -12,12 +12,15 @@ package apply
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Transport is the one place this package talks to a machine. Everything else
@@ -175,18 +178,120 @@ func (t SSHTransport) Run(command string) (string, error) {
 	if t.Sudo {
 		command = "sudo sh -c " + shellQuote(command)
 	}
-	cmd, cleanup, err := t.ssh(command)
+	out, err := t.run(command, nil)
 	if err != nil {
-		return "", err
+		return out, fmt.Errorf("%s: %s: %w\n%s", t.Describe(), firstLine(command), err, out)
 	}
-	defer cleanup()
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		return out.String(), fmt.Errorf("%s: %s: %w\n%s", t.Describe(), firstLine(command), err, out.String())
+	return out, nil
+}
+
+// How often a connection that never opened is tried again, and how long to
+// wait before each retry: three attempts in all. Package variables so that a
+// test can shrink them.
+var sshRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second}
+
+// runSSH runs one built ssh command. A package variable so that a test can
+// stand in for the ssh binary and choose its output and exit status.
+var runSSH = func(cmd *exec.Cmd) error { return cmd.Run() }
+
+// retryLog receives one line per retry.
+var retryLog io.Writer = os.Stderr
+
+// ErrUnreachable marks a command that never reached the host: ssh could not
+// connect, on every attempt. A caller asking the host a question can tell
+// "the host said no" from "the host was never asked" with errors.Is, and must
+// never read the second as an answer.
+var ErrUnreachable = errors.New("ssh could not connect to the host")
+
+// connectionFailures are what ssh prints when the connection itself failed,
+// before any command could run. "Connection closed by" is the pre
+// authentication form ("Connection closed by 203.0.113.10 port 22"); once a
+// session is open ssh says "Connection to <host> closed by remote host"
+// instead, which is not matched, because by then the command may have run.
+var connectionFailures = []string{
+	"Operation timed out",
+	"Connection timed out",
+	"Connection refused",
+	"Connection reset",
+	"No route to host",
+	"kex_exchange_identification",
+	"Connection closed by",
+}
+
+// connectionFailed reports whether a failed ssh never reached the remote
+// command. Both halves are needed. ssh exits 255 on its own errors, but a
+// remote command may exit 255 too, so the status alone proves nothing. And
+// the strings alone prove nothing either, since a remote command can print
+// "Connection refused" about some other connection. ssh's own error is its
+// last line, after anything the remote side printed, so only that line is
+// read, and a session that had opened (client_loop, which ssh prints only
+// once one exists) is never a connection failure.
+func connectionFailed(err error, out string) bool {
+	var exit interface{ ExitCode() int }
+	if !errors.As(err, &exit) || exit.ExitCode() != 255 {
+		return false
 	}
-	return out.String(), nil
+	last := lastLine(out)
+	if strings.Contains(last, "client_loop") {
+		return false
+	}
+	for _, s := range connectionFailures {
+		if strings.Contains(last, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func lastLine(out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+// run runs one remote command, with stdin when it is not nil, and retries a
+// connection that never opened.
+//
+// Only that failure is retried. A command that ran and failed is reported at
+// once, whatever its status: running it again could repeat whatever it did
+// before failing, and the failure is the host's answer. A connection that
+// never opened ran nothing, so trying again cannot do anything twice. The
+// first real storage add met exactly this twice, a connect timeout on a host
+// that answered seconds later, and stopped a multi stage operation half way
+// for it. WriteFile is retried the same way and is safe to be: it writes a
+// temporary file and renames it, so even a transfer cut off part way leaves
+// the old file whole and a second attempt starts over.
+//
+// Three attempts, two and four seconds apart, is enough for a blip and short
+// enough that a host which is really down is reported within seconds rather
+// than hidden behind a long wait.
+func (t SSHTransport) run(command string, stdin *string) (string, error) {
+	for attempt := 1; ; attempt++ {
+		cmd, cleanup, err := t.ssh(command)
+		if err != nil {
+			return "", err
+		}
+		if stdin != nil {
+			cmd.Stdin = strings.NewReader(*stdin)
+		}
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &out
+		err = runSSH(cmd)
+		cleanup()
+		if err == nil {
+			return out.String(), nil
+		}
+		if !connectionFailed(err, out.String()) {
+			return out.String(), err
+		}
+		if attempt > len(sshRetryDelays) {
+			return out.String(), fmt.Errorf("%w after %d attempts: %w", ErrUnreachable, attempt, err)
+		}
+		delay := sshRetryDelays[attempt-1]
+		fmt.Fprintf(retryLog, "%s: ssh could not connect (%s), retrying in %s (attempt %d of %d)\n",
+			t.Describe(), lastLine(out.String()), delay, attempt+1, len(sshRetryDelays)+1)
+		sleep(delay)
+	}
 }
 
 func (t SSHTransport) ReadFile(path string) (string, bool, error) {
@@ -215,17 +320,8 @@ func (t SSHTransport) WriteFile(path, content string, mode uint32) error {
 	if t.Sudo {
 		script = "sudo sh -c " + shellQuote(script)
 	}
-	cmd, cleanup, err := t.ssh(script)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	cmd.Stdin = strings.NewReader(content)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: writing %s: %w\n%s", t.Describe(), path, err, out.String())
+	if out, err := t.run(script, &content); err != nil {
+		return fmt.Errorf("%s: writing %s: %w\n%s", t.Describe(), path, err, out)
 	}
 	return nil
 }
@@ -237,19 +333,11 @@ func (t SSHTransport) RunInput(command, stdin string) (string, error) {
 	if t.Sudo {
 		command = "sudo sh -c " + shellQuote(command)
 	}
-	cmd, cleanup, err := t.ssh(command)
+	out, err := t.run(command, &stdin)
 	if err != nil {
-		return "", err
+		return out, fmt.Errorf("%s: %s: %w\n%s", t.Describe(), firstLine(command), err, out)
 	}
-	defer cleanup()
-	cmd.Stdin = strings.NewReader(stdin)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		return out.String(), fmt.Errorf("%s: %s: %w\n%s", t.Describe(), firstLine(command), err, out.String())
-	}
-	return out.String(), nil
+	return out, nil
 }
 
 func parentDir(path string) string {

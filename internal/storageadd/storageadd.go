@@ -216,7 +216,13 @@ func Build(cfg *config.Config, secrets *config.Secrets, transports map[string]ap
 		// A reset that stopped the nodes and rewrote every garage.toml, but
 		// was interrupted before starting them all, leaves no factor that
 		// differs. Its counts file is what says it is unfinished.
-		if _, counted, err := transports[p.anchor].ReadFile(countsFile); err == nil && counted {
+		_, counted, err := transports[p.anchor].ReadFile(countsFile)
+		if err != nil {
+			// An unread counts file is not an absent one: reading it as
+			// absent would skip resuming a reset that is half done.
+			return nil, fmt.Errorf("storage add: could not read host state on %s, so whether a reset is unfinished is unknown: %w", p.anchor, err)
+		}
+		if counted {
 			for _, n := range p.nodes {
 				if n.deployed && !n.answers() {
 					p.reset = true
@@ -227,7 +233,11 @@ func Build(cfg *config.Config, secrets *config.Secrets, transports map[string]ap
 
 	p.Stages = append(p.Stages, p.buildNodes())
 	if p.reset {
-		p.Stages = append(p.Stages, p.buildSettle(), p.buildReset())
+		reset, err := p.buildReset()
+		if err != nil {
+			return nil, err
+		}
+		p.Stages = append(p.Stages, p.buildSettle(), reset)
 	}
 	p.Stages = append(p.Stages, p.buildConnect(), p.buildLayout(), p.buildSync())
 	provision, err := p.buildProvision()

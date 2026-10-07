@@ -373,3 +373,40 @@ func TestAnAppUnhealthyAfterHAProxyStopsAtStage6(t *testing.T) {
 		t.Error("HAProxy's gate ran after an app failed")
 	}
 }
+
+// A mesh probe that never reached its host says so and stops, and nothing is
+// rolled back: the mesh may be whole, and undoing stage 2 on the strength of
+// an ssh timeout would take down a tunnel that works.
+func TestAnUnreachableMeshProbeStopsWithoutRollingBack(t *testing.T) {
+	defer siteadd.SetFast()()
+	for _, probe := range []string{"ping ", "latest-handshakes"} {
+		w := newWorld(t)
+		p := build(t, w)
+		w.unreachable = probe
+		err := siteadd.Execute(p)
+		if err == nil || !strings.Contains(err.Error(), "stage 2") || !strings.Contains(err.Error(), "could not read host state") {
+			t.Fatalf("%s: want stage 2 to stop on the transport error, got %v", probe, err)
+		}
+		if strings.Contains(err.Error(), "cannot reach") || strings.Contains(err.Error(), "not whole") {
+			t.Errorf("%s: an unreachable probe was reported as a mesh fault: %v", probe, err)
+		}
+		if !strings.Contains(err.Error(), "nothing was rolled back") {
+			t.Errorf("%s: the failure does not say nothing was rolled back: %v", probe, err)
+		}
+		if strings.Contains(err.Error(), "Done.") {
+			t.Errorf("%s: stage 2 was rolled back on an ssh timeout: %v", probe, err)
+		}
+	}
+}
+
+// HAProxy's statistics probe never reaching a site is an error at plan time,
+// not "HAProxy lists too few sites", which planned a restart that stops every
+// database app on the site.
+func TestAnUnreachableHAProxyProbeIsNotARestart(t *testing.T) {
+	w := newWorld(t)
+	w.unreachable = "/stats;csv"
+	_, err := siteadd.Build(w.cfg, w.secrets, "home-b", w.transports())
+	if err == nil || !strings.Contains(err.Error(), "could not read host state") {
+		t.Fatalf("want the transport error, got %v", err)
+	}
+}

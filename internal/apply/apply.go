@@ -90,6 +90,13 @@ type Action struct {
 	// for a new garage.toml restarted Patroni, which on the primary is a
 	// failover, and HAProxy, which drops every app's database connection.
 	Services []string
+	// Refresh names the infrastructure services whose bind mounted files
+	// changed, for an `up -d` that was not forced. `up -d` replaces only a
+	// container whose configuration changed, and a bind mounted file is not
+	// configuration to Compose, so a haproxy.cfg changed beside a
+	// patroni.env left HAProxy running on the old file. Execute restarts
+	// each of these that `up -d` left in place, and none it replaced.
+	Refresh []string
 }
 
 // Command is what the action runs on the host.
@@ -437,6 +444,8 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	// which case a restart is of the whole stack. See infraService.
 	infraServices := map[string]bool{}
 	infraWhole := false
+	// The same services, for a recreate: see Action.Refresh.
+	refresh := map[string]bool{}
 	// Whether this site runs the gateway at all, and which of the two ways its
 	// Caddy is about to change. render only emits a Caddyfile for a site
 	// holding the gateway role, so its presence in the rendered tree is the
@@ -515,14 +524,20 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 			continue
 		}
 		out.Changes = append(out.Changes, change)
+		// The gateway's routing files are the reload's alone. Making them an
+		// infrastructure action as well restarted Caddy after reloading it:
+		// two actions for one change, and the restart is the one that drops
+		// connections. A Caddy that is not running is started by Execute.
+		gatewayRouting := change.Stack == infraStack && isRouting(rel)
 		if (change.Kind == Create || change.Kind == Update) && !isRecord(rel) {
-			if change.Stack != "" {
+			if change.Stack != "" && !gatewayRouting {
 				stacks[change.Stack] = true
 				if isEnvironment(rel) {
 					envChanged[change.Stack] = true
 				} else if change.Stack == infraStack {
 					if service := infraService(rel); service != "" {
 						infraServices[service] = true
+						refresh[service] = true
 					} else {
 						infraWhole = true
 					}
@@ -612,6 +627,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		} else if envChanged[stack] {
 			action.Recreate = true
 			action.Reason = "an environment or compose file changed, and Compose passes environment at start, so a running container cannot be told about a new value"
+			if stack == infraStack && len(refresh) > 0 {
+				action.Refresh = sortedKeys(refresh)
+				action.Reason += "; " + strings.Join(action.Refresh, ", ") + " is restarted after it if `up -d` leaves its container in place, since a changed bind mounted file is not a reason Compose recreates one"
+			}
 		} else {
 			action.Reason = "only bind mounted configuration changed, so the container keeps its identity"
 			if stack == infraStack && !infraWhole && len(infraServices) > 0 {
@@ -840,18 +859,31 @@ func Execute(plan *Plan, t Transport) error {
 		}
 	}
 
-	if plan.GatewayReload {
-		// Reload only a Caddy that is running. A stopped or absent gateway is
-		// started by the Actions loop below instead, and it reads the same
-		// configuration this apply just validated, so nothing is skipped by
-		// not reloading it.
+	// A routing change is a reload and nothing else, and exactly one thing
+	// makes the new routing live. When the infrastructure stack is also
+	// recreated, the reload waits for that: a Caddy `up -d` replaces reads the
+	// new files as it starts, and one it leaves in place is reloaded then
+	// (see runAction). A forced recreate replaces it outright. Otherwise the
+	// reload is here, before any stack moves, as it always was.
+	infraUp, infraForced := infraRecreate(plan)
+	if plan.GatewayReload && !infraUp && !infraForced {
 		running, err := t.Run("docker compose -f /srv/infra/compose.yaml ps --status running --quiet caddy")
 		if err != nil {
 			return fmt.Errorf("%s: asking whether the gateway is running: %w", plan.Site, err)
 		}
 		if strings.TrimSpace(running) != "" {
-			if _, err := t.Run("docker compose -f /srv/infra/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"); err != nil {
+			if _, err := t.Run(reloadGateway); err != nil {
 				return fmt.Errorf("%s: reloading the gateway: %w", plan.Site, err)
+			}
+		} else {
+			// A stopped or absent gateway has nothing to reload, and no
+			// stack action will start it, since routing alone is not one.
+			// It starts on the configuration this apply just validated.
+			if _, err := t.Run("docker compose -f /srv/infra/compose.yaml up -d caddy"); err != nil {
+				return fmt.Errorf("%s: starting the gateway: %w", plan.Site, err)
+			}
+			if err := waitHealthy(plan, infraStack, t); err != nil {
+				return err
 			}
 		}
 	}
@@ -873,7 +905,7 @@ func Execute(plan *Plan, t Transport) error {
 		if action.Recreate {
 			previous = recordAnonymousVolumes(plan, action.Stack, t)
 		}
-		if _, err := t.Run(action.Command()); err != nil {
+		if err := runAction(action, action.Stack == infraStack && plan.GatewayReload, t); err != nil {
 			return err
 		}
 		// `up -d` and `restart` return once the containers start, which says

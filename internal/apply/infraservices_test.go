@@ -1,6 +1,7 @@
 package apply_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -82,5 +83,90 @@ func TestAnInfraEnvironmentChangeStillRecreates(t *testing.T) {
 	}
 	if a := infraAction(t, p); !a.Recreate || len(a.Services) != 0 {
 		t.Errorf("patroni.env changed and infra plans %q", a.Command())
+	}
+}
+
+// containerHost is a fakeHost whose infrastructure stack has containers with
+// IDs: `up -d` replaces those of the services in recreates and leaves the
+// rest, the way Compose replaces only a container whose configuration
+// changed.
+type containerHost struct {
+	*fakeHost
+	ids       map[string]string
+	recreates map[string]bool
+	gen       int
+}
+
+func newContainerHost(h *fakeHost, recreates ...string) *containerHost {
+	c := &containerHost{fakeHost: h, ids: map[string]string{}, recreates: map[string]bool{}}
+	for _, s := range []string{"caddy", "etcd", "garage", "haproxy", "patroni"} {
+		c.ids[s] = s + "-0"
+	}
+	for _, s := range recreates {
+		c.recreates[s] = true
+	}
+	return c
+}
+
+func (c *containerHost) Run(command string) (string, error) {
+	const compose = "docker compose -f /srv/infra/compose.yaml "
+	switch command {
+	case compose + "ps --all --format json":
+		c.commands = append(c.commands, command)
+		var b strings.Builder
+		for _, s := range []string{"caddy", "etcd", "garage", "haproxy", "patroni"} {
+			fmt.Fprintf(&b, `{"ID":%q,"Service":%q,"State":"running","Health":""}`+"\n", c.ids[s], s)
+		}
+		return b.String(), nil
+	case compose + "up -d":
+		c.gen++
+		for s := range c.recreates {
+			c.ids[s] = fmt.Sprintf("%s-%d", s, c.gen)
+		}
+	}
+	return c.fakeHost.Run(command)
+}
+
+// A haproxy.cfg changed in the same apply as a patroni.env: the env file
+// makes infra an `up -d`, which replaces Patroni and leaves HAProxy running
+// on the old file, since a bind mounted file is not configuration to Compose.
+// HAProxy is restarted after it, and so is Garage for its garage.toml; a
+// service `up -d` replaced is not restarted again.
+func TestABindMountChangedBesideAnUpIsRestartedAfterIt(t *testing.T) {
+	host := newContainerHost(appliedHost(t), "patroni", "garage")
+	p, err := apply.Build("home-a", planChanging(t, "srv/infra/patroni.env", "srv/infra/haproxy/haproxy.cfg", "srv/infra/garage/garage.toml"), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := infraAction(t, p)
+	if !a.Recreate || strings.Join(a.Refresh, ",") != "garage,haproxy" {
+		t.Fatalf("infra plans %q refreshing %v", a.Command(), a.Refresh)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	up := host.indexOf("compose.yaml up -d")
+	restart := host.indexOf("compose.yaml restart haproxy")
+	if up < 0 || restart < up {
+		t.Errorf("haproxy was not restarted after `up -d` (up %d, restart %d): %v", up, restart, host.commands)
+	}
+	if host.ran("restart garage") || host.ran("restart patroni") {
+		t.Errorf("a service `up -d` replaced was restarted again: %v", host.commands)
+	}
+}
+
+// When `up -d` replaces every container with a changed file, nothing is
+// restarted after it.
+func TestNothingIsRestartedWhenUpReplacedIt(t *testing.T) {
+	host := newContainerHost(appliedHost(t), "haproxy", "patroni")
+	p, err := apply.Build("home-a", planChanging(t, "srv/infra/patroni.env", "srv/infra/haproxy/haproxy.cfg"), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if host.ran("compose.yaml restart") {
+		t.Errorf("a container `up -d` replaced was restarted: %v", host.commands)
 	}
 }
