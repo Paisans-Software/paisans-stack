@@ -56,12 +56,13 @@ storage:
   garage:
     sites: [home-a]
     replication: 1
+    consistency: eventual
 
 apps:
   docs:
     kind: outline
     hostname: docs.example.org
-    placement: standby
+    placement: cluster
     settings:
       s3_bucket: docs-uploads
   auth:

@@ -2,6 +2,7 @@ package validate_test
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -35,6 +36,12 @@ func TestRulesFire(t *testing.T) {
 		{"cluster-site-without-data-role", "cluster-site-without-data-role", validate.Refuse},
 		{"cluster-app-without-apps-site", "cluster-app-without-apps-site", validate.Refuse},
 		{"garage-replication-exceeds-sites", "garage-replication-exceeds-sites", validate.Refuse},
+		{"garage-consistency-unknown", "garage-consistency-unknown", validate.Refuse},
+		{"garage-consistency-dangerous", "garage-consistency-dangerous", validate.Warn},
+		{"garage-consistency-degraded-is-consistent", "garage-consistency-degraded-is-consistent", validate.Warn},
+		{"garage-single-copy", "garage-single-copy", validate.Warn},
+		{"garage-two-sites-stop-uploads", "garage-two-sites-stop-uploads", validate.Warn},
+		{"garage-partial-uploads", "garage-partial-uploads", validate.Warn},
 		{"site-address-outside-mesh", "site-address-outside-mesh", validate.Refuse},
 		{"unknown-image-service", "unknown-image-service", validate.Refuse},
 		{"floating-image-tag", "floating-image-tag", validate.Refuse},
@@ -181,8 +188,10 @@ func TestValidFixtureIsQuiet(t *testing.T) {
 	}
 }
 
-// The shipped example must validate. It deliberately demonstrates one warning:
-// its Synapse stack is pinned to the site that also holds the witness role.
+// The shipped example must validate. It deliberately demonstrates two
+// warnings: its Synapse stack is pinned to the site that also holds the
+// witness role, and its two Garage sites at replication 2 stop uploads while
+// either is down.
 func TestExampleValidates(t *testing.T) {
 	cfg, err := config.Load(filepath.Join("..", "..", "examples", "paisans.example.yaml"))
 	if err != nil {
@@ -193,7 +202,12 @@ func TestExampleValidates(t *testing.T) {
 		t.Fatalf("the example was refused: %v", result.Refusals())
 	}
 	warnings := result.Warnings()
-	if len(warnings) != 1 || warnings[0].Rule != "pinned-app-on-witness" {
+	var rules []string
+	for _, w := range warnings {
+		rules = append(rules, w.Rule)
+	}
+	sort.Strings(rules)
+	if strings.Join(rules, ",") != "garage-two-sites-stop-uploads,pinned-app-on-witness" {
 		t.Fatalf("unexpected warnings on the example: %v", warnings)
 	}
 }

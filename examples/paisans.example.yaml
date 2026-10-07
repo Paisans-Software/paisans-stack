@@ -114,12 +114,22 @@ storage:
   # mesh address and a browser cannot reach one.
   media_hostname: media.example.org
   garage:
+    # Preference order, not a set. The first site serves every media read the
+    # gateway passes on and takes every app's writes; the rest serve only
+    # when the ones before them are down. Put the site with the best upload
+    # first: a home line's upload is its slow direction. A new site joins at
+    # the end and moves up only after `paisans storage add` has passed.
     sites: [home-a, home-b]
     # A factor of 2 across 2 sites means a write needs both of them: losing a
     # site keeps the database available through failover but stops uploads.
     # That is a trade, not a free win, and it is the reason a third Garage
-    # location is worth considering.
+    # location is worth considering. Validation warns about it on purpose.
     replication: 2
+    # consistent (the default), degraded or dangerous. dangerous keeps
+    # uploads working with a site down by confirming an upload once one copy
+    # exists. Changing replication on a running cluster is `paisans storage
+    # add --change-replication`; changing this is an ordinary apply.
+    consistency: consistent
     # What each node advertises to Garage's own layout, not a measurement of
     # the disk: the toolkit has no way to know how much of it is meant for
     # objects, so it takes your word and requires the unit suffix Garage

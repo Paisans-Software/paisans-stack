@@ -123,6 +123,8 @@ func Check(cfg *config.Config) Result {
 	c.clusterSiteWithoutData()
 	c.clusterAppWithoutAppsSite()
 	c.garageReplicationExceedsSites()
+	c.garageConsistency()
+	c.garageAvailability()
 	c.siteOutsideMesh()
 	c.imageServices()
 	c.floatingImages()
@@ -252,6 +254,73 @@ func (c *checker) garageReplicationExceedsSites() {
 	c.refuse("garage-replication-exceeds-sites", "storage.garage.replication",
 		"is %d, but only %d site(s) run Garage. Garage cannot place a copy on a node that does not exist, so every upload fails while everything else looks healthy. Lower the factor, or add a Garage site.",
 		garage.Replication, len(garage.Sites))
+}
+
+// garageConsistency refuses a consistency mode Garage does not know, and
+// warns on the two that do not mean what they appear to.
+//
+// Garage v1.0.1 accepts exactly consistent, degraded and dangerous
+// (src/rpc/replication_mode.rs) and refuses to start on anything else, so a
+// typo would take object storage down at the next apply. dangerous confirms
+// an upload once one copy exists; degraded relaxes only the read quorum, which
+// is already one at replication 2, so there it changes nothing
+// (doc/book/reference-manual/configuration.md, "consistency_mode").
+func (c *checker) garageConsistency() {
+	garage := c.cfg.Storage.Garage
+	switch garage.Consistency {
+	case "", config.GarageConsistent:
+	case config.GarageDangerous:
+		if len(garage.Sites) > 1 {
+			c.warn("garage-consistency-dangerous", "storage.garage.consistency",
+				"is dangerous: Garage confirms an upload once one copy exists and sends the rest in the background, so an upload can live on one disk until the other sites catch up, and a read can miss a recent change. Uploads continue while a site is down; that is the trade.")
+		}
+	case config.GarageDegraded:
+		if c.replication() <= 2 {
+			c.warn("garage-consistency-degraded-is-consistent", "storage.garage.consistency",
+				"is degraded, which at replication %d is identical to consistent: it lowers only the read quorum, which is already one. Use dangerous if uploads must continue while a site is down.", c.replication())
+		}
+	default:
+		c.refuse("garage-consistency-unknown", "storage.garage.consistency",
+			"is %q. Garage accepts consistent, degraded or dangerous, and refuses to start on anything else.", garage.Consistency)
+	}
+}
+
+// garageAvailability warns on layouts whose behaviour with one site down
+// surprises. Each is a legitimate choice, so none is refused.
+//
+// Quorums are Garage v1.0.1's (src/rpc/replication_mode.rs): at replication 2
+// a write needs both copies unless the mode is dangerous; at replication 2 on
+// three or more sites each partition sits on two of them, so the partitions a
+// down site holds stop taking writes.
+func (c *checker) garageAvailability() {
+	garage := c.cfg.Storage.Garage
+	n := len(garage.Sites)
+	rf := c.replication()
+	switch {
+	case n > 1 && rf == 1:
+		c.warn("garage-single-copy", "storage.garage.replication",
+			"is 1 across %d sites: each object lives on one site only, and is unreadable while that site is down. Raise it to 2 or more.", n)
+	case rf == 2 && n == 2 && garage.Consistency != config.GarageDangerous:
+		c.warn("garage-two-sites-stop-uploads", "storage.garage.replication",
+			"is 2 on two sites at consistency %s: every upload needs both, so uploads stop while either site is down; reads continue. A third Garage site at replication 3 keeps both, or consistency dangerous keeps uploads at a durability cost.", c.consistency())
+	case rf == 2 && n > 2 && garage.Consistency != config.GarageDangerous:
+		c.warn("garage-partial-uploads", "storage.garage.replication",
+			"is 2 on %d sites: each object lives on two of them, so while any one is down the uploads that would land on it fail, roughly %d in %d. Replication 3 keeps every upload working with one site down.", n, 2, n)
+	}
+}
+
+func (c *checker) replication() int {
+	if c.cfg.Storage.Garage.Replication == 0 {
+		return 1
+	}
+	return c.cfg.Storage.Garage.Replication
+}
+
+func (c *checker) consistency() string {
+	if c.cfg.Storage.Garage.Consistency == "" {
+		return config.GarageConsistent
+	}
+	return c.cfg.Storage.Garage.Consistency
 }
 
 // evenVoters warns about an even number of etcd members above two.

@@ -54,14 +54,15 @@ etcd:
 storage:
   media_hostname: media.example.org
   garage:
-    sites: [home-a]
-    replication: 1
+    sites: [home-a, home-b]
+    replication: 2
+    consistency: degraded
 
 apps:
   docs:
     kind: outline
     hostname: docs.example.org
-    placement: standby
+    placement: cluster
     settings:
       s3_bucket: docs-uploads
   auth:

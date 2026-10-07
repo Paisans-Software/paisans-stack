@@ -55,8 +55,8 @@ etcd:
 storage:
   media_hostname: media.example.org
   garage:
-    sites: [home-a, home-b]
-    replication: 2
+    sites: [home-a]
+    replication: 1
 
 apps:
   docs:

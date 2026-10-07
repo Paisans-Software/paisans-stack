@@ -238,7 +238,23 @@ type Garage struct {
 	// because the toolkit cannot know how much of that disk is meant for
 	// objects. Defaulted in Load when left unset.
 	Capacity string `yaml:"capacity"`
+	// Consistency is Garage's consistency_mode: consistent, degraded or
+	// dangerous. At replication 2 on two sites, dangerous is the only mode in
+	// which uploads continue while a site is down, at the price of an upload
+	// being confirmed once one copy exists (Garage v1.0.1,
+	// doc/book/reference-manual/configuration.md, "consistency_mode").
+	// Garage reads it at start and does not record it in the layout, so
+	// changing it is an ordinary apply. Defaulted in Load when left unset.
+	Consistency string `yaml:"consistency"`
 }
+
+// Garage consistency modes, as Garage v1.0.1 spells them
+// (src/rpc/replication_mode.rs).
+const (
+	GarageConsistent = "consistent"
+	GarageDegraded   = "degraded"
+	GarageDangerous  = "dangerous"
+)
 
 type App struct {
 	Kind      Kind      `yaml:"kind"`
@@ -374,6 +390,9 @@ func Load(path string) (*Config, error) {
 	cfg.Path = path
 	if cfg.Storage.Garage.Capacity == "" {
 		cfg.Storage.Garage.Capacity = "100G"
+	}
+	if cfg.Storage.Garage.Consistency == "" {
+		cfg.Storage.Garage.Consistency = GarageConsistent
 	}
 	if err := cfg.structural(); err != nil {
 		return nil, err
