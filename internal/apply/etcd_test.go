@@ -2,10 +2,12 @@ package apply_test
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -74,4 +76,86 @@ func TestReadEtcdInitial(t *testing.T) {
 	if _, _, err := apply.ReadEtcdInitial(host); err == nil {
 		t.Error("an unreadable record was accepted")
 	}
+}
+
+const memberListOne = `{"header":{"cluster_id":1,"member_id":2,"raft_term":3},"members":[{"ID":12345678901234567890,"name":"home-a","peerURLs":["http://10.44.0.1:2380"],"clientURLs":["http://10.44.0.1:2379"]}]}`
+
+func fixtureConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "render", "testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestParseEtcdMembers(t *testing.T) {
+	members, err := apply.ParseEtcdMembers(memberListOne + "\n")
+	if err != nil || len(members) != 1 {
+		t.Fatalf("%v %v", members, err)
+	}
+	if members[0].HexID() != "ab54a98ceb1f0ad2" {
+		t.Errorf("the ID lost precision or is not hex: %s", members[0].HexID())
+	}
+	unstarted := apply.EtcdMember{ID: 1, PeerURLs: []string{"http://10.44.0.3:2380"}, IsLearner: true}
+	if got := apply.EtcdMemberSite(fixtureConfig(t), unstarted); got != "vm" {
+		t.Errorf("an unstarted member is named %q, want vm by its peer URL", got)
+	}
+}
+
+// apply on a site of a cluster whose live membership differs from
+// etcd.members refuses to touch the infrastructure stack, and says to use
+// site add; the same apply against a matching membership proceeds.
+func TestApplyRefusesAHalfGrownEtcd(t *testing.T) {
+	cfg := fixtureConfig(t) // etcd.members: home-a, home-b, vm
+	host := newHost()
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members, _ := apply.ParseEtcdMembers(memberListOne)
+	err = apply.EtcdRefusal(cfg, p, members)
+	if err == nil || !strings.Contains(err.Error(), "paisans site add") {
+		t.Fatalf("a half grown cluster was not refused: %v", err)
+	}
+
+	all := append(members,
+		apply.EtcdMember{ID: 2, Name: "home-b", PeerURLs: []string{"http://10.44.0.2:2380"}},
+		apply.EtcdMember{ID: 3, Name: "vm", PeerURLs: []string{"http://10.44.0.3:2380"}})
+	if err := apply.EtcdRefusal(cfg, p, all); err != nil {
+		t.Errorf("a matching membership was refused: %v", err)
+	}
+	all[2].IsLearner = true
+	if err := apply.EtcdRefusal(cfg, p, all); err == nil {
+		t.Error("a learner still catching up was not refused")
+	}
+}
+
+// The probe asks the site first and then the other configured members, and
+// a host with no etcd running is an answer rather than an error.
+func TestProbeEtcdMembers(t *testing.T) {
+	cfg := fixtureConfig(t)
+	quiet := &scriptHost{fakeHost: newHost(), answer: "__PAISANS_NO_ETCD__\n"}
+	live := &scriptHost{fakeHost: newHost(), answer: memberListOne}
+	members, found, err := apply.ProbeEtcdMembers(cfg, "vm", map[string]apply.Transport{"vm": quiet, "home-a": live})
+	if err != nil || !found || len(members) != 1 {
+		t.Fatalf("%v %v %v", members, found, err)
+	}
+	_, found, err = apply.ProbeEtcdMembers(cfg, "vm", map[string]apply.Transport{"vm": quiet})
+	if err != nil || found {
+		t.Errorf("no etcd anywhere reported a membership: %v %v", found, err)
+	}
+}
+
+// scriptHost answers the membership probe with a fixed output.
+type scriptHost struct {
+	*fakeHost
+	answer string
+}
+
+func (h *scriptHost) Run(command string) (string, error) {
+	if strings.Contains(command, "member list -w json") {
+		return h.answer, nil
+	}
+	return h.fakeHost.Run(command)
 }

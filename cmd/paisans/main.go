@@ -401,6 +401,27 @@ func runApply(args []string) error {
 	plan.Progress = os.Stdout
 	printPlan(plan)
 
+	// A site running etcd, or configured to, is checked against the live
+	// membership. Only this site is asked unless it is a configured member,
+	// so applying a site with nothing to do with etcd reaches no other host.
+	transports := map[string]apply.Transport{*site: transport}
+	if contains(cfg.Etcd.Members, *site) {
+		for _, name := range cfg.Etcd.Members {
+			if name != *site {
+				transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
+			}
+		}
+	}
+	members, found, err := apply.ProbeEtcdMembers(cfg, *site, transports)
+	if err != nil {
+		return err
+	}
+	if found {
+		if err := apply.EtcdRefusal(cfg, plan, members); err != nil {
+			return err
+		}
+	}
+
 	if !*execute {
 		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone {
 			return nil
