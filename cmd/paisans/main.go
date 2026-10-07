@@ -49,6 +49,7 @@ Usage:
   paisans preflight --site <new site> [--config paisans.yaml]
   paisans failover test [--config paisans.yaml] [--execute]
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
+  paisans dns prune [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
   paisans secrets set <dotted.key> [--config paisans.yaml] [--secrets secrets.enc.yaml] < value
   paisans app admin create --app <name> --username <u> --email <e> [--site <name>]
                [--config paisans.yaml] [--ssh <destination>] [--reset-password]
@@ -94,10 +95,17 @@ Commands:
              back, checking the cluster and every app before and after
              each switch. Interrupts writes briefly, twice. Changes
              nothing without --execute.
-  dns        Create the public DNS records the configuration implies, at the
-             provider named by acme.provider. Creates only what is missing,
-             never updates or deletes, and refuses if any record conflicts.
-             Writes nothing without --execute.
+  dns        init: create the public DNS records the configuration implies,
+             at the provider named by acme.provider. Creates only what is
+             missing, never updates or deletes, and refuses if any record
+             conflicts.
+             prune: delete the A and AAAA records dns init created that the
+             configuration no longer implies: only one carrying init's
+             comment, at a name under community.domain or one the
+             configuration names, pointing at a site's public address, and
+             no longer wanted. Lists every other record init marked, with why
+             it is kept, and lists the zone again to confirm each delete.
+             Both write nothing without --execute.
   secrets    set: read one value from stdin and write it into the encrypted
              secrets file, printing only its name. For credentials issued
              elsewhere, so they never touch a terminal or an editor.
@@ -115,8 +123,9 @@ Commands:
 host prepare, apply, prune, site add, storage init, storage add, app admin
 create, oidc client create, preflight and failover test are the only commands
 that reach a host.
-Each reads it to plan, and changes it only with --execute. dns init reaches no
-host, only the DNS provider's API, and changes it only with --execute.
+Each reads it to plan, and changes it only with --execute. dns init and dns
+prune reach no host, only the DNS provider's API, and change it only with
+--execute.
 Everything else writes files locally and stops.
 `
 
@@ -170,11 +179,15 @@ func main() {
 	case "failover":
 		err = runFailover(os.Args[2:])
 	case "dns":
-		if len(os.Args) < 3 || os.Args[2] != "init" {
-			fmt.Fprintf(os.Stderr, "paisans: dns takes one subcommand, init\n\n%s", usage)
+		switch {
+		case len(os.Args) >= 3 && os.Args[2] == "init":
+			err = runDNSInit(os.Args[3:])
+		case len(os.Args) >= 3 && os.Args[2] == "prune":
+			err = runDNSPrune(os.Args[3:])
+		default:
+			fmt.Fprintf(os.Stderr, "paisans: dns takes one subcommand, init or prune\n\n%s", usage)
 			os.Exit(2)
 		}
-		err = runDNSInit(os.Args[3:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
@@ -712,41 +725,7 @@ func report(w *os.File, path string, result validate.Result) {
 // It reaches no host. The workstation talks to the provider's API and to
 // nothing else, so it takes no --site and no --ssh.
 func runDNSInit(args []string) error {
-	fs := flag.NewFlagSet("dns init", flag.ExitOnError)
-	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
-	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
-	execute := fs.Bool("execute", false, "actually create the missing records")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		return err
-	}
-	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
-	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
-	}
-	// Worked out before the secrets are opened or the provider is contacted,
-	// so a configuration that cannot name its records is refused offline.
-	wants, err := dns.Desired(cfg)
-	if err != nil {
-		return err
-	}
-
-	if *secretsPath == "" {
-		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
-	}
-	secrets, err := config.LoadSecrets(*secretsPath)
-	if err != nil {
-		return err
-	}
-	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
-	}
-	provider, err := dns.For(cfg.ACME.Provider, secrets.External["acme_dns_token"])
+	_, wants, provider, execute, err := dnsSetup("dns init", "actually create the missing records", args)
 	if err != nil {
 		return err
 	}
@@ -759,7 +738,7 @@ func runDNSInit(args []string) error {
 	}
 	plan.Write(os.Stdout)
 
-	if !*execute {
+	if !execute {
 		if len(plan.Creates()) == 0 {
 			return nil
 		}
@@ -771,6 +750,81 @@ func runDNSInit(args []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "\ncreated %d record(s) at %s, each read back\n", len(plan.Creates()), plan.Provider)
 	return nil
+}
+
+// runDNSPrune deletes the address records dns init created that the
+// configuration no longer implies, under the rules internal/dns/prune.go
+// states. A dry run by default, like dns init, and it reaches no host.
+func runDNSPrune(args []string) error {
+	cfg, wants, provider, execute, err := dnsSetup("dns prune", "actually delete the records listed as remove", args)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	plan, err := dns.BuildPrune(ctx, provider, cfg, wants)
+	if err != nil {
+		return err
+	}
+	plan.Write(os.Stdout)
+
+	if !execute {
+		if len(plan.Removes()) == 0 {
+			return nil
+		}
+		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to delete the records marked remove.\n")
+		return nil
+	}
+	if err := dns.ExecutePrune(ctx, provider, plan); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "\ndeleted %d record(s) at %s, each confirmed gone\n", len(plan.Removes()), plan.Provider)
+	return nil
+}
+
+// dnsSetup is what both dns subcommands do before contacting the provider:
+// validate, derive the wanted records, then open the secrets. The records
+// are worked out before the secrets are opened or the provider is contacted,
+// so a configuration that cannot name its records is refused offline.
+func dnsSetup(name, executeHelp string, args []string) (*config.Config, []dns.Want, dns.Provider, bool, error) {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
+	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
+	execute := fs.Bool("execute", false, executeHelp)
+	if err := fs.Parse(args); err != nil {
+		return nil, nil, nil, false, err
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+	result := validate.Check(cfg)
+	report(os.Stderr, *configPath, result)
+	if result.Refused() {
+		return nil, nil, nil, false, fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+	}
+	wants, err := dns.Desired(cfg)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+
+	if *secretsPath == "" {
+		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
+	}
+	secrets, err := config.LoadSecrets(*secretsPath)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+	if !secrets.Encrypted {
+		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+	}
+	provider, err := dns.For(cfg.ACME.Provider, secrets.External["acme_dns_token"])
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+	return cfg, wants, provider, *execute, nil
 }
 
 // printBootstrap shows the database work where it happens: after the

@@ -9,14 +9,17 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // recordComment is written on every record this package creates, so that a
-// person looking at the zone can tell which records the toolkit made. It is
-// informational only: nothing reads it back to decide ownership, because a
-// comment anyone can edit is not a claim anyone can trust.
+// person looking at the zone can tell which records the toolkit made. Prune
+// reads it back, but as a necessary condition and never a sufficient one: a
+// comment anyone can edit is not a claim anyone can trust, so a record also
+// has to sit at one of this deployment's names and point at one of its sites'
+// addresses before prune will remove it.
 const recordComment = "created by paisans dns init"
 
 // cloudflare is Cloudflare's API v4.
@@ -29,6 +32,14 @@ const recordComment = "created by paisans dns init"
 //     https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/list/
 //   - create:       POST /zones/{zone_id}/dns_records
 //     https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/
+//   - delete:       DELETE /zones/{zone_id}/dns_records/{dns_record_id}, no
+//     body; the result is the deleted record's id
+//     https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/delete/
+//
+// Listing a whole zone pages with the list method's page (from 1) and
+// per_page query parameters, and reads total_pages from result_info, whose
+// documented example shows a default of page 1 and per_page 20. Each record
+// in the list carries its id and, when one is set, its comment.
 //
 // Every response is the same envelope: success, errors (code and message),
 // result, and on lists result_info.
@@ -69,6 +80,7 @@ type cfResultInfo struct {
 }
 
 type cfRecord struct {
+	ID      string `json:"id,omitempty"`
 	Type    string `json:"type"`
 	Name    string `json:"name"`
 	Content string `json:"content"`
@@ -114,9 +126,55 @@ func (c *cloudflare) Records(ctx context.Context, zoneID, name string) ([]Record
 		if !strings.EqualFold(strings.TrimSuffix(r.Name, "."), name) {
 			continue
 		}
-		out = append(out, Record{Type: strings.ToUpper(r.Type), Name: r.Name, Content: r.Content, Proxied: r.Proxied})
+		out = append(out, r.record())
 	}
 	return out, nil
+}
+
+func (r cfRecord) record() Record {
+	return Record{Type: strings.ToUpper(r.Type), Name: r.Name, Content: r.Content, Proxied: r.Proxied, ID: r.ID, Comment: r.Comment}
+}
+
+// allRecordsPerPage is how many records each page of a whole zone listing
+// asks for, and maxZonePages bounds the walk, so that a provider reporting
+// ever more pages cannot keep it going forever.
+const (
+	allRecordsPerPage = 100
+	maxZonePages      = 1000
+)
+
+// AllRecords pages through every record in the zone. A response without
+// result_info is read as the only page; one claiming more pages than the
+// bound is refused rather than truncated, because prune decides from what
+// is absent from this list as well as what is in it.
+func (c *cloudflare) AllRecords(ctx context.Context, zoneID string) ([]Record, error) {
+	var out []Record
+	for page := 1; ; page++ {
+		var records []cfRecord
+		query := url.Values{"page": {strconv.Itoa(page)}, "per_page": {strconv.Itoa(allRecordsPerPage)}}
+		info, err := c.do(ctx, http.MethodGet, "/zones/"+url.PathEscape(zoneID)+"/dns_records", query, nil, &records)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range records {
+			out = append(out, r.record())
+		}
+		if info == nil || page >= info.TotalPages {
+			return out, nil
+		}
+		if info.TotalPages > maxZonePages {
+			return nil, fmt.Errorf("cloudflare reports %d pages of records in the zone, more than the %d this reads. Nothing is planned from a partial list", info.TotalPages, maxZonePages)
+		}
+	}
+}
+
+// Delete removes one record by its identifier.
+func (c *cloudflare) Delete(ctx context.Context, zoneID, recordID string) error {
+	var deleted struct {
+		ID string `json:"id"`
+	}
+	_, err := c.do(ctx, http.MethodDelete, "/zones/"+url.PathEscape(zoneID)+"/dns_records/"+url.PathEscape(recordID), nil, nil, &deleted)
+	return err
 }
 
 // Create adds an unproxied record with automatic TTL. In Cloudflare's API a
