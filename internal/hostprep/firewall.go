@@ -2,8 +2,10 @@ package hostprep
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // Rule is one inbound allowance. Either Port and Proto are set, or Interface
@@ -96,18 +98,59 @@ const garageS3Port = 3900
 // daemon restart and does not cover networks that already exist.
 func ContainerRules(cfg *config.Config, name string) []Rule {
 	site, ok := cfg.Sites[name]
-	if !ok || !site.Has(config.RoleApps) {
+	if !ok {
 		return nil
 	}
-	port := cfg.Cluster.Port
-	if port == 0 {
-		port = 5000
-	}
-	rules := []Rule{{Interface: containerBridges, To: site.Address, Port: port, Proto: "tcp", Why: "app containers to the local database proxy"}}
-	for _, garage := range cfg.Storage.Garage.Sites {
-		if garage == name {
-			rules = append(rules, Rule{Interface: containerBridges, To: site.Address, Port: garageS3Port, Proto: "tcp", Why: "app containers to object storage"})
+	var rules []Rule
+	if site.Has(config.RoleApps) {
+		port := cfg.Cluster.Port
+		if port == 0 {
+			port = 5000
 		}
+		rules = append(rules, Rule{Interface: containerBridges, To: site.Address, Port: port, Proto: "tcp", Why: "app containers to the local database proxy"})
+		for _, garage := range cfg.Storage.Garage.Sites {
+			if garage == name {
+				rules = append(rules, Rule{Interface: containerBridges, To: site.Address, Port: garageS3Port, Proto: "tcp", Why: "app containers to object storage"})
+			}
+		}
+	}
+	return append(rules, monitorRules(cfg, name, site)...)
+}
+
+// monitorRules lets an uptime monitor's direct checks reach the apps that run
+// on its own site. To another site they leave over wg0, which is let in whole;
+// to its own site they arrive on a compose bridge, where the default deny drops
+// them, and on a single site that would fail every direct check.
+func monitorRules(cfg *config.Config, name string, site config.Site) []Rule {
+	hosts := false
+	for _, app := range cfg.PinnedTo(name) {
+		if cfg.Apps[app].Kind == config.KindUptime {
+			hosts = true
+		}
+	}
+	if !hosts {
+		return nil
+	}
+	ports := map[int]bool{}
+	for app, sites := range render.AppSites(cfg) {
+		kind := cfg.Apps[app].Kind
+		if kind == config.KindUptime {
+			continue // a monitor does not check itself
+		}
+		for _, s := range sites {
+			if s == name {
+				ports[render.AppPort(kind)] = true
+			}
+		}
+	}
+	sorted := make([]int, 0, len(ports))
+	for port := range ports {
+		sorted = append(sorted, port)
+	}
+	sort.Ints(sorted)
+	var rules []Rule
+	for _, port := range sorted {
+		rules = append(rules, Rule{Interface: containerBridges, To: site.Address, Port: port, Proto: "tcp", Why: "the uptime monitor to apps on this site"})
 	}
 	return rules
 }
