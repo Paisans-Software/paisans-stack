@@ -412,7 +412,7 @@ func runApply(args []string) error {
 		return err
 	}
 
-	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...)}
+	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...), apply.DatabaseApps(apply.ClusterDatabaseApps(cfg)...)}
 	if *keepImages {
 		options = append(options, apply.KeepImages())
 	}

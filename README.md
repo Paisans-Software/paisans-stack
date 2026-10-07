@@ -1808,6 +1808,59 @@ keep trying forever without telling anyone. Treating a timeout as a warning was
 rejected for the same reason the other gates refuse rather than warn: an apply
 that reports success over a broken stack is how this was found.
 
+### `apply` restarts the apps whose database path changed
+
+An app with `cluster` placement reaches the database through its own site's
+HAProxy (rule 2), so a restarted HAProxy, or a Patroni that is recreated and
+hands the primary to another member, closes every connection that app holds.
+Most apps reconnect. Mbin does not: on a real host, after `site add` restarted
+HAProxy, Mbin answered HTTP 500 from then on (`SSL SYSCALL error: EOF
+detected`, then `no connection to the server`), because its FrankenPHP workers
+keep their connections open across requests and never open a new one. Its
+healthcheck does not touch the database, so the container stayed `healthy` and
+nothing in the toolkit noticed. Pocket ID recovered on its own.
+
+The toolkit owns this (founder decision): whatever it does that changes the
+database path restarts the app stacks that depend on it, and says so in the
+plan. In `apply` that is a change to the infrastructure stack that moves
+HAProxy or Patroni: `haproxy.cfg` or `patroni.env` changed, the `haproxy` or
+`patroni` service changed in `compose.yaml`, or the action restarts or force
+recreates either. Then every app on the site with `cluster` placement and a
+kind that uses Postgres gets a restart after the infrastructure stack's action
+and health gate and after the database bootstrap, and is held to the same gate:
+
+```
+restart   talk
+    its database path changed (HAProxy/Patroni moved), and an app's open database connections do not survive that
+```
+
+An app that already has its own restart or recreate keeps that one action,
+with the reason added; it is not acted on twice. A change that moves only etcd,
+Garage or Caddy restarts no app: a restart of the infrastructure stack is
+narrowed to the services whose files changed (see "`apply` restarts only the
+infrastructure service whose file changed"), and a recreate replaces only the
+services whose configuration Compose sees changed. A pinned app has its own
+Postgres and is not affected. `--only` without `infra` moves nothing under the
+apps and triggers nothing; `--only infra` that restarts HAProxy restarts the
+apps with it, because leaving them on dead connections is the incident.
+`site add` stops the apps around its HAProxy restart, and `failover test`
+restarts them on every apps site after each switchover; see those sections.
+
+A `restart` is enough. `docker compose restart` stops and starts the same
+container, so its process tree is new and every connection it held is gone,
+while its configuration is not reread. Checked with Docker Compose v5.4.0 on
+Engine 29.7.2: across a restart the container ID stayed the same, the start
+time changed, and every process inside, PID 1 and its children, had a new
+PID.
+
+**Fixing reconnection inside each app was rejected as the toolkit's answer.**
+It is right in principle, and worth reporting upstream, but the toolkit deploys
+apps it does not write and cannot guarantee it for every one of them; a restart
+it can guarantee. **Restarting every app after every infrastructure change was
+rejected too:** each restart is an outage, however brief, and most
+infrastructure changes (a Garage setting, a Caddy route, an etcd timing) never
+touch the database path.
+
 ### `apply` checks free space before it pulls
 
 A small host fills up with images. The first real host had a 10 GB root disk,

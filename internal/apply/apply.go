@@ -295,6 +295,7 @@ type options struct {
 	minFreeSet bool
 	keepImages bool
 	only       []string
+	dbApps     []string
 }
 
 // KeepImages leaves superseded images on the host for this run, as
@@ -331,6 +332,14 @@ func Recreate(stacks ...string) Option {
 // plan's does.
 func Only(stacks ...string) Option {
 	return func(o *options) { o.only = append(o.only, stacks...) }
+}
+
+// DatabaseApps names the apps that reach the cluster's database through the
+// site's HAProxy, as ClusterDatabaseApps returns them. When the plan moves
+// HAProxy or Patroni on this site, each of them this site runs is restarted
+// after the infrastructure stack: see databasePathMoves.
+func DatabaseApps(apps ...string) Option {
+	return func(o *options) { o.dbApps = append(o.dbApps, apps...) }
 }
 
 // Scope restricts an apply to the named files, as paths relative to the
@@ -589,6 +598,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		}
 		out.Actions = append(out.Actions, action)
 	}
+	out.restartDatabaseApps(o.dbApps, rendered)
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
 
