@@ -527,6 +527,14 @@ rule is pinned. When every attempt fails the error wraps `apply.ErrUnreachable`,
 which is what a caller tests with `errors.Is` before it reads a failed probe as
 anything at all.
 
+The fakes in `internal/storageadd` and `internal/siteadd` have an
+`unreachable` knob that fails matching commands with that error, and the tests
+using it pin README's *Never infer host state from a failed probe*: each probe
+stops with "could not read host state", and none is read as an answer. A new
+probe that ignores an error, or reads `err != nil` as "absent", is the pattern
+to avoid; check `apply.ErrUnreachable` first, or make the remote script print
+a marker for every answer it can give, as the set aside script does.
+
 ## Refuse and warn
 
 The distinction is the point of the tool and it is not a matter of severity

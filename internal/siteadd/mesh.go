@@ -1,6 +1,7 @@
 package siteadd
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -110,6 +111,11 @@ func (p *Plan) meshGate() error {
 				continue
 			}
 			if out, err := p.transports[name].Run("ping -c 3 -W 2 " + address); err != nil {
+				// A ping that never ran is not a ping that failed: the
+				// mesh may be whole, and only ssh to this site is not.
+				if errors.Is(err, apply.ErrUnreachable) {
+					return fmt.Errorf("%s: could not read host state, so whether it reaches %s is unknown: %w", name, p.Site, err)
+				}
 				problems = append(problems, fmt.Sprintf("%s cannot reach %s at %s: %s", name, p.Site, address, lastLines(out, 2)))
 			}
 		}
@@ -117,6 +123,9 @@ func (p *Plan) meshGate() error {
 		for _, name := range p.cfg.SiteNames() {
 			out, err := p.transports[name].Run(handshakeProbe)
 			if err != nil {
+				if errors.Is(err, apply.ErrUnreachable) {
+					return fmt.Errorf("%s: could not read host state, so its handshakes are unknown: %w", name, err)
+				}
 				problems = append(problems, fmt.Sprintf("%s: `wg show wg0` failed: %s", name, lastLines(out, 2)))
 				continue
 			}

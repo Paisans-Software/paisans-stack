@@ -1757,6 +1757,33 @@ that is then renamed. Setting `ConnectionAttempts` in the operator's
 `~/.ssh/config` was the alternative, and it is still honoured, but a default
 that depends on every admin's own file is not a default.
 
+#### Never infer host state from a failed probe
+
+A probe that never reached the host has not answered. During the first real
+`storage add`, ssh timed out on the command that sets the stored layout aside,
+and the error said the aside name "already exists from an earlier attempt",
+which nothing had checked. Every command that asks a host a question
+(`storage add`, `site add`, `apply`) now follows one rule: when the probe's own
+command fails to reach the host, the error says the host state could not be
+read, carries ssh's message, and the command stops there.
+
+What a probe concludes comes only from what the host printed. The set aside
+script prints a marker when the layout is still in place and another when the
+aside name is taken, and the message is built from those, never from the
+failure alone. A failed read of the counts file, of the metadata directory, of
+a node's ID, of HAProxy's statistics or of a mesh ping is an error rather than
+"absent", "no layout", "does not answer", "lists too few sites" or "cannot
+reach". And `site add` does not roll a stage back on an unreachable host: the
+stage may well have worked, and a rollback would most likely fail to reach the
+same host anyway. A probe that ran and failed is still an answer, and is read
+as one (a ping with no reply, a Garage that refuses).
+
+Treating a failed probe as the safe default ("absent, so do it again") was the
+alternative, and it is safe only when doing it again is harmless. Here it is
+not: counting objects again after a reset has stopped the nodes replaces the
+numbers the provision gate compares against, and restarting HAProxy stops every
+database app on the site.
+
 #### `--ssh` replaces the whole section
 
 Every command that reaches a host takes `--ssh <destination>`, the escape hatch

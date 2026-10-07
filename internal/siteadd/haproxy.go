@@ -1,6 +1,7 @@
 package siteadd
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -60,7 +61,11 @@ func (p *Plan) buildHAProxy(rendered *render.Plan) (*Stage, error) {
 		for _, c := range sp.Writes() {
 			st.Steps = append(st.Steps, Step{Site: name, Verb: c.Kind.String(), Text: c.Path})
 		}
-		if len(sp.Writes()) > 0 || !p.servesEverySite(name) {
+		serves, err := p.servesEverySite(name)
+		if err != nil {
+			return nil, err
+		}
+		if len(sp.Writes()) > 0 || !serves {
 			restarts[name] = true
 			apps[name] = p.databaseApps(rendered, name)
 			list := strings.Join(apps[name], ", ")
@@ -163,18 +168,27 @@ func (p *Plan) restartProxy(site string, apps []string) error {
 // servesEverySite reports whether the running HAProxy already lists every
 // cluster site, so a run that wrote the file and stopped before restarting
 // still restarts it.
-func (p *Plan) servesEverySite(site string) bool {
+//
+// A probe that never reached the host is an error, not a "no". Read as a no,
+// an ssh timeout planned an HAProxy restart, which stops every database app
+// on the site, for a proxy that may have been fine. A probe that ran and
+// failed (no HAProxy answering its statistics) is still a no: that HAProxy
+// does need starting.
+func (p *Plan) servesEverySite(site string) (bool, error) {
 	out, err := p.transports[site].Run(statsProbe())
 	if err != nil {
-		return false
+		if errors.Is(err, apply.ErrUnreachable) {
+			return false, fmt.Errorf("site add %s: %s: could not read host state, so whether its HAProxy lists every site is unknown: %w", p.Site, site, err)
+		}
+		return false, nil
 	}
 	servers := backendStatus(out)
 	for _, name := range p.cfg.Cluster.Sites {
 		if _, ok := servers[name]; !ok {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 // backendStatus reads the postgres proxy's servers and their status from the

@@ -12,6 +12,7 @@
 package siteadd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -367,7 +368,13 @@ func Execute(p *Plan) error {
 
 func (p *Plan) fail(st *Stage, err error) error {
 	msg := fmt.Sprintf("site add %s stopped at stage %d (%s), and nothing after it ran: %v", p.Site, st.Number, st.Name, err)
-	if st.rollback != nil {
+	// A host that could not be asked has not said the stage failed. Rolling
+	// back on that would undo a stage that may well have worked, on the
+	// strength of an ssh timeout, and would most likely fail to reach the
+	// same host anyway.
+	if st.rollback != nil && errors.Is(err, apply.ErrUnreachable) {
+		msg += "\nA host could not be reached, so nothing was rolled back"
+	} else if st.rollback != nil {
 		if rerr := st.rollback(); rerr != nil {
 			return fmt.Errorf("%s\nRolling back failed too, so the mesh may hold the new peer on some sites: %v", msg, rerr)
 		}

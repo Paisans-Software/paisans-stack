@@ -1,6 +1,7 @@
 package storageadd
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -71,15 +72,19 @@ func (p *Plan) readNode(site string) (*node, error) {
 		n.factor, _ = apply.GarageReplication(toml)
 	}
 
-	listing, err := t.Run("ls -1 " + metaDir)
-	if err == nil {
-		for _, name := range strings.Fields(listing) {
-			switch {
-			case name == "cluster_layout":
-				n.hasLayout = true
-			case strings.HasPrefix(name, "cluster_layout.rf"):
-				n.setAside = true
-			}
+	// A missing directory is an answer, an empty listing; any failure is
+	// not one. Ignoring a failed listing read as "no stored layout" and
+	// planned no set aside for a node that has one.
+	listing, err := t.Run(fmt.Sprintf("if [ -d %[1]s ]; then ls -1 %[1]s; fi", metaDir))
+	if err != nil {
+		return nil, fmt.Errorf("%s: could not read host state (the listing of %s): %w", site, metaDir, err)
+	}
+	for _, name := range strings.Fields(listing) {
+		switch {
+		case name == "cluster_layout":
+			n.hasLayout = true
+		case strings.HasPrefix(name, "cluster_layout.rf"):
+			n.setAside = true
 		}
 	}
 
@@ -87,6 +92,12 @@ func (p *Plan) readNode(site string) (*node, error) {
 		return n, nil
 	}
 	if err := n.refresh(t); err != nil {
+		// A node that could not be asked has not answered "no". Recording
+		// it as silent would let a counts file left by an earlier run
+		// resume a reset, which stops every node, on a blip of ssh.
+		if errors.Is(err, apply.ErrUnreachable) {
+			return nil, fmt.Errorf("%s: %w", site, err)
+		}
 		n.answerErr = err.Error()
 	}
 	return n, nil
@@ -97,6 +108,9 @@ func (n *node) refresh(t apply.Transport) error {
 	out, err := t.Run(gcmd("node id -q"))
 	if err != nil {
 		n.id = ""
+		if errors.Is(err, apply.ErrUnreachable) {
+			return fmt.Errorf("could not read host state: %w", err)
+		}
 		return fmt.Errorf("`garage node id` failed: %s", lastLines(out, 3))
 	}
 	// The combined output can carry Garage's own log lines, so the ID is

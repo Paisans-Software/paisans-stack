@@ -175,12 +175,18 @@ func (p *Plan) buildSettle() *Stage {
 // "replication_factor"), which it calls unsupported. Every node at the old
 // factor is stopped before any is changed: a node that meets a peer at a
 // higher factor exits (src/rpc/system.rs:583-587).
-func (p *Plan) buildReset() *Stage {
+func (p *Plan) buildReset() (*Stage, error) {
 	st := &Stage{
 		Name: "reset",
 		Gate: "every Garage node answers again, at the configured replication factor",
 	}
-	_, countsRecorded, _ := p.transports[p.anchor].ReadFile(countsFile)
+	// An unread counts file is not an absent one. Read as absent, a resumed
+	// reset would count again after the first run's stop, and the provision
+	// gate would compare against those numbers instead of the real ones.
+	_, countsRecorded, err := p.transports[p.anchor].ReadFile(countsFile)
+	if err != nil {
+		return nil, fmt.Errorf("%s: could not read host state, so whether the object counts were recorded is unknown: %w", p.anchor, err)
+	}
 	if !countsRecorded {
 		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "count", Text: "record every bucket's object count in " + countsFile + ", for the provision gate to compare"})
 	}
@@ -218,10 +224,20 @@ func (p *Plan) buildReset() *Stage {
 		}
 		for _, n := range changing {
 			t := p.transports[n.site]
-			cmd := fmt.Sprintf("if [ -e %[1]s ]; then mv -n %[1]s %[2]s; fi; test ! -e %[1]s", layoutFile, asideName(n.factor))
-			if out, err := t.Run(cmd); err != nil {
-				return fmt.Errorf("%s: setting the stored layout aside left %s in place, so Garage would refuse to start at the new factor. %s already exists there from an earlier attempt; move one of them by hand only once you know which is which: %s", n.site, layoutFile, asideName(n.factor), lastLines(out, 3))
+			out, err := t.Run(setAsideCommand(n.factor))
+			if err == nil {
+				continue
 			}
+			// Only the script's own markers say what is on the host. A
+			// failure without them is ssh's or the shell's, and says
+			// nothing about either file.
+			if !strings.Contains(out, layoutLeft) {
+				return fmt.Errorf("%s: could not read host state while setting the stored layout aside, so whether %s moved is unknown. Garage there is stopped; run storage add again once the host answers: %w", n.site, layoutFile, err)
+			}
+			if strings.Contains(out, asidePresent) {
+				return fmt.Errorf("%s: setting the stored layout aside left %s in place, so Garage would refuse to start at the new factor. %s already exists there from an earlier attempt; move one of them by hand only once you know which is which", n.site, layoutFile, asideName(n.factor))
+			}
+			return fmt.Errorf("%s: %s could not be moved to %s, so Garage would refuse to start at the new factor: %s", n.site, layoutFile, asideName(n.factor), lastLines(out, 3))
 		}
 		for _, n := range changing {
 			t := p.transports[n.site]
@@ -262,7 +278,24 @@ func (p *Plan) buildReset() *Stage {
 			return nil
 		})
 	}
-	return st
+	return st, nil
+}
+
+// The set aside script's markers, printed only when the script itself ran
+// far enough to look.
+const (
+	layoutLeft   = "__PAISANS_LAYOUT_LEFT__"
+	asidePresent = "__PAISANS_ASIDE_PRESENT__"
+)
+
+// setAsideCommand moves the stored layout aside, and when it is still in
+// place afterwards says so, and whether the aside name was already taken. The
+// error message is built from those markers, never from the failure alone: a
+// timed out ssh fails exactly as a refused mv does, and the first real storage
+// add reported a timeout as "already exists from an earlier attempt".
+func setAsideCommand(factor int) string {
+	return fmt.Sprintf("if [ -e %[1]s ]; then mv -n %[1]s %[2]s; fi; if [ -e %[1]s ]; then echo %[3]s; if [ -e %[2]s ]; then echo %[4]s; fi; exit 3; fi",
+		layoutFile, asideName(factor), layoutLeft, asidePresent)
 }
 
 // buckets is every bucket the configuration's apps store objects in, sorted.
