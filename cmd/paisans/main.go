@@ -45,6 +45,8 @@ Usage:
                [--ssh <destination>] [--execute]
   paisans storage add [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--change-replication] [--wait <duration>] [--execute]
+  paisans storage rotate-key --app <name> [--config paisans.yaml]
+               [--secrets secrets.enc.yaml] [--execute]
   paisans prune    --site <name> [--config paisans.yaml] [--ssh <destination>] [--execute]
   paisans preflight --site <new site> [--config paisans.yaml]
   paisans failover test [--config paisans.yaml] [--execute]
@@ -85,6 +87,13 @@ Commands:
              stage waiting on Garage (status 75) and resumes on the next
              run. Both create only what is missing, and write nothing
              without --execute.
+             rotate-key: replace one app's S3 key, in gated stages: the
+             new pair into the secrets (the old one kept beside it), the
+             new key imported and granted, the app applied alone on every
+             site running it, a probe written, read and deleted with the
+             new key, and only then the old key deleted from Garage and
+             the secrets. Resumes from the secrets file. Writes nothing
+             without --execute.
   prune      List one site's dangling Docker volumes, with size and top level
              entries, and say which are a paisans container's leftovers.
              Removes those with --execute; a volume another compose project
@@ -120,9 +129,9 @@ Commands:
              secret in the secrets file. The secret is never printed.
              Writes nothing without --execute. Mbin only, so far.
 
-host prepare, apply, prune, site add, storage init, storage add, app admin
-create, oidc client create, preflight and failover test are the only commands
-that reach a host.
+host prepare, apply, prune, site add, storage init, storage add, storage
+rotate-key, app admin create, oidc client create, preflight and failover test
+are the only commands that reach a host.
 Each reads it to plan, and changes it only with --execute. dns init and dns
 prune reach no host, only the DNS provider's API, and change it only with
 --execute.
@@ -168,8 +177,10 @@ func main() {
 			err = runStorageInit(os.Args[3:])
 		case len(os.Args) >= 3 && os.Args[2] == "add":
 			err = runStorageAdd(os.Args[3:])
+		case len(os.Args) >= 3 && os.Args[2] == "rotate-key":
+			err = runStorageRotateKey(os.Args[3:])
 		default:
-			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init or add\n\n%s", usage)
+			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init, add or rotate-key\n\n%s", usage)
 			os.Exit(2)
 		}
 	case "prune":
@@ -434,37 +445,14 @@ func runApply(args []string) error {
 
 	transport := siteTransport(declared, *destination, *sudo)
 
-	// An etcd member keeps the flags it was born with, read from its host,
-	// so that etcd.members growing never changes a running member's compose
-	// file. See render.EtcdInitialPath.
-	var renderOptions []render.Option
-	if contains(cfg.Etcd.Members, *site) {
-		initial, found, err := apply.ReadEtcdInitial(transport)
-		if err != nil {
-			return err
-		}
-		if found {
-			renderOptions = append(renderOptions, render.WithEtcdInitial(*site, initial))
-		}
-	}
-	rendered, err := render.Build(cfg, secrets, renderOptions...)
-	if err != nil {
-		return err
-	}
-
-	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...), apply.DatabaseApps(apply.ClusterDatabaseApps(cfg)...)}
+	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...)}
 	if *keepImages {
 		options = append(options, apply.KeepImages())
 	}
-	plan, err := apply.Build(*site, rendered, acme.Module(cfg.ACME.Provider), transport, options...)
+	plan, err := planSiteApply(cfg, secrets, *site, transport, options...)
 	if err != nil {
 		return err
 	}
-	databases, err := apply.Databases(cfg, secrets, *site)
-	if err != nil {
-		return err
-	}
-	plan.WithDatabases(databases)
 	plan.Progress = os.Stdout
 	printPlan(plan)
 
@@ -501,6 +489,42 @@ func runApply(args []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", len(plan.Writes()), plan.Transport)
 	return nil
+}
+
+// planSiteApply is everything apply decides for one site, without doing any
+// of it: the etcd flags the site's member was born with, the render, the plan
+// and the databases it bootstraps. `storage rotate-key` switches an app with
+// exactly this, scoped by apply.Only, so a rotation's switch is the apply an
+// operator would have typed rather than a second path to the same host.
+func planSiteApply(cfg *config.Config, secrets *config.Secrets, site string, transport apply.Transport, options ...apply.Option) (*apply.Plan, error) {
+	// An etcd member keeps the flags it was born with, read from its host,
+	// so that etcd.members growing never changes a running member's compose
+	// file. See render.EtcdInitialPath.
+	var renderOptions []render.Option
+	if contains(cfg.Etcd.Members, site) {
+		initial, found, err := apply.ReadEtcdInitial(transport)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			renderOptions = append(renderOptions, render.WithEtcdInitial(site, initial))
+		}
+	}
+	rendered, err := render.Build(cfg, secrets, renderOptions...)
+	if err != nil {
+		return nil, err
+	}
+	options = append(options, apply.DatabaseApps(apply.ClusterDatabaseApps(cfg)...))
+	plan, err := apply.Build(site, rendered, acme.Module(cfg.ACME.Provider), transport, options...)
+	if err != nil {
+		return nil, err
+	}
+	databases, err := apply.Databases(cfg, secrets, site)
+	if err != nil {
+		return nil, err
+	}
+	plan.WithDatabases(databases)
+	return plan, nil
 }
 
 // runStorageInit provisions Garage object storage on one site: the cluster

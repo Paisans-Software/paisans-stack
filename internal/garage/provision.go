@@ -244,50 +244,21 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		secretKey, _ := SecretString(secrets, name, "s3_secret_access_key")
 		bucket := BucketName(app, name)
 
-		keyOut, keyErr := t.Run(Command + " key info " + keyID)
-		keyAbsent, err := absent(keyOut, keyErr, "0 matching keys")
+		missing, err := keyAbsent(t, keyID)
 		if err != nil {
-			return nil, fmt.Errorf("checking key %s on %s: %w", keyID, t.Describe(), err)
+			return nil, err
 		}
-		if keyAbsent {
-			// `garage key import` takes the secret as a positional argument
-			// and offers no other form, so it is visible in `ps` on the host
-			// for the moment the command runs. That much is unavoidable here,
-			// and it is bounded: apply already writes this same secret to the
-			// host in the app's .env, so a reader of the process table learns
-			// nothing they could not read off the disk.
-			//
-			// The exposure that is NOT bounded, and that this comment used to
-			// miss entirely by reasoning only about `ps`, is the operator's
-			// own machine. A failing import produced an error carrying the
-			// command, and that error goes to a terminal: into a scrollback
-			// buffer, into a terminal multiplexer's log, into a CI job's
-			// recorded output, and into whatever a screen recording caught.
-			// None of those are on the host and none are bounded by who can
-			// already read the .env. Secret below is what keeps a failure from
-			// putting the value in any of them.
-			//
-			// Feeding it over stdin the way apply.WriteFile does would not
-			// help. WriteFile works because `cat > $tmp` never has the content
-			// in argv at all; here the value has to end up as an argument to
-			// the garage process whatever route it takes to get there, so
-			// stdin would move the same string through a shell and leave the
-			// `ps` exposure exactly where it was, while fixing only the error
-			// text that Secret already fixes.
-			plan.Steps = append(plan.Steps, Step{
-				Describe: fmt.Sprintf("import the S3 key for %s", name),
-				Command:  fmt.Sprintf("%s key import %s %s --yes -n %s", Command, keyID, secretKey, name),
-				Secret:   secretKey,
-			})
+		if missing {
+			plan.Steps = append(plan.Steps, ImportStep(name, keyID, secretKey))
 		} else {
 			plan.Present = append(plan.Present, fmt.Sprintf("key: %s already has an S3 key", name))
 		}
 
-		bucketOut, bucketErr := t.Run(Command + " bucket info " + bucket)
-		bucketAbsent, err := absent(bucketOut, bucketErr, "Bucket not found")
+		state, err := ReadBucket(t, bucket)
 		if err != nil {
-			return nil, fmt.Errorf("checking bucket %s on %s: %w", bucket, t.Describe(), err)
+			return nil, err
 		}
+		bucketAbsent := state.Absent
 		if bucketAbsent {
 			plan.Steps = append(plan.Steps, Step{
 				Describe: fmt.Sprintf("create the bucket for %s", name),
@@ -308,22 +279,18 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		// does not parse plans both, and says so: running a set twice costs
 		// nothing, while skipping a grant that is missing leaves the app
 		// unable to write.
-		var info bucketInfo
-		if !bucketAbsent {
-			info = parseBucketInfo(bucketOut)
-		}
+		info := state.info
 		unread := ""
 		if !bucketAbsent && !info.parsed {
 			unread = ", planned because `bucket info` could not be read"
 		}
 
-		if info.parsed && info.grants(keyID, name) {
+		if info.parsed && info.grants(keyID) {
 			plan.Present = append(plan.Present, fmt.Sprintf("grant: %s's key already has read/write/owner on %s", name, bucket))
 		} else {
-			plan.Steps = append(plan.Steps, Step{
-				Describe: fmt.Sprintf("grant %s's key read/write/owner on its bucket%s", name, unread),
-				Command:  fmt.Sprintf("%s bucket allow --read --write --owner %s --key %s", Command, bucket, keyID),
-			})
+			step := GrantStep(name, bucket, keyID)
+			step.Describe += unread
+			plan.Steps = append(plan.Steps, step)
 		}
 
 		if kinds.ServesObjectsPublicly(app.Kind) {
@@ -352,6 +319,113 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 	return plan, nil
 }
 
+// keyAbsent asks Garage whether a key with this ID exists. Garage matches the
+// argument against every key's ID by prefix and against its name exactly
+// (src/model/key_table.rs, KeyFilter::MatchesAndNotDeleted, at v1.0.1), so a
+// full ID matches only its own key, and a deleted key is absent.
+func keyAbsent(t Transport, keyID string) (bool, error) {
+	out, err := t.Run(Command + " key info " + keyID)
+	absentNow, err := absent(out, err, "0 matching keys")
+	if err != nil {
+		return false, fmt.Errorf("checking key %s on %s: %w", keyID, t.Describe(), err)
+	}
+	return absentNow, nil
+}
+
+// KeyPresent reports whether Garage holds a live key with this ID. Exported
+// for storage rotate-key, which checks both the key it retires and the one
+// replacing it.
+func KeyPresent(t Transport, keyID string) (bool, error) {
+	gone, err := keyAbsent(t, keyID)
+	return !gone, err
+}
+
+// ImportStep imports one app's S3 key under the app's name.
+//
+// `garage key import` takes the secret as a positional argument and offers no
+// other form, so it is visible in `ps` on the host for the moment the command
+// runs. That much is unavoidable here, and it is bounded: apply already writes
+// this same secret to the host in the app's .env, so a reader of the process
+// table learns nothing they could not read off the disk.
+//
+// The exposure that is NOT bounded, and that an earlier version of this
+// comment missed entirely by reasoning only about `ps`, is the operator's own
+// machine. A failing import produced an error carrying the command, and that
+// error goes to a terminal: into a scrollback buffer, into a terminal
+// multiplexer's log, into a CI job's recorded output, and into whatever a
+// screen recording caught. None of those are on the host and none are bounded
+// by who can already read the .env. Secret on the step is what keeps a failure
+// from putting the value in any of them.
+//
+// Feeding it over stdin the way apply.WriteFile does would not help.
+// WriteFile works because `cat > $tmp` never has the content in argv at all;
+// here the value has to end up as an argument to the garage process whatever
+// route it takes to get there, so stdin would move the same string through a
+// shell and leave the `ps` exposure exactly where it was, while fixing only the
+// error text that Secret already fixes.
+func ImportStep(app, keyID, secretKey string) Step {
+	return Step{
+		Describe: fmt.Sprintf("import the S3 key %s for %s", keyID, app),
+		Command:  fmt.Sprintf("%s key import %s %s --yes -n %s", Command, keyID, secretKey, app),
+		Secret:   secretKey,
+	}
+}
+
+// GrantStep grants one key read, write and owner on an app's bucket. The
+// command is a set, so running it on a key that already holds the grant
+// changes nothing.
+func GrantStep(app, bucket, keyID string) Step {
+	return Step{
+		Describe: fmt.Sprintf("grant %s's key %s read/write/owner on its bucket", app, keyID),
+		Command:  fmt.Sprintf("%s bucket allow --read --write --owner %s --key %s", Command, bucket, keyID),
+	}
+}
+
+// DeleteKeyStep deletes one key by its full ID. The syntax is
+// dxflrs/garage:v1.0.1's: `key delete <key_pattern> --yes`, where the pattern
+// is an ID prefix or an exact name, more than one match is refused with "N
+// matching keys", and without --yes nothing is deleted
+// (src/garage/cli/structs.rs, KeyDeleteOpt; src/garage/admin/key.rs,
+// handle_delete_key). Deleting a key also removes its grant on every bucket
+// (src/model/helper/locked.rs, delete_key). A deleted key's ID can never be
+// imported again (handle_import_key refuses any ID the key table holds, even
+// deleted), which is why storage rotate-key only ever deletes the key it is
+// retiring, and only after the new one is proven.
+func DeleteKeyStep(keyID string) Step {
+	return Step{
+		Describe: fmt.Sprintf("delete the S3 key %s from Garage", keyID),
+		Command:  fmt.Sprintf("%s key delete --yes %s", Command, keyID),
+	}
+}
+
+// Bucket is what `garage bucket info` said about one bucket, for a caller
+// outside this package. Exported for storage rotate-key.
+type Bucket struct {
+	// Absent is set when Garage has no bucket by this name.
+	Absent bool
+	info   bucketInfo
+}
+
+// Readable reports whether the output parsed. An unreadable answer grants
+// nothing, so a caller asking Grants about one plans the grant.
+func (b Bucket) Readable() bool { return b.info.parsed }
+
+// Grants reports whether the key with this ID holds read, write and owner.
+func (b Bucket) Grants(keyID string) bool { return b.info.parsed && b.info.grants(keyID) }
+
+// ReadBucket asks Garage about one bucket.
+func ReadBucket(t Transport, bucket string) (Bucket, error) {
+	out, err := t.Run(Command + " bucket info " + bucket)
+	gone, err := absent(out, err, "Bucket not found")
+	if err != nil {
+		return Bucket{}, fmt.Errorf("checking bucket %s on %s: %w", bucket, t.Describe(), err)
+	}
+	if gone {
+		return Bucket{Absent: true}, nil
+	}
+	return Bucket{info: parseBucketInfo(out)}, nil
+}
+
 // bucketInfo is what `garage bucket info` says about website access and
 // grants.
 type bucketInfo struct {
@@ -363,11 +437,18 @@ type bucketInfo struct {
 	keys [][3]string
 }
 
-// grants reports whether the key, by ID or by the name it was imported
-// under, holds all of read, write and owner.
-func (b bucketInfo) grants(keyID, name string) bool {
+// grants reports whether the key with this ID holds all of read, write and
+// owner.
+//
+// The ID is the only thing matched. A key's name is a label Garage does not
+// keep unique, and `storage rotate-key` imports the new key under the app's
+// name while the old one still holds its grant under the same name; matching
+// either would read the new key as granted and leave the app with no access
+// once the old key is deleted. `bucket info` prints the ID in every row, so
+// nothing is lost by ignoring the name.
+func (b bucketInfo) grants(keyID string) bool {
 	for _, row := range b.keys {
-		if row[1] != keyID && row[2] != name {
+		if row[1] != keyID {
 			continue
 		}
 		if strings.Contains(row[0], "R") && strings.Contains(row[0], "W") && strings.Contains(row[0], "O") {
