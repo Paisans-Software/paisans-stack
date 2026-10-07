@@ -78,7 +78,7 @@
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "ff39cbed99211473966606ce78c3d2b99203ac2bfeb36d79504735deeeb834e4",
+      "sha256": "c40b5672100577771c32ad352004dbf11c366d6a6191d7af1fb38ce3d3c97606",
       "mode": "0600"
     },
     {

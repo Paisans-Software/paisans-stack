@@ -2090,6 +2090,66 @@ func TestMultiSiteAppsShareOneFailoverSetting(t *testing.T) {
 	}
 }
 
+// Mbin's default lock store stays flock, because every rate limiter takes it
+// in FrankenPHP's long lived web workers, where a database store's private
+// connection is never reopened once HAProxy closes it. The locks that must
+// hold across sites get CLUSTER_LOCK_DSN instead: DATABASE_URL unchanged, a
+// plain postgresql:// for the fork's own Doctrine connection, reaching the
+// database the same way, the site's HAProxy for a clustered app and the
+// postgres container for a pinned one. A +advisory scheme there would be a
+// URL Doctrine cannot parse.
+func TestMbinSplitsItsLocks(t *testing.T) {
+	pinnedCfg := fixture(t)
+	talk := pinnedCfg.Apps["talk"]
+	talk.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-b", Literal: "home-b"}
+	pinnedCfg.Apps["talk"] = talk
+	pinnedPlan, err := render.Build(pinnedCfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clustered := planFiles(build(t))
+	for _, c := range []struct{ name, env, host string }{
+		{"clustered on home-a", clustered["home-a/srv/talk/.env"], "@10.44.0.1:5000/talk?"},
+		{"clustered on home-b", clustered["home-b/srv/talk/.env"], "@10.44.0.2:5000/talk?"},
+		{"pinned", planFiles(pinnedPlan)["home-b/srv/talk/.env"], "@postgres:5432/talk?"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := envValue(c.env, "LOCK_DSN"); got != "flock" {
+				t.Errorf("LOCK_DSN = %q, want flock: the rate limiters take the default store in the web workers", got)
+			}
+			database, cluster := envValue(c.env, "DATABASE_URL"), envValue(c.env, "CLUSTER_LOCK_DSN")
+			if cluster == "" {
+				t.Fatalf("the Mbin .env does not set CLUSTER_LOCK_DSN:\n%s", c.env)
+			}
+			if cluster != database {
+				t.Errorf("CLUSTER_LOCK_DSN = %q, want DATABASE_URL unchanged, %q", cluster, database)
+			}
+			if !strings.HasPrefix(cluster, "postgresql://") {
+				t.Errorf("CLUSTER_LOCK_DSN = %q; the fork's Doctrine connection parses only a plain postgresql:// URL", cluster)
+			}
+			if !strings.Contains(cluster, c.host) {
+				t.Errorf("CLUSTER_LOCK_DSN = %q does not reach the database at %s", cluster, c.host)
+			}
+			for _, key := range []string{"LOCK_DSN", "CLUSTER_LOCK_DSN"} {
+				if n := strings.Count(c.env, "\n"+key+"="); n != 1 {
+					t.Errorf("the Mbin .env sets %s %d times, want once", key, n)
+				}
+			}
+		})
+	}
+}
+
+// envValue is the value of key in a rendered .env, or empty when it is unset.
+func envValue(env, key string) string {
+	for _, line := range strings.Split(env, "\n") {
+		if v, ok := strings.CutPrefix(line, key+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 // Mbin's sign in comes back to the fork's verify route, and the .env says so,
 // because that comment is where an operator registering the client looks. It
 // used to say /oauth/oidc/verify while the value it was built from said
