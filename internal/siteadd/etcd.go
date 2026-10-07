@@ -57,9 +57,9 @@ func (p *Plan) probeEtcd() ([]apply.EtcdMember, error) {
 
 // joiners are the configured members that are not yet voters: existing sites
 // gaining the role first, so the witness joins before the new data site, then
-// the new site. One at a time, because a learner does not vote and etcd
-// admits one learner at a time by default (--experimental-max-learners, 1 in
-// v3.5).
+// the new site. One at a time, because etcd admits one learner at a time
+// (maxLearners = 1, etcd v3.5.16, server/etcdserver/api/membership/
+// cluster.go).
 func (p *Plan) joiners(live []apply.EtcdMember) []string {
 	voter := map[string]bool{}
 	for _, m := range live {
