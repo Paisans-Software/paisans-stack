@@ -1175,6 +1175,27 @@ claims it is. It also means `wg0` has to be up before the app stacks start,
 because Docker cannot publish on an address the host does not have yet; that
 is the ordering that step 4 under *`init`, one site, no mesh* already requires.
 
+**Two things on one site binding the same port is refused (`port-collision`).**
+Infrastructure runs with host networking and every app publishes on its site's
+mesh address, so on one site they all share one set of ports, and whichever
+starts second fails only when its container does. That is how it was found on
+a real data and apps site: Spilo's bg_mon took 8080 before Mbin could publish
+there. `validate` lists what each site binds (WireGuard's 51820/udp, etcd's
+2379 and 2380, Postgres, the Patroni API and bg_mon on a data site, HAProxy's
+cluster and stats ports where it runs, Garage's 3900 to 3903, Caddy's 80 and
+443 on every address of the gateway, and every app's published ports, counting
+a clustered app on every apps site and a pinned one on its own) and refuses
+any two that overlap, naming both and the port. The list is read from the same
+constants the rendered files use, so the check cannot drift from what lands on
+a host. It is a refusal rather than a warning because the configuration cannot
+work as written. The fix is the operator's: pin one of the two elsewhere, or
+move the role that brings the other. The alternative, giving the renderer
+freedom to pick a free port, was rejected: a port that depends on what else is
+on the site changes when an app is added, and the gateway's routes with it.
+Some combinations are refused by this today, and a homeserver pinned to a data
+site is the one worth knowing: Synapse's 8008 is the Patroni API's, and MAS's
+8009 is bg_mon's.
+
 **Leaving `gate` out of an app's stanza means the same thing as `gate: none`:
 ungated, reachable by anyone who can resolve the hostname.** That default has
 to be stated here, not only in a doc comment, because it is the one setting

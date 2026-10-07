@@ -20,6 +20,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // Level says how much a finding costs.
@@ -149,6 +150,7 @@ func Check(cfg *config.Config) Result {
 	c.configKeyIsNestedInAnEnvFile()
 	c.configKeyLooksLikeASecret()
 	c.configKeySteersCompose()
+	c.portCollision()
 
 	c.evenVoters()
 	c.meshIsNotPrivate()
@@ -740,6 +742,39 @@ func (c *checker) gatewayOnDataSite() {
 			c.warn("gateway-on-data-site", fmt.Sprintf("sites.%s.roles", name),
 				"holds both gateway and data while %d data sites are declared. The database would fail over in about a minute, but public DNS would still point here, so nothing is reachable until a record changes and propagates. Move the gateway off both data sites.",
 				len(c.cfg.DataSites()))
+		}
+	}
+}
+
+// portCollision refuses two things on one site binding the same port.
+//
+// Infrastructure runs with host networking and every app publishes on its
+// site's mesh address, so two of them on one port cannot both start, and the
+// second fails only when its container does: on a real data and apps site,
+// Spilo's bg_mon took 8080 before Mbin could publish there. The listeners are
+// read from render, which takes them from the same conditions and constants
+// the rendered files use, so the check cannot drift from what lands on a host.
+// A clustered app is counted on every apps site and a pinned one on its own.
+func (c *checker) portCollision() {
+	for _, name := range c.cfg.SiteNames() {
+		listeners := render.SiteListeners(c.cfg, name)
+		reported := map[string]bool{}
+		for i, a := range listeners {
+			for _, b := range listeners[i+1:] {
+				if a.Owner == b.Owner || !a.Overlaps(b) {
+					continue
+				}
+				// One finding per pair and port: a service on the mesh
+				// address and loopback is one collision, not two.
+				pair := fmt.Sprintf("%s|%s|%d/%s", a.Owner, b.Owner, a.Port, a.Proto)
+				if reported[pair] {
+					continue
+				}
+				reported[pair] = true
+				c.refuse("port-collision", fmt.Sprintf("sites.%s", name),
+					"%s binds %s and %s binds %s, so whichever starts second fails at container start. Pin one of them to another site, or move the role that brings the other.",
+					a.Owner, a, b.Owner, b)
+			}
 		}
 	}
 }

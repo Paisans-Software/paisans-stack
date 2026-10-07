@@ -318,10 +318,10 @@ type port struct {
 
 // wanted is every port the site will bind, by role.
 func (r *runner) wanted() []port {
-	ports := []port{{"udp", 51820, "WireGuard"}}
+	ports := []port{{"udp", render.WireGuardPort, "WireGuard"}}
 	for _, m := range r.cfg.Etcd.Members {
 		if m == r.newSite {
-			ports = append(ports, port{"tcp", 2379, "etcd client"}, port{"tcp", 2380, "etcd peer"})
+			ports = append(ports, port{"tcp", render.EtcdClientPort, "etcd client"}, port{"tcp", render.EtcdPeerPort, "etcd peer"})
 		}
 	}
 	if r.site.Has(config.RoleData) {

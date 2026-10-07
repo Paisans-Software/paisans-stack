@@ -20,13 +20,13 @@ consistency_mode = "{{ .Consistency }}"
 # its key on first start, so no configuration can name it in advance. `paisans
 # storage add` connects the nodes once, and each keeps the peers it has met in
 # meta/peer_list, redialled after a restart.
-rpc_bind_addr = "{{ .Site.Address }}:3901"
-rpc_public_addr = "{{ .Site.Address }}:3901"
+rpc_bind_addr = "{{ .Site.Address }}:{{ .RPCPort }}"
+rpc_public_addr = "{{ .Site.Address }}:{{ .RPCPort }}"
 rpc_secret = "{{ .RPCSecret }}"
 
 [s3_api]
 s3_region = "garage"
-api_bind_addr = "{{ .Site.Address }}:3900"
+api_bind_addr = "{{ .Site.Address }}:{{ .S3Port }}"
 root_domain = ".s3.{{ .Domain }}"
 
 [s3_web]
@@ -41,9 +41,9 @@ root_domain = ".s3.{{ .Domain }}"
 # there is no DNS record and no certificate here.
 #
 # No index document. A prefix with no object must be a 404.
-bind_addr = "{{ .Site.Address }}:3902"
+bind_addr = "{{ .Site.Address }}:{{ .WebPort }}"
 root_domain = ".web.garage.internal"
 
 [admin]
-api_bind_addr = "{{ .Site.Address }}:3903"
+api_bind_addr = "{{ .Site.Address }}:{{ .AdminPort }}"
 admin_token = "{{ .AdminToken }}"

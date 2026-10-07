@@ -794,6 +794,12 @@ before.
   moment a site was added, silently changing `TRUSTED_PROXIES` in every app.
   Declaring it also lets an operator avoid a range their hosts already route.
   Every site address must sit inside it, and that is a refusal.
+* **Every port a site binds is listed once, in `render.SiteListeners`**, from
+  the constants the templates render. `validate`'s `port-collision` reads it,
+  so a new listener added to a template without a constant, or a new kind's
+  port added to `appPort` without a look at the others, escapes the check.
+  `TestPublishedPortsAreDistinctPerSite` in `internal/render` catches the
+  second against the fixture; nothing catches the first.
 * **A pinned stack uses bind mounts under `/srv/<stack>/`**, never named
   volumes, so relocating it is one `tar`. A test walks every rendered compose
   file to confirm it.

@@ -5,7 +5,7 @@
 # service is reconfigured and no address changes.
 [Interface]
 Address = {{ .Site.Address }}/{{ .MeshPrefix }}
-ListenPort = 51820
+ListenPort = {{ .ListenPort }}
 PrivateKey = {{ .PrivateKey }}
 {{- if .IsRelay }}
 # This site has a stable endpoint, so it relays traffic between sites that

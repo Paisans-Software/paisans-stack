@@ -119,4 +119,4 @@ func ParseEtcdFlags(compose string) (EtcdInitial, bool) {
 
 // EtcdPeerURL is a member's peer URL on the mesh, as every rendered flag
 // names it.
-func EtcdPeerURL(address string) string { return fmt.Sprintf("http://%s:2380", address) }
+func EtcdPeerURL(address string) string { return fmt.Sprintf("http://%s:%d", address, etcdPeerPort) }
