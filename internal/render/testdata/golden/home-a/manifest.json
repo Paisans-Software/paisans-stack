@@ -78,12 +78,12 @@
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "c40b5672100577771c32ad352004dbf11c366d6a6191d7af1fb38ce3d3c97606",
+      "sha256": "88394bd3ca2e0252feeb617290c78179028f13947df247f7af6dbd5591ed8d83",
       "mode": "0600"
     },
     {
       "path": "srv/talk/compose.yaml",
-      "sha256": "73d9131ed68a40fb3b19a62a882ebcc5abb30a9d97b371464aef985b01f9b513",
+      "sha256": "58c1754ad9ee97e721578a34318b1da19a99cad6b673ca51b3a47b4f9043fbc2",
       "mode": "0644"
     },
     {

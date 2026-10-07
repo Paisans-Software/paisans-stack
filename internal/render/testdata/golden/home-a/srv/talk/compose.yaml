@@ -54,8 +54,10 @@ services:
       # configuration and the container restarts forever, which is what the
       # first real host did. The Caddyfile reads this variable inside its
       # mercure block (docker/Caddyfile, "Extra directives", at the fork's tag
-      # v1.13.3+paisans). Moving to an issuer block is a change to the image,
-      # not to this file.
+      # v1.13.3+paisans). From 1.14.0-paisans the image sets the directive
+      # itself; it is kept here for an operator who declares an older image,
+      # and a second copy was checked to be harmless (frankenphp validate on
+      # 1.14.0-paisans accepts the Caddyfile with and without it).
       MERCURE_EXTRA_DIRECTIVES: "protocol_version_compatibility 8"
     # The mesh address only. Docker's own iptables rules bypass a host
     # firewall, so a port published on every interface of a host with a
@@ -101,8 +103,6 @@ services:
       # adapter because S3_KEY is set in .env), and `sed -i` over a bind mount
       # fails and stops the container.
     depends_on:
-      amqproxy:
-        condition: service_started
       valkey:
         condition: service_healthy
 
@@ -131,42 +131,8 @@ services:
       # the web container in which keys it can see.
       - /srv/talk/oauth:/app/config/oauth2:ro
     depends_on:
-      amqproxy:
-        condition: service_started
       valkey:
         condition: service_healthy
-
-  amqproxy:
-    image: docker.io/cloudamqp/amqproxy:3.2.0
-    restart: unless-stopped
-    # Upstream's MBIN_USER default. Nothing is mounted, so there is no host
-    # ownership for it to match.
-    user: "1000:1000"
-    command: amqp://rabbitmq:5672
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-
-  rabbitmq:
-    image: docker.io/library/rabbitmq:3.13.7-management-alpine
-    restart: unless-stopped
-    # Fixed, because RabbitMQ keys its on disk state on the node name, which
-    # derives from the hostname. A generated one would orphan the queue on
-    # every recreate.
-    hostname: rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
-    # Only the two variables it reads, rather than the whole .env upstream
-    # hands it: a broker has no business holding the database password.
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:?set in .env}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?set in .env}
-    volumes:
-      # Data only. Upstream also mounts /var/log/rabbitmq, but the image logs
-      # to the console (its conf.d/10-defaults.conf sets log.console), and its
-      # entrypoint chowns only the data directory, so a root owned log mount
-      # would be a directory the broker cannot write to.
-      - /srv/talk/rabbitmq_data:/var/lib/rabbitmq
 
   valkey:
     image: docker.io/valkey/valkey:9.1.2-trixie

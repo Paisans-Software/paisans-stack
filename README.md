@@ -572,8 +572,9 @@ by name, and some are validated or acted on: `s3_bucket` is a setting because
 `validate` refuses one named `outline` and `storage init` creates it, and
 `sso_dashboard_link` is one because `oidc client create` sends it to the
 identity provider (see *`oidc client create` makes an app's client at Pocket
-ID*). A key no
-template asks for is silently ignored. That is the direction in which choosing
+ID*). An Mbin app's `queue` is one because it decides which services the stack
+runs (see *Mbin's queues are in Postgres by default*). A key no template asks
+for is silently ignored. That is the direction in which choosing
 wrong is silent, and the reason this section exists: an application option put
 under `settings` renders nothing and says nothing.
 
@@ -2210,6 +2211,85 @@ Rejected:
   connection, but Mbin closes that connection after every message, which would
   drop a scheduler lock held between messages.
 
+### Mbin's queues are in Postgres by default
+
+Mbin hands every federated activity and background job to Symfony Messenger.
+Upstream runs RabbitMQ for it, and so did this toolkit, one broker per Mbin
+stack, so one per apps site. Mbin's inbox controllers answer 200 as soon as an
+activity is on the broker, and a remote server that got the 200 never sends it
+again. An apps site lost with work queued therefore loses it for good, and
+deliveries it had queued for other servers are stranded with it; the other
+site cannot see either.
+
+So the queues live in the database by default (`settings.queue: postgres`):
+
+```
+MESSENGER_TRANSPORT_DSN=doctrine://default?check_delayed_interval=1000&redeliver_timeout=900
+```
+
+Symfony's Doctrine transport keeps each message as a row in the app's own
+database, which is synchronously replicated, and consumers on every site take
+rows with `SELECT ... FOR UPDATE SKIP LOCKED`, so the surviving site's
+consumers carry on with the dead site's backlog. There is no `rabbitmq` or
+`amqproxy` in the stack, and no broker credential in its `.env`.
+
+* `doctrine://default` is the app's own connection, so it reaches the database
+  exactly as `DATABASE_URL` does, through the site's HAProxy or the pinned
+  `postgres`. A message a handler dispatches is inserted inside that handler's
+  transaction and commits or rolls back with its writes.
+* `check_delayed_interval=1000` (milliseconds; the default is a minute). One
+  consumer process reads every queue over one session, and a LISTEN/NOTIFY
+  wake-up popped by one queue's receiver is lost to the others, which then wait
+  for this poll.
+* `redeliver_timeout=900` (seconds; the default is an hour). A message a dead
+  consumer had taken is handed out again after it. It must stay longer than any
+  handler runs; Mbin's HTTP client caps a request at 15 seconds.
+
+**It needs the paisans fork.** Upstream's `messenger.yaml` gives every
+transport AMQP options the Doctrine transport refuses (`Unknown option found:
+[queues, exchange]`), and names no queue, so on `doctrine://` they would all
+share one. The fork's `App\Messenger\DoctrineTransportFactory` drops those
+options and gives each transport its own queue name, leaving the YAML and the
+AMQP path untouched. It ships from fork release `1.14.0-paisans`, the toolkit's
+default image. An app that declares an older Mbin image under `images` must
+also declare `settings.queue: rabbitmq`, or its queues fail at the first
+dispatch.
+
+**RabbitMQ is an opt-in**, `settings.queue: rabbitmq`, rendered exactly as
+before, for an operator on one large site who wants the broker's throughput.
+`validate` warns (`mbin-rabbitmq-across-sites`) when it is chosen for an app on
+more than one apps site, and refuses any other value (`mbin-queue-unknown`).
+
+**Postgres is the default even on one site** (founder decision). With
+RabbitMQ the default for one site, adding a second would change the backend,
+and `site add` would carry a queue drain: an addition would become a
+migration.
+
+**Switching an existing stack is not automated.** `apply` renders the new
+`.env` and compose file, but does not drain the old broker, and compose leaves
+the removed `rabbitmq` and `amqproxy` containers running as orphans. Run one
+consumer against the old AMQP DSN until `messenger:stats` reads nothing and the
+broker's `delay_*` retry queues are empty (retries can be up to about 21 hours
+out), or accept losing pending retries; then `docker compose up -d
+--remove-orphans` in the stack.
+
+What it costs: every message is at least three commits (insert, take,
+delete), each waiting for the synchronous replica on the other site, and the
+table churns, which is vacuum's work. For a community of this size that is
+noise; an instance that outgrows it is the operator `queue: rabbitmq` exists
+for.
+
+Rejected:
+
+* **RabbitMQ by default, Postgres only on more than one apps site.** The
+  `site add` migration above.
+* **One RabbitMQ cluster across the sites, with quorum queues.** It replicates,
+  but it is a second clustered system with its own partitions and failover to
+  run over the mesh, where Postgres is already the one shared, highly available
+  thing.
+* **An inbox journal table in the fork.** Protects inbound activities only, and
+  is custom code where the Doctrine transport already exists.
+
 ### `apply` checks free space before it pulls
 
 A small host fills up with images. The first real host had a 10 GB root disk,
@@ -2301,7 +2381,7 @@ pulled for linux/amd64 and inspected on 2026-10-07:
 
 | Image | Declares | Mounted as |
 |-------|----------|------------|
-| mbin 1.13.3-paisans (app, messenger) | `/app/var/` | tmpfs, 256m. Symfony's compiled cache, rebuilt by the entrypoint's `cache:clear` on every start; the app cache is in Valkey. The log bind mounts stay inside it |
+| mbin 1.14.0-paisans (app, messenger) | `/app/var/` | tmpfs, 256m. Symfony's compiled cache, rebuilt by the entrypoint's `cache:clear` on every start; the app cache is in Valkey. The log bind mounts stay inside it |
 | rabbitmq 3.13.7-management-alpine | `/var/lib/rabbitmq` | bind, `rabbitmq_data` (already) |
 | outline 1.10.0 | `/var/lib/outline/data` | bind, `/srv/<app>/data`, which was mounted at `/data`, a path nothing reads |
 | postgres 16-alpine, 17-alpine | `/var/lib/postgresql/data` | bind, `/srv/<app>/postgres` (already) |

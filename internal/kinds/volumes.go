@@ -32,7 +32,7 @@ import (
 // and printed null for images that do declare volumes.
 var ImageVolumes = map[string][]string{
 	// Applications, the defaults in catalogue.
-	"ghcr.io/paisans-software/mbin:1.13.3-paisans":            {"/app/var/"},
+	"ghcr.io/paisans-software/mbin:1.14.0-paisans":            {"/app/var/"},
 	"docker.io/cloudamqp/amqproxy:3.2.0":                      nil,
 	"docker.io/library/rabbitmq:3.13.7-management-alpine":     {"/var/lib/rabbitmq"},
 	"docker.io/valkey/valkey:9.1.2-trixie":                    nil,
