@@ -28,12 +28,12 @@
     },
     {
       "path": "srv/blog/compose.yaml",
-      "sha256": "c085768b2468d9e8d4214580820a5336b40bd13125a77dab52b5ff87457811be",
+      "sha256": "fea8c5cc8b007d5218b73818c110fa98a5df94743ca0f9c715904c916d74dac6",
       "mode": "0644"
     },
     {
       "path": "srv/blog/config.ini",
-      "sha256": "b76f637331513ff6c05cd7a511e37957d9a322df0f642359f94e1029168f5750",
+      "sha256": "cf79065dc3eaa363535c8b0019f6cac9cdc072de39300b50600cba650c9af22b",
       "mode": "0600"
     },
     {

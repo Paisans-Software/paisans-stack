@@ -59,7 +59,7 @@
     {
       "name": "blog — direct (home-a)",
       "monitor_type": "active",
-      "url": "http://10.44.0.1:8080/",
+      "url": "http://10.44.0.1:8081/",
       "method": "GET",
       "check_type": "status",
       "expected_status": "200,302",

@@ -53,7 +53,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/blog.caddy",
-      "sha256": "3b8d153a3792d9c4599d108e1c4702a8a356eaa3e0271cf556a6a96161050e1f",
+      "sha256": "a26ef299d3ff2f71bea936fc395241360bd0c5fc37a4ee43b05fdec854a79366",
       "mode": "0644"
     },
     {
@@ -128,7 +128,7 @@
     },
     {
       "path": "srv/status/monitors.json",
-      "sha256": "71c709278adae4e1685931142022bb4110281ea5656ae690f2cc16709de8c5aa",
+      "sha256": "0c4aba23869fa27ac5d08d40edde4d911c36fe9add5ac6e9344b97c2316f1970",
       "mode": "0600"
     }
   ]
