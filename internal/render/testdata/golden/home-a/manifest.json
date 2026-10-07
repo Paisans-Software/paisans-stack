@@ -28,12 +28,12 @@
     },
     {
       "path": "srv/blog/config.ini",
-      "sha256": "f095ef6f5d0c2b8d00c439929650581cb1824e1b36ac3434060baed055bd3861",
+      "sha256": "b76f637331513ff6c05cd7a511e37957d9a322df0f642359f94e1029168f5750",
       "mode": "0600"
     },
     {
       "path": "srv/docs/.env",
-      "sha256": "95b15b959cbfc9840262d0e7b4edbdfcb4d35eea079fdffa76b702299213e904",
+      "sha256": "992db9c2dfd3b3bac3aaa19bee8edcab40d2df66de0176f8095cc9d5a754a080",
       "mode": "0600"
     },
     {
@@ -78,7 +78,7 @@
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "5a33cac8468df9a6a27dab149f1f5ae386ce79b76c056e67956c60d22168aba5",
+      "sha256": "ff39cbed99211473966606ce78c3d2b99203ac2bfeb36d79504735deeeb834e4",
       "mode": "0600"
     },
     {

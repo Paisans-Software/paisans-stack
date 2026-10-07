@@ -124,12 +124,28 @@ type appValues struct {
 type s3Values struct {
 	Endpoint string
 
+	// MediaHostname is where this app's objects are served from: its own
+	// hostname, a sibling of the app's, from kinds.MediaHostname. Empty for a
+	// kind that stores nothing.
+	MediaHostname string
+
 	// PublicBase is what an app writes into a page, a feed or a federated
 	// post: the media hostname, over https, never the mesh endpoint. It has
 	// to resolve for a browser and for a server that will never join this
-	// mesh, which the endpoint above does not. Empty when no media hostname is
-	// declared, so a kind that stores nothing does not carry a half-built URL.
+	// mesh, which the endpoint above does not. It carries no bucket segment,
+	// because the media hostname is this app's alone. Empty when there is no
+	// media hostname, so a kind that stores nothing does not carry a
+	// half-built URL.
 	PublicBase string
+
+	// GarageAddress is the Garage node the gateway proxies a media hostname
+	// to, over the mesh. It is the same node Endpoint names.
+	GarageAddress string
+
+	// WebHost is the Host Garage's web endpoint resolves this app's bucket
+	// from: the bucket name under an internal suffix that resolves nowhere.
+	// Only a media snippet for a kind that serves objects publicly sends it.
+	WebHost string
 
 	AccessKeyID    string
 	SecretKey      string
@@ -238,28 +254,31 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	if planned.Kind == config.KindElement {
 		v.ServerName = p.homeserverServerName(v.Setting("homeserver", planned.Hostname))
 	}
+	garage := garageEndpointHost(p)
 	var s3Endpoint string
-	if host := garageEndpointHost(p); host != "" {
-		s3Endpoint = fmt.Sprintf("http://%s:3900", host)
+	if garage != "" {
+		s3Endpoint = fmt.Sprintf("http://%s:3900", garage)
 	}
 	v.S3 = s3Values{
-		// Mbin writes to this address itself, server side, over the mesh.
-		// Outline never uses it: its uploads are a presigned POST the browser
-		// submits directly, so for Outline every upload and every read goes
-		// through PublicBase, not here.
+		// Mbin and the blog write to this address themselves, server side,
+		// over the mesh. Outline never uses it: its uploads are a presigned
+		// POST the browser submits directly, so for Outline every upload and
+		// every read goes through PublicBase, not here.
 		Endpoint:       s3Endpoint,
+		GarageAddress:  garage,
 		AccessKeyID:    v.Secret("s3_access_key_id"),
 		SecretKey:      v.Secret("s3_secret_access_key"),
-		Bucket:         v.Setting("s3_bucket", planned.Name+"-uploads"),
+		Bucket:         kinds.BucketName(planned.Name, app),
 		Region:         v.Setting("s3_region", "garage"),
 		ForcePathStyle: v.SettingBool("s3_force_path_style", true),
 	}
-	// PublicBase is what an app writes into a page, a feed or a federated
-	// post: the media hostname, over https. Set only when a media hostname is
-	// declared, so a kind that stores nothing does not carry the literal
-	// string "https://" into a template that has never been written to check.
-	if p.cfg.Storage.MediaHostname != "" {
-		v.S3.PublicBase = "https://" + p.cfg.Storage.MediaHostname
+	v.S3.WebHost = v.S3.Bucket + webEndpointSuffix
+	// Set only for a kind that stores objects, so a kind that stores nothing
+	// does not carry the literal string "https://" into a template that has
+	// never been written to check.
+	if media := kinds.MediaHostname(app, p.cfg.Community.Domain); media != "" {
+		v.S3.MediaHostname = media
+		v.S3.PublicBase = "https://" + media
 	}
 	v.OIDC = p.oidcFor(planned)
 	v.Upstreams = p.upstreams(planned.Name)
@@ -372,54 +391,10 @@ func (p *planner) identityProviderURL() string {
 	return ""
 }
 
-// mediaBucket is one public bucket's route onto the gateway's media
-// hostname: its name, for the path prefix, and the internal vhost that
-// Garage's web endpoint resolves it from.
-type mediaBucket struct {
-	Bucket string
-	Vhost  string
-}
-
 // webEndpointSuffix is the internal suffix Garage's s3_web endpoint resolves
 // a bucket from, and that nothing on the mesh or off it otherwise resolves.
 // It must match the root_domain rendered into garage.toml.
 const webEndpointSuffix = ".web.garage.internal"
-
-// publicBuckets lists every bucket the gateway must route to Garage's web
-// endpoint rather than the S3 API: one entry per app that both uses object
-// storage and must serve its objects with no credential.
-//
-// It is built from kinds.ServesObjectsPublicly rather than from "has a
-// bucket", because a kind can keep its uploads in S3 while serving them
-// through its own application route, never exposing its bucket directly. A
-// future kind in that shape must not acquire a route here just because it
-// has one.
-//
-// The bucket name is read from the same appValues an app's own S3 settings
-// use, via p.values, so the route and the credential cannot drift apart.
-// cfg.AppNames() is sorted, so the result is deterministic.
-func (p *planner) publicBuckets() ([]mediaBucket, error) {
-	var out []mediaBucket
-	for _, name := range p.cfg.AppNames() {
-		app := p.cfg.Apps[name]
-		if !kinds.UsesObjectStorage(app.Kind) || !kinds.ServesObjectsPublicly(app.Kind) {
-			continue
-		}
-		planned, err := p.plannedFor(name, app)
-		if err != nil {
-			return nil, err
-		}
-		values, err := p.values(planned, app)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, mediaBucket{
-			Bucket: values.S3.Bucket,
-			Vhost:  values.S3.Bucket + webEndpointSuffix,
-		})
-	}
-	return out, nil
-}
 
 // quote renders a value into a double quoted YAML or INI string. Templates use
 // it wherever a secret lands in a structured file, since a generated password

@@ -33,7 +33,7 @@
     },
     {
       "path": "srv/infra/caddy/Caddyfile",
-      "sha256": "7fafd154336bacd227bdac0b31f9c55fe73d5b388254dacfbbf4b48bf6bb9e36",
+      "sha256": "ca41dd4ed61427aab97ff2f154beec172bd493e33f97340b8b528528b4770367",
       "mode": "0644"
     },
     {
@@ -44,6 +44,11 @@
     {
       "path": "srv/infra/caddy/snippets/auth.caddy",
       "sha256": "3c80e9376267aefbf991e261a3b957f94711cecb90974302b4932895d67fa79f",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/caddy/snippets/blog-media.caddy",
+      "sha256": "96d69847b0c19f41499e4fd3416b08652f4e03776404ba5bf34d847891cb4e7b",
       "mode": "0644"
     },
     {
@@ -62,6 +67,11 @@
       "mode": "0644"
     },
     {
+      "path": "srv/infra/caddy/snippets/docs-media.caddy",
+      "sha256": "a767e3670256aff02c26af8ad512bf6823373186d057bc0299b4c3ebbad90137",
+      "mode": "0644"
+    },
+    {
       "path": "srv/infra/caddy/snippets/docs.caddy",
       "sha256": "7785654743fe6347de3895686346af6da5ee7cfde231789fcdcb7aead6ea7740",
       "mode": "0644"
@@ -77,13 +87,13 @@
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/media.caddy",
-      "sha256": "db64ed7580f02fb4db4fd7eff1ecc71b4821b67096f319c8f60a062648f5f375",
+      "path": "srv/infra/caddy/snippets/talk-media.caddy",
+      "sha256": "a802646f90418b405387fc58905fa68deac03108a447e29022d5d31a9b703e1e",
       "mode": "0644"
     },
     {
       "path": "srv/infra/caddy/snippets/talk.caddy",
-      "sha256": "7fe39211c8e0eac65e4db5839dc3ccbc592d8bcbab2eb871c2c06e1220eec0e5",
+      "sha256": "4dbb8bd26fe15ff40acbbd046a443e96d218d1f0335218bea7f1c43b1eda1466",
       "mode": "0644"
     },
     {

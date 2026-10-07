@@ -7,11 +7,11 @@
 # address of each site it runs on, and the one FrankenPHP is told to listen on
 # there (SERVER_NAME), so this routes plain HTTP: TLS ends at the gateway.
 #
-# Media is not routed here. Upstream strongly advises a media reverse proxy on
-# its own hostname, so media URLs survive a change of storage provider and the
-# S3 endpoint is not exposed to readers. That is storage.media_hostname, whose
-# routing the gateway renders as media.caddy for every public bucket, and
-# KBIN_STORAGE_URL in this app's .env points at it.
+# Media is not routed here. Upstream advises serving it from a hostname of
+# its own, so media URLs survive a change of storage provider and the S3
+# endpoint is not exposed to readers, and that is what
+# caddy.snippet.media.tmpl does: talk-media.example.org is a separate site
+# block with its own snippet.
 reverse_proxy 10.44.0.1:8080 10.44.0.2:8080 {
 	# first, not round robin: the apps sites are not interchangeable during a
 	# failover, and a dead one must simply be skipped.

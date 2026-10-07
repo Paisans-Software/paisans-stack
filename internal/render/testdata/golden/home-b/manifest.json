@@ -18,7 +18,7 @@
     },
     {
       "path": "srv/docs/.env",
-      "sha256": "b43301198ae9f24789d743be2cf852f32febbba8d95d6076c71e7bdc43c4f59d",
+      "sha256": "a4bf56bd7bf8bdbad05f7c1db04eb386c5f9005e574d47d96a803dc7df330c1e",
       "mode": "0600"
     },
     {
@@ -53,7 +53,7 @@
     },
     {
       "path": "srv/talk/.env",
-      "sha256": "94ea106b983fe036eb1c9589cd602b5456d41cca22dbb5e3c45f208c7f72f15c",
+      "sha256": "905264bc9207325b219b1e0ed63096b39c0ed366b37abe9a9a684f55d3c90e10",
       "mode": "0600"
     },
     {

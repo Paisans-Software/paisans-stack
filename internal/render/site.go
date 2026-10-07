@@ -145,7 +145,8 @@ type route struct {
 	Snippet string
 	// Gate is the app's declared gate, carried onto every one of its
 	// hostnames. A gate is access policy for the app, not for one hostname of
-	// it, so every route an app has gets the same value.
+	// it, so every route an app has gets the same value, with one exception:
+	// a media hostname is never gated (see routes).
 	Gate string
 }
 
@@ -265,8 +266,6 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"GateSnippets":   p.gateSnippetMounts(),
 			"TrustedProxies": p.mesh,
 			"ACMEDirective":  acme.Directive(p.cfg.ACME.Provider),
-			"MediaHostname":  p.cfg.Storage.MediaHostname,
-			"MediaSnippet":   snippetMount + mediaSnippetFile,
 		})
 		if err != nil {
 			return nil, err
@@ -278,21 +277,6 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			return nil, err
 		}
 		files = append(files, snippets...)
-
-		if p.cfg.Storage.MediaHostname != "" {
-			publicBuckets, err := p.publicBuckets()
-			if err != nil {
-				return nil, err
-			}
-			media, err := p.renderTemplate("media.caddy.snippet.tmpl", map[string]any{
-				"GarageAddresses": garageAddresses(p),
-				"PublicBuckets":   publicBuckets,
-			})
-			if err != nil {
-				return nil, err
-			}
-			files = append(files, File{Path: base + snippetDir + mediaSnippetFile, Content: media, Mode: 0o644})
-		}
 
 		gateSnippets, err := p.renderGateSnippets(base)
 		if err != nil {
@@ -339,10 +323,6 @@ const (
 	snippetDir   = "srv/infra/caddy/snippets/"
 	snippetMount = "/etc/caddy/snippets/"
 )
-
-// mediaSnippetFile is the media hostname's own routing, the one snippet
-// rendered from the storage configuration rather than from an app.
-const mediaSnippetFile = "media.caddy"
 
 // renderSnippets renders every hostname's routing onto a gateway.
 //
@@ -681,14 +661,30 @@ func (p *planner) routes() []route {
 			Snippet:   snippetMount + name + ".caddy",
 			Gate:      gate,
 		})
-		for _, role := range sortedKeys(app.Hostnames) {
+		roles := sortedKeys(app.Hostnames)
+		if kinds.MediaHostnameIsDerived(app) {
+			// Every kind that stores objects has a media hostname whether or
+			// not the app names one, so the route exists either way.
+			roles = append(roles, kinds.MediaRole)
+		}
+		for _, role := range roles {
+			hostname := app.Hostnames[role]
+			routeGate := gate
+			if role == kinds.MediaRole {
+				hostname = kinds.MediaHostname(app, p.cfg.Community.Domain)
+				// Never gated, whatever the app's gate is. A federating server
+				// fetching an image is a machine, and it will not follow a
+				// redirect to a passkey prompt; Outline's private objects are
+				// protected by the signature on every URL, not by a cookie.
+				routeGate = ""
+			}
 			out = append(out, route{
 				App:       name,
 				Role:      role,
-				Hostname:  app.Hostnames[role],
+				Hostname:  hostname,
 				Upstreams: p.upstreams(name),
 				Snippet:   snippetMount + name + "-" + role + ".caddy",
-				Gate:      gate,
+				Gate:      routeGate,
 			})
 		}
 	}

@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
 // Record is one DNS record as a provider reports it.
@@ -112,8 +113,17 @@ func Desired(cfg *config.Config) ([]Want, error) {
 			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostnames.%s", appName, role), app.Hostnames[role]})
 		}
 	}
-	if cfg.Storage.MediaHostname != "" {
-		hostnames = append(hostnames, claim{"storage.media_hostname", cfg.Storage.MediaHostname})
+	// Each app that stores objects serves them on a media hostname of its
+	// own, derived when the app does not declare one under hostnames.media
+	// (a declared one is already in the loop above).
+	for _, appName := range cfg.AppNames() {
+		app := cfg.Apps[appName]
+		if !kinds.MediaHostnameIsDerived(app) {
+			continue
+		}
+		if media := kinds.MediaHostname(app, cfg.Community.Domain); media != "" {
+			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostnames.media (derived)", appName), media})
+		}
 	}
 	if len(hostnames) > 0 {
 		gateways := cfg.GatewaySites()

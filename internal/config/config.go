@@ -218,16 +218,12 @@ type Etcd struct {
 
 type Storage struct {
 	Garage Garage `yaml:"garage"`
-	// MediaHostname is where objects are served from. It is one hostname for
-	// the deployment rather than one per app: a bucket is a path under it.
-	//
-	// It is required once any app stores objects, because the endpoint an app
-	// writes through is a mesh address and a browser cannot reach one. A
-	// federating instance that caches such a URL keeps it. That requirement is
-	// checked in internal/validate rather than here: internal/kinds, which
-	// knows which kinds store objects, already imports internal/config, so
-	// this package asking it back would be an import cycle.
-	MediaHostname string `yaml:"media_hostname"`
+	// There is no deployment wide media hostname. Each app that stores objects
+	// serves them on a hostname of its own, derived from its own hostname and
+	// overridable as `hostnames.media` on that app: see kinds.MediaHostname.
+	// A single hostname with a bucket as a path under it was the earlier
+	// shape, and it was replaced because a path cannot be pointed at a CDN or
+	// another provider one app at a time, while a hostname can.
 }
 
 type Garage struct {
@@ -292,6 +288,10 @@ type App struct {
 	// the kind understands. The primary hostname stays in Hostname; a role here
 	// selects a different Caddy snippet, because a second hostname usually
 	// exists to serve something different rather than the same thing twice.
+	//
+	// `media` is the one role that exists without being declared: every kind
+	// that stores objects serves them on <label>-media.<domain>, and declaring
+	// it here only chooses another name. See kinds.MediaHostname.
 	Hostnames map[string]string `yaml:"hostnames"`
 
 	// Gate is which auth gate sits in front of this app: none, provisional or

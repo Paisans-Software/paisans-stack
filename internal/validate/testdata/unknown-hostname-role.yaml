@@ -52,7 +52,6 @@ etcd:
   election_timeout_ms: 2000
 
 storage:
-  media_hostname: media.example.org
   garage:
     sites: [home-a]
     replication: 1
@@ -64,11 +63,13 @@ apps:
     placement: cluster
     settings:
       s3_bucket: docs-uploads
-    hostnames:
-      media: media.example.org
   auth:
     kind: pocket-id
     hostname: id.example.org
     placement: cluster
     settings:
       file_backend: database
+    # media is a role only for a kind that stores objects, and Pocket ID
+    # keeps its uploads in its database.
+    hostnames:
+      media: id-media.example.org

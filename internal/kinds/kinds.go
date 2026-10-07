@@ -146,6 +146,15 @@ var catalogue = map[config.Kind][]Service{
 		// checking the binary with `strings` for the `s3_secret_access_key`
 		// ini tag and the Postgres `sslmode` field. Bump this once a release
 		// carries the same features, and drop this paragraph when it does.
+		//
+		// This digest predates writefreely-wisp#171, which makes S3 storage
+		// direct only and adds `[storage] image_url_base`. The template
+		// renders that key and the gateway serves the bucket on the blog's
+		// media hostname, but this build does not read the key: it keeps
+		// streaming images through /uploads/ with its own credential, which
+		// still works and does not use the media hostname. Move the pin to a
+		// build containing #171 once it is merged, which is when the media
+		// hostname starts carrying the blog's images.
 		{Name: "app", Image: "ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea", Purpose: "the application"},
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
@@ -212,9 +221,16 @@ func UsesObjectStorage(kind config.Kind) bool {
 // without a credential.
 //
 // Mbin's are: a federating server fetching an image is a machine with no
-// account here, and a remote instance caches the URL it was given. Outline's
-// are not, because its bucket holds the attachments of documents that are
-// readable only to members, and its server presigns every read it issues.
+// account here, and a remote instance caches the URL it was given. So are
+// WriteFreely's, meaning the wisp fork: with `[storage] type = s3` the fork
+// writes images to the bucket and never reads them back to serve them. It
+// requires `[storage] image_url_base`, publishes every image URL under it, and
+// answers its own /uploads/ route with a redirect there, so the bucket has to
+// answer a reader with no credential or no image on the blog loads at all.
+//
+// Outline's are not, because its bucket holds the attachments of documents
+// that are readable only to members, and its server presigns every read it
+// issues.
 //
 // This is deliberately not a configuration key. Garage's website access is per
 // bucket and opt in, so the only way Outline's bucket becomes world readable
@@ -223,13 +239,11 @@ func UsesObjectStorage(kind config.Kind) bool {
 //
 // A kind storing objects (UsesObjectStorage) is not the same question as one
 // whose objects are fetched anonymously: a kind can keep its uploads in S3
-// while serving them through its own application route, never exposing its
-// bucket directly. WriteFreely (meaning the wisp fork) is exactly that case:
-// it streams images through its own /uploads/ route with http.ServeContent
-// and never emits or presigns an S3 URL, so its bucket gets no website access
-// even though the kind uses object storage.
+// while serving them through its own application route, or through
+// signatures it issues, never exposing its bucket. Outline is the second
+// case, and the fork used to be the first, before it became direct only.
 func ServesObjectsPublicly(kind config.Kind) bool {
-	return kind == config.KindMbin
+	return kind == config.KindMbin || kind == config.KindWriteFreely
 }
 
 // ServiceNames returns a kind's service names, sorted, for an error message
@@ -284,3 +298,19 @@ func ConfigFormat(kind config.Kind) Format { return configFiles[kind].format }
 
 // ConfigFile is the rendered path of that file, relative to the stack.
 func ConfigFile(kind config.Kind) string { return configFiles[kind].file }
+
+// BucketName is the bucket an app that stores objects keeps them in: the
+// `s3_bucket` setting when one is declared, and the app's name with
+// "-uploads" otherwise.
+//
+// It is here because three packages need the same answer: the renderer, which
+// gives the app the name; the provisioner, which creates the bucket; and
+// validate, which checks the name against what the app will do with it. Three
+// copies of one default is how the bucket the app writes to and the bucket the
+// provisioner created stop being the same bucket.
+func BucketName(name string, app config.App) string {
+	if v, ok := app.Settings["s3_bucket"].(string); ok && v != "" {
+		return v
+	}
+	return name + "-uploads"
+}

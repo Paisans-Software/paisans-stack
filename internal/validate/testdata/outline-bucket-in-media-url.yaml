@@ -1,5 +1,7 @@
-# A coherent three site deployment. Every fixture in this directory is a
-# variation on this one, so that a test names exactly the thing it breaks.
+# valid.yaml with one thing broken: docs's bucket is named "docs", which is a
+# substring of its derived media URL, https://docs-media.example.org. Outline
+# reads that as virtual host addressing and drops the bucket from the path a
+# browser uploads to, while Garage needs it there.
 version: 1
 
 community:
@@ -40,7 +42,7 @@ sites:
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 
 cluster:
-  sites: [home-a, home-c]
+  sites: [home-a, home-b]
   port: 5000
   postgres_version: "18"
   synchronous: true
@@ -62,7 +64,7 @@ apps:
     hostname: docs.example.org
     placement: cluster
     settings:
-      s3_bucket: docs-uploads
+      s3_bucket: docs
   auth:
     kind: pocket-id
     hostname: id.example.org

@@ -59,7 +59,6 @@ cluster:
 etcd:
   members: [home-a]
 storage:
-  media_hostname: media.example.org
   garage:
     sites: [home-a]
     replication: 1

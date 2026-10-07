@@ -322,7 +322,7 @@ func TestTheBlogReadsPostgresAndS3(t *testing.T) {
 	// The endpoint is a fact of the fixture (garageEndpointHost picks the
 	// first Garage site by sorted name), not of this change, so it is read
 	// from the committed golden tree rather than guessed, the same way
-	// TestObjectStorageIsPublishedOnTheMediaHostname reads Mbin's.
+	// TestEachAppPublishesItsOwnMediaHostname reads Mbin's.
 	golden, err := os.ReadFile(filepath.Join("testdata", "golden", "home-a", "srv", "talk", ".env"))
 	if err != nil {
 		t.Fatalf("reading the golden talk .env: %v", err)
@@ -349,6 +349,10 @@ func TestTheBlogReadsPostgresAndS3(t *testing.T) {
 		// its own default would otherwise break every image with nothing in
 		// the configuration to explain it.
 		"s3_virtual_host = false",
+		// The fork is direct only under S3: it refuses to start without
+		// image_url_base and publishes every image URL under it. It is the
+		// blog's own media hostname with no path.
+		"image_url_base = https://blog-media.example.org\n",
 		// The [storage] block above is inert without this. uploads.enabled
 		// defaults to false in the fork, and with it false POST
 		// /api/me/images is not routed, the /uploads/ route is gated off,
@@ -1280,22 +1284,24 @@ func hostBlock(t *testing.T, caddyfile, hostname string) string {
 	if end < 0 {
 		t.Fatalf("unterminated host block for %s", hostname)
 	}
-	return caddyfile[start : start+end]
+	// end is relative to start+1, so the block runs to start+1+end, which is
+	// the newline before its closing brace.
+	return caddyfile[start : start+1+end]
 }
 
 // The endpoint an app writes through and the URL it publishes are different
 // strings for a reason, though what crosses the gateway differs by app. Mbin
-// writes to its endpoint itself, server side, over the mesh, so its uploads
-// never cross the gateway; only the URL it publishes does. Outline's server
-// never writes bytes to S3 at all: it issues a presigned POST the browser
-// submits directly against the media hostname, so Outline's uploads cross the
-// gateway too. Either way the published URL must resolve for a browser and
-// for a federating server that will never join this mesh.
-func TestObjectStorageIsPublishedOnTheMediaHostname(t *testing.T) {
-	files := map[string]string{}
-	for _, f := range build(t).Files {
-		files[f.Path] = f.Content
-	}
+// and the blog write to their endpoint themselves, server side, over the mesh,
+// so their uploads never cross the gateway; only the URL they publish does.
+// Outline's server never writes bytes to S3 at all: it issues a presigned POST
+// the browser submits directly against its media hostname, so Outline's
+// uploads cross the gateway too. Either way the published URL must resolve for
+// a browser and for a federating server that will never join this mesh.
+//
+// Each app's media hostname is its own, <label>-media.<domain>, with no bucket
+// in the published URL: the hostname already says whose objects they are.
+func TestEachAppPublishesItsOwnMediaHostname(t *testing.T) {
+	files := planFiles(build(t))
 
 	// The endpoint is a fact of the fixture (garageEndpointHost picks the
 	// first Garage site by sorted name), not of this change, so it is read
@@ -1317,39 +1323,153 @@ func TestObjectStorageIsPublishedOnTheMediaHostname(t *testing.T) {
 	}
 
 	env := files["home-a/srv/talk/.env"]
-	if !strings.Contains(env, "KBIN_STORAGE_URL=https://media.example.org/talk-uploads") {
-		t.Errorf("Mbin builds every media URL and every thumbnail root from KBIN_STORAGE_URL, got:\n%s", env)
+	if !strings.Contains(env, "\nKBIN_STORAGE_URL=https://talk-media.example.org\n") {
+		t.Errorf("Mbin builds every media URL from KBIN_STORAGE_URL, which must be its own media hostname with no bucket segment, got:\n%s", env)
 	}
 	if !strings.Contains(env, endpointLine) {
 		t.Errorf("Mbin writes to Garage itself, server side, over the mesh, so its endpoint must still be the internal one, want %q in:\n%s", endpointLine, env)
 	}
 
 	outline := files["home-a/srv/docs/.env"]
-	if !strings.Contains(outline, "AWS_S3_UPLOAD_BUCKET_URL=https://media.example.org") {
-		t.Errorf("Outline publishes attachment URLs from its bucket URL, got:\n%s", outline)
+	if !strings.Contains(outline, "\nAWS_S3_UPLOAD_BUCKET_URL=https://docs-media.example.org\n") {
+		t.Errorf("Outline signs and publishes attachment URLs on its bucket URL, which must be its own media hostname, got:\n%s", outline)
+	}
+	// Path style is required, not a preference: the media hostname is not
+	// under Garage's S3 root domain, so Garage reads the bucket from the path,
+	// and virtual host style would sign for docs-uploads.docs-media.example.org,
+	// which nothing serves.
+	if !strings.Contains(outline, "\nAWS_S3_FORCE_PATH_STYLE=true\n") {
+		t.Errorf("Outline must address its media hostname path style, got:\n%s", outline)
+	}
+
+	blog := files["home-a/srv/blog/config.ini"]
+	if !strings.Contains(blog, "\nimage_url_base = https://blog-media.example.org\n") {
+		t.Errorf("the fork serves every image from image_url_base, which must be the blog's own media hostname, got:\n%s", blog)
 	}
 
 	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
-	block := hostBlock(t, caddyfile, "media.example.org")
-	if strings.Contains(block, "import gate_") {
-		t.Error("the media hostname must never be gated: a federating server fetching an image is a machine")
+	for app, host := range map[string]string{
+		"talk": "talk-media.example.org",
+		"docs": "docs-media.example.org",
+		"blog": "blog-media.example.org",
+	} {
+		block := hostBlock(t, caddyfile, host)
+		// talk is gated members in the fixture, which is what makes this
+		// assertion able to fail: its media hostname must not inherit it.
+		if strings.Contains(block, "import gate_") {
+			t.Errorf("%s must never be gated: a federating server fetching an image is a machine, and Outline's URLs carry their own signature:\n%s", host, block)
+		}
+		if !strings.Contains(block, "import /etc/caddy/snippets/"+app+"-media.caddy") {
+			t.Errorf("%s should import %s's own media snippet:\n%s", host, app, block)
+		}
+		if _, ok := files["vm/srv/infra/caddy/snippets/"+app+"-media.caddy"]; !ok {
+			t.Errorf("no media snippet rendered for %s", app)
+		}
+	}
+	if !strings.Contains(hostBlock(t, caddyfile, "talk.example.org"), "import gate_members") {
+		t.Error("the fixture gates talk itself, and that gate must stay on the app's own hostname")
 	}
 
-	snippet := files["vm/srv/infra/caddy/snippets/media.caddy"]
-	if !strings.Contains(snippet, "3900") {
-		t.Errorf("the media snippet should reach Garage on 3900, got:\n%s", snippet)
+	// The single deployment wide hostname is gone, and so is its routing.
+	if strings.Contains(caddyfile, "\nmedia.example.org {") {
+		t.Errorf("there is no deployment wide media hostname any more:\n%s", caddyfile)
 	}
-	// Only a public bucket's own route rewrites Host, to reach the web
-	// endpoint's vhost. The fallback, which is what Outline's presigned
-	// reads take, must forward Host unchanged or its signatures stop
-	// verifying. TestOnlyAPublicBucketIsRewrittenToTheWebEndpoint covers the
-	// bucket route itself; this asserts the fallback never rewrites.
-	//
-	// Scoped to the fallback block rather than matched against a longer
-	// string: any `header_up Host` at all in that region is the bug, whatever
-	// value it carries.
-	if fallback := fallbackHandle(t, snippet); strings.Contains(fallback, "header_up Host") {
-		t.Errorf("the fallback must forward Host unchanged or Outline's presigned URLs stop verifying, got:\n%s", fallback)
+	if _, ok := files["vm/srv/infra/caddy/snippets/media.caddy"]; ok {
+		t.Error("the deployment wide media snippet should no longer be rendered")
+	}
+	// Only kinds that store objects get one.
+	for _, app := range []string{"auth", "chat", "web", "gate"} {
+		if _, ok := files["vm/srv/infra/caddy/snippets/"+app+"-media.caddy"]; ok {
+			t.Errorf("%s stores no objects, so it has no media hostname", app)
+		}
+	}
+}
+
+// A declared hostnames.media replaces the derived name everywhere it is used:
+// the site address, the snippet that serves it and the URL the app publishes.
+func TestADeclaredMediaHostnameReplacesTheDerivedOne(t *testing.T) {
+	cfg := fixture(t)
+	docs := cfg.Apps["docs"]
+	docs.Hostnames = map[string]string{"media": "attachments.example.org"}
+	cfg.Apps["docs"] = docs
+	if refusals := validate.Check(cfg).Refusals(); len(refusals) > 0 {
+		t.Fatalf("the override should be accepted, got %v", refusals)
+	}
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatalf("building the plan: %v", err)
+	}
+	files := planFiles(plan)
+
+	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	block := hostBlock(t, caddyfile, "attachments.example.org")
+	if !strings.Contains(block, "import /etc/caddy/snippets/docs-media.caddy") {
+		t.Errorf("the declared name should import docs's media snippet:\n%s", block)
+	}
+	if strings.Contains(caddyfile, "docs-media.example.org {") {
+		t.Errorf("the derived name must not be served beside a declared one:\n%s", caddyfile)
+	}
+	if env := files["home-a/srv/docs/.env"]; !strings.Contains(env, "\nAWS_S3_UPLOAD_BUCKET_URL=https://attachments.example.org\n") {
+		t.Errorf("Outline must sign for the declared name, got:\n%s", env)
+	}
+}
+
+// publicMediaPolicy is the response policy every public media hostname
+// carries. Applications store what they are given byte for byte, an SVG among
+// it, and no S3 provider can store a header on an object, so the gateway is
+// the only place it can be set.
+const publicMediaPolicy = `Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; sandbox"`
+
+// A public bucket's media hostname goes to Garage's web endpoint, with Host
+// rewritten to the internal name that endpoint resolves the bucket from. There
+// is no path prefix to strip: the hostname is the app's alone, so the path is
+// already the object key.
+func TestAPublicMediaHostnameGoesToTheWebEndpoint(t *testing.T) {
+	files := planFiles(build(t))
+	for app, bucket := range map[string]string{"talk": "talk-uploads", "blog": "blog-uploads"} {
+		snippet := files["vm/srv/infra/caddy/snippets/"+app+"-media.caddy"]
+		for _, want := range []string{
+			"reverse_proxy 10.44.0.1:3902 {",
+			"header_up Host " + bucket + ".web.garage.internal",
+			publicMediaPolicy,
+			"X-Content-Type-Options nosniff",
+			// Deferred, so the policy replaces anything the upstream sent
+			// rather than sitting beside it as a second header.
+			"\tdefer\n",
+		} {
+			if !strings.Contains(snippet, want) {
+				t.Errorf("%s's media snippet is missing %q:\n%s", app, want, snippet)
+			}
+		}
+		for _, unwanted := range []string{"strip_prefix", ":3900", "handle "} {
+			if strings.Contains(snippet, unwanted) {
+				t.Errorf("%s's media snippet should not contain %q: one hostname is one bucket, with no per path routing:\n%s", app, unwanted, snippet)
+			}
+		}
+	}
+}
+
+// Outline's media hostname goes to the S3 API and never to the anonymous web
+// endpoint, with Host forwarded unchanged so that every presigned URL
+// verifies. It carries nosniff but not the sandboxing policy, which would stop
+// a browser running its PDF viewer on the attachments Outline embeds.
+func TestOutlinesMediaHostnameGoesToTheS3APIWithHostUnchanged(t *testing.T) {
+	snippet := planFiles(build(t))["vm/srv/infra/caddy/snippets/docs-media.caddy"]
+	if !strings.Contains(snippet, "reverse_proxy 10.44.0.1:3900\n") {
+		t.Errorf("Outline's media hostname must reach the S3 API on 3900:\n%s", snippet)
+	}
+	if strings.Contains(snippet, ":3902") {
+		t.Errorf("Outline's media hostname must never reach the anonymous web endpoint:\n%s", snippet)
+	}
+	// Any header_up Host at all is the bug, whatever value it carries.
+	if strings.Contains(snippet, "header_up Host") {
+		t.Errorf("Host must be forwarded unchanged or Outline's presigned URLs stop verifying:\n%s", snippet)
+	}
+	if !strings.Contains(snippet, "X-Content-Type-Options nosniff") {
+		t.Errorf("nosniff costs Outline nothing and should be set:\n%s", snippet)
+	}
+	if strings.Contains(snippet, "Content-Security-Policy") {
+		t.Errorf("a sandboxing policy on Outline's attachments breaks its embedded PDF previews:\n%s", snippet)
 	}
 }
 
@@ -1376,106 +1496,6 @@ func TestGarageServesAWebEndpointOnAnInternalSuffix(t *testing.T) {
 	if strings.Contains(conf, "index =") {
 		t.Error("no index document: a prefix with no object must 404 rather than return something else")
 	}
-}
-
-// A public bucket's objects reach the web endpoint, which needs a vhost style
-// Host. Everything else stays on the S3 API with Host untouched, because that
-// is what makes Outline's presigned URLs verify.
-//
-// Caddy sorts same directive routes by path matcher length, longest first, so
-// this asserts matcher length rather than the order the lines happen to be
-// written in. The file order is not what decides it.
-func TestOnlyAPublicBucketIsRewrittenToTheWebEndpoint(t *testing.T) {
-	tree := build(t)
-	files := map[string]string{}
-	for _, f := range tree.Files {
-		files[f.Path] = f.Content
-	}
-	snippet := files["vm/srv/infra/caddy/snippets/media.caddy"]
-
-	// talk-uploads is Mbin's bucket in this fixture (app "talk", no
-	// s3_bucket override, so the default is the app name plus "-uploads").
-	if !strings.Contains(snippet, "handle /talk-uploads/*") {
-		t.Errorf("mbin's bucket should have its own route:\n%s", snippet)
-	}
-	if !strings.Contains(snippet, "uri strip_prefix /talk-uploads") {
-		t.Error("the bucket prefix must be stripped: the web endpoint takes the key as the path")
-	}
-	if !strings.Contains(snippet, "header_up Host talk-uploads.web.garage.internal") {
-		t.Error("the web endpoint resolves the bucket from Host, so Host must be rewritten")
-	}
-	if !strings.Contains(snippet, ":3902") {
-		t.Error("a public bucket's reads go to the web endpoint")
-	}
-
-	// Outline's bucket (docs-uploads, declared in the fixture) must not
-	// appear at all. Its attachments are private and its reads are
-	// presigned, so they belong on the S3 API with the fallback.
-	if strings.Contains(snippet, "docs-uploads") {
-		t.Errorf("outline's bucket must not be routed to the anonymous endpoint:\n%s", snippet)
-	}
-
-	// The blog's bucket (blog-uploads, the default for app "blog", no
-	// s3_bucket override in the fixture) must not appear either, and for a
-	// different reason than Outline's: the wisp fork streams its images
-	// through its own /uploads/ route and never addresses the object store
-	// from a browser at all, so there is no anonymous read to route here.
-	if strings.Contains(snippet, "blog-uploads") {
-		t.Errorf("the blog's bucket must not be routed to the anonymous endpoint:\n%s", snippet)
-	}
-
-	// The fallback keeps Host, which is the whole reason presigned URLs verify.
-	if !strings.Contains(snippet, ":3900") {
-		t.Error("the fallback should reach the S3 API")
-	}
-	if fallback := fallbackHandle(t, snippet); strings.Contains(fallback, "header_up Host") {
-		t.Errorf("the fallback must not rewrite Host, got:\n%s", fallback)
-	}
-
-	// Matcher length, not file order, is what Caddy sorts on. Prove the
-	// bucket route carries a path matcher and the fallback carries none,
-	// which is the property that makes Caddy put the bucket route first.
-	if !strings.Contains(snippet, "handle /talk-uploads/* {") {
-		t.Errorf("the bucket route should carry a path matcher:\n%s", snippet)
-	}
-	if !strings.Contains(snippet, "handle {\n\treverse_proxy") {
-		t.Errorf("the fallback route should carry no path matcher:\n%s", snippet)
-	}
-}
-
-// fallbackHandle returns the text of the media snippet's fallback `handle`
-// block: the one with no path matcher, which is what everything that is not a
-// public bucket takes.
-//
-// A test that wants to say "the fallback does not rewrite Host" has to look at
-// the fallback and nothing else, because the public bucket routes rewrite Host
-// legitimately and a search over the whole snippet would always match. Scoping
-// is what makes the assertion able to fail: an earlier version of it searched
-// the whole file for a longer string the template cannot produce, which made it
-// unfalsifiable and so no protection at all.
-func fallbackHandle(t *testing.T, snippet string) string {
-	t.Helper()
-	open := strings.Index(snippet, "\nhandle {\n")
-	if open < 0 {
-		t.Fatalf("the media snippet has no fallback handle block:\n%s", snippet)
-	}
-	// Brace counting from the block's own opening brace, so a nested block
-	// (the reverse_proxy body, when it has one) does not end the region early.
-	start := open + len("\nhandle ")
-	depth := 0
-	for i := start; i < len(snippet); i++ {
-		switch snippet[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return snippet[start : i+1]
-			}
-		}
-	}
-	t.Fatalf("unterminated fallback handle block:\n%s", snippet[start:])
-	return ""
 }
 
 // requiredComposeVar matches a `${VAR:?message}` reference, which is Compose's
@@ -2247,5 +2267,23 @@ func TestEtcdRendersTheFlagsItWasBornWith(t *testing.T) {
 	// Without the option, the fresh deployment's flags, as before the record.
 	if c := files["home-b/srv/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster-state=new") || !strings.Contains(c, "home-b=http://10.44.0.2:2380,vm=") {
 		t.Errorf("an unrecorded member does not render as a founder:\n%s", c)
+	}
+}
+
+// Each media URL is a value the toolkit decides, because the gateway serves
+// exactly that hostname. A passthrough key that overrode one would publish URLs
+// on a name nothing routes, so each is refused the way any key the template
+// already writes is. hostnames.media is the way to choose another name.
+func TestAMediaURLCannotBeOverriddenThroughConfig(t *testing.T) {
+	for _, tc := range []struct{ app, key string }{
+		{"talk", "KBIN_STORAGE_URL"},
+		{"docs", "AWS_S3_UPLOAD_BUCKET_URL"},
+		{"blog", "storage.image_url_base"},
+	} {
+		cfg := withConfig(t, tc.app, map[string]any{tc.key: "https://elsewhere.example.org"})
+		_, err := render.Build(cfg, fixtureSecrets(t))
+		if err == nil || !strings.Contains(err.Error(), "apps."+tc.app+".config."+tc.key) {
+			t.Errorf("config %s on %s must be refused, got: %v", tc.key, tc.app, err)
+		}
 	}
 }

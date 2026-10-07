@@ -1,0 +1,31 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# docs's attachments, imported by the gateway's block for
+# docs-media.example.org. They are private: this bucket has no website access,
+# so nothing here is readable without a signature Outline issued.
+#
+# NEVER GATE THIS HOSTNAME, for a different reason than a public one. The
+# signature on each URL is the access control, and a gate in front of it would
+# redirect a browser that is holding a valid one.
+#
+# Garage's S3 API on 3900, never the web endpoint, and with Host forwarded
+# unchanged. That is load bearing rather than tidy: Outline presigns its reads
+# and the upload a browser submits, a SigV4 signature covers the host it was
+# signed for, and rewriting this header would invalidate every URL Outline
+# issues. The URLs are path style, https://docs-media.example.org/docs-uploads/<key>,
+# because this hostname is not under Garage's S3 root domain and Garage then
+# reads the bucket from the path.
+#
+# Only nosniff, not the sandboxing policy the public media hostnames carry.
+# Outline embeds a PDF attachment in the page with <embed>, and a browser will
+# not run its PDF viewer in a sandboxed document, so the policy would break
+# every PDF preview. What it would protect against is already handled
+# upstream: Outline stores every type outside a short list of images, PDF,
+# audio and video with Content-Disposition: attachment, and leaves SVG off
+# that list because it can carry script. nosniff costs nothing here and stops
+# a browser guessing a type Garage did not send.
+header {
+	defer
+	X-Content-Type-Options nosniff
+}
+reverse_proxy 10.44.0.1:3900

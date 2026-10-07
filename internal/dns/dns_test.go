@@ -112,8 +112,9 @@ func (f *fakeCloudflare) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// deployment is a gateway with a public address, two apps, a media hostname,
-// and a site endpoint given as a name.
+// deployment is a gateway with a public address, two apps that each serve
+// their objects on a derived media hostname, and a site endpoint given as a
+// name.
 func deployment() *config.Config {
 	return &config.Config{
 		Mesh: config.Mesh{Subnet: "10.44.0.0/24"},
@@ -128,7 +129,7 @@ func deployment() *config.Config {
 			"talk": {Kind: config.KindMbin, Hostname: "talk.example.org"},
 			"docs": {Kind: config.KindOutline, Hostname: "Docs.Example.org."},
 		},
-		Storage: config.Storage{MediaHostname: "media.example.org"},
+		Community: config.Community{Domain: "example.org"},
 	}
 }
 
@@ -155,8 +156,8 @@ func TestFreshZonePlansCreatesAndExecuteReadsBack(t *testing.T) {
 	p.Write(&out)
 	t.Logf("dry run:\n%s", out.String())
 
-	if len(p.Entries) != 4 || len(p.Creates()) != 4 {
-		t.Fatalf("want 4 creates, got %+v", p.Entries)
+	if len(p.Entries) != 5 || len(p.Creates()) != 5 {
+		t.Fatalf("want 5 creates, got %+v", p.Entries)
 	}
 	if len(fake.posts) != 0 {
 		t.Fatalf("planning wrote %d record(s)", len(fake.posts))
@@ -164,16 +165,17 @@ func TestFreshZonePlansCreatesAndExecuteReadsBack(t *testing.T) {
 	if err := Execute(context.Background(), c, p); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.posts) != 4 {
-		t.Fatalf("want 4 POSTs, got %d", len(fake.posts))
+	if len(fake.posts) != 5 {
+		t.Fatalf("want 5 POSTs, got %d", len(fake.posts))
 	}
 	for _, rec := range fake.posts {
 		if rec.Type != "A" || rec.Content != "203.0.113.10" || rec.Proxied || rec.TTL != 1 || rec.Comment == "" {
 			t.Errorf("unexpected record body %+v", rec)
 		}
 	}
-	// docs was declared with capitals and a trailing dot.
-	if fake.posts[0].Name != "docs.example.org" {
+	// docs was declared with capitals and a trailing dot, which its derived
+	// media hostname inherits, and both sort first.
+	if fake.posts[0].Name != "docs-media.example.org" || fake.posts[1].Name != "docs.example.org" {
 		t.Errorf("names should be normalised and sorted, first was %q", fake.posts[0].Name)
 	}
 
@@ -399,10 +401,11 @@ func TestDesiredDerivesAndDedupes(t *testing.T) {
 		}
 	}
 	want := []string{
+		"A docs-media.example.org", "AAAA docs-media.example.org",
 		"A docs.example.org", "AAAA docs.example.org",
 		"A example.org", "AAAA example.org",
 		"A matrix.example.org", "AAAA matrix.example.org",
-		"A media.example.org", "AAAA media.example.org",
+		"A talk-media.example.org", "AAAA talk-media.example.org",
 		"A talk.example.org", "AAAA talk.example.org",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {

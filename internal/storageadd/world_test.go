@@ -15,6 +15,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/garage"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
 )
@@ -114,7 +115,7 @@ var (
 	methodRe  = regexp.MustCompile(`request = "(\w+)"`)
 	bodyRe    = regexp.MustCompile(`data-binary = "([^"]*)"`)
 	hostHdrRe = regexp.MustCompile(`Host: (\S+?)\.web\.garage\.internal' http://\S+:3902/(\S+)$`)
-	mediaRe   = regexp.MustCompile(`https://[^/]+/(\S+)$`)
+	mediaRe   = regexp.MustCompile(`https://([^/]+)/(\S+)$`)
 )
 
 func (h *host) run(command, stdin string) (string, error) {
@@ -167,9 +168,17 @@ func (h *host) run(command, stdin string) (string, error) {
 		}
 		return "curl: (22) The requested URL returned error: 404", fmt.Errorf("exit status 22")
 	case strings.Contains(command, "--resolve "):
+		// An app's media hostname is its alone, so the path is the object
+		// key and the hostname says which bucket.
 		m := mediaRe.FindStringSubmatch(command)
-		if body, ok := w.objects[m[1]]; ok {
-			return body, nil
+		for _, app := range w.cfg.AppNames() {
+			a := w.cfg.Apps[app]
+			if kinds.MediaHostname(a, w.cfg.Community.Domain) != m[1] {
+				continue
+			}
+			if body, ok := w.objects[garage.BucketName(a, app)+"/"+m[2]]; ok {
+				return body, nil
+			}
 		}
 		return "curl: (22) The requested URL returned error: 404", fmt.Errorf("exit status 22")
 	}
