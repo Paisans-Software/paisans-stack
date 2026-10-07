@@ -159,7 +159,9 @@ var catalogue = map[config.Kind][]Service{
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
 	config.KindUptime: {
-		// The josephquigley/uptime fork: OIDC sign in gated on a group, a
+		// The Paisans-Software/uptime fork (josephquigley/uptime until
+		// 2026-10-07; the image below predates the move and stays at the old
+		// path until the next release): OIDC sign in gated on a group, a
 		// seed file (SEED_FILE), TRUST_PROXY, and an entrypoint that drops
 		// from root, all from 1.1.0-oidc.2. Its database is SQLite under
 		// /data, which is why the kind is pinned only: it has no Postgres

@@ -388,7 +388,7 @@ its template set, and the gateway file holds only what is cross-cutting. See
 
 ## Monitoring
 
-The `uptime` kind runs the [`josephquigley/uptime`](https://github.com/josephquigley/uptime)
+The `uptime` kind runs the [`Paisans-Software/uptime`](https://github.com/Paisans-Software/uptime)
 fork. It is an app like any other, not a site role, and it is **pinned only**:
 it keeps SQLite on local disk, so `cluster` is refused by the same rule that
 refuses Element and oauth2-proxy. The design and the reasoning behind each

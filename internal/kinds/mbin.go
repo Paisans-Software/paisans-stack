@@ -97,7 +97,7 @@ func OIDCClient(kind config.Kind, hostname string) (OIDCClientSpec, bool) {
 			MemberGroupKey: "OAUTH_OIDC_MEMBER_GROUP",
 		}, true
 	case config.KindUptime:
-		// The josephquigley/uptime fork at 1.1.0-oidc.2: the callback is
+		// The Paisans-Software/uptime fork at 1.1.0-oidc.2: the callback is
 		// /login/oidc/callback (src/lib/oidc.js:26), and every sign in sends
 		// an S256 code challenge (src/lib/oidc.js:96-103), so PKCE is on. Its
 		// one group is settings.admin_group, used as both: its members are

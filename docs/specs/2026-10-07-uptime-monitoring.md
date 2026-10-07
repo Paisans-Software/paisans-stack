@@ -511,3 +511,16 @@ field. "Check fields updated" in the ownership table means exactly that.
 published `ghcr.io/josephquigley/uptime:1.1.0-oidc.2` (checked 2026-10-07:
 manifest 200 for amd64 and arm64, `/data` its only declared volume, the new
 entrypoint in place). The kind's default image is that tag.
+
+## Amendment, 2026-10-07: the fork moved to Paisans-Software
+
+Founder instruction: the fork will diverge from upstream with paisans-specific
+changes, so it moved from `josephquigley/uptime` to `Paisans-Software/uptime`.
+GitHub redirects the old repository path, but a container package owned by a
+user does not move with its repository: `1.1.0-oidc.2` was copied by digest
+(`sha256:cf8c9b1c…`, identical at both paths) to
+`ghcr.io/paisans-software/uptime:1.1.0-oidc.2`, and every later release
+publishes there, since the workflow tags `ghcr.io/${{ github.repository }}`.
+The kind's default moves to the new path with the next release, once the org
+package is public; until then it stays at the old path, which still pulls.
+
