@@ -112,17 +112,17 @@ var (
 	assignRe  = regexp.MustCompile(`layout assign -z (\S+) -c (\S+) ([0-9a-f]{64})$`)
 	applyRe   = regexp.MustCompile(`layout apply --version (\d+)$`)
 	connectRe = regexp.MustCompile(`node connect ([0-9a-f]{64})@`)
-	urlRe     = regexp.MustCompile(`url = "http://[^/]+/([^"]+)"`)
+	urlRe     = regexp.MustCompile(`url = "http://([^:/]+):[0-9]+/([^"]+)"`)
 	methodRe  = regexp.MustCompile(`request = "(\w+)"`)
 	bodyRe    = regexp.MustCompile(`data-binary = "([^"]*)"`)
-	hostHdrRe = regexp.MustCompile(`Host: (\S+?)\.web\.garage\.internal' http://\S+:3902/(\S+)$`)
+	hostHdrRe = regexp.MustCompile(`Host: (\S+?)\.web\.garage\.internal' http://([^:]+):3902/(\S+)$`)
 	mediaRe   = regexp.MustCompile(`https://([^/]+)/(\S+)$`)
 )
 
 func (h *host) run(command, stdin string) (string, error) {
 	w := h.w
 	h.commands = append(h.commands, command)
-	if w.failOnce != "" && strings.Contains(command, w.failOnce) {
+	if w.failOnce != "" && (strings.Contains(command, w.failOnce) || strings.Contains(stdin, w.failOnce)) {
 		w.failOnce = ""
 		return "failed by the test", fmt.Errorf("exit status 1")
 	}
@@ -164,7 +164,10 @@ func (h *host) run(command, stdin string) (string, error) {
 		return h.s3(stdin)
 	case strings.Contains(command, ".web.garage.internal"):
 		m := hostHdrRe.FindStringSubmatch(command)
-		if body, ok := w.objects[m[1]+"/"+m[2]]; ok {
+		if !w.upAt(m[2]) {
+			return "curl: (7) Failed to connect", fmt.Errorf("exit status 7")
+		}
+		if body, ok := w.objects[m[1]+"/"+m[3]]; ok {
 			return body, nil
 		}
 		return "curl: (22) The requested URL returned error: 404", fmt.Errorf("exit status 22")
@@ -355,7 +358,11 @@ func (h *host) garage(cmd string) (string, error) {
 // describes it.
 func (h *host) s3(stdin string) (string, error) {
 	w := h.w
-	path := urlRe.FindStringSubmatch(stdin)[1]
+	m := urlRe.FindStringSubmatch(stdin)
+	if !w.upAt(m[1]) {
+		return "curl: (7) Failed to connect", fmt.Errorf("exit status 7")
+	}
+	path := m[2]
 	switch methodRe.FindStringSubmatch(stdin)[1] {
 	case "PUT":
 		w.objects[path] = bodyRe.FindStringSubmatch(stdin)[1]
@@ -533,4 +540,25 @@ func shown(n int64) string {
 func zoneOf(h *host, of *host) string {
 	zone, _ := splitRole(h.roles[of.short()])
 	return zone
+}
+
+// upAt reports whether the Garage node at a mesh address is running, so a
+// request to a stopped node fails the way a refused connection does.
+func (w *world) upAt(address string) bool {
+	for name, h := range w.hosts {
+		if w.cfg.Sites[name].Address == address {
+			return h.running
+		}
+	}
+	return false
+}
+
+func (h *host) ran(sub string) int {
+	n := 0
+	for _, c := range h.commands {
+		if strings.Contains(c, sub) {
+			n++
+		}
+	}
+	return n
 }

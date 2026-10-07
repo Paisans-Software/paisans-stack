@@ -343,3 +343,75 @@ func TestCapacitiesAreAssignedAndResized(t *testing.T) {
 		t.Errorf("after the resize: version %d (was %d), roles %v", a.version, before, a.roles)
 	}
 }
+
+// The stop test is refused where uploads would fail with one node down, and
+// refused before anything is read or stopped.
+func TestTheStopTestIsRefusedWhereUploadsWouldStop(t *testing.T) {
+	cfg, secrets := fixture(t)
+	w := newWorld(t, cfg, secrets)
+	w.provisioned(2, "home-a", "home-b")
+	_, err := storageadd.Build(w.cfg, w.secrets, w.transports(), storageadd.Options{StopTest: true})
+	if err == nil || !strings.Contains(err.Error(), "consistency dangerous") {
+		t.Fatalf("expected the stop test refused at replication 2, consistent, got %v", err)
+	}
+	for _, h := range w.hosts {
+		for _, c := range h.commands {
+			if strings.Contains(c, "stop garage") {
+				t.Fatalf("a refused stop test stopped Garage on %s", h.name)
+			}
+		}
+	}
+}
+
+// At replication 2, dangerous, the stop test stops the last listed node,
+// proves reads and an upload through the rest, and starts it again; both
+// probes are gone afterwards.
+func TestTheStopTestStopsTheLastNodeAndStartsItAgain(t *testing.T) {
+	cfg, secrets := fixture(t)
+	cfg.Storage.Garage.Consistency = "dangerous"
+	w := newWorld(t, cfg, secrets)
+	w.provisioned(2, "home-a", "home-b")
+
+	p := w.build(storageadd.Options{StopTest: true})
+	if !strings.Contains(printed(p), "uploads must survive") {
+		t.Fatalf("the plan does not show the stop test:\n%s", printed(p))
+	}
+	if err := storageadd.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+	a, b := w.hosts["home-a"], w.hosts["home-b"]
+	if a.ran("stop garage") != 0 {
+		t.Error("the stop test stopped the first listed site, which serves media")
+	}
+	if b.ran("stop garage") != 1 || !b.running {
+		t.Errorf("home-b was stopped %d time(s) and is running: %v", b.ran("stop garage"), b.running)
+	}
+	if len(w.objects) != 0 {
+		t.Errorf("probes left behind: %v", w.objects)
+	}
+}
+
+// A failure while the node is down still starts it again, so the failure is
+// the only thing left to fix.
+func TestTheStopTestStartsTheNodeAfterAFailure(t *testing.T) {
+	cfg, secrets := fixture(t)
+	cfg.Storage.Garage.Consistency = "dangerous"
+	w := newWorld(t, cfg, secrets)
+	w.provisioned(2, "home-a", "home-b")
+	p := w.build(storageadd.Options{StopTest: true})
+	// The first probe's write and reads pass; fail the second write, made
+	// with home-b stopped.
+	w.failOnce = "-stopped"
+	err := storageadd.Execute(p)
+	if err == nil || !strings.Contains(err.Error(), "with home-b stopped") {
+		t.Fatalf("expected the second probe's failure, got %v", err)
+	}
+	if !w.hosts["home-b"].running {
+		t.Error("home-b was left stopped after the stop test failed")
+	}
+	for _, app := range cfg.AppNames() {
+		if secret, ok := secrets.Apps[app]["s3_secret_access_key"].(string); ok && secret != "" && strings.Contains(err.Error(), secret) {
+			t.Fatalf("the stop test's error carries %s's S3 secret", app)
+		}
+	}
+}

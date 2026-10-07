@@ -362,29 +362,33 @@ func (p *Plan) buildConnect() *Stage {
 		}
 		return nil
 	}
-	st.gate = func() error {
-		return poll(attempts(connectWait, connectPoll), connectPoll, func() error {
-			for _, n := range p.nodes {
-				if err := n.refresh(p.transports[n.site]); err != nil {
-					return fmt.Errorf("%s: %w", n.site, err)
-				}
-			}
-			for _, n := range p.nodes {
-				out, err := p.transports[n.site].Run(gcmd("status"))
-				if err != nil {
-					return fmt.Errorf("%s: `garage status` failed: %s", n.site, lastLines(out, 3))
-				}
-				healthy, _ := parseStatus(out)
-				for _, other := range p.nodes {
-					if !healthy[other.short()] {
-						return fmt.Errorf("%s does not list %s (%s) as healthy", n.site, other.site, other.short())
-					}
-				}
-			}
-			return nil
-		})
-	}
+	st.gate = p.everyNodeHealthy
 	return st
+}
+
+// everyNodeHealthy waits until `garage status` on every node lists every
+// configured node as healthy.
+func (p *Plan) everyNodeHealthy() error {
+	return poll(attempts(connectWait, connectPoll), connectPoll, func() error {
+		for _, n := range p.nodes {
+			if err := n.refresh(p.transports[n.site]); err != nil {
+				return fmt.Errorf("%s: %w", n.site, err)
+			}
+		}
+		for _, n := range p.nodes {
+			out, err := p.transports[n.site].Run(gcmd("status"))
+			if err != nil {
+				return fmt.Errorf("%s: `garage status` failed: %s", n.site, lastLines(out, 3))
+			}
+			healthy, _ := parseStatus(out)
+			for _, other := range p.nodes {
+				if !healthy[other.short()] {
+					return fmt.Errorf("%s does not list %s (%s) as healthy", n.site, other.site, other.short())
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // buildLayout is stage 5: every node gets a role in the zone named after its
