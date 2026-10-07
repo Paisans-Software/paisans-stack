@@ -713,14 +713,15 @@ before.
   `upstream_unavailable`. `TestMultiSiteAppsShareOneFailoverSetting` and
   `TestEveryHostBlockAnswers503WhenNoSiteCan` hold both. README's "Failing
   over, and saying so when nothing can serve" has the reasoning.
-* **Mbin's `LOCK_DSN` is its `DATABASE_URL` under `postgresql+advisory://`**,
-  never the image's `flock`, so every messenger consumer on every site locks
-  in one place. The scheme selects the store: a plain `postgresql://` is
-  symfony/lock's table store, not its advisory one. `AdvisoryLockDSN` in
-  `internal/render/appview.go` cites the lines, and
-  `TestMbinLocksInItsOwnDatabase` asserts the form for clustered and pinned
-  placement. `README.md` has the reasoning under "Mbin's locks are Postgres
-  advisory locks on its own database".
+* **Mbin's `LOCK_DSN` stays `flock`**, and only `CLUSTER_LOCK_DSN` points at
+  the database. Every Symfony rate limiter takes the default lock store in
+  FrankenPHP's long lived web workers, where a database store's private
+  connection is never reopened once HAProxy closes it; a first version of this
+  change made exactly that mistake. `CLUSTER_LOCK_DSN` is `DATABASE_URL`
+  unchanged, for the fork's planned named `cluster` lock resource, and is inert
+  until a fork release reads it. `TestMbinSplitsItsLocks` asserts both for
+  clustered and pinned placement. `README.md` has the reasoning under "Mbin's
+  locks are split: flock by default, Postgres for the few that cross sites".
 * **A published port binds the site's mesh address**, never every interface,
   because Docker's iptables rules bypass a host firewall. A test walks every
   rendered compose file to confirm it.

@@ -2090,14 +2090,15 @@ func TestMultiSiteAppsShareOneFailoverSetting(t *testing.T) {
 	}
 }
 
-// Mbin's locks live in Postgres advisory locks on the app's own database, so
-// every messenger consumer on every site contends for the same lock. The image
-// bakes LOCK_DSN=flock, a file inside each container, which coordinates
-// nothing. The lock DSN is DATABASE_URL with the +advisory scheme, which is
-// what selects symfony/lock's advisory store rather than its table store, so
-// it reaches the database the same way: the site's HAProxy for a clustered
-// app, the postgres container for a pinned one.
-func TestMbinLocksInItsOwnDatabase(t *testing.T) {
+// Mbin's default lock store stays flock, because every rate limiter takes it
+// in FrankenPHP's long lived web workers, where a database store's private
+// connection is never reopened once HAProxy closes it. The locks that must
+// hold across sites get CLUSTER_LOCK_DSN instead: DATABASE_URL unchanged, a
+// plain postgresql:// for the fork's own Doctrine connection, reaching the
+// database the same way, the site's HAProxy for a clustered app and the
+// postgres container for a pinned one. A +advisory scheme there would be a
+// URL Doctrine cannot parse.
+func TestMbinSplitsItsLocks(t *testing.T) {
 	pinnedCfg := fixture(t)
 	talk := pinnedCfg.Apps["talk"]
 	talk.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-b", Literal: "home-b"}
@@ -2114,28 +2115,26 @@ func TestMbinLocksInItsOwnDatabase(t *testing.T) {
 		{"pinned", planFiles(pinnedPlan)["home-b/srv/talk/.env"], "@postgres:5432/talk?"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			database, lock := envValue(c.env, "DATABASE_URL"), envValue(c.env, "LOCK_DSN")
-			if lock == "" {
-				t.Fatalf("the Mbin .env does not set LOCK_DSN, so the image's flock default applies:\n%s", c.env)
+			if got := envValue(c.env, "LOCK_DSN"); got != "flock" {
+				t.Errorf("LOCK_DSN = %q, want flock: the rate limiters take the default store in the web workers", got)
 			}
-			if !strings.HasPrefix(lock, "postgresql+advisory://") {
-				t.Errorf("LOCK_DSN = %q; only a +advisory scheme selects the advisory lock store", lock)
+			database, cluster := envValue(c.env, "DATABASE_URL"), envValue(c.env, "CLUSTER_LOCK_DSN")
+			if cluster == "" {
+				t.Fatalf("the Mbin .env does not set CLUSTER_LOCK_DSN:\n%s", c.env)
 			}
-			if want := strings.Replace(database, "postgresql://", "postgresql+advisory://", 1); lock != want {
-				t.Errorf("LOCK_DSN = %q, want DATABASE_URL with the advisory scheme, %q", lock, want)
+			if cluster != database {
+				t.Errorf("CLUSTER_LOCK_DSN = %q, want DATABASE_URL unchanged, %q", cluster, database)
 			}
-			if !strings.Contains(lock, c.host) {
-				t.Errorf("LOCK_DSN = %q does not reach the database at %s", lock, c.host)
+			if !strings.HasPrefix(cluster, "postgresql://") {
+				t.Errorf("CLUSTER_LOCK_DSN = %q; the fork's Doctrine connection parses only a plain postgresql:// URL", cluster)
 			}
-			// The template's comment explains why flock is wrong, so only
-			// settings are checked: no line may set anything to it.
-			for _, line := range strings.Split(c.env, "\n") {
-				if !strings.HasPrefix(line, "#") && strings.Contains(line, "flock") {
-					t.Errorf("the Mbin .env sets flock, which locks only inside one container: %s", line)
+			if !strings.Contains(cluster, c.host) {
+				t.Errorf("CLUSTER_LOCK_DSN = %q does not reach the database at %s", cluster, c.host)
+			}
+			for _, key := range []string{"LOCK_DSN", "CLUSTER_LOCK_DSN"} {
+				if n := strings.Count(c.env, "\n"+key+"="); n != 1 {
+					t.Errorf("the Mbin .env sets %s %d times, want once", key, n)
 				}
-			}
-			if n := strings.Count(c.env, "\nLOCK_DSN="); n != 1 {
-				t.Errorf("the Mbin .env sets LOCK_DSN %d times, want once", n)
 			}
 		})
 	}
