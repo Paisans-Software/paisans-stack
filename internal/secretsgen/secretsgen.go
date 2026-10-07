@@ -551,6 +551,29 @@ func garageSecretKey() (string, error) {
 	return hexSecret(32)
 }
 
+// PreviousKeyID and PreviousSecretKey hold an app's S3 key while `storage
+// rotate-key` replaces it: the key being retired, kept beside the new one in
+// s3_access_key_id and s3_secret_access_key until the new one is proven and
+// the old one deleted from Garage. Their presence is what says a rotation is
+// in progress, so they live in the encrypted file a resumed run reads rather
+// than anywhere on a host.
+const (
+	PreviousKeyID     = "s3_previous_access_key_id"
+	PreviousSecretKey = "s3_previous_secret_access_key"
+)
+
+// GarageKeyPair generates one S3 key ID and secret in the shapes Garage
+// accepts, the generators `init` uses. Exported for storage rotate-key.
+func GarageKeyPair() (keyID, secret string, err error) {
+	if keyID, err = garageKeyID(); err != nil {
+		return "", "", err
+	}
+	if secret, err = garageSecretKey(); err != nil {
+		return "", "", err
+	}
+	return keyID, secret, nil
+}
+
 // garageKeyIsMalformed refuses an S3 credential Garage will not accept.
 //
 // Generated credentials cannot trip this: garageKeyID and garageSecretKey
@@ -565,11 +588,11 @@ func garageSecretKey() (string, error) {
 // place that can see it to check it.
 func garageKeyIsMalformed(appName, key, value string) error {
 	switch key {
-	case "s3_access_key_id":
+	case "s3_access_key_id", PreviousKeyID:
 		if !garageKeyIDPattern.MatchString(value) {
 			return fmt.Errorf("garage-key-is-malformed: apps.%s.%s is %q, which Garage will not accept. A Garage access key ID is the literal \"GK\" followed by exactly 24 lowercase hex characters.", appName, key, value)
 		}
-	case "s3_secret_access_key":
+	case "s3_secret_access_key", PreviousSecretKey:
 		if !garageSecretPattern.MatchString(value) {
 			return fmt.Errorf("garage-key-is-malformed: apps.%s.%s is not in the shape Garage accepts. A Garage secret key is exactly 64 lowercase hex characters.", appName, key)
 		}
@@ -594,7 +617,7 @@ func CheckGarageKeys(cfg *config.Config, secrets *config.Secrets) error {
 			continue
 		}
 		entries := secrets.Apps[name]
-		for _, key := range []string{"s3_access_key_id", "s3_secret_access_key"} {
+		for _, key := range []string{"s3_access_key_id", "s3_secret_access_key", PreviousKeyID, PreviousSecretKey} {
 			value, _ := entries[key].(string)
 			if value == "" {
 				continue
