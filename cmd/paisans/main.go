@@ -488,6 +488,39 @@ func runApply(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", len(plan.Writes()), plan.Transport)
+	return checkStandby(cfg, plan, *site, transport, func(name string) apply.Transport {
+		return siteTransport(cfg.Sites[name], "", *sudo)
+	})
+}
+
+// checkStandby is the deployment level gate after an apply that acted on a
+// Pocket ID stack running on more than one site: every stack passed its own
+// gate, active or standing by, and this asks every site that exactly one is
+// active. The applied site is reached as the apply reached it, the others
+// through their ssh sections. See apply.CheckOneActive.
+func checkStandby(cfg *config.Config, plan *apply.Plan, site string, transport apply.Transport, other func(string) apply.Transport) error {
+	acted := map[string]bool{}
+	for _, action := range plan.Actions {
+		acted[action.Stack] = true
+	}
+	sites := render.AppSites(cfg)
+	for _, app := range apply.StandbyApps(cfg) {
+		if !acted[app] {
+			continue
+		}
+		transports := map[string]apply.Transport{}
+		for _, name := range sites[app] {
+			if name == site {
+				transports[name] = transport
+			} else {
+				transports[name] = other(name)
+			}
+		}
+		fmt.Fprintln(os.Stdout)
+		if err := apply.CheckOneActive(cfg, app, transports, os.Stdout); err != nil {
+			return fmt.Errorf("%w. The apply itself finished; this is the check after it", err)
+		}
+	}
 	return nil
 }
 

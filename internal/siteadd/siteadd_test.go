@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/siteadd"
 )
 
@@ -271,6 +272,20 @@ func TestAJoinOutsideTheScopeIsRefused(t *testing.T) {
 	w = newWorld(t)
 	if _, err := siteadd.Build(w.cfg, w.secrets, "home-a", w.transports()); err == nil {
 		t.Error("an existing data and apps site was accepted as a new data site")
+	}
+	// A new site with the apps role is still refused, but for what site add
+	// does not build, not for Pocket ID, which now stands by on a second
+	// apps site: the message says how to get there.
+	w = newWorld(t)
+	b := w.cfg.Sites["home-b"]
+	b.Roles = append(b.Roles, config.RoleApps)
+	w.cfg.Sites["home-b"] = b
+	_, err := siteadd.Build(w.cfg, w.secrets, "home-b", w.transports())
+	if err == nil || !strings.Contains(err.Error(), "give it the apps role and run host prepare and apply") {
+		t.Errorf("a new data and apps site: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "placement decision") {
+		t.Errorf("the refusal still blames Pocket ID: %v", err)
 	}
 }
 

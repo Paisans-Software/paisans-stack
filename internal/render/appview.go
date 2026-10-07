@@ -225,6 +225,14 @@ func (v appValues) MbinQueue() string { return kinds.MbinQueue(v.set) }
 // decides for itself.
 func (v appValues) Image(service string) string { return v.App.Images[service] }
 
+// StandbyMarker is the text a Pocket ID app's image logs when another
+// instance already holds the database, for the standby wrapper. See
+// kinds.PocketIDStandbyMarker.
+func (v appValues) StandbyMarker() string {
+	marker, _ := kinds.StandbyMarker(v.Image("app"))
+	return marker
+}
+
 // PostgresDataMount is where a pinned app's Postgres container mounts its data
 // directory, which moved in the official image's 18. See
 // kinds.PostgresDataMount.

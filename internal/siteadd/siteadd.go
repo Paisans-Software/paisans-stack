@@ -221,7 +221,7 @@ func checkScope(cfg *config.Config, newSite string, transports map[string]apply.
 		return fmt.Errorf("site add: the configuration declares no site %q. Declare it at its end state first, Eg: roles [data], an address, an endpoint and an ssh section", newSite)
 	}
 	if len(site.Roles) != 1 || !site.Has(config.RoleData) {
-		return fmt.Errorf("site add %s: the site's roles must be exactly [data]. Apps on a second site need a placement decision first, since Pocket ID allows one instance per database, and a second gateway or witness is a separate change", newSite)
+		return fmt.Errorf("site add %s: the site's roles must be exactly [data]. site add's stages start no app stacks, so join it as [data], then give it the apps role and run host prepare and apply on it, and apply on the gateway (Pocket ID stands by there while another site is active); a second gateway or witness is a separate change", newSite)
 	}
 	if !contains(cfg.Cluster.Sites, newSite) {
 		return fmt.Errorf("site add %s: cluster.sites does not list it, so there is no replica to add. List it there", newSite)

@@ -43,7 +43,7 @@ func runOIDCClientCreate(args []string) error {
 	appName := fs.String("app", "", "the app the client is for, by the name it has in the configuration")
 	adminUser := fs.String("admin-user", "", "a Pocket ID username to add to the app's admin group")
 	rotate := fs.Bool("rotate-secret", false, "add a new secret even when the recorded one is live; the old one stays valid until deleted")
-	site := fs.String("site", "", "the site whose Pocket ID to call (default: its pinned site, or the first apps site)")
+	site := fs.String("site", "", "the site whose Pocket ID to call (default: its pinned site, or the apps site whose instance is active)")
 	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	execute := fs.Bool("execute", false, "actually create and record")
 	if err := fs.Parse(args); err != nil {
@@ -82,7 +82,7 @@ func runOIDCClientCreate(args []string) error {
 	if idp == "" {
 		return fmt.Errorf("oidc client create: %s declares no pocket-id app to create the client in", *configPath)
 	}
-	where, err := adminSite(cfg, idp, *site)
+	where, err := pocketIDSite(cfg, idp, *site, "oidc client create")
 	if err != nil {
 		return err
 	}

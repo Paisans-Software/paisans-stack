@@ -9,10 +9,31 @@ services:
   app:
     image: ghcr.io/pocket-id/pocket-id:v2.14.0
     restart: unless-stopped
-    # No healthcheck is declared because the image has one: `/app/pocket-id
-    # healthcheck` every 90s after a 10s start period (docker/Dockerfile-prebuilt:20
-    # at tag v2.14.0, the Dockerfile .goreleaser.yaml:101 publishes from). apply's
-    # health gate reads it, so the first healthy report can take up to 90s.
+    # The standby wrapper, paisans-standby.sh beside this file, runs the
+    # image's own entrypoint and command, which are spelled out here because
+    # setting an entrypoint clears the image's command. Pocket ID admits one
+    # instance per database, so on every apps site but one it stands by,
+    # healthy, and retries every PAISANS_STANDBY_RETRY seconds (default 15).
+    entrypoint: ["/bin/sh", "/paisans/pocket-id-standby.sh"]
+    command: ["/app/docker/entrypoint.sh", "/app/pocket-id"]
+    # The image's healthcheck (`/app/pocket-id healthcheck`, docker/
+    # Dockerfile-prebuilt:20 at tag v2.14.0), passed by a standby through its
+    # state file. Its timing is stated rather than inherited: the image checks
+    # every 90s, which is also how long apply's gate would wait for a first
+    # report, and a check that is a stat or one local request costs nothing.
+    healthcheck:
+      test: ["CMD-SHELL", "[ -f /tmp/paisans-standby ] || /app/pocket-id healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 5s
+      retries: 3
+    # Long enough for a clean shutdown, which halts the actors (a 10s grace,
+    # backend/internal/bootstrap/actors_bootstrap.go:60) and then deregisters
+    # this instance, so a standby takes over at its next retry. Docker's
+    # default of 10s would kill it first and leave the registration to age out
+    # over 90s.
+    stop_grace_period: 30s
     env_file:
       - .env
     # The mesh address only. Docker's own iptables rules bypass a host
@@ -23,3 +44,4 @@ services:
       - "10.44.0.1:1411:1411"
     volumes:
       - /srv/auth/data:/app/data
+      - /srv/auth/paisans-standby.sh:/paisans/pocket-id-standby.sh:ro

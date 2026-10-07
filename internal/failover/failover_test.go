@@ -28,6 +28,12 @@ type world struct {
 	ran       []string
 	// failRestart names an app whose restart fails.
 	failRestart string
+	// instance is what each site's Pocket ID is doing, as the standby check
+	// asks it. Unset, home-a is active and every other site stands by.
+	instance map[string]string
+	// afterRestart replaces instance when auth is restarted, as a switchover's
+	// gate does.
+	afterRestart map[string]string
 }
 
 func newWorld() *world {
@@ -69,6 +75,14 @@ func (h host) Run(command string) (string, error) {
 	defer w.mu.Unlock()
 	w.ran = append(w.ran, h.name+": "+command)
 	switch {
+	case strings.Contains(command, "/tmp/paisans-standby"):
+		if state, ok := w.instance[h.name]; ok {
+			return state + "\n", nil
+		}
+		if h.name == "home-a" {
+			return "active\n", nil
+		}
+		return "standby\n", nil
 	case strings.Contains(command, "/cluster"):
 		return w.document(), nil
 	case strings.Contains(command, "patronictl"):
@@ -83,6 +97,9 @@ func (h host) Run(command string) (string, error) {
 	case strings.HasSuffix(command, "/compose.yaml restart"):
 		if w.failRestart != "" && strings.Contains(command, "/srv/"+w.failRestart+"/") {
 			return "Error response from daemon: no such container", errors.New("exit status 1")
+		}
+		if w.afterRestart != nil && strings.Contains(command, "/srv/auth/") {
+			w.instance = w.afterRestart
 		}
 		return "", nil
 	case strings.Contains(command, " ps --all --format json"):
@@ -384,5 +401,88 @@ func TestAFailedAppRestartStops(t *testing.T) {
 	}
 	if switches != 1 {
 		t.Fatalf("ran %d switchovers, want the first only", switches)
+	}
+}
+
+// twoAppsSites gives home-b the apps role too, so the fixture's Pocket ID runs
+// on both and has a standby to check.
+func twoAppsSites(cfg *config.Config) {
+	b := cfg.Sites["home-b"]
+	b.Roles = append(b.Roles, config.RoleApps)
+	cfg.Sites["home-b"] = b
+}
+
+func TestPreflightChecksOnePocketIDIsActive(t *testing.T) {
+	cfg, _, o, _ := setup(t, ok)
+	twoAppsSites(cfg)
+	var out strings.Builder
+	o.Out = &out
+	if err := Run(cfg, o); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "ok       standby  pocket-id auth: home-a active, home-b standby") {
+		t.Errorf("preflight does not report the standby:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "Each gate\nwaits for exactly one active instance.") {
+		t.Errorf("the plan does not say the gate waits for one active Pocket ID:\n%s", out.String())
+	}
+}
+
+func TestPreflightRefusesTwoActivePocketIDs(t *testing.T) {
+	cfg, w, o, _ := setup(t, ok)
+	twoAppsSites(cfg)
+	w.instance = map[string]string{"home-a": "active", "home-b": "active"}
+	o.Execute = true
+	var out strings.Builder
+	o.Out = &out
+	if err := Run(cfg, o); err == nil {
+		t.Fatalf("not refused:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "REFUSED  standby  pocket-id auth: 2 sites have an active instance") {
+		t.Errorf("output:\n%s", out.String())
+	}
+	for _, c := range w.ran {
+		if strings.Contains(c, "patronictl") {
+			t.Fatalf("switched over with two active Pocket IDs: %s", c)
+		}
+	}
+}
+
+// After a switch the gate waits for a handover in progress: the restart left
+// nobody active, and that is not a failure until the gate's own deadline.
+func TestTheGateWaitsForAPocketIDHandover(t *testing.T) {
+	cfg, w, o, _ := setup(t, ok)
+	twoAppsSites(cfg)
+	w.afterRestart = map[string]string{"home-a": "down", "home-b": "standby"}
+	o.Execute = true
+	waited := 0
+	sleep = func(time.Duration) {
+		// Called with w.mu free: the gate sleeps between looks.
+		waited++
+		w.instance = map[string]string{"home-a": "standby", "home-b": "active"}
+	}
+	var out strings.Builder
+	o.Out = &out
+	if err := Run(cfg, o); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if waited == 0 {
+		t.Fatal("the gate never waited, so this proved nothing")
+	}
+}
+
+func TestTheGateStopsWhenNoPocketIDBecomesActive(t *testing.T) {
+	cfg, w, o, _ := setup(t, ok)
+	twoAppsSites(cfg)
+	w.afterRestart = map[string]string{"home-a": "standby", "home-b": "down"}
+	o.Execute = true
+	var out strings.Builder
+	o.Out = &out
+	err := Run(cfg, o)
+	if err == nil || !strings.Contains(err.Error(), "pocket-id auth: no site has an active instance") {
+		t.Fatalf("got %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "switchover 2:") {
+		t.Errorf("did not stop after the first switch:\n%s", out.String())
 	}
 }

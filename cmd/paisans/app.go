@@ -56,7 +56,7 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	firstName := fs.String("first-name", "", "pocket-id only: the first name, used only if the account is created (default: the username)")
 	lastName := fs.String("last-name", "", "pocket-id only: the last name, used only if the account is created")
 	loginLink := fs.Bool("login-link", false, "pocket-id only: issue a fresh one-time login link for an account that already exists")
-	site := fs.String("site", "", "the site whose copy of the app to run the commands in (default: the pinned site, or the first apps site)")
+	site := fs.String("site", "", "the site whose copy of the app to run the commands in (default: the pinned site, the first apps site, or for pocket-id the site whose instance is active)")
 	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	resetPassword := fs.Bool("reset-password", false, "replace the password of an account that already exists")
 	execute := fs.Bool("execute", false, "actually create, verify and grant")
@@ -113,6 +113,9 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	}
 
 	where, err := adminSite(cfg, *appName, *site)
+	if app.Kind == config.KindPocketID {
+		where, err = pocketIDSite(cfg, *appName, *site, "app admin create")
+	}
 	if err != nil {
 		return err
 	}
@@ -225,6 +228,37 @@ func adminSite(cfg *config.Config, appName, override string) (string, error) {
 		return "", fmt.Errorf("app admin create: %s does not run on %s. It runs on %s", appName, override, strings.Join(candidates, ", "))
 	}
 	return override, nil
+}
+
+// standbyLook is how the admin commands ask a site what its Pocket ID is
+// doing. Tests replace it.
+var standbyLook = func(t apply.SSHTransport) apply.Transport { return t }
+
+// pocketIDSite is adminSite for a Pocket ID that runs on more than one site:
+// with no --site, the site whose instance is active, since the others stand
+// by with their port closed and an API call there would be refused. It asks
+// without sudo, as the API calls themselves run: the active site is found by
+// /healthz on its mesh address, which needs no root, and a standby merely
+// reads as down when docker is not the deploy user's. An explicit --site is
+// used as given, through adminSite's own check.
+func pocketIDSite(cfg *config.Config, appName, override, command string) (string, error) {
+	if override != "" || !slices.Contains(apply.StandbyApps(cfg), appName) {
+		return adminSite(cfg, appName, override)
+	}
+	transports := map[string]apply.Transport{}
+	for _, name := range cfg.AppsSites() {
+		transports[name] = standbyLook(siteTransport(cfg.Sites[name], "", false))
+	}
+	list := apply.LookAtInstances(cfg, appName, transports)
+	if _, err := apply.OneActive(appName, list); err != nil {
+		return "", fmt.Errorf("%s: %w, so there is no one site to call:\n%sName one with --site once exactly one is active", command, err, apply.DescribeInstances(list))
+	}
+	for _, in := range list {
+		if in.State == apply.Active {
+			return in.Site, nil
+		}
+	}
+	return "", fmt.Errorf("%s: no active instance of %s", command, appName)
 }
 
 // readPassword reads the password from stdin, refusing a terminal and an

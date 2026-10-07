@@ -56,6 +56,7 @@ func TestRulesFire(t *testing.T) {
 		{"pocket-id-file-backend", "pocket-id-file-backend", validate.Warn},
 		{"mbin-queue-unknown", "mbin-queue-unknown", validate.Refuse},
 		{"mbin-rabbitmq-across-sites", "mbin-rabbitmq-across-sites", validate.Warn},
+		{"pocket-id-standby-marker-unknown", "pocket-id-standby-marker-unknown", validate.Warn},
 		{"image-for-absent-postgres", "image-for-absent-postgres", validate.Warn},
 		{"watchdog-off-on-data-site", "watchdog-off-on-data-site", validate.Warn},
 		{"acme-provider-needs-an-image", "acme-provider-needs-an-image", validate.Refuse},
@@ -197,6 +198,23 @@ func TestValidFixtureIsQuiet(t *testing.T) {
 	result := validate.Check(load(t, "valid"))
 	if len(result.Findings) != 0 {
 		t.Fatalf("valid fixture produced findings: %v", result.Findings)
+	}
+}
+
+// Pocket ID with cluster placement on two apps sites is allowed: one
+// instance is active and the others stand by (README, "Pocket ID runs on
+// every apps site, and one of them is active"). The valid fixture is that
+// shape, so this names the fact rather than leaving it implied.
+func TestPocketIDOnTwoAppsSitesIsAllowed(t *testing.T) {
+	cfg := load(t, "valid")
+	if n := len(cfg.AppsSites()); n < 2 {
+		t.Fatalf("the valid fixture has %d apps site(s), so this proves nothing", n)
+	}
+	if app := cfg.Apps["auth"]; app.Kind != config.KindPocketID || app.Placement.Mode != config.PlacementCluster {
+		t.Fatalf("the valid fixture's auth is not a clustered pocket-id: %+v", app)
+	}
+	if result := validate.Check(cfg); len(result.Findings) != 0 {
+		t.Fatalf("findings: %v", result.Findings)
 	}
 }
 
