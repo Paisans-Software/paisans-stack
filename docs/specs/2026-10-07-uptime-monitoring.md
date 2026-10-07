@@ -223,9 +223,10 @@ Rejected:
 }
 ```
 
-SMTP comes from the same values Pocket ID is rendered with; the password is
-`external.smtp_password`, which is already one deployment wide pasted secret,
-so no second credential is introduced.
+SMTP comes from the deployment's `smtp:` block, with any per app override
+applied; see *Amendment, 2026-10-07: SMTP is declared, not borrowed*. (This
+paragraph used to say it came from "the values Pocket ID is rendered with".
+There are none: see the amendment.)
 
 Monitor names are derived from app and site keys, never from hostnames, so
 renaming a hostname updates a monitor rather than replacing it.
@@ -343,3 +344,96 @@ Each its own pull request on `josephquigley/uptime`, then a release tag.
 * The `apps` role reads as "may host an app" and means "runs every clustered
   app". Renaming it is its own change across the configuration surface and is
   out of scope here.
+
+## Amendment, 2026-10-07: SMTP is declared, not borrowed
+
+Found while planning, and decided by the founder in session. The toolkit
+renders SMTP nowhere. Pocket ID's `.env.secret.tmpl` has no SMTP key, because
+Pocket ID keeps its SMTP settings in its own database and they are set in its
+admin UI; and `external.smtp_password` in `examples/secrets.example.yaml` is
+declared but read by no template and no Go code. So there was nothing to copy.
+
+**A deployment wide `smtp:` block**, defaults for every app that sends mail:
+
+```yaml
+smtp:
+  host: smtp.example.org
+  port: 587
+  security: starttls      # starttls or tls
+  username: status@example.org
+  from_address: status@example.org
+  from_name: Example Community
+```
+
+**Any field can be overridden per app**, and a field the app leaves out is
+inherited (founder instruction: "we may want to override any or all of the
+smtp settings for each app that supports smtp"):
+
+```yaml
+apps:
+  status:
+    kind: uptime
+    smtp:
+      from_address: alerts@example.org
+      from_name: Example Status
+```
+
+**The password** is `apps.<app>.smtp_password` in the secrets when present,
+otherwise `external.smtp_password`, so an app sending through a different
+account needs no change to anyone else's.
+
+Rules:
+
+* `smtp.security` is `starttls` or `tls`. `none` is not offered: no consumer
+  needs it and the uptime fork cannot express it (its `smtp_secure` is a
+  boolean, nodemailer's `secure`, and STARTTLS is what `false` means).
+* `smtp.port`, when set, is 1 to 65535.
+* **`apps.<app>.smtp` on a kind that sends no mail is refused**
+  (`smtp-on-a-kind-without-mail`). An override nothing reads is ignored without
+  a word, which is the failure this toolkit refuses everywhere else.
+  `kinds.SendsMail(kind)` is the list; today it is `uptime` alone. Pocket ID
+  joining it is a later change that would read the same block.
+* **An `uptime` app with no resolved SMTP host is a warning**
+  (`uptime-without-smtp`): it runs and records incidents, but no email channel
+  can send. The seed then carries no SMTP settings at all and leaves whatever
+  an admin set in the UI alone.
+* `external.smtp_password` is owed (`paisans init` lists it) once any app that
+  sends mail resolves an SMTP host and no per app password covers it.
+
+## Amendment, 2026-10-07: the container starts as root and drops
+
+Found while planning. `apply` writes rendered files through `sudo`, so the
+0600 seed file is owned by root, and a missing bind mount directory is created
+by Docker as root. The uptime image runs as `node` (uid 1000), so as shipped it
+could read neither the seed nor write its database.
+
+The fix is the pattern Mbin's template already documents ("start as root; the
+image's entrypoint chowns ... and then drops"): the toolkit's compose sets
+`user: "0:0"`, and the fork gains an entrypoint that, **only when started as
+root**, chowns `/data` to `node`, copies `SEED_FILE` to a `node` owned 0600
+file under `/tmp` and points `SEED_FILE` at it, then `exec`s the server through
+`setpriv` as `node`. Started as anyone else it does nothing, so the image's
+behaviour outside this toolkit is unchanged. `setpriv` is in the image already
+(util-linux, checked 2026-10-07 by running it).
+
+## Amendment, 2026-10-07: smaller settlements made while planning
+
+* **Direct checks send `Host: <hostname>` and `X-Forwarded-Proto: https`**,
+  through the fork's per monitor `request_headers`. An app answering on its own
+  port behind a proxy may refuse or redirect a request whose Host is a mesh
+  address, and the check is meant to see what the gateway would see, minus the
+  gateway.
+* **The monitor does not watch itself.** An `uptime` app gets no monitors in
+  its own seed: it cannot report its own death, and a check that can only ever
+  pass is noise.
+* **The fork's changes land as two stacked branches**, not four pull requests:
+  `feat/channel-auto-attach` (the flag), then `feat/seed-file` on top of it
+  (settings, monitors, entrypoint). The seed's creation path needs the flag, so
+  splitting further would only produce a pull request that cannot be tested on
+  its own.
+* **Releasing the fork and bumping the kind's default image are left to the
+  founder.** Pushing a `v*` tag publishes an image, which is outward facing.
+  Until then the kind's default stays `1.1.0-oidc.1`, which ignores
+  `SEED_FILE`: monitors are not seeded and the container runs as root with no
+  entrypoint to drop. The render and its tests are complete either way; the
+  bump is one line in `internal/kinds` plus its `ImageVolumes` row.
