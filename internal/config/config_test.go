@@ -361,3 +361,73 @@ func TestSSHHostAcceptsHostnamesAndAddresses(t *testing.T) {
 		}
 	}
 }
+
+const smtpBlock = `smtp:
+  host: smtp.example.org
+  port: 587
+  security: starttls
+  username: robot@example.org
+  from_address: hello@example.org
+  from_name: Fixture
+`
+
+// statusApp is an uptime app pinned to site, appended to validConfig's apps.
+func statusApp(site, extra string) string {
+	return "  status:\n    kind: uptime\n    hostname: status.example.org\n    placement: { pinned: " + site + " }\n" + extra
+}
+
+// An app's smtp block replaces only the fields it names; everything else is
+// the deployment's, so a different sender does not mean repeating the host.
+func TestSMTPForInheritsAndOverridesFieldByField(t *testing.T) {
+	cfg, err := config.Load(write(t, validConfig+statusApp("home-a", "    smtp:\n      from_address: alerts@example.org\n      security: tls\n")+smtpBlock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.SMTPFor("status")
+	want := config.SMTP{Host: "smtp.example.org", Port: 587, Security: "tls", Username: "robot@example.org", FromAddress: "alerts@example.org", FromName: "Fixture"}
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	if cfg.SMTPFor("talk") != cfg.SMTP {
+		t.Fatal("an app without an override did not get the deployment's block")
+	}
+}
+
+func TestSMTPPortDefaultsBySecurity(t *testing.T) {
+	if p := (config.SMTP{Security: "starttls"}).PortOrDefault(); p != 587 {
+		t.Fatalf("starttls: %d", p)
+	}
+	if p := (config.SMTP{Security: "tls"}).PortOrDefault(); p != 465 {
+		t.Fatalf("tls: %d", p)
+	}
+	if p := (config.SMTP{Security: "tls", Port: 2465}).PortOrDefault(); p != 2465 {
+		t.Fatalf("declared: %d", p)
+	}
+}
+
+func TestSMTPShapeIsChecked(t *testing.T) {
+	body := validConfig + statusApp("home-a", "    smtp:\n      security: ssl\n") + "smtp:\n  host: smtp.example.org\n  security: none\n  port: 70000\n"
+	_, err := config.Load(write(t, body))
+	if err == nil {
+		t.Fatal("loaded")
+	}
+	for _, want := range []string{"smtp.security", "smtp.port", "apps.status.smtp.security"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("no problem named %s in %v", want, err)
+		}
+	}
+}
+
+// A site may declare no roles only when an app is pinned to it: then it
+// exists to host that app. With nothing pinned it is almost certainly a
+// mistake.
+func TestARolelessSiteIsAcceptedOnlyWhenSomethingIsPinnedToIt(t *testing.T) {
+	site := "  mon:\n    roles: []\n    address: 10.44.0.9\n    ssh:\n      host: mon.local\n      user: ubuntu\n      public_key: |\n        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org\n"
+	withSite := strings.Replace(validConfig, "etcd:\n", site+"etcd:\n", 1)
+	if _, err := config.Load(write(t, withSite)); err == nil || !strings.Contains(err.Error(), "sites.mon.roles") {
+		t.Fatalf("a role-less site with nothing pinned to it loaded: %v", err)
+	}
+	if _, err := config.Load(write(t, withSite+statusApp("mon", ""))); err != nil {
+		t.Fatalf("a role-less site hosting a pinned app was refused: %v", err)
+	}
+}

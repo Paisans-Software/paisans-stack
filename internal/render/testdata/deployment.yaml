@@ -127,3 +127,23 @@ apps:
     # Pinned for the same reason. oauth2-proxy holds its sessions in a cookie
     # rather than in the database, so cluster placement is refused here too.
     placement: { pinned: home-a }
+  status:
+    kind: uptime
+    hostname: status.example.org
+    # The monitor on the gateway VM, the usual multi-site placement: it is a
+    # site that the homes' failures do not take down with them.
+    placement: { pinned: vm }
+    settings:
+      admin_group: admins
+    # One field overridden, so the golden seed shows the merge.
+    smtp:
+      from_name: Example Status
+
+# The deployment's mail server. The uptime app above inherits every field but
+# the one it overrides.
+smtp:
+  host: smtp.example.org
+  security: starttls
+  username: robot@example.org
+  from_address: hello@example.org
+  from_name: Example Community

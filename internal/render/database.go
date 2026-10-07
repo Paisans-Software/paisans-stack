@@ -61,6 +61,12 @@ func (p *planner) appDatabasePassword(planned plannedApp) (string, error) {
 // container that exits on a host after the apply has already moved, so render
 // refuses first and names the command that fixes it.
 var requiredAppSecrets = map[config.Kind][]struct{ Key, Why string }{
+	config.KindUptime: {
+		// src/config.js at 1.1.0-oidc.1: ADMIN_PASS falls back to "admin" and
+		// SESSION_SECRET to a value invented per boot.
+		{"admin_password", "the monitor falls back to the password `admin` when ADMIN_PASS is unset"},
+		{"session_secret", "without it every restart signs every admin out"},
+	},
 	config.KindPocketID: {
 		// env_config.go:167-169 at tag v2.14.0.
 		{"encryption_key", "Pocket ID refuses to start without an ENCRYPTION_KEY of at least 16 bytes"},

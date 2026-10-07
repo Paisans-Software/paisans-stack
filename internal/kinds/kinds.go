@@ -161,7 +161,31 @@ var catalogue = map[config.Kind][]Service{
 		{Name: "app", Image: "ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea", Purpose: "the application"},
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
+	config.KindUptime: {
+		// The Paisans-Software/uptime fork (josephquigley/uptime until
+		// 2026-10-07): OIDC sign in gated on a group, a seed file
+		// (SEED_FILE), TRUST_PROXY and an entrypoint that drops from root
+		// from 1.1.0-oidc.2; bulk channel actions and the SMTP lock when the
+		// seed supplies SMTP from 1.1.0-oidc.3, the first release published
+		// from the organisation. Its database is SQLite under /data, which
+		// is why the kind is pinned only: it has no Postgres service, so
+		// cluster-placement-without-a-cluster refuses it.
+		//
+		// NOTE THE MISSING `v`: the git tag is v1.1.0-oidc.3 and
+		// docker/metadata-action's semver pattern strips it. Checked against
+		// ghcr.io on 2026-10-07 by requesting the manifest for this exact tag
+		// anonymously: 200. Ran it as root with a seed carrying SMTP: healthy,
+		// seed applied.
+		{Name: "app", Image: "ghcr.io/paisans-software/uptime:1.1.0-oidc.3", Purpose: "the monitor"},
+	},
 }
+
+// SendsMail reports whether a kind reads the deployment's smtp settings. An
+// app level smtp block on any other kind is refused, because an override
+// nothing reads is ignored without a word. Pocket ID keeps its SMTP settings
+// in its own database today; rendering them from the same block would add it
+// here.
+func SendsMail(kind config.Kind) bool { return kind == config.KindUptime }
 
 // Services returns a kind's services in compose order, which is the order they
 // are declared above rather than alphabetical: `app` first is what an operator
@@ -293,6 +317,7 @@ var configFiles = map[config.Kind]struct {
 	config.KindWriteFreely: {ConfigINI, "config.ini"},
 	config.KindSynapse:     {ConfigYAML, "homeserver.yaml"},
 	config.KindElement:     {ConfigJSON, "config.json"},
+	config.KindUptime:      {ConfigEnv, ".env"},
 }
 
 // ConfigFormat is the syntax of the file a kind reads its configuration from,

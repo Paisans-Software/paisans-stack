@@ -231,6 +231,15 @@ func appSecretKeys(app config.App) []string {
 		// through its static API key", says why it is generated here.
 		keys = append(keys, "encryption_key", "static_api_key")
 	}
+	if app.Kind == config.KindUptime {
+		// ADMIN_PASS is the break glass sign in for when the identity
+		// provider is down, which is one of the things this app watches; the
+		// fork falls back to the literal "admin" when it is unset, so it is
+		// generated rather than optional. SESSION_SECRET signs the session
+		// cookie; unset, the fork invents one per boot and every restart
+		// signs everyone out.
+		keys = append(keys, "admin_password", "session_secret")
+	}
 	if app.Kind == config.KindSynapse {
 		// Three, because the homeserver no longer authenticates anyone and
 		// Matrix Authentication Service in front of it needs its own.
@@ -460,6 +469,9 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 				cfg.ACME.Provider),
 		})
 	}
+	if o, ok := owedSMTPPassword(cfg, secrets); ok {
+		out = append(out, o)
+	}
 	for _, name := range cfg.AppNames() {
 		if _, ok := secrets.OIDCClients[name]; ok {
 			continue
@@ -498,9 +510,42 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 				"`, which records the client ID and secret here itself. It shows each Pocket ID mutation and changes nothing until it is re-run with --execute, and that re-run is the human approval. The client's redirect URI is " +
 				kinds.MbinRedirectURI(cfg.Apps[name].Hostname) + ", with PKCE enabled: Mbin always sends a code challenge"
 		}
+		if cfg.Apps[name].Kind == config.KindUptime {
+			why += ". Register its redirect URI as https://" + cfg.Apps[name].Hostname +
+				"/login/oidc/callback (src/lib/oidc.js:26 in the uptime fork) and restrict the client to the group named in apps." +
+				name + ".settings.admin_group, so the identity provider refuses everyone else before the monitor does"
+		}
 		out = append(out, Owed{Name: "oidc_clients." + name, Why: why})
 	}
 	return out
+}
+
+// owedSMTPPassword is external.smtp_password, owed once any app that sends
+// mail resolves an SMTP host and neither that secret nor the app's own
+// apps.<app>.smtp_password covers it. Said at init rather than discovered when
+// the first alert fails to send.
+func owedSMTPPassword(cfg *config.Config, secrets *config.Secrets) (Owed, bool) {
+	if secrets.External["smtp_password"] != "" {
+		return Owed{}, false
+	}
+	for _, name := range cfg.AppNames() {
+		if !kinds.SendsMail(cfg.Apps[name].Kind) {
+			continue
+		}
+		host := cfg.SMTPFor(name).Host
+		if host == "" {
+			continue
+		}
+		if own, _ := secrets.Apps[name]["smtp_password"].(string); own != "" {
+			continue
+		}
+		return Owed{
+			Name: "external.smtp_password",
+			Why: fmt.Sprintf("issued by the mail provider for %s. %s sends mail through it and has no password of its own under apps.%s.smtp_password",
+				host, name, name),
+		}, true
+	}
+	return Owed{}, false
 }
 
 // fillString generates into a pointer when it is empty, reporting whether it

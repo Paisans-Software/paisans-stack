@@ -194,7 +194,12 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	if err != nil {
 		return nil, err
 	}
-	files = append(files, File{Path: base + "srv/infra/compose.yaml", Content: infra, Mode: 0o644})
+	// A site with no roles exists only to host what is pinned to it and runs
+	// no infrastructure, so it gets no infra stack: a compose project with an
+	// empty services map is nothing apply could start or recreate.
+	if site.IsEtcd || site.IsData || site.NeedsProxy || site.IsGarage || site.IsGateway {
+		files = append(files, File{Path: base + "srv/infra/compose.yaml", Content: infra, Mode: 0o644})
+	}
 	if site.IsEtcd {
 		files = append(files, File{Path: base + EtcdInitialPath, Content: FormatEtcdInitial(initial), Mode: 0o644})
 	}

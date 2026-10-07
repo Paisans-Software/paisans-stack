@@ -38,6 +38,9 @@ var appPort = map[config.Kind]int{
 	config.KindPocketID:    1411,
 	config.KindSynapse:     8008,
 	config.KindWriteFreely: 8080,
+	// Not the fork's default 3000: Outline publishes 3000, and two apps on
+	// one site publish on the same mesh address.
+	config.KindUptime: 3001,
 }
 
 // AppPort is the port a kind listens on, which is also the port it publishes

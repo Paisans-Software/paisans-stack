@@ -43,6 +43,38 @@ type OIDCClientSpec struct {
 	// Empty when the kind reads no such key.
 	AdminGroupKey  string
 	MemberGroupKey string
+	// AdminGroupSetting and MemberGroupSetting name app `settings` keys
+	// instead, for a kind whose group is an input the toolkit reasons about
+	// rather than a passthrough key. A spec uses one pair or the other.
+	AdminGroupSetting  string
+	MemberGroupSetting string
+}
+
+// Groups is the admin group and the member group an app's declaration names,
+// read from whichever of config or settings the kind keeps them in. Either is
+// empty when the app names none.
+func (s OIDCClientSpec) Groups(app config.App) (admin, member string) {
+	read := func(configKey, settingKey string) string {
+		if configKey != "" {
+			v, _ := app.Config[configKey].(string)
+			return v
+		}
+		if settingKey != "" {
+			v, _ := app.Settings[settingKey].(string)
+			return v
+		}
+		return ""
+	}
+	return read(s.AdminGroupKey, s.AdminGroupSetting), read(s.MemberGroupKey, s.MemberGroupSetting)
+}
+
+// AdminGroupSource is the configuration key an app's admin group is read
+// from, for a message telling an operator where to set it.
+func (s OIDCClientSpec) AdminGroupSource(app string) string {
+	if s.AdminGroupKey != "" {
+		return "apps." + app + ".config." + s.AdminGroupKey
+	}
+	return "apps." + app + ".settings." + s.AdminGroupSetting
 }
 
 // OIDCClient is the client spec for an app of a kind, and whether this
@@ -63,6 +95,21 @@ func OIDCClient(kind config.Kind, hostname string) (OIDCClientSpec, bool) {
 			PKCE:           true,
 			AdminGroupKey:  "OAUTH_OIDC_ADMIN_GROUP",
 			MemberGroupKey: "OAUTH_OIDC_MEMBER_GROUP",
+		}, true
+	case config.KindUptime:
+		// The Paisans-Software/uptime fork at 1.1.0-oidc.2: the callback is
+		// /login/oidc/callback (src/lib/oidc.js:26), and every sign in sends
+		// an S256 code challenge (src/lib/oidc.js:96-103), so PKCE is on. Its
+		// one group is settings.admin_group, used as both: its members are
+		// the monitor's administrators, and nobody else may sign in, so the
+		// client is restricted to it and Pocket ID refuses everyone else
+		// before the monitor sees them.
+		return OIDCClientSpec{
+			CallbackURL:        "https://" + hostname + "/login/oidc/callback",
+			LaunchURL:          LaunchURL(kind, hostname, ""),
+			PKCE:               true,
+			AdminGroupSetting:  "admin_group",
+			MemberGroupSetting: "admin_group",
 		}, true
 	}
 	return OIDCClientSpec{}, false

@@ -12,7 +12,7 @@ import (
 // bump changes the reference, the new one has no entry, and this fails until
 // somebody inspects the image and records what it declares.
 func TestEveryDefaultImageHasItsVolumesRecorded(t *testing.T) {
-	for _, kind := range []config.Kind{config.KindMbin, config.KindOutline, config.KindPocketID, config.KindSynapse, config.KindElement, config.KindWriteFreely, config.KindOAuth2Proxy} {
+	for _, kind := range []config.Kind{config.KindMbin, config.KindOutline, config.KindPocketID, config.KindSynapse, config.KindElement, config.KindWriteFreely, config.KindOAuth2Proxy, config.KindUptime} {
 		for _, service := range kinds.Services(kind) {
 			if service.Image == "" {
 				continue

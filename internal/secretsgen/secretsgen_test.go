@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -465,6 +466,81 @@ func TestMbinOAuthKeypairIsGeneratedOnceAndOpens(t *testing.T) {
 	}
 	if secrets.Apps["talk"]["oauth_private_key"] != private {
 		t.Error("a private key the passphrase cannot open was replaced")
+	}
+}
+
+// withUptime is the fixture deployment with its uptime app replaced by a
+// plain one and its smtp block replaced by smtp, or removed when nil.
+func withUptime(t *testing.T, smtp *config.SMTP) *config.Config {
+	t.Helper()
+	cfg := load(t)
+	cfg.Apps["status"] = config.App{Kind: config.KindUptime, Hostname: "status.example.org",
+		Placement: config.Placement{Mode: config.PlacementPinned, Site: "vm"},
+		Settings:  map[string]any{"admin_group": "admins"}}
+	cfg.SMTP = config.SMTP{}
+	if smtp != nil {
+		cfg.SMTP = *smtp
+	}
+	return cfg
+}
+
+func owedBy(t *testing.T, cfg *config.Config, secrets *config.Secrets) map[string]string {
+	t.Helper()
+	filled, err := secretsgen.Fill(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, o := range filled.Owed {
+		out[o.Name] = o.Why
+	}
+	return out
+}
+
+// The monitor's break glass password and its session key are generated:
+// unset, the fork signs in with the literal password "admin" and signs every
+// admin out on every restart.
+func TestUptimeGetsItsOwnTwoSecretsAndNothingElse(t *testing.T) {
+	secrets := &config.Secrets{}
+	if _, err := secretsgen.Fill(withUptime(t, nil), secrets); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for k := range secrets.Apps["status"] {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if strings.Join(keys, ",") != "admin_password,session_secret" {
+		t.Fatalf("uptime was given %v", keys)
+	}
+}
+
+// A declared mail server with no password anywhere is said at init, not
+// discovered when the first alert fails to send.
+func TestSMTPPasswordIsOwedOnlyWhenNothingCoversIt(t *testing.T) {
+	smtp := &config.SMTP{Host: "smtp.example.org"}
+	if _, ok := owedBy(t, withUptime(t, nil), &config.Secrets{})["external.smtp_password"]; ok {
+		t.Error("owed with no smtp host declared")
+	}
+	why, ok := owedBy(t, withUptime(t, smtp), &config.Secrets{})["external.smtp_password"]
+	if !ok || !strings.Contains(why, "smtp.example.org") {
+		t.Errorf("not owed, or the reason does not name the host: %q", why)
+	}
+	if _, ok := owedBy(t, withUptime(t, smtp), &config.Secrets{External: map[string]string{"smtp_password": "x"}})["external.smtp_password"]; ok {
+		t.Error("owed although external.smtp_password is set")
+	}
+	perApp := &config.Secrets{Apps: map[string]map[string]any{"status": {"smtp_password": "x"}}}
+	if _, ok := owedBy(t, withUptime(t, smtp), perApp)["external.smtp_password"]; ok {
+		t.Error("owed although the app has its own smtp_password")
+	}
+}
+
+// The monitor's client returns to the fork's own callback, which an operator
+// needs while minting the client.
+func TestAnUptimeOwedClientNamesItsRedirectURI(t *testing.T) {
+	why := owedBy(t, withUptime(t, nil), &config.Secrets{})["oidc_clients.status"]
+	if !strings.Contains(why, "https://status.example.org/login/oidc/callback") {
+		t.Errorf("the owed client does not name the redirect URI:\n%s", why)
 	}
 }
 

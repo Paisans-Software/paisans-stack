@@ -71,7 +71,7 @@ func runOIDCClientCreate(args []string) error {
 	}
 	spec, ok := kinds.OIDCClient(app.Kind, app.Hostname)
 	if !ok {
-		return fmt.Errorf("oidc client create: this toolkit does not know what a %s client looks like yet. Implemented kinds: mbin", app.Kind)
+		return fmt.Errorf("oidc client create: this toolkit does not know what a %s client looks like yet. Implemented kinds: mbin, uptime", app.Kind)
 	}
 	idp := ""
 	for _, name := range cfg.AppNames() {
@@ -108,14 +108,15 @@ func runOIDCClientCreate(args []string) error {
 		return fmt.Errorf("oidc client create: secrets apps.%s.static_api_key is empty. Run `paisans init` to generate it and `paisans apply` to render it into Pocket ID, then re-run", idp)
 	}
 
+	adminGroup, memberGroup := spec.Groups(app)
 	desired := oidcclient.Desired{
 		App:               *appName,
 		CallbackURL:       spec.CallbackURL,
 		LaunchURL:         spec.LaunchURL,
 		ToolkitLaunchURLs: kinds.ToolkitLaunchURLs(app.Kind, app.Hostname),
 		PKCE:              spec.PKCE,
-		AdminGroup:        configString(app, spec.AdminGroupKey),
-		MemberGroup:       configString(app, spec.MemberGroupKey),
+		AdminGroup:        adminGroup,
+		MemberGroup:       memberGroup,
 		AdminUser:         *adminUser,
 		RotateSecret:      *rotate,
 	}
@@ -126,7 +127,7 @@ func runOIDCClientCreate(args []string) error {
 	}
 	// Refused before the host is reached, since no probe could change it.
 	if desired.AdminUser != "" && desired.AdminGroup == "" {
-		return fmt.Errorf("oidc client create: --admin-user %s names nobody to add them to: apps.%s.config sets no %s, so the app reads no admin group", desired.AdminUser, *appName, spec.AdminGroupKey)
+		return fmt.Errorf("oidc client create: --admin-user %s names nobody to add them to: %s is unset, so the app reads no admin group", desired.AdminUser, spec.AdminGroupSource(*appName))
 	}
 	recorded := oidcclient.Recorded{
 		ClientID:     secrets.OIDCClients[*appName].ClientID,
@@ -172,21 +173,6 @@ func runOIDCClientCreate(args []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "\n%s's client is in place. `paisans apply --site <site> --execute` on each site running %s renders it.\n", *appName, *appName)
 	return nil
-}
-
-// configString is a string value from the app's passthrough config, or empty.
-//
-// Reading a passthrough key is an exception to "the toolkit only places a
-// config key", and a deliberate one: the group name has to be the same at the
-// identity provider and in the app, and reading it from where it is already
-// declared leaves one place to type it rather than a flag that can disagree.
-// It is still only read; how it is placed is unchanged.
-func configString(app config.App, key string) string {
-	if key == "" {
-		return ""
-	}
-	value, _ := app.Config[key].(string)
-	return value
 }
 
 // secretsRecorder writes a client's credentials into the secrets file,

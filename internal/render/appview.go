@@ -117,6 +117,14 @@ type appValues struct {
 	MASDBName             string
 	MASUpstreamProviderID string
 
+	// SMTP is this app's resolved mail settings, populated only for a kind
+	// that sends mail (kinds.SendsMail) and zero when no host resolves.
+	SMTP smtpValues
+
+	// UptimeSeed is the uptime kind's monitors.json, built from the whole
+	// deployment (uptime.go). Populated only for that kind.
+	UptimeSeed string
+
 	secrets map[string]any
 	set     map[string]any
 }
@@ -299,6 +307,16 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	if planned.Kind == config.KindOAuth2Proxy {
 		v.GateMembersPort = gateMembersPort
 		v.GateMembersUpstreams = p.upstreamsOnPort(planned.Name, gateMembersPort)
+	}
+	if kinds.SendsMail(planned.Kind) {
+		v.SMTP = p.smtpFor(planned.Name)
+	}
+	if planned.Kind == config.KindUptime {
+		seed, err := p.uptimeSeed(planned.Name)
+		if err != nil {
+			return appValues{}, err
+		}
+		v.UptimeSeed = seed
 	}
 	if planned.Kind == config.KindSynapse {
 		v.MASPort = masPort

@@ -3,6 +3,7 @@ package hostprep_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -134,7 +135,9 @@ func preparedHost(gateway bool) *fakeHost {
 		firewall += owned("allow in on br-+ to 10.44.0.1 port 5000 proto tcp", "allow in on br-+ to 10.44.0.1 port 3900 proto tcp")
 	}
 	if gateway {
-		firewall += owned("allow 80/tcp", "allow 443/tcp")
+		// The fixture's gateway also hosts the uptime monitor beside the
+		// homeserver, so preparing it allowed the monitor to reach 8008.
+		firewall += owned("allow 80/tcp", "allow 443/tcp", "allow in on br-+ to 10.44.0.3 port 8008 proto tcp")
 	}
 	return keysPrepared(&fakeHost{
 		files: map[string]string{
@@ -168,6 +171,16 @@ func fixture(t *testing.T) *config.Config {
 	if err != nil {
 		t.Fatalf("loading the fixture configuration: %v", err)
 	}
+	return cfg
+}
+
+// withoutMonitor is the fixture without its uptime app, for a test about the
+// firewall's handling of rules on vm that the monitor's own rule there would
+// only add noise to.
+func withoutMonitor(t *testing.T) *config.Config {
+	t.Helper()
+	cfg := fixture(t)
+	delete(cfg.Apps, "status")
 	return cfg
 }
 
@@ -528,7 +541,8 @@ func TestARemovedPackageIsNotInstalled(t *testing.T) {
 
 // An apps site lets its containers reach the database proxy and, where Garage
 // runs, object storage on its own mesh address, over the compose bridges and
-// nothing wider. A gateway only site runs no app containers and gets neither.
+// nothing wider. A gateway only site gets neither; the fixture's gateway hosts
+// the uptime monitor beside the pinned homeserver, so it gets that one rule.
 func TestContainerRulesReachOnlyWhatAppsUse(t *testing.T) {
 	cfg := fixture(t)
 	var got []string
@@ -538,8 +552,12 @@ func TestContainerRulesReachOnlyWhatAppsUse(t *testing.T) {
 	if want := "5000/tcp on br-+ to 10.44.0.1,3900/tcp on br-+ to 10.44.0.1"; strings.Join(got, ",") != want {
 		t.Errorf("home-a: got %s, want %s", strings.Join(got, ","), want)
 	}
-	if rules := hostprep.ContainerRules(cfg, "vm"); len(rules) != 0 {
-		t.Errorf("a gateway only site was given container rules: %v", rules)
+	got = nil
+	for _, r := range hostprep.ContainerRules(cfg, "vm") {
+		got = append(got, r.String())
+	}
+	if want := "8008/tcp on br-+ to 10.44.0.3"; strings.Join(got, ",") != want {
+		t.Errorf("vm: got %s, want only the monitor's rule %s", strings.Join(got, ","), want)
 	}
 }
 
@@ -621,7 +639,7 @@ func TestAStaleOwnedRuleIsRemovedLast(t *testing.T) {
 // Rules host prepare did not add are never removed or changed. One that bears
 // on a derived rule is listed; one that does not is not mentioned at all.
 func TestAForeignRuleIsNeverTouched(t *testing.T) {
-	cfg := fixture(t)
+	cfg := withoutMonitor(t)
 	vm := cfg.Sites["vm"]
 	vm.Roles = []config.Role{config.RoleWitness}
 	cfg.Sites["vm"] = vm
@@ -663,7 +681,7 @@ func TestAForeignCommentedMatchIsLeftAlone(t *testing.T) {
 	host.responses[probeFirewall] = "ufw present\nstatus active\n" +
 		owned("allow 22/tcp", "allow 51820/udp", "allow in on wg0", "allow 443/tcp") +
 		"rule allow 80/tcp comment 'acme http-01'\n"
-	plan, err := hostprep.Build("vm", fixture(t), host)
+	plan, err := hostprep.Build("vm", withoutMonitor(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +701,7 @@ func TestAForeignActionIsWarnedOrRefused(t *testing.T) {
 	host.responses[probeFirewall] = "ufw present\nstatus active\n" +
 		owned("allow 51820/udp", "allow in on wg0", "allow 80/tcp") +
 		"rule limit 22/tcp\nrule deny 443/tcp\n"
-	plan, err := hostprep.Build("vm", fixture(t), host)
+	plan, err := hostprep.Build("vm", withoutMonitor(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,7 +710,7 @@ func TestAForeignActionIsWarnedOrRefused(t *testing.T) {
 	}
 
 	host.responses[probeFirewall] = "ufw present\nstatus inactive\nrule deny 22/tcp\n"
-	if _, err := hostprep.Build("vm", fixture(t), host); err == nil || !strings.Contains(err.Error(), "blocks SSH") {
+	if _, err := hostprep.Build("vm", withoutMonitor(t), host); err == nil || !strings.Contains(err.Error(), "blocks SSH") {
 		t.Fatalf("a deny on SSH was not refused: %v", err)
 	}
 }
@@ -1032,5 +1050,36 @@ func TestPreparedKeysPlanNothing(t *testing.T) {
 	}
 	if !strings.Contains(printed(plan), "present   ssh: key "+fingerprint(keyBob)+" (bob@example.org) authorized for ubuntu") {
 		t.Errorf("got:\n%s", printed(plan))
+	}
+}
+
+// A site hosting the monitor lets its containers reach every app port on that
+// site's own mesh address, once per port, because the monitor's direct checks
+// to a local app arrive on a compose bridge rather than on wg0.
+func TestContainerRulesLetTheMonitorReachLocalApps(t *testing.T) {
+	cfg := fixture(t)
+	status := cfg.Apps["status"]
+	status.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-a"}
+	cfg.Apps["status"] = status
+	var got []string
+	for _, r := range hostprep.ContainerRules(cfg, "home-a") {
+		if r.Why == "the uptime monitor to apps on this site" {
+			if r.Interface != "br-+" || r.To != "10.44.0.1" || r.Proto != "tcp" {
+				t.Errorf("rule is wider or other than a bridge to the mesh address: %s", r)
+			}
+			got = append(got, fmt.Sprint(r.Port))
+		}
+	}
+	// home-a runs the clustered mbin (8080), outline (3000) and pocket-id
+	// (1411), and the pinned writefreely (8080) and oauth2-proxy (4180):
+	// 8080 twice, listed once. 3001 is absent: the monitor does not check
+	// itself.
+	if want := "1411,3000,4180,8080"; strings.Join(got, ",") != want {
+		t.Fatalf("got %v, want %s", got, want)
+	}
+	for _, r := range hostprep.ContainerRules(cfg, "home-b") {
+		if r.Why == "the uptime monitor to apps on this site" {
+			t.Errorf("home-b hosts no monitor and was given a monitor rule: %s", r)
+		}
 	}
 }
