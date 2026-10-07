@@ -159,17 +159,17 @@ var catalogue = map[config.Kind][]Service{
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
 	config.KindUptime: {
-		// The josephquigley/uptime fork: OIDC sign in gated on a group, and
-		// (from the release after 1.1.0-oidc.1) a seed file and an entrypoint
-		// that drops from root. Its database is SQLite under /data, which is
-		// why the kind is pinned only: it has no Postgres service, so
-		// cluster-placement-without-a-cluster refuses it.
+		// The josephquigley/uptime fork: OIDC sign in gated on a group, a
+		// seed file (SEED_FILE), TRUST_PROXY, and an entrypoint that drops
+		// from root, all from 1.1.0-oidc.2. Its database is SQLite under
+		// /data, which is why the kind is pinned only: it has no Postgres
+		// service, so cluster-placement-without-a-cluster refuses it.
 		//
-		// NOTE THE MISSING `v`: the git tag is v1.1.0-oidc.1 and
+		// NOTE THE MISSING `v`: the git tag is v1.1.0-oidc.2 and
 		// docker/metadata-action's semver pattern strips it. Checked against
 		// ghcr.io on 2026-10-07 by requesting the manifest for this exact tag
 		// anonymously: 200, an OCI image index for linux/amd64 and arm64.
-		{Name: "app", Image: "ghcr.io/josephquigley/uptime:1.1.0-oidc.1", Purpose: "the monitor"},
+		{Name: "app", Image: "ghcr.io/josephquigley/uptime:1.1.0-oidc.2", Purpose: "the monitor"},
 	},
 }
 

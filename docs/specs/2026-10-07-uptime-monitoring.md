@@ -505,3 +505,9 @@ And one on the fork, fixed before its release: a reseed no longer resets what
 an admin set in the UI on a managed monitor (pause, mute, renotify, notes,
 display name, status page placement, double verify) unless the file names the
 field. "Check fields updated" in the ownership table means exactly that.
+
+**Released.** On the founder's instruction the fork's changes were merged
+(josephquigley/uptime #8, #9, #10) and released as `v1.1.0-oidc.2`, which
+published `ghcr.io/josephquigley/uptime:1.1.0-oidc.2` (checked 2026-10-07:
+manifest 200 for amd64 and arm64, `/data` its only declared volume, the new
+entrypoint in place). The kind's default image is that tag.

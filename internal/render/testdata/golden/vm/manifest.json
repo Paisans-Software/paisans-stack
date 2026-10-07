@@ -118,12 +118,12 @@
     },
     {
       "path": "srv/status/.env",
-      "sha256": "899b24c7366c8d607008a6e96de1873804821b9b437f22f1f8a4acfa73559b6d",
+      "sha256": "1290c6f3e1aaeb6c431d6daac55a8b205083f3dd4e30208c4be1a3e8cc26f24f",
       "mode": "0600"
     },
     {
       "path": "srv/status/compose.yaml",
-      "sha256": "f283b8b75530b3e7354b6b13f79a602abd46d9e33ffdb5aad92b6b207936f28a",
+      "sha256": "d6beea3f2424070da8d1490a88d6f9c2aaf52c7979914037e97f72491aa87227",
       "mode": "0644"
     },
     {

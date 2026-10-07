@@ -43,7 +43,7 @@ var ImageVolumes = map[string][]string{
 	"ghcr.io/element-hq/element-web:v1.12.27":                 nil,
 	"ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea": nil,
 	"quay.io/oauth2-proxy/oauth2-proxy:v7.15.4": nil,
-	"ghcr.io/josephquigley/uptime:1.1.0-oidc.1": {"/data"},
+	"ghcr.io/josephquigley/uptime:1.1.0-oidc.2": {"/data"},
 	// A pinned app's own database, one per postgres_version the toolkit
 	// knows. The path moved in 18; see PostgresDataMount.
 	"postgres:16-alpine": {"/var/lib/postgresql/data"},
