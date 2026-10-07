@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -296,6 +298,18 @@ type options struct {
 	keepImages bool
 	only       []string
 	dbApps     []string
+	// replicationChange lets a garage.toml with a different
+	// replication_factor replace the deployed one. Only `storage add
+	// --change-replication` sets it; see GarageReplication.
+	replicationChange bool
+}
+
+// ReplicationChange lets this apply replace a deployed garage.toml whose
+// replication_factor differs from the rendered one. It is for `storage add
+// --change-replication`, which stops every Garage node and sets its stored
+// layout aside first; any other caller gets the refusal in Build.
+func ReplicationChange() Option {
+	return func(o *options) { o.replicationChange = true }
 }
 
 // KeepImages leaves superseded images on the host for this run, as
@@ -458,6 +472,11 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 			return nil, err
 		}
 		change.before = current
+		if rel == GarageConfig && found && !o.replicationChange {
+			if err := garageReplicationGuard(site, current, file.Content); err != nil {
+				return nil, err
+			}
+		}
 		switch {
 		case !found:
 			change.Kind = Create
@@ -1063,4 +1082,48 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// GarageConfig is Garage's configuration file, relative to a site's root.
+const GarageConfig = "srv/infra/garage/garage.toml"
+
+// garageReplicationLine matches the replication_factor setting as
+// garage.toml.tmpl renders it.
+var garageReplicationLine = regexp.MustCompile(`(?m)^\s*replication_factor\s*=\s*(\d+)\s*$`)
+
+// GarageReplication reads replication_factor out of a garage.toml, false when
+// the file does not set one.
+func GarageReplication(toml string) (int, bool) {
+	m := garageReplicationLine.FindStringSubmatch(toml)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// garageReplicationGuard refuses to replace a deployed garage.toml with one at
+// a different replication_factor.
+//
+// Garage v1.0.1 records the factor in its stored layout and refuses to start
+// when the configuration disagrees: "Prevous cluster layout has replication
+// factor 1, which is different than the one specified in the config file (2)"
+// (src/rpc/layout/manager.rs:46-56; observed). An apply that wrote the file
+// would restart Garage into that refusal and leave object storage down until
+// somebody read the container log. Refuse, not warn: the outcome is certain.
+// The change is `paisans storage add --change-replication`, which stops every
+// node and sets the stored layout aside first.
+func garageReplicationGuard(site, deployed, rendered string) error {
+	have, ok := GarageReplication(deployed)
+	if !ok {
+		return nil
+	}
+	want, ok := GarageReplication(rendered)
+	if !ok || have == want {
+		return nil
+	}
+	return fmt.Errorf("%s: Garage there runs at replication %d and the configuration says %d. Garage refuses to start when its stored layout disagrees with its configuration, so apply will not write this file. Change the factor with `paisans storage add --change-replication`, which stops every Garage node and rebuilds the layout, then run apply again. Nothing was changed", site, have, want)
 }
