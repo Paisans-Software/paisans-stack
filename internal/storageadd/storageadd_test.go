@@ -9,10 +9,10 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
 )
 
-// growing is the shape storage add was built for, a deployment growing from one Garage node: home-a has run Garage
-// alone at replication 1, with every app provisioned, and home-b has just
-// been applied at the configuration's replication 2, so its node runs alone
-// with an empty layout.
+// growing is the shape storage add was built for, a deployment growing from
+// one Garage node: home-a has run Garage alone at replication 1, with every
+// app provisioned, and home-b has just been applied at the configuration's
+// replication 2, so its node runs alone with an empty layout.
 func growing(t *testing.T) *world {
 	t.Helper()
 	cfg, secrets := fixture(t)
