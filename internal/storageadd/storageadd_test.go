@@ -1,3 +1,9 @@
+//go:build !garage_integration
+
+// The fake-cluster tests. They run without the garage_integration tag, at
+// fast timing; under the tag the real-container tests run alone, at real
+// timing.
+
 package storageadd_test
 
 import (
