@@ -2217,6 +2217,31 @@ the primary that is a second failover. A forced recreate (`--recreate`, or a
 stack a stopped apply owes) replaces every container, so it needs none of
 this.
 
+### etcd compacts its history and states its quota
+
+etcd keeps every revision of every key until it is compacted, and its auto
+compaction is off by default. Patroni rewrites its leader key on every loop, so
+an uncompacted store grows until it reaches the backend quota, raises a
+`NOSPACE` alarm and refuses writes; Patroni then cannot renew the leader lock
+and the primary demotes itself. Every member is rendered with
+`--auto-compaction-mode=periodic --auto-compaction-retention=1h` and
+`--quota-backend-bytes=2147483648` (flag names from etcd v3.5.16,
+`server/etcdmain/help.go`). An hour is far more history than anything reads.
+The quota is etcd's own default, 2 GiB (`DefaultQuotaBytes` in
+`server/etcdserver/quota.go`), made explicit so that a later etcd changing its
+default does not move it silently. A smaller one was rejected: compaction
+frees pages for reuse but the file never shrinks without a defrag, which
+nothing schedules, so a tight quota is an alarm waiting on a burst.
+
+These are runtime flags, read on every start, unlike `--initial-cluster` and
+`--initial-cluster-state`, which etcd reads only on a member's first start and
+which `/srv/infra/etcd-initial` keeps fixed. Changing them is an ordinary
+change to the infrastructure compose file: `apply` recreates the `etcd`
+service on the site it is applying and leaves the record alone. On a live
+deployment that is one member at a time, one site per apply, and with three
+voters a member down for its recreate leaves the other two as quorum. Apply
+the sites one after another, not at once.
+
 ### A stopped apply force-recreates what it still owes
 
 A stack whose action did not finish is in an unknown state, and Compose cannot

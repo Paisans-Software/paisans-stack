@@ -24,6 +24,26 @@ import (
 // isRecord).
 const EtcdInitialPath = "srv/infra/etcd-initial"
 
+// etcdCompactionRetention is how much key history etcd keeps, with
+// --auto-compaction-mode=periodic (flag names and semantics from etcd v3.5.16,
+// server/etcdmain/help.go). etcd keeps every revision of every key until it is
+// compacted, and auto compaction is off by default. Patroni rewrites its
+// leader key on every loop, so an uncompacted store grows without bound until
+// it reaches the backend quota, raises NOSPACE and refuses writes, at which
+// point Patroni cannot renew the leader lock and the primary demotes itself.
+// An hour is far more history than anything here reads: Patroni watches
+// current values, and nothing in the toolkit asks for an old revision.
+const etcdCompactionRetention = "1h"
+
+// etcdQuotaBackendBytes is etcd's own default, 2 GiB (DefaultQuotaBytes in
+// v3.5.16's server/etcdserver/quota.go), made explicit. Patroni's state is a
+// few kilobytes of keys, so with compaction the store stays far below either
+// number. A smaller quota was rejected: compaction frees pages for reuse but
+// the bbolt file never shrinks without a defrag, which nothing schedules, so a
+// tight quota is a NOSPACE alarm waiting on a burst. Explicit rather than left
+// at 0 so that a future etcd changing its default does not move it silently.
+const etcdQuotaBackendBytes = 2 << 30
+
 // EtcdInitial is how one etcd member was first started.
 type EtcdInitial struct {
 	// State is etcd's --initial-cluster-state: "new" for a member that

@@ -2480,6 +2480,39 @@ func TestEtcdRendersTheFlagsItWasBornWith(t *testing.T) {
 	}
 }
 
+// Every etcd member compacts its history and states its backend quota.
+// Without compaction etcd keeps every revision of Patroni's leader key until
+// the quota raises NOSPACE and writes stop. Both are runtime flags, so a
+// member already running keeps the initial-cluster flags it was born with and
+// its record is untouched: adding them is a recreate of etcd, not a rejoin.
+func TestEtcdCompactsAndStatesItsQuota(t *testing.T) {
+	cfg := fixture(t)
+	born := render.EtcdInitial{State: render.EtcdStateNew, Cluster: "home-a=http://10.44.0.1:2380"}
+	plan, err := render.Build(cfg, fixtureSecrets(t), render.WithEtcdInitial("home-a", born))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+	for _, site := range cfg.Etcd.Members {
+		compose := files[site+"/srv/infra/compose.yaml"]
+		for _, flag := range []string{
+			"- --auto-compaction-mode=periodic\n",
+			"- --auto-compaction-retention=1h\n",
+			"- --quota-backend-bytes=2147483648\n",
+		} {
+			if !strings.Contains(compose, flag) {
+				t.Errorf("%s's etcd lacks %q", site, strings.TrimSpace(flag))
+			}
+		}
+	}
+	if got, ok := render.ParseEtcdFlags(files["home-a/srv/infra/compose.yaml"]); !ok || got != born {
+		t.Errorf("the compose file's initial flags read back as %+v, want %+v", got, born)
+	}
+	if got, ok := render.ParseEtcdInitial(files["home-a/"+render.EtcdInitialPath]); !ok || got != born {
+		t.Errorf("the record changed: %+v", got)
+	}
+}
+
 // Each media URL is a value the toolkit decides, because the gateway serves
 // exactly that hostname. A passthrough key that overrode one would publish URLs
 // on a name nothing routes, so each is refused the way any key the template

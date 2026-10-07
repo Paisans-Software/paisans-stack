@@ -32,6 +32,13 @@ services:
       # time a home connection hiccups.
       - --heartbeat-interval={{ .HeartbeatMS }}
       - --election-timeout={{ .ElectionTimeoutMS }}
+{{- /* Runtime flags, read on every start, unlike the initial-cluster pair
+        above: changing them recreates this member and nothing else. See
+        etcdCompactionRetention and etcdQuotaBackendBytes in
+        internal/render/etcd.go for the values and their reasons. */}}
+      - --auto-compaction-mode=periodic
+      - --auto-compaction-retention={{ .EtcdCompactionRetention }}
+      - --quota-backend-bytes={{ .EtcdQuotaBackendBytes }}
     volumes:
       - /srv/infra/etcd:/var/lib/etcd
 {{- end }}

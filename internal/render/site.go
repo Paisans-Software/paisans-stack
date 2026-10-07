@@ -181,17 +181,19 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	}
 	initial := p.etcdInitialFor(site.Name)
 	infra, err := p.renderTemplate("infra-compose.yaml.tmpl", map[string]any{
-		"Site":               site,
-		"Scope":              p.scope(),
-		"EtcdInitialCluster": initial.Cluster,
-		"EtcdInitialState":   initial.State,
-		"HeartbeatMS":        p.heartbeatMS(),
-		"ElectionTimeoutMS":  p.electionTimeoutMS(),
-		"PostgresVersion":    p.postgresVersion(),
-		"SpiloTag":           spilo,
-		"CaddyImage":         caddy,
-		"EtcdClientPort":     etcdClientPort,
-		"EtcdPeerPort":       etcdPeerPort,
+		"Site":                    site,
+		"Scope":                   p.scope(),
+		"EtcdInitialCluster":      initial.Cluster,
+		"EtcdInitialState":        initial.State,
+		"HeartbeatMS":             p.heartbeatMS(),
+		"ElectionTimeoutMS":       p.electionTimeoutMS(),
+		"PostgresVersion":         p.postgresVersion(),
+		"SpiloTag":                spilo,
+		"CaddyImage":              caddy,
+		"EtcdClientPort":          etcdClientPort,
+		"EtcdPeerPort":            etcdPeerPort,
+		"EtcdCompactionRetention": etcdCompactionRetention,
+		"EtcdQuotaBackendBytes":   etcdQuotaBackendBytes,
 	})
 	if err != nil {
 		return nil, err
