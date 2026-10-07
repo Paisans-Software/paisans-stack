@@ -524,3 +524,12 @@ publishes there, since the workflow tags `ghcr.io/${{ github.repository }}`.
 The kind's default moves to the new path with the next release, once the org
 package is public; until then it stays at the old path, which still pulls.
 
+
+**Released from the organisation.** `v1.1.0-oidc.3` (Paisans-Software/uptime
+#11 bulk channel attach/detach and retroactive auto-attach, #12 SMTP lock when
+the seed supplies SMTP, #13 version) published
+`ghcr.io/paisans-software/uptime:1.1.0-oidc.3`, after the package was made
+public and given the repository's Actions write access. Checked 2026-10-07:
+anonymous manifest 200, `/data` its only declared volume, and a run as root
+with an SMTP seed came up healthy with the seed applied. The kind's default is
+that reference.

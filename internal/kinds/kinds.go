@@ -160,18 +160,20 @@ var catalogue = map[config.Kind][]Service{
 	},
 	config.KindUptime: {
 		// The Paisans-Software/uptime fork (josephquigley/uptime until
-		// 2026-10-07; the image below predates the move and stays at the old
-		// path until the next release): OIDC sign in gated on a group, a
-		// seed file (SEED_FILE), TRUST_PROXY, and an entrypoint that drops
-		// from root, all from 1.1.0-oidc.2. Its database is SQLite under
-		// /data, which is why the kind is pinned only: it has no Postgres
-		// service, so cluster-placement-without-a-cluster refuses it.
+		// 2026-10-07): OIDC sign in gated on a group, a seed file
+		// (SEED_FILE), TRUST_PROXY and an entrypoint that drops from root
+		// from 1.1.0-oidc.2; bulk channel actions and the SMTP lock when the
+		// seed supplies SMTP from 1.1.0-oidc.3, the first release published
+		// from the organisation. Its database is SQLite under /data, which
+		// is why the kind is pinned only: it has no Postgres service, so
+		// cluster-placement-without-a-cluster refuses it.
 		//
-		// NOTE THE MISSING `v`: the git tag is v1.1.0-oidc.2 and
+		// NOTE THE MISSING `v`: the git tag is v1.1.0-oidc.3 and
 		// docker/metadata-action's semver pattern strips it. Checked against
 		// ghcr.io on 2026-10-07 by requesting the manifest for this exact tag
-		// anonymously: 200, an OCI image index for linux/amd64 and arm64.
-		{Name: "app", Image: "ghcr.io/josephquigley/uptime:1.1.0-oidc.2", Purpose: "the monitor"},
+		// anonymously: 200. Ran it as root with a seed carrying SMTP: healthy,
+		// seed applied.
+		{Name: "app", Image: "ghcr.io/paisans-software/uptime:1.1.0-oidc.3", Purpose: "the monitor"},
 	},
 }
 

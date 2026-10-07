@@ -17,7 +17,7 @@ services:
     restart: unless-stopped
     user: "0:0"
     # The image declares its own healthcheck on /healthz (Dockerfile at
-    # 1.1.0-oidc.2), which apply's health gate reads.
+    # 1.1.0-oidc.3), which apply's health gate reads.
     env_file:
       - .env
     # ICMP for the per site ping checks.
