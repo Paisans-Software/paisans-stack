@@ -137,6 +137,8 @@ func Check(cfg *config.Config) Result {
 	c.gateWithoutAGate()
 	c.gatedMatrixHostname()
 	c.homeserverMustBePinned()
+	c.uptimeNeedsAnAdminGroup()
+	c.smtpOnAKindWithoutMail()
 	c.mediaHostnameShape()
 	c.mediaHostnameUnderAnAppHostname()
 	c.outlineBucketInMediaURL()
@@ -149,6 +151,7 @@ func Check(cfg *config.Config) Result {
 	c.pinnedOntoWitness()
 	c.gatewayOnDataSite()
 	c.pocketIDFileBackend()
+	c.uptimeWithoutSMTP()
 	c.imageForAbsentPostgres()
 	c.publicAddress()
 	c.watchdogOffOnDataSite()
@@ -1146,5 +1149,49 @@ func (c *checker) watchdogOffOnDataSite() {
 			c.warn("watchdog-off-on-data-site", fmt.Sprintf("sites.%s.watchdog", name),
 				"is off on a site holding the data role. Patroni is rendered with PATRONI_WATCHDOG_MODE=off, so a Patroni that hangs while it is leader is not fenced and can keep taking writes after another node is promoted. Use auto unless this host genuinely cannot load any watchdog driver.")
 		}
+	}
+}
+
+// uptimeNeedsAnAdminGroup refuses an uptime app that names no admin group.
+//
+// The fork admits exactly the members of the groups it is given and refuses
+// everyone else, and group names are the community's own, so there is no
+// default to fall back to: without one, nobody but the break glass password
+// could ever sign in.
+func (c *checker) uptimeNeedsAnAdminGroup() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Kind != config.KindUptime {
+			continue
+		}
+		if group, _ := app.Settings["admin_group"].(string); strings.TrimSpace(group) != "" {
+			continue
+		}
+		c.refuse("uptime-needs-an-admin-group", fmt.Sprintf("apps.%s.settings.admin_group", name),
+			"is required. Name the identity provider group whose members may sign in to the monitor, for example admins. Only that group is admitted, and group names are this community's own, so there is no default.")
+	}
+}
+
+// smtpOnAKindWithoutMail refuses an app level smtp block that nothing reads.
+func (c *checker) smtpOnAKindWithoutMail() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.SMTP == nil || kinds.SendsMail(app.Kind) {
+			continue
+		}
+		c.refuse("smtp-on-a-kind-without-mail", fmt.Sprintf("apps.%s.smtp", name),
+			"is declared, but %s does not read the toolkit's smtp settings, so this override would be ignored without a word. Remove it, or configure that application's mail where it keeps it.",
+			app.Kind)
+	}
+}
+
+// uptimeWithoutSMTP warns that a monitor with no mail server cannot email.
+func (c *checker) uptimeWithoutSMTP() {
+	for _, name := range c.cfg.AppNames() {
+		if c.cfg.Apps[name].Kind != config.KindUptime || c.cfg.SMTPFor(name).Host != "" {
+			continue
+		}
+		c.warn("uptime-without-smtp", fmt.Sprintf("apps.%s.smtp", name),
+			"resolves no SMTP host, so no email channel in the monitor can send. It still checks and records incidents. Declare a top level smtp block, or one on this app, or set SMTP in the monitor's own settings page, which the toolkit then leaves alone.")
 	}
 }

@@ -69,6 +69,9 @@ func TestRulesFire(t *testing.T) {
 		{"config-key-is-nested-in-an-env-file", "config-key-is-nested-in-an-env-file", validate.Refuse},
 		{"config-key-looks-like-a-secret", "config-key-looks-like-a-secret", validate.Refuse},
 		{"config-key-steers-compose", "config-key-steers-compose", validate.Refuse},
+		{"uptime-needs-an-admin-group", "uptime-needs-an-admin-group", validate.Refuse},
+		{"smtp-on-a-kind-without-mail", "smtp-on-a-kind-without-mail", validate.Refuse},
+		{"uptime-without-smtp", "uptime-without-smtp", validate.Warn},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
