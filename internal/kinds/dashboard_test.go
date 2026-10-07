@@ -74,3 +74,16 @@ func TestCheckDashboardLink(t *testing.T) {
 		}
 	}
 }
+
+// An Mbin app that chooses no queue backend gets Postgres, and an empty value
+// is the same as none.
+func TestMbinQueueDefaultsToPostgres(t *testing.T) {
+	for _, settings := range []map[string]any{nil, {}, {"queue": ""}} {
+		if got := kinds.MbinQueue(settings); got != kinds.MbinQueuePostgres {
+			t.Errorf("MbinQueue(%v) = %q, want %q", settings, got, kinds.MbinQueuePostgres)
+		}
+	}
+	if got := kinds.MbinQueue(map[string]any{"queue": "rabbitmq"}); got != kinds.MbinQueueRabbitMQ {
+		t.Errorf("MbinQueue(rabbitmq) = %q", got)
+	}
+}

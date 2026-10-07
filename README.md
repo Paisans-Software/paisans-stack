@@ -386,6 +386,42 @@ It is assembled rather than written: each `kind` ships its own Caddy snippet in
 its template set, and the gateway file holds only what is cross-cutting. See
 *The template set owns everything app-specific, routing and shims included*.
 
+#### Failing over, and saying so when nothing can serve
+
+Two things are cross-cutting enough to live in the gateway file as named
+snippets rather than in every kind.
+
+**`upstream_failover`**, imported inside the proxy of every app on more than
+one apps site: `lb_policy first`, `lb_try_duration 5s`, `fail_duration 30s`,
+`dial_timeout 2s`. `first`, not round robin, because the apps sites are not
+interchangeable during a failover. A dial that fails is retried on the next
+site within the same request, for a POST too: Caddy 2.11 retries any method
+only when the connection never opened, so no body was sent. A dead site on
+the mesh answers nothing, not even a reset, so the dial timeout is the whole
+price of finding it dead; once found, it is skipped for `fail_duration`, and
+then one request tries it again. Checked against a live Caddy: with one site
+refusing and the other up, a POST is answered by the live one with no error.
+A pinned app has nowhere to fail over to and does not import it.
+
+**`upstream_unavailable`**, imported in every host block, media included:
+when Caddy itself fails to reach any upstream, it answers 503 with
+`Retry-After: 120` instead of its own 502, 503 or 504. Without it, the status
+depends on how the sites died: a refused or timed out dial, or a site dying
+mid request, is 502; every upstream already marked down is 503. A fediverse
+server delivering to an inbox may treat a 502 as a permanent failure and drop
+the activity, which is the one loss nobody can recover later; 503 with
+`Retry-After` is the status that asks it to come back. It catches only errors
+Caddy raised: an application's own 502, 503 or 504 response (Garage's 503 for
+lost quorum among them) is passed through unchanged, so it never hides an
+application's real answer. It does also turn an auth gate's failure into 503,
+which is the right answer there too.
+
+Rejected: an active health check on each app. It would keep live requests off
+a dead site between failures, but Caddy's check sends the upstream's address
+as the Host header, which an app checking trusted hosts may refuse, and it
+adds steady traffic to every app on every site; the dial timeout it saves is
+paid once per `fail_duration`.
+
 ## Monitoring
 
 The `uptime` kind runs the [`Paisans-Software/uptime`](https://github.com/Paisans-Software/uptime)
@@ -599,8 +635,9 @@ by name, and some are validated or acted on: `s3_bucket` is a setting because
 `validate` refuses one named `outline` and `storage init` creates it, and
 `sso_dashboard_link` is one because `oidc client create` sends it to the
 identity provider (see *`oidc client create` makes an app's client at Pocket
-ID*). A key no
-template asks for is silently ignored. That is the direction in which choosing
+ID*). An Mbin app's `queue` is one because it decides which services the stack
+runs (see *Mbin's queues are in Postgres by default*). A key no template asks
+for is silently ignored. That is the direction in which choosing
 wrong is silent, and the reason this section exists: an application option put
 under `settings` renders nothing and says nothing.
 
@@ -1266,6 +1303,41 @@ the old node must stay online until its data directory is empty, because
 Garage does not track block migration, and a dead one needs `layout
 skip-dead-nodes`, possibly with `--allow-missing-data`. Both are decisions
 about losing data, and will get their own gates.
+
+#### Replacing an app's key: `storage rotate-key`
+
+An app's S3 key is replaced when it may have leaked, Eg: a key ID committed to
+a public history. **`paisans storage rotate-key --app <app>`** does it, dry run
+by default and in gated stages, like `storage add`:
+
+| Stage | What it does | Gate |
+|---|---|---|
+| 1. secrets | generates a new pair, the way `init` does, keeps the current one as `apps.<app>.s3_previous_access_key_id` and `s3_previous_secret_access_key`, and writes the file encrypted to its recipients | the file holds both pairs |
+| 2. Garage | imports the new key under the app's name and grants it read, write and owner on the app's bucket, beside the old key; website access is the bucket's and is left as it is | `bucket info` lists the new key ID with `RWO` |
+| 3. switch | applies the app alone, as `apply --site <site> --only <app>`, on every site running it | `apply --only` has nothing left to do, and the app passed apply's health gate |
+| 4. prove | from each of those sites, writes a probe with the new key through the S3 address the app is rendered with, reads it back, deletes it | byte for byte |
+| 5. retire | deletes the old key from Garage, then removes the previous pair from the secrets | Garage no longer holds the old key ID |
+
+The plan prints both key IDs, so an operator can see which one is retired, and
+never a secret key. **It is staged because the app must keep a working key
+the whole time.** The secrets are written before Garage hears of the new key,
+so Garage never holds a key the secrets file does not; the old key stays in
+Garage and granted until the app has been switched and the new key proven, so
+a run that stops anywhere before stage 5 leaves the app running on whichever
+key it was last started with. A previous pair in the secrets file is what says
+a rotation is in progress, and a re-run plans from it rather than generating a
+second key. Every gate runs on every execute, so the old key is deleted only by
+a run that has just seen stages 3 and 4 pass. Garage never lets a deleted key's
+ID be imported again (`handle_import_key` in v1.0.1's
+`src/garage/admin/key.rs`), which is one more reason the deletion is last.
+
+Rejected: deleting the old key and importing the new one in its place, which
+is an outage between the two and leaves the app with no key at all if the
+import fails. Rejected: finding an app's keys by the name they were imported
+under. Both keys carry the app's name while a rotation runs, Garage does not
+keep names unique, and `storage init` used to read a grant as present when
+only the name matched, which would have left the new key without access. Keys
+are found, granted and deleted by ID alone.
 
 ### `dns init` creates the records a deployment needs
 
@@ -2120,6 +2192,188 @@ rejected too:** each restart is an outage, however brief, and most
 infrastructure changes (a Garage setting, a Caddy route, an etcd timing) never
 touch the database path.
 
+### Mbin's locks are split: flock by default, Postgres for the few that cross sites
+
+Mbin takes its Symfony Lock store from `LOCK_DSN`
+(`config/packages/lock.yaml` in the paisans fork at `v1.13.3+paisans`), and
+the image bakes in `LOCK_DSN=flock`, a lock file inside one container. Two of
+Mbin's locks exist to stop two messenger consumers doing the same work at once:
+`UpdateActorHandler`'s `update_actor_<hash>` lock, and the scheduler lock the
+fork is adding so only one consumer generates the recurring schedule. The
+toolkit runs two consumers per apps site, on every apps site, so under `flock`
+neither lock protects anything, even on one site.
+
+The toolkit renders two variables:
+
+```
+LOCK_DSN=flock
+CLUSTER_LOCK_DSN=postgresql://talk:...@10.44.0.1:5000/talk?serverVersion=18&charset=utf8
+```
+
+`CLUSTER_LOCK_DSN` is `DATABASE_URL` unchanged, reached the same way: through
+the site's HAProxy on its mesh address for a clustered app (rule 2), the
+`postgres` container beside it for a pinned one, as the app's own role. **It is
+provisional: no fork release reads it yet.** The planned fork change gives the
+two locks above a named `cluster` lock resource: a Postgres advisory lock store
+on a Doctrine connection of its own, wrapped so that a failed lock call closes
+the connection and retries once. Until an image carrying that change is
+deployed, the variable is inert and both locks stay on `flock`, which is what
+runs today.
+
+**Why the default store stays `flock`.** The first version of this change set
+`LOCK_DSN` itself to `postgresql+advisory://...`, and review found it would
+have broken posting. With a lock store configured, every Symfony rate limiter
+takes the default lock factory (framework-bundle v7.4.14,
+`FrameworkExtension.php:3465-3466`) and acquires it on every reservation, and
+Mbin rate-limits votes, entries, posts, comments, magazines and the API. Those
+run in FrankenPHP's web workers, which loop for the life of the container. The
+advisory store opens a private Doctrine DBAL connection (`new Configuration()`,
+no middleware), and DBAL 4.4.3 reopens a connection on its own only after an
+error it classes as a lost connection, which for Postgres is a
+`terminating connection` message (`ExceptionConverter.php`), not a socket
+closed under it. HAProxy closes a session idle for `timeout client`, 30
+minutes. A web worker that went half an hour without a rate-limited action
+would then fail every vote, post and comment until the container restarted.
+Mbin's own connection does not have this problem: DoctrineBundle's
+`idle_connection_ttl` (600 s) reopens it in web workers, and Mbin closes it
+after every message in consumers. Limiter state lives in the site's own Valkey,
+so a lock across sites buys a limiter nothing; leaving them on `flock` costs
+nothing.
+
+**Why advisory locks for the rest.** An advisory lock is held by a database
+session and is visible to every session on the same server, so every consumer
+on every site contends for the one lock, because every site's HAProxy routes to
+the one primary. Advisory keys are scoped to a database, so another app's locks
+on the same cluster cannot collide. A lock is released when its session ends,
+so a consumer that dies takes its locks with it.
+
+**They work through HAProxy** because HAProxy runs Postgres in `mode tcp`: a
+client's session is one TCP connection to the primary for as long as HAProxy
+keeps it open, which is what a session-level lock needs. A transaction-pooling
+proxy (Eg: pgbouncer in transaction mode) would silently break them, and must
+not be put in front of an app that uses them.
+
+**What the locks do in a failure.**
+
+* **Switchover or failover.** The old primary's sessions end, and advisory
+  locks are never written to WAL, so the new primary starts with none. Holders
+  are not told; for a moment two consumers may each believe they hold the same
+  lock. For an actor refresh or a daily cleanup that is harmless.
+* **An apps site dies while the primary lives elsewhere.** The primary does not
+  see the site's sessions end until TCP keepalive gives up on them. Spilo
+  4.1-p2 sets `tcp_keepalives_idle` 900 and `tcp_keepalives_interval` 100, so
+  with the kernel's default nine probes that is about 30 minutes, during which
+  the dead site's locks stay held. A held actor lock makes the surviving site
+  skip that actor's refresh, which the next fetch queues again; a held
+  scheduler lock delays the daily schedule. Lower keepalives would shorten
+  this; the toolkit does not set them yet.
+* **A consumer whose lock connection died** (idle cut, switchover) fails a
+  lock until the planned reconnecting store reopens it. Without that wrapper
+  it fails until the process restarts, which `--time-limit=3600`, a crash on
+  the scheduler poll, or the restarts `apply`, `site add` and `failover test`
+  make when they move the database path (see "`apply` restarts the apps whose
+  database path changed") all bring about. The failed message is retried.
+
+Rejected:
+
+* **`LOCK_DSN` itself on Postgres**, the first version of this change. It
+  breaks the web workers, as above.
+* **`flock` everywhere, the image's default.** Per container, so the two locks
+  that matter lock nothing.
+* **`semaphore`.** A System V semaphore is per IPC namespace, which in Docker
+  is per container, and never spans sites.
+* **A `redis://` store on Valkey.** Valkey is per stack, one on each apps site
+  with nothing replicating between them, so it coordinates one site and not
+  the other. Making it work would mean one Valkey every site reaches, a new
+  shared service with its own failover, where Postgres is already the one
+  shared, highly available thing.
+* **symfony/lock's table store** (a plain `postgresql://` through
+  `StoreFactory`). It works across sites, but a lock is a row with an expiry,
+  so a dead holder blocks others until it expires, and it creates a
+  `lock_keys` table the app's own schema does not declare.
+* **The advisory store on Mbin's own Doctrine connection.** No extra
+  connection, but Mbin closes that connection after every message, which would
+  drop a scheduler lock held between messages.
+
+### Mbin's queues are in Postgres by default
+
+Mbin hands every federated activity and background job to Symfony Messenger.
+Upstream runs RabbitMQ for it, and so did this toolkit, one broker per Mbin
+stack, so one per apps site. Mbin's inbox controllers answer 200 as soon as an
+activity is on the broker, and a remote server that got the 200 never sends it
+again. An apps site lost with work queued therefore loses it for good, and
+deliveries it had queued for other servers are stranded with it; the other
+site cannot see either.
+
+So the queues live in the database by default (`settings.queue: postgres`):
+
+```
+MESSENGER_TRANSPORT_DSN=doctrine://default?check_delayed_interval=1000&redeliver_timeout=900
+```
+
+Symfony's Doctrine transport keeps each message as a row in the app's own
+database, which is synchronously replicated, and consumers on every site take
+rows with `SELECT ... FOR UPDATE SKIP LOCKED`, so the surviving site's
+consumers carry on with the dead site's backlog. There is no `rabbitmq` or
+`amqproxy` in the stack, and no broker credential in its `.env`.
+
+* `doctrine://default` is the app's own connection, so it reaches the database
+  exactly as `DATABASE_URL` does, through the site's HAProxy or the pinned
+  `postgres`. A message a handler dispatches is inserted inside that handler's
+  transaction and commits or rolls back with its writes.
+* `check_delayed_interval=1000` (milliseconds; the default is a minute). One
+  consumer process reads every queue over one session, and a LISTEN/NOTIFY
+  wake-up popped by one queue's receiver is lost to the others, which then wait
+  for this poll.
+* `redeliver_timeout=900` (seconds; the default is an hour). A message a dead
+  consumer had taken is handed out again after it. It must stay longer than any
+  handler runs; Mbin's HTTP client caps a request at 15 seconds.
+
+**It needs the paisans fork.** Upstream's `messenger.yaml` gives every
+transport AMQP options the Doctrine transport refuses (`Unknown option found:
+[queues, exchange]`), and names no queue, so on `doctrine://` they would all
+share one. The fork's `App\Messenger\DoctrineTransportFactory` drops those
+options and gives each transport its own queue name, leaving the YAML and the
+AMQP path untouched. It ships from fork release `1.14.0-paisans`, the toolkit's
+default image. An app that declares an older Mbin image under `images` must
+also declare `settings.queue: rabbitmq`, or its queues fail at the first
+dispatch.
+
+**RabbitMQ is an opt-in**, `settings.queue: rabbitmq`, rendered exactly as
+before, for an operator on one large site who wants the broker's throughput.
+`validate` warns (`mbin-rabbitmq-across-sites`) when it is chosen for an app on
+more than one apps site, and refuses any other value (`mbin-queue-unknown`).
+
+**Postgres is the default even on one site** (founder decision). With
+RabbitMQ the default for one site, adding a second would change the backend,
+and `site add` would carry a queue drain: an addition would become a
+migration.
+
+**Switching an existing stack is not automated.** `apply` renders the new
+`.env` and compose file, but does not drain the old broker, and compose leaves
+the removed `rabbitmq` and `amqproxy` containers running as orphans. Run one
+consumer against the old AMQP DSN until `messenger:stats` reads nothing and the
+broker's `delay_*` retry queues are empty (retries can be up to about 21 hours
+out), or accept losing pending retries; then `docker compose up -d
+--remove-orphans` in the stack.
+
+What it costs: every message is at least three commits (insert, take,
+delete), each waiting for the synchronous replica on the other site, and the
+table churns, which is vacuum's work. For a community of this size that is
+noise; an instance that outgrows it is the operator `queue: rabbitmq` exists
+for.
+
+Rejected:
+
+* **RabbitMQ by default, Postgres only on more than one apps site.** The
+  `site add` migration above.
+* **One RabbitMQ cluster across the sites, with quorum queues.** It replicates,
+  but it is a second clustered system with its own partitions and failover to
+  run over the mesh, where Postgres is already the one shared, highly available
+  thing.
+* **An inbox journal table in the fork.** Protects inbound activities only, and
+  is custom code where the Doctrine transport already exists.
+
 ### `apply` checks free space before it pulls
 
 A small host fills up with images. The first real host had a 10 GB root disk,
@@ -2211,7 +2465,7 @@ pulled for linux/amd64 and inspected on 2026-10-07:
 
 | Image | Declares | Mounted as |
 |-------|----------|------------|
-| mbin 1.13.3-paisans (app, messenger) | `/app/var/` | tmpfs, 256m. Symfony's compiled cache, rebuilt by the entrypoint's `cache:clear` on every start; the app cache is in Valkey. The log bind mounts stay inside it |
+| mbin 1.14.0-paisans (app, messenger) | `/app/var/` | tmpfs, 256m. Symfony's compiled cache, rebuilt by the entrypoint's `cache:clear` on every start; the app cache is in Valkey. The log bind mounts stay inside it |
 | rabbitmq 3.13.7-management-alpine | `/var/lib/rabbitmq` | bind, `rabbitmq_data` (already) |
 | outline 1.10.0 | `/var/lib/outline/data` | bind, `/srv/<app>/data`, which was mounted at `/data`, a path nothing reads |
 | postgres 16-alpine, 17-alpine | `/var/lib/postgresql/data` | bind, `/srv/<app>/postgres` (already) |

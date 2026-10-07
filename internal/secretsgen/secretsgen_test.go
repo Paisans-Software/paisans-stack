@@ -355,6 +355,18 @@ func TestGarageKeyIsMalformed(t *testing.T) {
 			},
 			want: "docs.s3_secret_access_key",
 		},
+		{
+			// A rotation keeps the retired pair beside the new one, and
+			// storage rotate-key deletes it from Garage by this ID, so it is
+			// held to the same shape.
+			name: "malformed previous key ID",
+			entry: map[string]any{
+				"s3_access_key_id":          "GK" + strings.Repeat("ab", 12),
+				"s3_secret_access_key":      validSecret,
+				"s3_previous_access_key_id": "talk",
+			},
+			want: "docs.s3_previous_access_key_id",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -529,5 +541,29 @@ func TestAnUptimeOwedClientNamesItsRedirectURI(t *testing.T) {
 	why := owedBy(t, withUptime(t, nil), &config.Secrets{})["oidc_clients.status"]
 	if !strings.Contains(why, "https://status.example.org/login/oidc/callback") {
 		t.Errorf("the owed client does not name the redirect URI:\n%s", why)
+	}
+}
+
+// GarageKeyPair is what storage rotate-key generates a replacement with, so it
+// must pass the same check a kept key does, and two calls must differ.
+func TestGarageKeyPairIsWellFormedAndFresh(t *testing.T) {
+	id1, secret1, err := secretsgen.GarageKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id2, secret2, err := secretsgen.GarageKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id1 == id2 || secret1 == secret2 {
+		t.Fatal("two generated key pairs are the same")
+	}
+	cfg := load(t)
+	secrets := &config.Secrets{Apps: map[string]map[string]any{"docs": {
+		"s3_access_key_id": id1, "s3_secret_access_key": secret1,
+		secretsgen.PreviousKeyID: id2, secretsgen.PreviousSecretKey: secret2,
+	}}}
+	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
+		t.Fatalf("a generated pair is refused: %v", err)
 	}
 }

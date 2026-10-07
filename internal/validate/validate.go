@@ -120,6 +120,7 @@ func Check(cfg *config.Config) Result {
 	c.placementShape()
 	c.outlineBucketName()
 	c.dashboardLinkIsAPath()
+	c.mbinQueueIsKnown()
 	c.clusterSiteWithoutData()
 	c.clusterAppWithoutAppsSite()
 	c.garageReplicationExceedsSites()
@@ -152,6 +153,7 @@ func Check(cfg *config.Config) Result {
 	c.gatewayOnDataSite()
 	c.pocketIDFileBackend()
 	c.uptimeWithoutSMTP()
+	c.mbinRabbitMQAcrossSites()
 	c.imageForAbsentPostgres()
 	c.publicAddress()
 	c.watchdogOffOnDataSite()
@@ -460,6 +462,46 @@ func (c *checker) dashboardLinkIsAPath() {
 		if err := kinds.CheckDashboardLink(v); err != nil {
 			c.refuse("sso-dashboard-link-not-a-path", fmt.Sprintf("apps.%s.settings.%s", name, kinds.DashboardLinkSetting), "%s", err.Error())
 		}
+	}
+}
+
+// mbinQueueIsKnown refuses an Mbin queue setting that names no backend the
+// toolkit renders. Rendering would otherwise have to pick one silently.
+func (c *checker) mbinQueueIsKnown() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Kind != config.KindMbin {
+			continue
+		}
+		switch q := kinds.MbinQueue(app.Settings); q {
+		case kinds.MbinQueuePostgres, kinds.MbinQueueRabbitMQ:
+		default:
+			c.refuse("mbin-queue-unknown", fmt.Sprintf("apps.%s.settings.%s", name, kinds.MbinQueueSetting),
+				"is %q. Choose %s (the default: the queues live in the replicated database) or %s (a broker per site, faster, and lost with its site).",
+				q, kinds.MbinQueuePostgres, kinds.MbinQueueRabbitMQ)
+		}
+	}
+}
+
+// mbinRabbitMQAcrossSites warns when an Mbin app on more than one apps site
+// keeps its queues in RabbitMQ. Each site then has its own broker, and an
+// activity a site has acknowledged, or a delivery it has queued, is lost with
+// that site; the remote server that got the acknowledgement never sends it
+// again. A warning rather than a refusal: it is a risk an operator may take
+// for throughput, not a configuration that cannot work.
+func (c *checker) mbinRabbitMQAcrossSites() {
+	sites := len(c.cfg.AppsSites())
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Kind != config.KindMbin || app.Placement.Mode == config.PlacementPinned || sites < 2 {
+			continue
+		}
+		if kinds.MbinQueue(app.Settings) != kinds.MbinQueueRabbitMQ {
+			continue
+		}
+		c.warn("mbin-rabbitmq-across-sites", fmt.Sprintf("apps.%s.settings.%s", name, kinds.MbinQueueSetting),
+			"is %s on %d apps sites. Each site runs its own broker, so work a site has accepted (an inbox delivery already answered, a delivery queued for another server) is lost or stranded with that site. %s keeps the queues in the replicated database, where the other site's consumers take them over.",
+			kinds.MbinQueueRabbitMQ, sites, kinds.MbinQueuePostgres)
 	}
 }
 

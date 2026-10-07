@@ -430,7 +430,9 @@ func commandsOf(plan *garage.Plan) []string {
 // observedBucketInfo is `garage bucket info talk-uploads` exactly as
 // dxflrs/garage:v1.0.1 printed it on a provisioned node, with the RPC
 // client's ANSI coloured log line ahead of it, as the combined output of
-// `docker compose exec -T` carries it.
+// `docker compose exec -T` carries it. The key ID in the authorized keys row
+// is the fixture's talk key rather than the one observed, since a grant is
+// matched on the ID alone.
 const observedBucketInfo = "\x1b[2m2026-10-05T18:02:11.104Z\x1b[0m \x1b[32m INFO\x1b[0m \x1b[2mgarage_net::netapp\x1b[0m\x1b[2m:\x1b[0m Connection established to 51494feb5444d466\n" +
 	`Bucket: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
 
@@ -448,7 +450,7 @@ Global aliases:
 Key-specific aliases:
 
 Authorized keys:
-  RWO  GK0123456789abcdef01234567  talk
+  RWO  GK001122334455001122334455  talk
 `
 
 // bucketInfoPlan builds a plan for a provisioned node whose talk-uploads
@@ -502,9 +504,13 @@ func TestWebsiteAccessOffIsPlanned(t *testing.T) {
 // all, is granted again.
 func TestAPartialOrMissingGrantIsPlanned(t *testing.T) {
 	for name, info := range map[string]string{
-		"read only": strings.Replace(observedBucketInfo, "  RWO  GK0123456789abcdef01234567  talk", "  R    GK0123456789abcdef01234567  talk", 1),
-		"no row":    strings.Replace(observedBucketInfo, "  RWO  GK0123456789abcdef01234567  talk\n", "", 1),
-		"other key": strings.Replace(observedBucketInfo, "GK0123456789abcdef01234567  talk", "GKffffffffffffffffffffffff  other", 1),
+		"read only": strings.Replace(observedBucketInfo, "  RWO  GK001122334455001122334455  talk", "  R    GK001122334455001122334455  talk", 1),
+		"no row":    strings.Replace(observedBucketInfo, "  RWO  GK001122334455001122334455  talk\n", "", 1),
+		"other key": strings.Replace(observedBucketInfo, "GK001122334455001122334455  talk", "GKffffffffffffffffffffffff  other", 1),
+		// A rotated key is imported under the app's name while the old one
+		// still holds the grant under that same name. Matching on the name
+		// would read the new key as granted and leave it with no access.
+		"same name, other ID": strings.Replace(observedBucketInfo, "GK001122334455001122334455  talk", "GKffffffffffffffffffffffff  talk", 1),
 	} {
 		_, talk := bucketInfoPlan(t, info)
 		if len(talk) != 1 || !strings.Contains(talk[0], "bucket allow --read --write --owner talk-uploads") {

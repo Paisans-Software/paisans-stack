@@ -1,9 +1,23 @@
 # Multi-site Garage: `paisans storage add`
 
 Date: 2026-10-07. Status: **approved by the founder in session**, with the
-decisions recorded under *The founder's decisions*. Replaces the README section *A second Garage site has to be joined
-by hand first*, whose `garage node connect` is a hand step on a server, which
-the founder's rule forbids: a server is changed only by the toolkit.
+decisions recorded under *The founder's decisions*. Replaces the README section
+*A second Garage site has to be joined by hand first*, whose `garage node
+connect` is a hand step on a server, which the founder's rule forbids: a server
+is changed only by the toolkit.
+
+> **Amended 2026-10-07, after merge.** This spec was written against one
+> deployment-wide `storage.media_hostname` with a single gateway `media.caddy`.
+> PR #14, merged on top of it, replaced that with one media hostname per app
+> (`<label>-media.<domain>`, or `hostnames.media`), each with its own
+> `<app>-media.caddy`. Read every mention below of "the media hostname" or
+> `media.caddy` as "each app's media hostname and its snippet". Each snippet
+> lists the Garage nodes in `storage.garage.sites` order with the failover
+> described under *Gateway media routes*. Stage 8 writes every
+> `<app>-media.caddy`. Stage 9 reads the probe through the probe app's own
+> media hostname, where the path is the object key with no bucket segment. The
+> example configuration's `media_hostname` line is no longer a valid key. The
+> design is otherwise unchanged.
 
 Every claim about Garage below is about `dxflrs/garage:v1.0.1`, the image the
 toolkit pins, and carries one of two kinds of evidence:

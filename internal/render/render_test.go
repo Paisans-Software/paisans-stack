@@ -1936,7 +1936,7 @@ func TestMbinRendersItsWholeStack(t *testing.T) {
 	compose := files["home-a/srv/talk/compose.yaml"]
 	env := files["home-a/srv/talk/.env"]
 
-	for _, service := range []string{"  app:", "  messenger:", "  amqproxy:", "  rabbitmq:", "  valkey:"} {
+	for _, service := range []string{"  app:", "  messenger:", "  valkey:"} {
 		if !strings.Contains(compose, "\n"+service+"\n") {
 			t.Errorf("the Mbin stack has no %s service:\n%s", strings.TrimSpace(service), compose)
 		}
@@ -1963,9 +1963,6 @@ func TestMbinRendersItsWholeStack(t *testing.T) {
 	for _, want := range []string{
 		"\nMBIN_USER=1000:1000\n",
 		"\nAPP_SECRET=fixture-not-a-secret-talk-app\n",
-		"\nRABBITMQ_DEFAULT_USER=mbin\n",
-		"\nRABBITMQ_DEFAULT_PASS=fixture-not-a-secret-rabbitmq\n",
-		"\nMESSENGER_TRANSPORT_DSN=amqp://mbin:fixture-not-a-secret-rabbitmq@amqproxy:5673/%2f/messages\n",
 		"\nVALKEY_PASSWORD=fixture-not-a-secret-valkey\n",
 		"\nREDIS_DNS=redis://fixture-not-a-secret-valkey@valkey:6379\n",
 		"\nMERCURE_URL=http://app:8080/.well-known/mercure\n",
@@ -2004,6 +2001,71 @@ func TestMbinRendersItsWholeStack(t *testing.T) {
 	}
 }
 
+// Mbin's queues are rows in its own database by default, clustered or pinned,
+// so work a site has accepted survives the site: no broker, no amqproxy, no
+// broker credential, and nothing waits on either.
+func TestMbinQueuesInPostgresByDefault(t *testing.T) {
+	pinnedCfg := fixture(t)
+	talk := pinnedCfg.Apps["talk"]
+	talk.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-b", Literal: "home-b"}
+	pinnedCfg.Apps["talk"] = talk
+	pinnedPlan, err := render.Build(pinnedCfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clustered, pinned := planFiles(build(t)), planFiles(pinnedPlan)
+	for _, c := range []struct{ name, env, compose string }{
+		{"clustered", clustered["home-a/srv/talk/.env"], clustered["home-a/srv/talk/compose.yaml"]},
+		{"pinned", pinned["home-b/srv/talk/.env"], pinned["home-b/srv/talk/compose.yaml"]},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got, want := envValue(c.env, "MESSENGER_TRANSPORT_DSN"), "doctrine://default?check_delayed_interval=1000&redeliver_timeout=900"; got != want {
+				t.Errorf("MESSENGER_TRANSPORT_DSN = %q, want %q", got, want)
+			}
+			if strings.Contains(c.env, "\nRABBITMQ_") {
+				t.Errorf("the .env carries a broker credential with no broker:\n%s", c.env)
+			}
+			for _, absent := range []string{"\n  amqproxy:\n", "\n  rabbitmq:\n", "      amqproxy:\n"} {
+				if strings.Contains(c.compose, absent) {
+					t.Errorf("compose.yaml carries %q with the queues in Postgres:\n%s", strings.TrimSpace(absent), c.compose)
+				}
+			}
+		})
+	}
+}
+
+// queue: rabbitmq renders the broker stack exactly as before, for an operator
+// on one large site who wants its throughput.
+func TestMbinRabbitMQIsAnOptIn(t *testing.T) {
+	cfg := fixture(t)
+	talk := cfg.Apps["talk"]
+	talk.Settings = map[string]any{"queue": "rabbitmq"}
+	cfg.Apps["talk"] = talk
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+	env, compose := files["home-a/srv/talk/.env"], files["home-a/srv/talk/compose.yaml"]
+	for _, want := range []string{
+		"\nRABBITMQ_DEFAULT_USER=mbin\n",
+		"\nRABBITMQ_DEFAULT_PASS=fixture-not-a-secret-rabbitmq\n",
+		"\nMESSENGER_TRANSPORT_DSN=amqp://mbin:fixture-not-a-secret-rabbitmq@amqproxy:5673/%2f/messages\n",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("the .env does not carry %q:\n%s", strings.TrimSpace(want), env)
+		}
+	}
+	for _, want := range []string{"\n\n  amqproxy:\n", "\n\n  rabbitmq:\n"} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose.yaml has no %s service set off by a blank line:\n%s", strings.TrimSpace(want), compose)
+		}
+	}
+	if n := strings.Count(compose, "      amqproxy:\n        condition: service_started\n"); n != 2 {
+		t.Errorf("app and messenger should both wait for amqproxy, %d do:\n%s", n, compose)
+	}
+}
+
 // Pinned Mbin keeps its own database beside the rest of the stack, and the
 // application waits for it.
 func TestPinnedMbinRunsItsOwnDatabase(t *testing.T) {
@@ -2030,6 +2092,124 @@ func TestPinnedMbinRunsItsOwnDatabase(t *testing.T) {
 	if !strings.Contains(compose, `"10.44.0.2:8080:8080"`) {
 		t.Errorf("a pinned Mbin does not publish on its own site's mesh address:\n%s", compose)
 	}
+}
+
+// When no apps site can serve, the gateway answers 503 with Retry-After, the
+// status a fediverse server takes as "come back later". Caddy's own failures
+// are 502 (a dial refused or timed out, or a site dying mid request), 503 (no
+// upstream left) or 504, and a server receiving 502 for an inbox POST may drop
+// the delivery for good. Every host block imports the same handler, so no app,
+// media hostname included, is left out.
+func TestEveryHostBlockAnswers503WhenNoSiteCan(t *testing.T) {
+	caddyfile := planFiles(build(t))["vm/srv/infra/caddy/Caddyfile"]
+	for _, want := range []string{
+		"(upstream_unavailable) {",
+		"handle_errors 502 503 504 {",
+		"header Retry-After 120",
+		`respond "Service temporarily unavailable" 503`,
+	} {
+		if !strings.Contains(caddyfile, want) {
+			t.Errorf("the gateway Caddyfile does not carry %q:\n%s", want, caddyfile)
+		}
+	}
+	blocks := strings.Count(caddyfile, "\timport /etc/caddy/snippets/")
+	if blocks == 0 {
+		t.Fatalf("the gateway Caddyfile imports no app snippet:\n%s", caddyfile)
+	}
+	if n := strings.Count(caddyfile, "\timport upstream_unavailable\n"); n != blocks {
+		t.Errorf("%d host blocks import upstream_unavailable, want all %d:\n%s", n, blocks, caddyfile)
+	}
+}
+
+// An app on more than one apps site fails over with the gateway's one set of
+// settings, and a pinned app, with nowhere to fail over to, does not import
+// them. The settings themselves are what make failover invisible to a client:
+// a refused dial is retried on the next site inside the same request.
+func TestMultiSiteAppsShareOneFailoverSetting(t *testing.T) {
+	files := planFiles(build(t))
+	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	for _, want := range []string{"(upstream_failover) {", "lb_policy first", "lb_try_duration 5s", "fail_duration 30s", "dial_timeout 2s"} {
+		if !strings.Contains(caddyfile, want) {
+			t.Errorf("the gateway Caddyfile's upstream_failover does not carry %q:\n%s", want, caddyfile)
+		}
+	}
+	for _, app := range []string{"talk", "docs", "auth"} {
+		snippet := files["vm/srv/infra/caddy/snippets/"+app+".caddy"]
+		if !strings.Contains(snippet, "10.44.0.1:") || !strings.Contains(snippet, "10.44.0.2:") {
+			t.Fatalf("%s is not on both apps sites in the fixture, so it proves nothing:\n%s", app, snippet)
+		}
+		if !strings.Contains(snippet, "\timport upstream_failover\n") {
+			t.Errorf("%s's snippet does not import upstream_failover:\n%s", app, snippet)
+		}
+		if strings.Contains(snippet, "lb_policy") {
+			t.Errorf("%s's snippet sets its own lb_policy rather than the shared one:\n%s", app, snippet)
+		}
+	}
+	for _, app := range []string{"blog", "chat", "web", "gate"} {
+		if snippet := files["vm/srv/infra/caddy/snippets/"+app+".caddy"]; strings.Contains(snippet, "upstream_failover") {
+			t.Errorf("pinned %s imports upstream_failover with one upstream:\n%s", app, snippet)
+		}
+	}
+}
+
+// Mbin's default lock store stays flock, because every rate limiter takes it
+// in FrankenPHP's long lived web workers, where a database store's private
+// connection is never reopened once HAProxy closes it. The locks that must
+// hold across sites get CLUSTER_LOCK_DSN instead: DATABASE_URL unchanged, a
+// plain postgresql:// for the fork's own Doctrine connection, reaching the
+// database the same way, the site's HAProxy for a clustered app and the
+// postgres container for a pinned one. A +advisory scheme there would be a
+// URL Doctrine cannot parse.
+func TestMbinSplitsItsLocks(t *testing.T) {
+	pinnedCfg := fixture(t)
+	talk := pinnedCfg.Apps["talk"]
+	talk.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-b", Literal: "home-b"}
+	pinnedCfg.Apps["talk"] = talk
+	pinnedPlan, err := render.Build(pinnedCfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clustered := planFiles(build(t))
+	for _, c := range []struct{ name, env, host string }{
+		{"clustered on home-a", clustered["home-a/srv/talk/.env"], "@10.44.0.1:5000/talk?"},
+		{"clustered on home-b", clustered["home-b/srv/talk/.env"], "@10.44.0.2:5000/talk?"},
+		{"pinned", planFiles(pinnedPlan)["home-b/srv/talk/.env"], "@postgres:5432/talk?"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := envValue(c.env, "LOCK_DSN"); got != "flock" {
+				t.Errorf("LOCK_DSN = %q, want flock: the rate limiters take the default store in the web workers", got)
+			}
+			database, cluster := envValue(c.env, "DATABASE_URL"), envValue(c.env, "CLUSTER_LOCK_DSN")
+			if cluster == "" {
+				t.Fatalf("the Mbin .env does not set CLUSTER_LOCK_DSN:\n%s", c.env)
+			}
+			if cluster != database {
+				t.Errorf("CLUSTER_LOCK_DSN = %q, want DATABASE_URL unchanged, %q", cluster, database)
+			}
+			if !strings.HasPrefix(cluster, "postgresql://") {
+				t.Errorf("CLUSTER_LOCK_DSN = %q; the fork's Doctrine connection parses only a plain postgresql:// URL", cluster)
+			}
+			if !strings.Contains(cluster, c.host) {
+				t.Errorf("CLUSTER_LOCK_DSN = %q does not reach the database at %s", cluster, c.host)
+			}
+			for _, key := range []string{"LOCK_DSN", "CLUSTER_LOCK_DSN"} {
+				if n := strings.Count(c.env, "\n"+key+"="); n != 1 {
+					t.Errorf("the Mbin .env sets %s %d times, want once", key, n)
+				}
+			}
+		})
+	}
+}
+
+// envValue is the value of key in a rendered .env, or empty when it is unset.
+func envValue(env, key string) string {
+	for _, line := range strings.Split(env, "\n") {
+		if v, ok := strings.CutPrefix(line, key+"="); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 // Mbin's sign in comes back to the fork's verify route, and the .env says so,
@@ -2104,7 +2284,7 @@ func TestMbinOAuthKeypairIsRenderedForEveryAppsSite(t *testing.T) {
 		compose := files[path].Content
 		for _, service := range []string{"app", "messenger"} {
 			block := compose[strings.Index(compose, "\n  "+service+":\n"):]
-			block = block[:strings.Index(block[1:], "\n  amqproxy:\n")+1]
+			block = block[:strings.Index(block[1:], "\n  valkey:\n")+1]
 			if service == "app" {
 				block = block[:strings.Index(block, "\n  messenger:\n")]
 			}

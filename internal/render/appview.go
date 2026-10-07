@@ -217,6 +217,10 @@ func (v appValues) SettingBool(key string, fallback bool) bool {
 	return fallback
 }
 
+// MbinQueue is the queue backend an Mbin app's settings choose, with the
+// toolkit's default, so a template never repeats the default itself.
+func (v appValues) MbinQueue() string { return kinds.MbinQueue(v.set) }
+
 // Image returns the reference a service runs, so a compose template never
 // decides for itself.
 func (v appValues) Image(service string) string { return v.App.Images[service] }

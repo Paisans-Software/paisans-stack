@@ -15,7 +15,8 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 
 validate, init and render touch nothing outside the working directory.
 `host prepare`, `apply`, `prune`, `site add`, `storage init`, `storage add`,
-`app admin create` and `oidc client create` reach a machine, and each changes
+`storage rotate-key`, `app admin create` and `oidc client create` reach a
+machine, and each changes
 it only with `--execute`. `preflight`
 reaches every site and never changes one; `failover test` changes which site
 is primary, only with `--execute`. `dns init` and `dns prune` reach no
@@ -32,6 +33,7 @@ paisans apply    --site home-a --execute  # does it
 paisans prune    --site home-a            # lists dangling volumes, and which go
 paisans preflight --site home-b           # site add's read only checks
 paisans storage add                       # every Garage stage, from live state
+paisans storage rotate-key --app talk     # replaces one app's S3 key, staged
 paisans failover test                     # checks, and prints the plan
 paisans dns init                          # shows which records it would create
 paisans dns prune                         # shows which records it would delete
@@ -387,6 +389,40 @@ a reset interrupted between rewriting and starting, the order rule, a site
 with no `garage.toml`, a join without a reset, the probe's secret, and a
 shortfall in object counts.
 
+## `storage rotate-key`
+
+`internal/rotatekey` has the same shape as `internal/storageadd`: Build reads
+the secrets and Garage and changes nothing, each stage carries its steps and a
+gate, Execute runs the steps only when there are some and the gate always. The
+rules are in `README.md` under *Replacing an app's key*. What is easy to undo
+by accident:
+
+* **The resume state is the secrets file.** A previous pair beside the current
+  one means a rotation is in progress. Nothing generates a pair while one
+  exists, and half a pair, or a previous key equal to the current one, is
+  refused before Garage is asked anything.
+* **The deletion is last and is never skipped to.** A failure at any stage
+  before it must leave the old key in Garage and granted; a test fails each
+  stage in turn and asserts that, then resumes.
+* **Keys are matched by ID only.** `garage key info`, `key delete` and
+  `bucket allow` take a pattern that matches an ID prefix or an exact name
+  (`src/model/key_table.rs`, `KeyFilter::MatchesAndNotDeleted`, at v1.0.1),
+  so the code passes a full ID every time, and the grant check reads only the
+  ID column of `bucket info`.
+* **The switch is `apply` itself.** `cmd/paisans` implements
+  `rotatekey.Switch` with `planSiteApply`, the function `runApply` uses, and
+  `apply.Only`. A second way of writing an app's `.env` would leave the
+  manifest stale.
+* **Secrets stay out of output.** `key import` takes the secret positionally,
+  so it goes through `garage.ImportStep`, whose failures are redacted; the
+  probe sends the key on curl's stdin through `garage.S3Object`. A test
+  asserts that no other command carries either secret.
+
+The tests run Garage's keys and grants, the secrets file and each site's
+running key in maps: a whole rotation's order, a dry run that changes nothing,
+a resume after a failure at every stage and after the deletion, and the
+refusals.
+
 ## `dns init`, `dns prune`, and why init can only create
 
 `dns init` is the one command that talks to something other than a host or the
@@ -706,6 +742,29 @@ before.
   (Eg: `10.44.0.1:5000`), never `127.0.0.1`, which inside the app's container
   is the container itself. A pinned app gets its own container: an app that is
   pinned must be pinned all the way down.
+* **Failover and the 503 live in the gateway file**, as the named snippets
+  `upstream_failover` and `upstream_unavailable`, not in each kind. A kind's
+  snippet imports `upstream_failover` when it has more than one upstream and
+  never sets `lb_policy` itself; every host block imports
+  `upstream_unavailable`. `TestMultiSiteAppsShareOneFailoverSetting` and
+  `TestEveryHostBlockAnswers503WhenNoSiteCan` hold both. README's "Failing
+  over, and saying so when nothing can serve" has the reasoning.
+* **Mbin's `LOCK_DSN` stays `flock`**, and only `CLUSTER_LOCK_DSN` points at
+  the database. Every Symfony rate limiter takes the default lock store in
+  FrankenPHP's long lived web workers, where a database store's private
+  connection is never reopened once HAProxy closes it; a first version of this
+  change made exactly that mistake. `CLUSTER_LOCK_DSN` is `DATABASE_URL`
+  unchanged, for the fork's planned named `cluster` lock resource, and is inert
+  until a fork release reads it. `TestMbinSplitsItsLocks` asserts both for
+  clustered and pinned placement. `README.md` has the reasoning under "Mbin's
+  locks are split: flock by default, Postgres for the few that cross sites".
+* **Mbin's queues default to Postgres** (`settings.queue`, `kinds.MbinQueue`),
+  with no broker in the stack; `queue: rabbitmq` renders the broker stack as
+  before. `TestMbinQueuesInPostgresByDefault` and `TestMbinRabbitMQIsAnOptIn`
+  hold both, and `validate` refuses an unknown value and warns for RabbitMQ on
+  more than one apps site. The default needs a paisans fork image with the
+  Doctrine transport decorator. README: "Mbin's queues are in Postgres by
+  default".
 * **A published port binds the site's mesh address**, never every interface,
   because Docker's iptables rules bypass a host firewall. A test walks every
   rendered compose file to confirm it.
