@@ -310,6 +310,16 @@ is why `internal/acme` holds the exact lines for each provider rather than
 building one shared form (github.com/caddy-dns/cloudflare, README "Caddyfile"
 section; github.com/caddy-dns/desec, README "Caddyfile" section).
 
+**After an apply that acted on a Pocket ID stack running on more than one site,
+every one of those sites is asked whether its instance is active.** Each
+stack passed its own gate whether it is active or on standby, so this is the
+only check that can see two active or none. It lives in `cmd/paisans`
+(`checkStandby`) rather than in `apply.Execute`, because it reaches other
+sites and `Execute` is one site's. The rule is `apply.OneActive`, shared with
+`failover test` and with the admin commands, which use it to find the site
+to call. README: "Pocket ID runs on every apps site, and one of them is
+active".
+
 ## `site add`, and why it is not a loop of applies
 
 ```
@@ -569,6 +579,21 @@ through both nodes. A second grows to three nodes at replication 3, one a
 the Docker tests run alone and at real timing: the fake-cluster tests, whose
 `TestMain` makes every wait instant, are left out of that build. It runs its probe in `curlimages/curl`, which it pulls.
 
+Pocket ID's standby wrapper has Docker tests of its own, behind their own tag:
+
+```
+go test -tags standby_integration -timeout 10m -run TestStandbyWrapper ./internal/render/
+```
+
+Four run the rendered wrapper in the pinned Pocket ID image, through the
+image's entrypoint and `su-exec`, with a fake `/app/pocket-id` bind mounted
+over the binary: standing by and then serving, a prompt stop that reaches the
+child, any other exit passed on, and the 50 line window. The fifth runs two
+real instances against a `postgres:17-alpine` and stops the active one. Rerun
+it whenever the Pocket ID image is bumped: it is what proves the marker
+against the binary. The image is `linux/amd64`, emulated on an arm64
+workstation.
+
 ## Fixtures and secrets
 
 `internal/render/testdata/secrets.fixture.yaml` is plaintext on purpose. Every
@@ -774,6 +799,16 @@ before.
   more than one apps site. The default needs a paisans fork image with the
   Doctrine transport decorator. README: "Mbin's queues are in Postgres by
   default".
+* **Pocket ID's standby is keyed on its log text**, pinned per image in
+  `kinds.PocketIDStandbyMarker`. `TestDefaultPocketIDImageHasItsStandbyMarker`
+  fails on an image bump until the new text is recorded; record it from the
+  release's `bootstrap.go`, then run the `standby_integration` tests above.
+  The instance check asks for the wrapper's state file **before** `/healthz`:
+  a standby's port is closed, so the other order reads every standby as
+  down. `TestTheInstanceQuestionAsksTheStateFileThenTheMeshPort` holds the
+  order. And the compose file names the image's entrypoint and command as the
+  wrapper's arguments because setting `entrypoint` clears the image's
+  command; dropping them leaves the wrapper running nothing.
 * **A published port binds the site's mesh address**, never every interface,
   because Docker's iptables rules bypass a host firewall. A test walks every
   rendered compose file to confirm it.
@@ -807,6 +842,11 @@ pushes files, brings up `wg0`, creates clustered apps' roles and databases, and
 takes the narrowest action that makes the rest live. `site add` has never been
 run against a real host, so every command it sends is reasoned from upstream
 source and documentation, not observed.
+
+Pocket ID on more than one apps site has run only in containers on one
+machine: two real instances against one Postgres, through the rendered
+wrapper and compose file. It has not run across the mesh, so the gateway's
+handling of a standby's closed port is reasoned, not observed.
 
 Mbin's media reverse proxy is rendered, as one of the per app media
 hostnames: each kind that stores objects ships a `caddy.snippet.media.tmpl`,

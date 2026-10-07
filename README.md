@@ -2405,6 +2405,101 @@ Rejected:
 * **An inbox journal table in the fork.** Protects inbound activities only, and
   is custom code where the Doctrine transport already exists.
 
+### Pocket ID runs on every apps site, and one of them is active
+
+Pocket ID v2.14.0 admits one instance per database. Its actor runtime,
+francis, caps the hosts a database may register at one unless
+`EnvConfig.HAEnabled` (`backend/internal/bootstrap/actors_bootstrap.go:47-53`),
+and that field is "intentionally not bound to an environment variable while
+HA support is still being completed" (`internal/common/env_config.go:91-94`).
+A second instance is refused at admission, which counts only hosts whose last
+health check is within 90 s with HA off (francis v0.1.0-beta.23,
+`components/postgres/postgres-cluster.go:55-93`), logs "it appears that
+there's already one instance of Pocket ID running" and exits 1, the status of
+every other failure (`bootstrap.go:126-128`, `cmds/root.go:21-24`). A
+refused instance never starts its router (`bootstrap.go:121`), so its port is
+closed.
+
+So Pocket ID with `cluster` placement renders on every apps site like any
+other clustered app, and every site runs it through a standby wrapper,
+`/srv/<app>/paisans-standby.sh`, mounted read only and set as the service's
+entrypoint, with the image's own entrypoint and command as its arguments:
+
+* it streams the child's output to the container's log, keeping the last 50
+  lines;
+* it forwards a stop to the child as SIGTERM, so an active instance shuts down
+  cleanly and deregisters (francis `host/local/host.go:377-393`), and
+  `stop_grace_period` is 30 s so that outlasts Pocket ID's own 10 s actor grace;
+* on a non zero exit whose last lines carry the refusal, it touches
+  `/tmp/paisans-standby`, waits `PAISANS_STANDBY_RETRY` seconds (15 by
+  default) and tries again;
+* on any other exit, it exits with the child's status.
+
+The healthcheck becomes `[ -f /tmp/paisans-standby ] || /app/pocket-id
+healthcheck`, so a standby is healthy, and `apply`'s gate passes it like any
+other stack. Whichever site starts first wins; when it stops cleanly, a
+standby takes over at its next retry, and when it dies, within the 90 s its
+registration takes to age plus a retry. Both were observed with two real
+v2.14.0 instances against one Postgres: a clean stop handed over in about two
+seconds at a 3 s retry, and a `docker kill` of the active one in 49 s.
+
+**The refusal text is pinned per image**, in `kinds.PocketIDStandbyMarker`,
+keyed by the whole reference as `kinds.ImageVolumes` is, so an image bump
+fails a test until somebody rereads `bootstrap.go`, and `validate` warns
+(`pocket-id-standby-marker-unknown`) for an operator's own image the table
+does not know. **It fails safe**: a marker that stops matching makes the
+wrapper exit like any other failure, Docker's restart policy retries it more
+slowly, and the standby site's stack reads `restarting`, which `apply`'s gate
+reports. Nothing runs twice; francis refuses the second instance either way.
+
+**Exactly one is active, and the toolkit checks it.** No one stack can see
+that, and the gateway answers from whichever site is first, so after any
+`apply --execute` that acted on the stack, and in `failover test`'s preflight
+and after each switchover, the toolkit asks every apps site the app runs on:
+
+```
+pocket-id auth: one active instance
+  home-a   active      /healthz answered on 10.44.0.1:1411
+  home-b   standby     another instance holds the database
+```
+
+A site is `standby` when the state file is present, `active` when `/healthz`
+answers on its mesh address (the address and port the gateway dials), `down`
+otherwise, and `absent` before it has the stack. None active is waited for, up
+to three minutes, then fails: sign in is down. Two active fails at once,
+since waiting would leave both serving. A site that cannot be reached is shown
+and not counted. `app admin create` and `oidc client create` call the active
+site the same way unless `--site` names one.
+
+**The gateway needs nothing new.** The route lists every apps site in order
+under `upstream_failover`, as every multi site app does, with no active
+health check. A request finds the active site by a dial to the standby's
+closed port, which is refused at once and marks only the standby down for
+`fail_duration`. That is reasoned from the closed port; Docker's userland
+proxy accepting a connection it cannot forward would turn it into a failed
+request instead, and the first multi site run should look.
+
+Rejected:
+
+* **Pinning Pocket ID to one site.** It gives up the failover that cluster
+  placement exists for, for the one service every other one signs in through.
+  *Worked example: should the identity provider live on the gateway?* argues
+  the same point from the other side.
+* **A lock or leader election of our own in front of it.** francis already
+  admits hosts atomically in Postgres, under a row lock on its cluster
+  configuration; a second election could disagree with it.
+* **Starting the second site's stack only on failover.** That is an
+  orchestrator, and the failover it would drive happens when the toolkit is
+  not running.
+
+**When upstream binds HA mode to a variable**, delete the wrapper and the
+healthcheck override and set it: every site then serves, and the check
+becomes "at least one active". Until then, Mbin on a second apps site has
+limits of its own, recorded in `docs/specs/2026-10-07-pocket-id-standby.md`:
+its cache is per site, its scheduled tasks run per site until the fork's
+scheduler lock lands, and the second site's web workers serve only during a
+failover. Its sessions are in Postgres and survive one.
+
 ### `apply` checks free space before it pulls
 
 A small host fills up with images. The first real host had a 10 GB root disk,
@@ -2714,7 +2809,9 @@ Pocket ID app without it, as it refuses one without its `ENCRYPTION_KEY`.
 
 A call goes from the workstation over the operator's own ssh to the site the
 app runs on, where `curl` calls the port Pocket ID publishes on the mesh
-address. The command line is one constant, `curl --silent --show-error
+address. On more than one apps site that is the site whose instance is active
+(see *Pocket ID runs on every apps site, and one of them is active*), unless
+`--site` names one. The command line is one constant, `curl --silent --show-error
 --globoff --config -`; the URL, the key and any request body are a curl
 configuration on stdin. A command line is in the process table, readable by
 every user on the host, for as long as it runs; stdin is not. `curl` runs on
@@ -2961,9 +3058,13 @@ resumes rather than restarting.
 with `roles: [data]` joining a running cluster of one, an existing site gaining
 the witness role in the same join, and **every site declaring an `endpoint`**.
 A site without one is refused, naming the relay design above, which is still a
-design: the first deployment that needs it builds it. Apps on the new site, a
-second Garage node and removing a site are out of scope too, each refused or
-left alone. `docs/specs/2026-10-07-site-add.md` is the approved specification.
+design: the first deployment that needs it builds it. A second Garage node
+and removing a site are out of scope too, each refused or left alone. Apps on
+the new site come after the join rather than in it, since no stage starts an
+app stack: give the site the `apps` role, `host prepare` and `apply` it, then
+`apply` the gateway, whose routes gain the site.
+Pocket ID stands by there while another site's instance is active (see
+*Pocket ID runs on every apps site, and one of them is active*). `docs/specs/2026-10-07-site-add.md` is the approved specification.
 
 ```
 paisans site add home-b             # every stage, its steps and its gate
