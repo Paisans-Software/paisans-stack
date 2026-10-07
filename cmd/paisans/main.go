@@ -38,6 +38,8 @@ Usage:
   paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                    [--ssh <destination>] [--overwrite <path>]... [--recreate <stack>]...
                    [--min-free <size>] [--keep-images] [--execute]
+  paisans site add <site> [--config paisans.yaml] [--secrets secrets.enc.yaml]
+               [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
@@ -62,6 +64,11 @@ Commands:
              Installs only what is missing. Writes nothing without --execute.
   apply      Compare one site's rendered artifacts with what is on that host
              and show what would change. Writes nothing without --execute.
+  site       add: join a new data site to the running cluster in six gated
+             stages: preflight, mesh, etcd (learners, then promoted), the
+             Patroni replica, synchronous mode, HAProxy. Reads every site
+             and plans only what differs, so a re-run resumes. Writes
+             nothing without --execute.
   storage    Provision object storage on a site: the cluster layout, each
              app's key, and its bucket. Creates only what is missing.
              Writes nothing without --execute.
@@ -83,8 +90,8 @@ Commands:
              secret in the secrets file. The secret is never printed.
              Writes nothing without --execute. Mbin only, so far.
 
-host prepare, apply, storage init, app admin create and oidc client create are
-the only commands that reach a host.
+host prepare, apply, site add, storage init, app admin create and oidc client
+create are the only commands that reach a host.
 Each reads it to plan, and changes it only with --execute. dns init reaches no
 host, only the DNS provider's API, and changes it only with --execute.
 Everything else writes files locally and stops.
@@ -111,6 +118,12 @@ func main() {
 			os.Exit(2)
 		}
 		err = runHostPrepare(os.Args[3:])
+	case "site":
+		if len(os.Args) < 3 || os.Args[2] != "add" {
+			fmt.Fprintf(os.Stderr, "paisans: site takes one subcommand, add\n\n%s", usage)
+			os.Exit(2)
+		}
+		err = runSiteAdd(os.Args[3:])
 	case "secrets":
 		err = runSecrets(os.Args[2:])
 	case "app":
