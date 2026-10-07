@@ -28,6 +28,8 @@ type Change struct {
 	// said so for that one path.
 	Overwritten bool
 	content     string
+	// before is what the host held, for a scoped plan's Rollback.
+	before string
 }
 
 // ChangeKind is what an apply will do to one file.
@@ -144,6 +146,12 @@ type Plan struct {
 	KeepImages bool
 	// images is what each stack of this site renders, from its compose file.
 	images map[string][]string
+	// scoped marks a plan built with Scope: it writes its files and syncs
+	// the mesh, and leaves every stack, gate and other file to its caller.
+	scoped bool
+	// recorded is the manifest as Build read it, which a scoped plan's own
+	// manifest write keeps for every file outside its scope.
+	recorded map[string]render.ManifestFile
 	// Progress receives what Execute decided along the way that is not an
 	// error, such as a replica leaving the database work to the leader. Nil
 	// discards it.
@@ -269,6 +277,7 @@ const wireguardProbe = "if ip link show wg0 >/dev/null 2>&1; then echo up; else 
 type Option func(*options)
 
 type options struct {
+	scope      []string
 	overwrite  []string
 	recreate   []string
 	minFree    int64
@@ -300,6 +309,23 @@ func Recreate(stacks ...string) Option {
 	return func(o *options) { o.recreate = append(o.recreate, stacks...) }
 }
 
+// Scope restricts an apply to the named files, as paths relative to the
+// site's root (Eg: etc/wireguard/wg0.conf). It is for a staged operation such
+// as `site add`, which has to move one file on every site and nothing else:
+// the new peer goes into wg0.conf on every site before etcd may change, and
+// HAProxy's backend list changes on a site whose patroni.env changed too,
+// where a whole apply would recreate the primary.
+//
+// A scoped plan compares, refuses on conflict and writes exactly like a whole
+// one, and records what it wrote in the same manifest, so a later apply sees
+// those files as its own. It plans no stack action, no gateway gate and no
+// image work, and does not read or write the record of owed actions: its
+// caller runs the one command the change needs. The manifest keeps every
+// entry outside the scope as it was.
+func Scope(paths ...string) Option {
+	return func(o *options) { o.scope = append(o.scope, paths...) }
+}
+
 // Build decides what one site's apply would do, without doing any of it.
 //
 // The order matters and is the whole design. Every file is compared against
@@ -323,9 +349,21 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	}
 	used := map[string]bool{}
 
-	recorded, err := readManifest(t)
+	entries, err := readManifestFiles(t)
 	if err != nil {
 		return nil, err
+	}
+	recorded := make(map[string]string, len(entries))
+	for path, entry := range entries {
+		recorded[path] = entry.SHA256
+	}
+	inScope := map[string]bool{}
+	for _, path := range o.scope {
+		inScope[strings.TrimPrefix(path, "/")] = true
+	}
+	if len(o.scope) > 0 {
+		out.scoped = true
+		out.recorded = entries
 	}
 
 	prefix := site + "/"
@@ -352,6 +390,9 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		if rel == render.ManifestName {
 			continue
 		}
+		if out.scoped && !inScope[rel] {
+			continue
+		}
 		remote := remoteRoot + rel
 
 		if rel == gatewayCaddyfile {
@@ -369,6 +410,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		if err != nil {
 			return nil, err
 		}
+		change.before = current
 		switch {
 		case !found:
 			change.Kind = Create
@@ -423,6 +465,23 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		if !used[path] {
 			return nil, fmt.Errorf("%s: --overwrite %s names no conflicting file. Only a file this site renders, and which differs from what the last apply recorded, can be overwritten", site, path)
 		}
+	}
+
+	if out.scoped {
+		for path := range inScope {
+			if !seenInScope(out.Changes, path) {
+				return nil, fmt.Errorf("%s: %s is not a file this site renders", site, path)
+			}
+		}
+		sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
+		if wireguard != nil {
+			step, err := wireguardStep(*wireguard, wireguardBefore, t)
+			if err != nil {
+				return nil, err
+			}
+			out.WireGuard = step
+		}
+		return out, nil
 	}
 
 	resumed, err := readPending(t)
@@ -799,40 +858,55 @@ func stackOrder(stacks map[string]bool) []string {
 	return out
 }
 
-// readManifest returns what the last apply recorded, keyed by path relative to
-// the site root. A host with no manifest is a first apply, which is ordinary.
-func readManifest(t Transport) (map[string]string, error) {
+// readManifestFiles returns what the last apply recorded, keyed by path
+// relative to the site root. A host with no manifest is a first apply, which
+// is ordinary.
+func readManifestFiles(t Transport) (map[string]render.ManifestFile, error) {
 	content, found, err := t.ReadFile(manifestPath)
 	if err != nil {
 		return nil, err
 	}
 	if !found {
-		return map[string]string{}, nil
+		return map[string]render.ManifestFile{}, nil
 	}
 	var m render.Manifest
 	if err := json.Unmarshal([]byte(content), &m); err != nil {
 		return nil, fmt.Errorf("%s is not readable as a manifest: %w\nIt records what the last apply wrote. Delete it to treat every file on this host as somebody else's, which is the safe reading", manifestPath, err)
 	}
-	out := make(map[string]string, len(m.Files))
+	out := make(map[string]render.ManifestFile, len(m.Files))
 	for _, file := range m.Files {
-		out[file.Path] = file.SHA256
+		out[file.Path] = file
 	}
 	return out, nil
 }
 
 // writeManifest records what is now on the host, so the next apply can tell its
 // own writes from somebody's edit.
+//
+// A whole plan records exactly what it renders. A scoped one starts from the
+// manifest it read and replaces only its own files, because the rest of the
+// site is still what the last whole apply wrote.
 func writeManifest(plan *Plan, t Transport) error {
-	var files []render.ManifestFile
+	entries := map[string]render.ManifestFile{}
+	if plan.scoped {
+		for path, entry := range plan.recorded {
+			entries[path] = entry
+		}
+	}
 	for _, change := range plan.Changes {
 		if change.Kind == Conflict {
 			continue
 		}
-		files = append(files, render.ManifestFile{
-			Path:   strings.TrimPrefix(change.Path, remoteRoot),
+		path := strings.TrimPrefix(change.Path, remoteRoot)
+		entries[path] = render.ManifestFile{
+			Path:   path,
 			SHA256: sum(change.content),
 			Mode:   fmt.Sprintf("%04o", change.Mode),
-		})
+		}
+	}
+	files := make([]render.ManifestFile, 0, len(entries))
+	for _, entry := range entries {
+		files = append(files, entry)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	data, err := json.MarshalIndent(render.Manifest{Version: 1, Files: files}, "", "  ")
