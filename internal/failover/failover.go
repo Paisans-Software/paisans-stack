@@ -309,14 +309,52 @@ func (r *runner) line(label, what, detail string) {
 	fmt.Fprintf(r.o.Out, "  %-8s %-8s %s\n", label, what, detail)
 }
 
+// databaseStack is one app stack on one apps site that reaches the database
+// through that site's HAProxy. that reach the database
+// through that site's HAProxy, as apply.ClusterDatabaseApps names them.
+type databaseStack struct{ site, app string }
+
+func (r *runner) databaseStacks() []databaseStack {
+	var out []databaseStack
+	placed := render.AppSites(r.cfg)
+	apps := apply.ClusterDatabaseApps(r.cfg)
+	for _, site := range r.cfg.AppsSites() {
+		for _, app := range apps {
+			for _, s := range placed[app] {
+				if s == site {
+					out = append(out, databaseStack{site: site, app: app})
+				}
+			}
+		}
+	}
+	return out
+}
+
+func restartCommand(app string) string {
+	return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml restart", app)
+}
+
 // printPlan is the dry run: what will run, where, and what it costs.
 func (r *runner) printPlan(leader, candidate string) {
 	out := r.o.Out
+	stacks := r.databaseStacks()
 	fmt.Fprintf(out, "\nplan\n")
-	fmt.Fprintf(out, "  1. on %s: %s\n", leader, SwitchoverCommand(leader, candidate))
-	fmt.Fprintf(out, "  2. gate: %s leads, %s streams from it, every app stack healthy and answering\n", candidate, leader)
-	fmt.Fprintf(out, "  3. on %s: %s\n", candidate, SwitchoverCommand(candidate, leader))
-	fmt.Fprintf(out, "  4. gate: %s leads, %s streams from it, every app stack healthy and answering\n", leader, candidate)
+	n := 0
+	for _, step := range []struct{ from, to string }{{leader, candidate}, {candidate, leader}} {
+		n++
+		fmt.Fprintf(out, "  %d. on %s: %s\n", n, step.from, SwitchoverCommand(step.from, step.to))
+		n++
+		fmt.Fprintf(out, "  %d. gate: %s leads, %s streams from it\n", n, step.to, step.from)
+		if len(stacks) > 0 {
+			n++
+			fmt.Fprintf(out, "  %d. restart the apps that use the cluster database, on every apps site: the leader change dropped their connections\n", n)
+			for _, st := range stacks {
+				fmt.Fprintf(out, "       on %s: %s\n", st.site, restartCommand(st.app))
+			}
+		}
+		n++
+		fmt.Fprintf(out, "  %d. gate: every app stack healthy and answering\n", n)
+	}
 	fmt.Fprintf(out, "\nexpected interruption, twice: writes fail from the moment the old primary\n")
 	fmt.Fprintf(out, "demotes until the new one is promoted and each site's HAProxy marks it up.\n")
 	fmt.Fprintf(out, "HAProxy asks every member's /primary every 3 s and needs 2 passes (inter 3s,\n")
@@ -324,6 +362,10 @@ func (r *runner) printPlan(leader, candidate string) {
 	fmt.Fprintf(out, "to the old primary are closed when it is marked down (on-marked-down\n")
 	fmt.Fprintf(out, "shutdown-sessions), so apps must reconnect. Reads through HAProxy pause too: it\n")
 	fmt.Fprintf(out, "routes only to the primary.\n")
+	if len(stacks) > 0 {
+		fmt.Fprintf(out, "Not every app reconnects (Mbin's workers do not), so each app above is\n")
+		fmt.Fprintf(out, "restarted after each switch, a further outage of a few seconds per app.\n")
+	}
 }
 
 // switchover runs one switch and waits for its gate.
@@ -340,20 +382,51 @@ func (r *runner) switchover(from, to string) error {
 	return r.gate(from, to)
 }
 
-// gate waits until the candidate leads, the old leader streams from it, and
-// every app is healthy and answering. It polls rather than looking once,
-// because each of those settles a few seconds apart, and stops at gateWait
-// with what was still failing.
+// gate waits until the candidate leads and the old leader streams from it,
+// restarts every app that uses the cluster database on every apps site, then
+// waits until every app is healthy and answering. It polls rather than
+// looking once, because each of those settles a few seconds apart, and stops
+// at gateWait with what was still failing.
+//
+// The restart is on every apps site, not only the old primary's: a leader
+// change closes every client connection to the old primary wherever the client
+// runs, and an app whose workers never reconnect (Mbin's FrankenPHP workers,
+// found after a real HAProxy restart) answers 500 until it is restarted, with
+// a container its own healthcheck still calls healthy. It waits for the
+// cluster first, so that the apps start against the new primary.
 func (r *runner) gate(from, to string) error {
+	if err := r.poll(from, to, func() []string { return r.clusterGate(from, to) }); err != nil {
+		return err
+	}
+	fmt.Fprintf(r.o.Out, "  cluster settled: %s leads, %s streams\n", to, from)
+	for _, st := range r.databaseStacks() {
+		t, ok := r.o.Transports[st.site]
+		if !ok {
+			return fmt.Errorf("failover test stopped after switching %s to %s: no transport for %s to restart %s, so nothing after it ran", from, to, st.site, st.app)
+		}
+		out, err := t.Run(restartCommand(st.app))
+		if err != nil {
+			return fmt.Errorf("failover test stopped after switching %s to %s: restarting %s on %s failed, so nothing after it ran: %s", from, to, st.app, st.site, firstLine(out, err))
+		}
+		fmt.Fprintf(r.o.Out, "  restarted %s on %s\n", st.app, st.site)
+	}
+	if err := r.poll(from, to, func() []string { return r.gateProblems(from, to) }); err != nil {
+		return err
+	}
+	fmt.Fprintf(r.o.Out, "  gate passed: %s leads, %s streams, every app healthy and answering\n", to, from)
+	return nil
+}
+
+// poll looks at problems until there are none or gateWait has passed.
+func (r *runner) poll(from, to string, problems func() []string) error {
 	attempts := int(gateWait / gatePoll)
 	if attempts < 1 {
 		attempts = 1
 	}
 	var last []string
 	for i := 0; i < attempts; i++ {
-		last = r.gateProblems(from, to)
+		last = problems()
 		if len(last) == 0 {
-			fmt.Fprintf(r.o.Out, "  gate passed: %s leads, %s streams, every app healthy and answering\n", to, from)
 			return nil
 		}
 		if i < attempts-1 {
@@ -368,6 +441,15 @@ func (r *runner) gate(from, to string) error {
 // gateProblems is one look at the gate's conditions, quietly: progress lines
 // for every poll would bury the one that matters.
 func (r *runner) gateProblems(from, to string) []string {
+	problems := r.clusterGate(from, to)
+	quiet := *r
+	quiet.o.Out = io.Discard
+	return append(problems, quiet.appProblems()...)
+}
+
+// clusterGate is the cluster's half of the gate: the candidate leads and the
+// old leader streams from it.
+func (r *runner) clusterGate(from, to string) []string {
 	c, err := r.cluster()
 	if err != nil {
 		return []string{err.Error()}
@@ -387,9 +469,7 @@ func (r *runner) gateProblems(from, to string) []string {
 		}
 		problems = append(problems, fmt.Sprintf("%s is %s, not streaming", from, state))
 	}
-	quiet := *r
-	quiet.o.Out = io.Discard
-	return append(problems, quiet.appProblems()...)
+	return problems
 }
 
 func firstLine(out string, err error) string {

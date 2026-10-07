@@ -26,6 +26,8 @@ type world struct {
 	ignore    bool // a switchover that patronictl accepts and Patroni never does
 	unhealthy map[string]bool
 	ran       []string
+	// failRestart names an app whose restart fails.
+	failRestart string
 }
 
 func newWorld() *world {
@@ -78,6 +80,11 @@ func (h host) Run(command string) (string, error) {
 			w.leader = strings.Fields(command[i+len("--candidate "):])[0]
 		}
 		return "Successfully switched over", nil
+	case strings.HasSuffix(command, "/compose.yaml restart"):
+		if w.failRestart != "" && strings.Contains(command, "/srv/"+w.failRestart+"/") {
+			return "Error response from daemon: no such container", errors.New("exit status 1")
+		}
+		return "", nil
 	case strings.Contains(command, " ps --all --format json"):
 		stack := strings.TrimPrefix(strings.Fields(command)[3], "/srv/")
 		stack = strings.TrimSuffix(stack, "/compose.yaml")
@@ -278,5 +285,104 @@ func TestOneDataSiteIsRefused(t *testing.T) {
 	cfg.Cluster.Sites = []string{"home-a"}
 	if err := Run(cfg, o); err == nil || !strings.Contains(err.Error(), "another data site") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// After each switch passes its cluster gate, every app that uses the cluster
+// database is restarted on every apps site, since a leader change drops every
+// client's connection to the old primary wherever the client runs; then the
+// apps are checked. A pinned app is left alone.
+func TestEachSwitchRestartsTheDatabaseAppsOnEveryAppsSite(t *testing.T) {
+	cfg, w, o, _ := setup(t, ok)
+	b := cfg.Sites["home-b"]
+	b.Roles = append(b.Roles, config.RoleApps)
+	cfg.Sites["home-b"] = b
+	pinned := cfg.Apps["blog"]
+	pinned.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-a"}
+	cfg.Apps["blog"] = pinned
+	o.Execute = true
+	var out strings.Builder
+	o.Out = &out
+	if err := Run(cfg, o); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	for _, want := range []string{
+		"restart the apps that use the cluster database, on every apps site",
+		"on home-a: docker compose -f /srv/auth/compose.yaml restart",
+		"on home-b: docker compose -f /srv/auth/compose.yaml restart",
+		"restarted auth on home-b",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output does not say %q:\n%s", want, out.String())
+		}
+	}
+
+	// Per switch: the switchover, the cluster settling, the restarts on both
+	// sites, then the apps gate.
+	var switches []int
+	for i, c := range w.ran {
+		if strings.Contains(c, "patronictl") {
+			switches = append(switches, i)
+		}
+	}
+	if len(switches) != 2 {
+		t.Fatalf("switchovers at %v", switches)
+	}
+	for n, start := range switches {
+		end := len(w.ran)
+		if n+1 < len(switches) {
+			end = switches[n+1]
+		}
+		window := w.ran[start:end]
+		restarts := map[string]int{}
+		firstRestart, lastRestart, firstPs := -1, -1, -1
+		for i, c := range window {
+			if strings.HasSuffix(c, "/compose.yaml restart") {
+				restarts[c]++
+				if firstRestart < 0 {
+					firstRestart = i
+				}
+				lastRestart = i
+			}
+			if strings.Contains(c, "ps --all") && firstPs < 0 {
+				firstPs = i
+			}
+		}
+		if restarts["home-a: docker compose -f /srv/auth/compose.yaml restart"] != 1 || restarts["home-b: docker compose -f /srv/auth/compose.yaml restart"] != 1 || len(restarts) != 2 {
+			t.Errorf("switch %d restarted %v", n+1, restarts)
+		}
+		cluster := -1
+		for i, c := range window {
+			if strings.Contains(c, "/cluster") {
+				cluster = i
+				break
+			}
+		}
+		if cluster < 0 || cluster > firstRestart {
+			t.Errorf("switch %d restarted the apps before reading the cluster", n+1)
+		}
+		if firstPs < lastRestart {
+			t.Errorf("switch %d checked an app before every restart was done", n+1)
+		}
+	}
+}
+
+// A restart that fails stops the test where it is.
+func TestAFailedAppRestartStops(t *testing.T) {
+	cfg, w, o, _ := setup(t, ok)
+	w.failRestart = "auth"
+	o.Execute = true
+	err := Run(cfg, o)
+	if err == nil || !strings.Contains(err.Error(), "restarting auth on home-a failed") {
+		t.Fatalf("got %v", err)
+	}
+	var switches int
+	for _, c := range w.ran {
+		if strings.Contains(c, "patronictl") {
+			switches++
+		}
+	}
+	if switches != 1 {
+		t.Fatalf("ran %d switchovers, want the first only", switches)
 	}
 }

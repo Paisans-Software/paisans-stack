@@ -2539,12 +2539,22 @@ does not pass stops it where it is rather than switching back blind.
    means now. The config path is the one Spilo runs Patroni with
    (`postgres-appliance/runit/patroni/run`, at every Spilo tag the toolkit
    pins), a link to the `/run/postgres.yml` Spilo writes at start.
-3. **Gate.** Polled for up to three minutes: the candidate leads, the old
-   leader is `streaming`, and every app is healthy and answering again. The
-   gate reads `/cluster` rather than trusting patronictl's exit status,
-   because when Patroni refuses a switchover patronictl prints `Switchover
-   failed` and exits normally.
-4. **Switch back**, the same way, through the same gate.
+3. **Gate.** Polled for up to three minutes: the candidate leads and the old
+   leader is `streaming`. The gate reads `/cluster` rather than trusting
+   patronictl's exit status, because when Patroni refuses a switchover
+   patronictl prints `Switchover failed` and exits normally.
+4. **Restart the database apps.** Every app with `cluster` placement and a
+   kind that uses Postgres is restarted on **every** apps site (`docker
+   compose -f /srv/<app>/compose.yaml restart`), not only the old primary's:
+   a leader change closes every client's connection to the old primary
+   wherever the client runs, and an app whose workers never reconnect, as
+   Mbin's do not (see "`apply` restarts the apps whose database path
+   changed"), answers 500 until restarted while its container stays
+   `healthy`. A pinned app has its own Postgres and is left alone. A failed
+   restart stops the test there.
+5. **Gate.** Polled for up to three minutes: the cluster still as above, and
+   every app healthy and answering again.
+6. **Switch back**, the same way, through the same gates and restarts.
 
 It is a dry run by default, which prints the checks, both commands and the
 expected interruption: writes fail from the old primary's demotion until each
@@ -2552,7 +2562,9 @@ site's HAProxy marks the new one up, which with the rendered `inter 3s` and
 `rise 2` is several seconds after promotion, twice. Connections to the old
 primary are closed when it is marked down (`on-marked-down
 shutdown-sessions`), and reads through HAProxy pause too, since it routes only
-to the primary.
+to the primary. The plan lists each app restart after each switch, a further
+few seconds per app. Waiting for each app to reconnect on its own was
+rejected: some never do, and their healthchecks do not notice.
 
 ## Moving the gateway
 
