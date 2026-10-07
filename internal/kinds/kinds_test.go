@@ -127,6 +127,7 @@ func TestEachKindsConfigFileAndFormat(t *testing.T) {
 		config.KindWriteFreely: {kinds.ConfigINI, "config.ini"},
 		config.KindSynapse:     {kinds.ConfigYAML, "homeserver.yaml"},
 		config.KindElement:     {kinds.ConfigJSON, "config.json"},
+		config.KindUptime:      {kinds.ConfigEnv, ".env"},
 	}
 	for _, kind := range config.Kinds() {
 		want, known := cases[kind]
