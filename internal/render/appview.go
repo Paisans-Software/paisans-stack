@@ -138,9 +138,12 @@ type s3Values struct {
 	// half-built URL.
 	PublicBase string
 
-	// GarageAddress is the Garage node the gateway proxies a media hostname
-	// to, over the mesh. It is the same node Endpoint names.
-	GarageAddress string
+	// GarageAddresses is every Garage node, in storage.garage.sites order,
+	// that the gateway proxies a media hostname to over the mesh. The first
+	// is the node Endpoint names and serves while it is up; the rest stand
+	// by, so losing one site does not take media down while another holds
+	// the data.
+	GarageAddresses []string
 
 	// WebHost is the Host Garage's web endpoint resolves this app's bucket
 	// from: the bucket name under an internal suffix that resolves nowhere.
@@ -264,13 +267,13 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		// over the mesh. Outline never uses it: its uploads are a presigned
 		// POST the browser submits directly, so for Outline every upload and
 		// every read goes through PublicBase, not here.
-		Endpoint:       s3Endpoint,
-		GarageAddress:  garage,
-		AccessKeyID:    v.Secret("s3_access_key_id"),
-		SecretKey:      v.Secret("s3_secret_access_key"),
-		Bucket:         kinds.BucketName(planned.Name, app),
-		Region:         v.Setting("s3_region", "garage"),
-		ForcePathStyle: v.SettingBool("s3_force_path_style", true),
+		Endpoint:        s3Endpoint,
+		GarageAddresses: garageAddresses(p),
+		AccessKeyID:     v.Secret("s3_access_key_id"),
+		SecretKey:       v.Secret("s3_secret_access_key"),
+		Bucket:          kinds.BucketName(planned.Name, app),
+		Region:          v.Setting("s3_region", "garage"),
+		ForcePathStyle:  v.SettingBool("s3_force_path_style", true),
 	}
 	v.S3.WebHost = v.S3.Bucket + webEndpointSuffix
 	// Set only for a kind that stores objects, so a kind that stores nothing

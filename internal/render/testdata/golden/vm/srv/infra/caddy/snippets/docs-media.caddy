@@ -28,4 +28,15 @@ header {
 	defer
 	X-Content-Type-Options nosniff
 }
-reverse_proxy 10.44.0.1:3900
+reverse_proxy 10.44.0.1:3900 10.44.0.2:3900 {
+	# Every Garage node, in storage.garage.sites order: the first serves while
+	# it is up. lb_try_duration sends a request whose connection failed to the
+	# next node, and a 503 is Garage saying it lost quorum. No active check on
+	# Garage's /health, which judges with the consistent write quorum whatever
+	# the configured mode, so at replication 2 on two nodes it calls the
+	# survivor unavailable while it serves every read.
+	lb_policy first
+	lb_try_duration 5s
+	fail_duration 10s
+	unhealthy_status 503
+}

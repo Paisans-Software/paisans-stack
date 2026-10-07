@@ -968,6 +968,8 @@ const publicMediaPolicy = "default-src 'none'; style-src 'unsafe-inline'; sandbo
 //  5. Outline's key asked for on talk-media. Not Outline's object: talk-media
 //     resolves to talk's bucket whatever the path says, so one app's media
 //     hostname cannot be used to reach another app's bucket.
+//  6. talk's object again with the first listed Garage node stopped. 200
+//     and the bytes, from the second node.
 func TestEachAppsMediaHostnameServesOnlyItsOwnBucket(t *testing.T) {
 	cfg, secrets := fixtureDeployment(t)
 	cluster := startMediaCluster(t)
@@ -1053,20 +1055,21 @@ func TestEachAppsMediaHostnameServesOnlyItsOwnBucket(t *testing.T) {
 		t.Errorf("talk's media hostname must not reach Outline's bucket, got %d:\n%s", status, body)
 	}
 
-	// 4. The first listed node gone. The media routes name every Garage node
-	// in storage.garage.sites order, so the gateway must find the object on
-	// the second: the request that meets the dead node is retried there
-	// (lb_try_duration), and every node holds a copy at replication 2.
+	// 6. The first listed node gone. Every media hostname names the Garage
+	// nodes in storage.garage.sites order, so the gateway must find talk's
+	// object on the second: the request that meets the dead node is retried
+	// there (lb_try_duration), and both nodes hold a copy at replication 2.
 	// Asserted at once, without waiting for Garage to notice the node is
 	// down, because a reader does not wait either.
 	if out, err := exec.Command("docker", "stop", cluster.Nodes[garageNodes[0].Site].container).CombinedOutput(); err != nil {
 		t.Fatalf("stopping %s: %v\n%s", garageNodes[0].Site, err, out)
 	}
+	talkHost := mediaHosts["talk"]
 	for i := 0; i < 3; i++ {
-		status, body = throughGateway(t, cluster, "/"+publicBucket+"/"+publicKey, "")
-		t.Logf("anonymous GET /%s/%s with %s stopped, attempt %d: HTTP %d", publicBucket, publicKey, garageNodes[0].Site, i+1, status)
-		if status != http.StatusOK || body != publicBody {
-			t.Errorf("with %s stopped, the gateway must serve %s from %s, got %d:\n%s", garageNodes[0].Site, publicBucket, garageNodes[1].Site, status, body)
+		status, _, body = throughGateway(t, cluster, talkHost, "/"+key, "")
+		t.Logf("anonymous GET %s/%s with %s stopped, attempt %d: HTTP %d", talkHost, key, garageNodes[0].Site, i+1, status)
+		if status != http.StatusOK || body != talkBody {
+			t.Errorf("with %s stopped, %s must serve talk's object from %s, got %d:\n%s", garageNodes[0].Site, talkHost, garageNodes[1].Site, status, body)
 		}
 	}
 }

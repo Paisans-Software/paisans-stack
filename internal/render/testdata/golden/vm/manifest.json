@@ -48,7 +48,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/blog-media.caddy",
-      "sha256": "96d69847b0c19f41499e4fd3416b08652f4e03776404ba5bf34d847891cb4e7b",
+      "sha256": "a86a4ca2490ae64dbf50d8d4019347156fb5822f6feec2622dd0634fb125d0f7",
       "mode": "0644"
     },
     {
@@ -68,7 +68,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/docs-media.caddy",
-      "sha256": "a767e3670256aff02c26af8ad512bf6823373186d057bc0299b4c3ebbad90137",
+      "sha256": "8e7c36bc41157d707340acd0c984a277b36925168eca49a83ee0025a5a3fee90",
       "mode": "0644"
     },
     {
@@ -88,7 +88,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/talk-media.caddy",
-      "sha256": "a802646f90418b405387fc58905fa68deac03108a447e29022d5d31a9b703e1e",
+      "sha256": "e9294a3439525cc3cc9cd86edb3ececb9c79e28ae0c5086809dca5e9dbebfa36",
       "mode": "0644"
     },
     {

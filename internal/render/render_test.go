@@ -1429,7 +1429,10 @@ func TestAPublicMediaHostnameGoesToTheWebEndpoint(t *testing.T) {
 	for app, bucket := range map[string]string{"talk": "talk-uploads", "blog": "blog-uploads"} {
 		snippet := files["vm/srv/infra/caddy/snippets/"+app+"-media.caddy"]
 		for _, want := range []string{
-			"reverse_proxy 10.44.0.1:3902 {",
+			// Every Garage node, in storage.garage.sites order, the first
+			// serving while it is up.
+			"reverse_proxy 10.44.0.1:3902 10.44.0.2:3902 {",
+			"lb_policy first",
 			"header_up Host " + bucket + ".web.garage.internal",
 			publicMediaPolicy,
 			"X-Content-Type-Options nosniff",
@@ -1455,8 +1458,8 @@ func TestAPublicMediaHostnameGoesToTheWebEndpoint(t *testing.T) {
 // a browser running its PDF viewer on the attachments Outline embeds.
 func TestOutlinesMediaHostnameGoesToTheS3APIWithHostUnchanged(t *testing.T) {
 	snippet := planFiles(build(t))["vm/srv/infra/caddy/snippets/docs-media.caddy"]
-	if !strings.Contains(snippet, "reverse_proxy 10.44.0.1:3900\n") {
-		t.Errorf("Outline's media hostname must reach the S3 API on 3900:\n%s", snippet)
+	if !strings.Contains(snippet, "reverse_proxy 10.44.0.1:3900 10.44.0.2:3900 {\n") || !strings.Contains(snippet, "lb_policy first") {
+		t.Errorf("Outline's media hostname must reach the S3 API on 3900, on every Garage node in order:\n%s", snippet)
 	}
 	if strings.Contains(snippet, ":3902") {
 		t.Errorf("Outline's media hostname must never reach the anonymous web endpoint:\n%s", snippet)

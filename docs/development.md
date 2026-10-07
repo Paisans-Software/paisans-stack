@@ -341,7 +341,8 @@ accident:
   into the error, which is the worst case.
 * **The media routes are rendered after the join, not before.** A node with no
   role answers every bucket as missing, and the routes prefer the first
-  listed node.
+  listed node. The stage writes every `<app>-media.caddy` the gateway renders,
+  one per app that stores objects.
 
 The tests in `internal/storageadd` run a Garage cluster in maps: each host's
 files, its node, its copy of the layout and the peers it has met, with output

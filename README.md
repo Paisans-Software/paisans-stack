@@ -1110,7 +1110,7 @@ replication reset when one is needed, connect, one layout version with each
 node in a zone named after its site (only distinct zones spread copies across
 sites), sync, provisioning planned by `storage init`'s own planner and found
 present, the gateway's media routes, and a smoke test that writes a probe and
-reads it back through every node and the media hostname. The design, with
+reads it back through every node and through the app's own media hostname. The design, with
 Garage v1.0.1's source behind each gate, is
 `docs/specs/2026-10-07-multisite-garage.md`.
 
@@ -1123,7 +1123,8 @@ blocking in the foreground, which leaves an operator's terminal hostage to a
 residential uplink.
 
 **`storage.garage.sites` is a preference order, not a set.** The first site
-serves every media read the gateway passes on and takes every app's writes
+serves every media read the gateway passes on, for every app's media
+hostname, and takes every app's writes
 (`S3_ENDPOINT`); the others serve only when the ones before them are down. A
 Garage node that receives a write sends the other copies itself, and a home
 line's upload is its slow direction, so the site with the best upload goes
@@ -1196,8 +1197,9 @@ paisans dns init --execute      # creates it
 ```
 
 **The records are derived, never declared.** Each app's `hostname`, each of its
-role `hostnames`, and `storage.media_hostname` get an A record pointing at the
-gateway site's `public_address`. A site whose `endpoint` is a name rather than
+role `hostnames`, and the media hostname of each app that stores objects,
+derived or declared, get an A record pointing at the gateway site's
+`public_address`. A site whose `endpoint` is a name rather than
 an address gets an A record pointing at that site's own `public_address`,
 because that is the name the other sites' WireGuard dials. Where a site also
 declares `public_address6`, each of its names gets an AAAA record as well. A

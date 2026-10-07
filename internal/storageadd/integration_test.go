@@ -26,6 +26,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/garage"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
 )
@@ -108,6 +109,8 @@ func (h *dockerHost) RunInput(command, stdin string) (string, error) {
 type gatewayHost struct {
 	dockerHost
 	first string
+	// buckets maps each app's media hostname to its bucket.
+	buckets map[string]string
 }
 
 func (g *gatewayHost) Run(command string) (string, error) {
@@ -115,8 +118,10 @@ func (g *gatewayHost) Run(command string) (string, error) {
 	case strings.Contains(command, "caddy validate"), strings.Contains(command, "caddy reload"):
 		return "", nil
 	case strings.Contains(command, "--resolve "):
-		m := regexp.MustCompile(`https://[^/]+/([^/]+)/(\S+)$`).FindStringSubmatch(command)
-		return g.dockerHost.Run(fmt.Sprintf("curl -fsS --max-time 20 -H 'Host: %s.web.garage.internal' http://%s:3902/%s", m[1], g.first, m[2]))
+		// An app's media hostname is its alone and the path is the object
+		// key, so the hostname says which bucket's web vhost to ask.
+		m := regexp.MustCompile(`https://([^/]+)/(\S+)$`).FindStringSubmatch(command)
+		return g.dockerHost.Run(fmt.Sprintf("curl -fsS --max-time 20 -H 'Host: %s.web.garage.internal' http://%s:3902/%s", g.buckets[m[1]], g.first, m[2]))
 	}
 	return g.dockerHost.Run(command)
 }
@@ -151,7 +156,7 @@ func renderFor(t *testing.T, cfg *config.Config, secrets *config.Secrets, hosts 
 	for _, site := range sites {
 		h := hosts[site]
 		for _, f := range rendered.Files {
-			if f.Path == site+"/"+apply.GarageConfig || f.Path == site+"/srv/infra/caddy/snippets/media.caddy" {
+			if f.Path == site+"/"+apply.GarageConfig || (strings.HasPrefix(f.Path, site+"/srv/infra/caddy/snippets/") && strings.HasSuffix(f.Path, "-media.caddy")) {
 				rel := strings.TrimPrefix(f.Path, site+"/")
 				if err := h.WriteFile("/"+rel, f.Content, 0o600); err != nil {
 					t.Fatal(err)
@@ -169,13 +174,15 @@ func recordManifest(t *testing.T, h *dockerHost) {
 	t.Helper()
 	var m render.Manifest
 	m.Version = 1
-	for _, rel := range []string{apply.GarageConfig, "srv/infra/caddy/snippets/media.caddy"} {
-		content, found, _ := h.ReadFile("/" + rel)
-		if !found {
-			continue
+	_ = filepath.Walk(h.local("/srv/infra"), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || strings.Contains(path, "/garage/meta/") || strings.Contains(path, "/garage/data/") {
+			return nil
 		}
-		m.Files = append(m.Files, render.ManifestFile{Path: rel, SHA256: sha(content), Mode: "0600"})
-	}
+		rel, _ := filepath.Rel(h.root, path)
+		content, _ := os.ReadFile(path)
+		m.Files = append(m.Files, render.ManifestFile{Path: rel, SHA256: sha(string(content)), Mode: "0600"})
+		return nil
+	})
 	data, _ := jsonMarshal(m)
 	if err := h.WriteFile("/srv/.paisans-manifest.json", data, 0o644); err != nil {
 		t.Fatal(err)
@@ -259,7 +266,7 @@ func TestStorageAddResetsAndJoinsRealGarage(t *testing.T) {
 	transports := map[string]apply.Transport{
 		"home-a": hosts["home-a"],
 		"home-b": hosts["home-b"],
-		"vm":     &gatewayHost{dockerHost: *hosts["vm"], first: addresses["home-a"]},
+		"vm":     &gatewayHost{dockerHost: *hosts["vm"], first: addresses["home-a"], buckets: mediaBuckets(cfg)},
 	}
 
 	// Without the flag: refused, nothing changed.
@@ -325,4 +332,15 @@ func waitAnswers(t *testing.T, h *dockerHost) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+func mediaBuckets(cfg *config.Config) map[string]string {
+	out := map[string]string{}
+	for _, name := range cfg.AppNames() {
+		app := cfg.Apps[name]
+		if media := kinds.MediaHostname(app, cfg.Community.Domain); media != "" {
+			out[media] = garage.BucketName(app, name)
+		}
+	}
+	return out
 }
