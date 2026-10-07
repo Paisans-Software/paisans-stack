@@ -138,24 +138,15 @@ func (p *Plan) publicProbe() *probe {
 	return nil
 }
 
-// s3Config is a curl configuration for one signed request to Garage's S3 API.
-// It travels on stdin, so the secret is never in a command line where `ps`
-// would show it.
+// s3Config is a curl configuration for one signed request to Garage's S3 API,
+// shaped by garage.S3Object. It travels on stdin, so the secret is never in a
+// command line where `ps` would show it.
 func (pr *probe) s3Config(method, address string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "url = \"http://%s:3900/%s/%s\"\n", address, pr.bucket, pr.key)
-	fmt.Fprintf(&b, "request = \"%s\"\n", method)
-	fmt.Fprintf(&b, "user = \"%s:%s\"\n", pr.keyID, pr.secret)
-	fmt.Fprintf(&b, "aws-sigv4 = \"aws:amz:%s:s3\"\n", pr.region)
-	b.WriteString("header = \"x-amz-content-sha256: UNSIGNED-PAYLOAD\"\n")
-	if method == "PUT" {
-		fmt.Fprintf(&b, "data-binary = \"%s\"\n", pr.body)
-	}
-	return b.String()
+	return garage.S3Object{Address: address, Bucket: pr.bucket, Key: pr.key, KeyID: pr.keyID, Secret: pr.secret, Region: pr.region}.CurlConfig(method, pr.body)
 }
 
 // curlStdin runs curl with its configuration on stdin.
-const curlStdin = "curl -fsS --max-time 20 -K -"
+const curlStdin = garage.CurlStdin
 
 func (pr *probe) redact(s string) string {
 	return strings.ReplaceAll(s, pr.secret, "[redacted]")
