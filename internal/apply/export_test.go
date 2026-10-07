@@ -39,3 +39,16 @@ func SSHCommand(t SSHTransport, command string) ([]string, func(), error) {
 	}
 	return cmd.Args, cleanup, nil
 }
+
+// SetStandbyWait shortens the wait for an active Pocket ID the same way, and
+// shares the same sleep.
+func SetStandbyWait(wait, poll time.Duration, sleeper func(time.Duration)) func() {
+	oldWait, oldPoll, oldSleep := standbyWait, standbyPoll, sleep
+	standbyWait, standbyPoll, sleep = wait, poll, sleeper
+	return func() { standbyWait, standbyPoll, sleep = oldWait, oldPoll, oldSleep }
+}
+
+// InstanceCommand exposes what a site is asked.
+func InstanceCommand(app, address string, port int) string {
+	return instanceCommand(app, address, port)
+}
