@@ -54,6 +54,13 @@ type fakeHost struct {
 	images string
 	// containers is what the containers' images probe prints: names and IDs.
 	containers string
+	// volumes is what each image declares, as `docker image inspect --format
+	// '{{json .Config.Volumes}}'` prints it. An image not in it declares
+	// nothing, which prints null.
+	volumes map[string]string
+	// pulled is every image `docker pull` was asked for. A pulled image is
+	// present from then on.
+	pulled []string
 }
 
 func newHost() *fakeHost { return &fakeHost{files: map[string]string{}, leader: "home-a"} }
@@ -76,8 +83,17 @@ func (h *fakeHost) Run(command string) (string, error) {
 	if h.fail != "" && strings.Contains(command, h.fail) {
 		return "refused by the fake host", fmt.Errorf("exit status 1")
 	}
+	if strings.Contains(command, ".Config.Volumes") {
+		return h.volumeProbe(command), nil
+	}
 	if strings.Contains(command, "docker image inspect") {
 		return h.imageProbe(command), nil
+	}
+	if ref, ok := strings.CutPrefix(command, "docker pull --quiet "); ok {
+		ref = strings.Trim(ref, "'")
+		h.pulled = append(h.pulled, ref)
+		delete(h.absent, ref)
+		return "", nil
 	}
 	if strings.Contains(command, "docker info --format") {
 		return "/var/lib/docker\n", nil
@@ -153,6 +169,25 @@ func (h *fakeHost) imageProbe(command string) string {
 		}
 		digest := sha256.Sum256([]byte(ref))
 		fmt.Fprintf(&b, "present sha256:%s %s\n", hex.EncodeToString(digest[:]), ref)
+	}
+	return b.String()
+}
+
+// volumeProbe answers the loop apply sends to ask what each image declares.
+func (h *fakeHost) volumeProbe(command string) string {
+	list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")
+	var b strings.Builder
+	for _, quoted := range strings.Fields(list) {
+		ref := strings.Trim(quoted, "'")
+		if h.absent[ref] {
+			fmt.Fprintf(&b, "absent %s\n", ref)
+			continue
+		}
+		declared := h.volumes[ref]
+		if declared == "" {
+			declared = "null"
+		}
+		fmt.Fprintf(&b, "volumes %s %s\n", ref, declared)
 	}
 	return b.String()
 }

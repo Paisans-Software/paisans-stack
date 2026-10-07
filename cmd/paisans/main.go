@@ -624,6 +624,12 @@ func printPlan(plan *apply.Plan) {
 	if plan.Disk != nil {
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "check", plan.Disk.Describe())
 	}
+	if plan.Volumes != nil {
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "check", plan.Volumes.Describe())
+		for _, u := range plan.Volumes.Uncovered {
+			fmt.Fprintf(os.Stdout, "  %-9s %s\n", "refuse", u.Describe())
+		}
+	}
 	var unchanged int
 	for _, change := range plan.Changes {
 		if change.Kind == apply.Unchanged {

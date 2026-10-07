@@ -23,9 +23,19 @@ func (emptyHost) Run(command string) (string, error) {
 	// own tests cover that.
 	if list, ok := strings.CutPrefix(command, "for r in "); ok {
 		list, _, _ = strings.Cut(list, "; do")
+		// The volume probe asks the same loop what each image declares:
+		// nothing, here.
+		answer := "present sha256:0123456789abcdef "
+		if strings.Contains(command, ".Config.Volumes") {
+			answer = "volumes "
+		}
 		var out strings.Builder
 		for _, ref := range strings.Fields(list) {
-			out.WriteString("present sha256:0123456789abcdef " + strings.Trim(ref, "'") + "\n")
+			out.WriteString(answer + strings.Trim(ref, "'"))
+			if answer == "volumes " {
+				out.WriteString(" null")
+			}
+			out.WriteString("\n")
 		}
 		return out.String(), nil
 	}

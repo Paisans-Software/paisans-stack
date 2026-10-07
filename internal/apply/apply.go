@@ -152,6 +152,10 @@ type Plan struct {
 	// as Build saw them. Execute reads the host again after each stack is
 	// healthy, and removes only what no container uses by then.
 	Prunes []Prune
+	// Volumes is the check of every acted on image's declared volumes
+	// against what its service mounts, nil when no stack moves. Any uncovered
+	// path refuses the apply before anything is written. See VolumeCheck.
+	Volumes *VolumeCheck
 	// KeepImages skips pruning for this run, as --keep-images does.
 	KeepImages bool
 	// images is what each stack of this site renders, from its compose file.
@@ -719,6 +723,20 @@ func Execute(plan *Plan, t Transport) error {
 	// first write, leaves the host exactly as it was.
 	if plan.Disk.Short() {
 		return diskRefusal(plan)
+	}
+
+	// An image declaring a volume its service does not mount leaks an
+	// anonymous volume on every recreate. Refuse before the first write, and
+	// pull what Build could not inspect first, which is the one pull `up -d`
+	// would have made anyway.
+	if plan.Volumes != nil && len(plan.Volumes.Uncovered) > 0 {
+		return volumeRefusal(plan)
+	}
+	if err := settleOwedVolumes(plan, t); err != nil {
+		return err
+	}
+	if plan.Volumes != nil && len(plan.Volumes.Uncovered) > 0 {
+		return volumeRefusal(plan)
 	}
 
 	// Record what this apply owes before writing anything. Files that land

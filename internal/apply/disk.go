@@ -259,6 +259,9 @@ func (p *Plan) probeImages(need int64, t Transport) error {
 	if err != nil {
 		return err
 	}
+	if err := p.probeVolumeCheck(ids, t); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	var pulls []string
 	for _, action := range p.Actions {
