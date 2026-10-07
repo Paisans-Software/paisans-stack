@@ -13,7 +13,12 @@
     },
     {
       "path": "srv/auth/compose.yaml",
-      "sha256": "4fae51ad5ca3e5453a03d94c923d08e6391c34e40834a54f461c0f2cff9d78e5",
+      "sha256": "6c822f69413eac335e73124dfa5802d2267d7cc2d3701b7ae86b4f8bffefc012",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/auth/paisans-standby.sh",
+      "sha256": "e685ef55b81fb428cc431dbf05cc58746ef2de19cdeea9b10af8abfdab3f3b60",
       "mode": "0644"
     },
     {

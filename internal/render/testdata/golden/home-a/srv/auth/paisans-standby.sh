@@ -1,0 +1,100 @@
+#!/bin/sh
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# The entrypoint of auth's app service, mounted read only at
+# /paisans/pocket-id-standby.sh. It runs the image's own entrypoint and command
+# (given as arguments by compose.yaml) and holds this instance on standby
+# while another one is active against the same database.
+#
+# Pocket ID admits one instance per database while its HA mode is off, and HA
+# mode cannot be turned on from the environment. A second instance logs a
+# refusal and exits 1, the status of every other failure, so the only way to
+# tell a standby from a crash is the text. This keeps the last 50 lines of the
+# child's output, and when it exits non zero with the refusal among them,
+# touches /tmp/paisans-standby (which the healthcheck reads as healthy),
+# waits $PAISANS_STANDBY_RETRY seconds and tries again. Any other exit is
+# passed on, so Docker's restart policy and apply's gate see it as before.
+#
+# A stop is forwarded to the child as SIGTERM, so an active instance shuts
+# down cleanly and deregisters, and a standby elsewhere takes over within one
+# retry instead of after the 90 s an unclean stop leaves its registration to
+# age.
+#
+# Delete this file, the entrypoint and the healthcheck override once
+# upstream binds HA mode to a variable; see README, "Pocket ID runs on every
+# apps site, and one of them is active".
+set -u
+
+state=/tmp/paisans-standby
+fifo=/tmp/paisans-standby.fifo
+kept=/tmp/paisans-standby.tail
+marker='already one instance of Pocket ID running'
+retry="${PAISANS_STANDBY_RETRY:-15}"
+
+child=
+stopping=
+
+stop() {
+	stopping=1
+	if [ -n "$child" ]; then
+		kill -TERM "$child" 2>/dev/null
+	fi
+}
+# TERM for both: a background job in a non interactive shell ignores SIGINT.
+trap stop TERM INT
+
+# reap waits for a background process until it has really exited. A trapped
+# signal interrupts `wait` with 128 plus its number while the process is still
+# shutting down, so wait again until it is gone.
+reap() {
+	wait "$1"
+	code=$?
+	while kill -0 "$1" 2>/dev/null; do
+		wait "$1"
+		code=$?
+	done
+	return "$code"
+}
+
+while :; do
+	rm -f "$state" "$fifo" "$kept"
+	mkfifo "$fifo" || exit 1
+	# Every line goes straight to the container's log; only the last 50 are
+	# held, in a ring, and written to $kept when the child closes its output.
+	awk -v kept="$kept" '
+		{ print; fflush(); ring[NR % 50] = $0 }
+		END {
+			first = NR > 50 ? NR - 49 : 1
+			for (i = first; i <= NR; i++) print ring[i % 50] > kept
+		}
+	' < "$fifo" &
+	reader=$!
+	"$@" > "$fifo" 2>&1 &
+	child=$!
+	# A stop that arrived before there was a child to forward it to.
+	if [ -n "$stopping" ]; then
+		kill -TERM "$child" 2>/dev/null
+	fi
+	reap "$child"
+	status=$?
+	child=
+	reap "$reader"
+	rm -f "$fifo"
+
+	if [ "$status" -eq 0 ] || [ -n "$stopping" ]; then
+		exit "$status"
+	fi
+	if ! grep -qF -e "$marker" "$kept" 2>/dev/null; then
+		exit "$status"
+	fi
+
+	: > "$state"
+	echo "paisans-standby: another Pocket ID instance is active on this database; standing by, next attempt in ${retry}s"
+	sleep "$retry" &
+	child=$!
+	reap "$child"
+	child=
+	if [ -n "$stopping" ]; then
+		exit 0
+	fi
+done
