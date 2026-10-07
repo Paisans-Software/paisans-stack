@@ -62,13 +62,16 @@ var catalogue = map[config.Kind][]Service{
 	config.KindMbin: {
 		// The paisans fork, not upstream: it carries the generic OIDC
 		// provider this kind's .env configures, which upstream does not
-		// have. Released 2026-10-05 as 1.13.3-paisans. Checked against
-		// ghcr.io on 2026-10-06 by requesting the manifest for that exact tag
-		// with an anonymous pull token, which resolved (200, an OCI image
-		// index, sha256:42e65e245b1026e0384a3834b7e49721123115e5acc11a63b29cd4bdf6eb6ef4).
+		// have, and the Doctrine transport decorator the default
+		// settings.queue (postgres) needs: on an image without it,
+		// MESSENGER_TRANSPORT_DSN=doctrine:// fails every dispatch.
+		// Released 2026-10-07 as 1.14.0-paisans. Checked against ghcr.io on
+		// 2026-10-07 by requesting the manifest for that exact tag with an
+		// anonymous pull token, which resolved (200, an OCI image index,
+		// sha256:b04dc373df76eaf4b61a303b18e540eb35f8b541b07631da2544ff2f5f3b4acf).
 		// The index carries linux/amd64 only, beside an attestation
 		// manifest, so an arm64 apps site cannot run it.
-		{Name: "app", Image: "ghcr.io/paisans-software/mbin:1.13.3-paisans", Purpose: "the application, and its messenger consumers"},
+		{Name: "app", Image: "ghcr.io/paisans-software/mbin:1.14.0-paisans", Purpose: "the application, and its messenger consumers"},
 		// The three sidecars upstream's compose.yaml runs beside it. The
 		// messenger consumers are not here: they run the application's own
 		// code, so they always take the app's image, and a key that let them

@@ -2250,9 +2250,10 @@ transport AMQP options the Doctrine transport refuses (`Unknown option found:
 [queues, exchange]`), and names no queue, so on `doctrine://` they would all
 share one. The fork's `App\Messenger\DoctrineTransportFactory` drops those
 options and gives each transport its own queue name, leaving the YAML and the
-AMQP path untouched. **The default Mbin image does not carry it yet**; the
-default image moves to the first fork release that does, in the same change
-that merges this one.
+AMQP path untouched. It ships from fork release `1.14.0-paisans`, the toolkit's
+default image. An app that declares an older Mbin image under `images` must
+also declare `settings.queue: rabbitmq`, or its queues fail at the first
+dispatch.
 
 **RabbitMQ is an opt-in**, `settings.queue: rabbitmq`, rendered exactly as
 before, for an operator on one large site who wants the broker's throughput.
@@ -2380,7 +2381,7 @@ pulled for linux/amd64 and inspected on 2026-10-07:
 
 | Image | Declares | Mounted as |
 |-------|----------|------------|
-| mbin 1.13.3-paisans (app, messenger) | `/app/var/` | tmpfs, 256m. Symfony's compiled cache, rebuilt by the entrypoint's `cache:clear` on every start; the app cache is in Valkey. The log bind mounts stay inside it |
+| mbin 1.14.0-paisans (app, messenger) | `/app/var/` | tmpfs, 256m. Symfony's compiled cache, rebuilt by the entrypoint's `cache:clear` on every start; the app cache is in Valkey. The log bind mounts stay inside it |
 | rabbitmq 3.13.7-management-alpine | `/var/lib/rabbitmq` | bind, `rabbitmq_data` (already) |
 | outline 1.10.0 | `/var/lib/outline/data` | bind, `/srv/<app>/data`, which was mounted at `/data`, a path nothing reads |
 | postgres 16-alpine, 17-alpine | `/var/lib/postgresql/data` | bind, `/srv/<app>/postgres` (already) |

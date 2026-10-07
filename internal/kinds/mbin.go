@@ -76,10 +76,10 @@ const MbinQueueSetting = "queue"
 const (
 	// MbinQueuePostgres keeps the queues as rows in the app's own database,
 	// through Symfony Messenger's Doctrine transport. They survive losing an
-	// apps site, and every site's consumers share them. It needs a paisans
-	// fork image that carries the Doctrine transport decorator (fork spec 12,
-	// feat/doctrine_transport_queue_names): the shipped messenger.yaml's AMQP
-	// options are otherwise refused by the Doctrine transport.
+	// apps site, and every site's consumers share them. It needs paisans fork
+	// 1.14.0-paisans or later, which carries the Doctrine transport decorator:
+	// on an older image the shipped messenger.yaml's AMQP options are refused
+	// by the Doctrine transport at the first dispatch.
 	MbinQueuePostgres = "postgres"
 	// MbinQueueRabbitMQ runs a broker per stack, behind amqproxy, as upstream
 	// does. Faster under load, and lost with its site.

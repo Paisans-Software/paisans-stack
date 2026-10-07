@@ -54,8 +54,10 @@ services:
       # configuration and the container restarts forever, which is what the
       # first real host did. The Caddyfile reads this variable inside its
       # mercure block (docker/Caddyfile, "Extra directives", at the fork's tag
-      # v1.13.3+paisans). Moving to an issuer block is a change to the image,
-      # not to this file.
+      # v1.13.3+paisans). From 1.14.0-paisans the image sets the directive
+      # itself; it is kept here for an operator who declares an older image,
+      # and a second copy was checked to be harmless (frankenphp validate on
+      # 1.14.0-paisans accepts the Caddyfile with and without it).
       MERCURE_EXTRA_DIRECTIVES: "protocol_version_compatibility 8"
     # The mesh address only. Docker's own iptables rules bypass a host
     # firewall, so a port published on every interface of a host with a

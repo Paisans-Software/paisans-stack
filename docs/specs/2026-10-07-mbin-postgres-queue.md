@@ -72,8 +72,8 @@ No `rabbitmq` or `amqproxy` service in compose, no `RABBITMQ_` variables in
   pending retries; then `docker compose up -d --remove-orphans`.
 * **The fork image.** The default Mbin image must be a fork release carrying
   the decorator before this branch is merged; the image bump lands in the same
-  merge. Until then, an app on the default image with `queue: postgres`
-  starts, then fails every dispatch.
+  merge. Done: `1.14.0-paisans`, released 2026-10-07. An app that declares an
+  older image keeps working only with `queue: rabbitmq`.
 
 ## Rejected
 
