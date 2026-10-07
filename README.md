@@ -3341,6 +3341,7 @@ at, and "could not look" is not "looked and it was fine".
 | Ports | new site | `ss -Hltnu` | anything listens on 51820/udp; on 2379 or 2380 for an etcd member; on 5432, 8008 or 8009 for a data site; on the cluster port where the site runs HAProxy |
 | Routes | new site | `ip -j route` | a route overlaps `mesh.subnet`, other than one through `wg0` |
 | Disk | new data site | the leader's `sum(pg_database_size(...))`, through its Patroni container's `psql`; `df` on the deepest existing directory towards `/srv/infra/postgres` | free space is under that plus 2 GiB |
+| Storage | new site | `docker info --format '{{.DockerRootDir}}'`, then `findmnt -no FSTYPE,SOURCE --target` on Docker's root and on `/srv` (or the deepest directory towards it that exists) | either is a network filesystem (`nfs`, `nfs4`, `cifs`, `smb3`, `glusterfs`, `ceph`, `fuse.sshfs` and the others preflight lists); a type that is neither that nor a local block filesystem (`ext4`, `xfs`, `btrfs`, `zfs`, `f2fs`) warns |
 | Round trip | new site to every other site | three TCP connects to the site's `public_address` on its ssh port, timed with bash's `/dev/tcp` and `$EPOCHREALTIME`; the median is used | `etcd.election_timeout_ms` is under five round trips |
 
 Three of these need a word.
@@ -3360,10 +3361,21 @@ spec (`docs/specs/2026-10-07-site-add.md`) checks them instead, because a
 derived value would change the rendered etcd flags on every member, and
 changing those on a running cluster is an operation of its own.
 
-**Two items above are covered indirectly or not at all.** Docker's presence
-is part of `host prepare`'s plan, so "prepared" covers it. Whether storage is
-local rather than network attached is not checked: nothing on a host says so
-reliably.
+**Docker's presence is covered indirectly**: it is part of `host prepare`'s
+plan, so "prepared" covers it.
+
+**Storage is judged by filesystem type, and a network one is refused.**
+Postgres acknowledges a commit, and etcd agrees a write, once fsync returns.
+On NFS, SMB, GlusterFS, CephFS or a FUSE mount of a remote, what fsync
+promises depends on the server, its export options and the client's cache,
+and a network blip stalls it for as long as the blip lasts, which for etcd is
+a missed heartbeat and an election for nothing. Docker's root is checked as
+well as `/srv`, because it holds every container's writable layer and an
+operator may have moved it. A type in neither list warns rather than refuses:
+it is not known to be wrong, and a list of every filesystem is not one this
+toolkit can keep. The check cannot see through a block device: an iSCSI LUN
+or a Ceph RBD image carries an ordinary `ext4` or `xfs` and passes, so a
+network disk presented as a local one is still the operator's to know about.
 
 The ports check reads listeners, not owners. After the mesh stage the new
 site's own `wg0` holds 51820/udp, so preflight is the gate for a join that

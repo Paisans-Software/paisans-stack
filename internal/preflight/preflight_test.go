@@ -74,6 +74,8 @@ func healthy(name string) *fakeHost {
 			{match: "pg_database_size", out: fmt.Sprintf("%d\n", int64(1)<<30)},
 			{match: "df -B1", out: "Avail\n" + fmt.Sprint(int64(40)<<30) + "\n"},
 			{match: "/dev/tcp", out: "11800\n12000\n12500\n"},
+			{match: "docker info", out: "/var/lib/docker\n"},
+			{match: "findmnt", out: "ext4 /dev/sda1\n"},
 		},
 	}
 }
@@ -163,7 +165,7 @@ func TestAHealthyJoinPassesEveryCheck(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"prepared", "platform", "wireguard", "watchdog", "ports", "routes", "disk"} {
+	for _, name := range []string{"prepared", "platform", "wireguard", "watchdog", "ports", "routes", "disk", "storage"} {
 		if len(find(r, "home-b", name)) == 0 {
 			t.Errorf("%s not checked on the new site", name)
 		}
@@ -248,6 +250,24 @@ func TestPreflightRefuses(t *testing.T) {
 			setup: func(h map[string]*fakeHost) {
 				h["home-b"].override(rule{match: "df -B1", out: "Avail\n1073741824\n"})
 			}},
+		{name: "postgres on nfs", site: "home-b", check: "storage", want: "/srv on nfs4 (nas:/export/srv) is network attached",
+			setup: func(h map[string]*fakeHost) {
+				h["home-b"].override(rule{match: "d='/srv'", out: "nfs4 nas:/export/srv\n"})
+			}},
+		{name: "docker root on cifs", site: "home-b", check: "storage", want: "/mnt/share/docker on cifs",
+			setup: func(h map[string]*fakeHost) {
+				h["home-b"].override(
+					rule{match: "docker info", out: "/mnt/share/docker\n"},
+					rule{match: "d='/mnt/share/docker'", out: "cifs //nas/share\n"})
+			}},
+		{name: "no docker", site: "home-b", check: "storage", want: "Docker's root directory",
+			setup: func(h map[string]*fakeHost) {
+				h["home-b"].override(rule{match: "docker info", out: "Cannot connect to the Docker daemon", err: errors.New("exit status 1")})
+			}},
+		{name: "no findmnt answer", site: "home-b", check: "storage", want: "could not read the filesystem under /var/lib/docker",
+			setup: func(h map[string]*fakeHost) {
+				h["home-b"].override(rule{match: "findmnt", out: "findmnt: not found", err: errors.New("exit status 127")})
+			}},
 		{name: "no leader", site: "home-b", check: "disk", want: "no running leader",
 			setup: func(h map[string]*fakeHost) {
 				h["home-a"].override(rule{match: "/cluster", out: `{"members":[{"name":"home-a","role":"replica","state":"starting"}]}`})
@@ -276,6 +296,29 @@ func TestPreflightRefuses(t *testing.T) {
 				t.Errorf("detail %q does not mention %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A filesystem in neither list is warned about, not refused: it is not known
+// to be wrong. The probe walks up from a path that does not exist yet.
+func TestUnknownFilesystemWarns(t *testing.T) {
+	prepared(t)
+	h := hosts()
+	h["home-b"].override(rule{match: "findmnt", out: "bcachefs /dev/nvme0n1p2\n"})
+	r := run(t, fixture(t), h)
+	if r.Refused() {
+		t.Fatalf("refused:\n%s", printed(r))
+	}
+	checks := find(r, "home-b", "storage")
+	if len(checks) != 1 || !checks[0].Warned || !strings.Contains(checks[0].Detail, "bcachefs") {
+		t.Fatalf("got %+v, want one warning naming bcachefs", checks)
+	}
+	var walked bool
+	for _, c := range h["home-b"].ran {
+		walked = walked || (strings.Contains(c, "d='/srv'") && strings.Contains(c, "dirname") && strings.Contains(c, "findmnt -no FSTYPE,SOURCE --target"))
+	}
+	if !walked {
+		t.Errorf("/srv was not probed by walking up to a directory that exists: %q", h["home-b"].ran)
 	}
 }
 
