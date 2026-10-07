@@ -258,3 +258,31 @@ apps:
     # its first start, so a key added later is ignored; see the README.
     config:
       app.max_blogs: 3
+
+  status:
+    kind: uptime
+    hostname: status.example.org
+    # The uptime monitor. Pinned only: it keeps SQLite on local disk. The
+    # gateway VM is the usual place in a multi-site deployment, because a
+    # home going dark does not take the monitor with it; on a single site it
+    # runs beside everything else and watches the apps rather than the host.
+    # Its monitors are not declared here: every app gets a public and a
+    # direct check and every other site a ping, generated from this file.
+    placement: { pinned: vm }
+    settings:
+      # Required. Only members of this identity provider group may sign in.
+      admin_group: admins
+    # Optional, any field of the smtp block below; the rest is inherited.
+    # smtp:
+    #   from_name: Example Status
+
+# How apps that send mail send it. Today that is the uptime monitor's alerts.
+# Each app may override any field in its own smtp block. The password is a
+# secret: apps.<app>.smtp_password if set, else external.smtp_password.
+smtp:
+  host: smtp.example.org
+  port: 587
+  security: starttls          # or tls
+  username: status@example.org
+  from_address: status@example.org
+  from_name: Example Community

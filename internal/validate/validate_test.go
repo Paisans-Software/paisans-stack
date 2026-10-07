@@ -195,10 +195,11 @@ func TestValidFixtureIsQuiet(t *testing.T) {
 	}
 }
 
-// The shipped example must validate. It deliberately demonstrates two
-// warnings: its Synapse stack is pinned to the site that also holds the
-// witness role, and its two Garage sites at replication 2 stop uploads while
-// either is down.
+// The shipped example must validate. It deliberately demonstrates three
+// warnings: its Synapse stack and its uptime monitor are both pinned to the
+// site that also holds the witness role (the monitor with VACUUM off, which is
+// what makes that a reasonable neighbour), and its two Garage sites at
+// replication 2 stop uploads while either is down.
 func TestExampleValidates(t *testing.T) {
 	cfg, err := config.Load(filepath.Join("..", "..", "examples", "paisans.example.yaml"))
 	if err != nil {
@@ -214,7 +215,7 @@ func TestExampleValidates(t *testing.T) {
 		rules = append(rules, w.Rule)
 	}
 	sort.Strings(rules)
-	if strings.Join(rules, ",") != "garage-two-sites-stop-uploads,pinned-app-on-witness" {
+	if strings.Join(rules, ",") != "garage-two-sites-stop-uploads,pinned-app-on-witness,pinned-app-on-witness" {
 		t.Fatalf("unexpected warnings on the example: %v", warnings)
 	}
 }

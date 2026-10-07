@@ -386,6 +386,64 @@ It is assembled rather than written: each `kind` ships its own Caddy snippet in
 its template set, and the gateway file holds only what is cross-cutting. See
 *The template set owns everything app-specific, routing and shims included*.
 
+## Monitoring
+
+The `uptime` kind runs the [`josephquigley/uptime`](https://github.com/josephquigley/uptime)
+fork. It is an app like any other, not a site role, and it is **pinned only**:
+it keeps SQLite on local disk, so `cluster` is refused by the same rule that
+refuses Element and oauth2-proxy. The design and the reasoning behind each
+choice are in `docs/specs/2026-10-07-uptime-monitoring.md`.
+
+**Where it goes.** On a single site it runs beside everything else and watches
+the software, not the host: nothing can report its own machine dying, and a
+single site losing everything at once is what having one site means. With
+several sites the gateway VM is the usual choice, so a home going dark does not
+take the monitor with it. A site may have **no roles at all** when an app is
+pinned to it, so a small dedicated VM is declared as `roles: []`. `apps` would
+be wrong there: it means "runs every clustered app", not "may host an app".
+
+**What it checks is generated, never typed.** `apply` renders `monitors.json`
+from this configuration and the fork reconciles it at every start:
+
+* every app gets a **public** check at its hostname, through DNS, the gateway
+  and its certificate (whose expiry the fork warns about at 14 days), and a
+  **direct** check on each site it runs on, straight to the container with the
+  app's own `Host`. The public check alone cannot see an app behind a gate,
+  which redirects to sign in without asking the app, nor a clustered app dead
+  on one site while Caddy routes round it.
+* both ask the kind's own health route (`kinds.HealthFor`), established from
+  each pinned image's source and, where possible, by running it.
+* every site but the monitor's own gets a **ping** over the mesh.
+* the monitor does not watch itself.
+
+Monitors the file creates are tagged `managed` and belong to it. Monitors an
+admin makes by hand, and the channels an admin attaches to any monitor, are
+never touched. An admin who ticks **Attach to new managed monitors** on their
+channel is subscribed to apps added later; nobody's recipients are in YAML.
+
+**Beside etcd** the monitor renders `RETENTION_VACUUM=false`. The fork's full
+VACUUM rewrites the whole file every six hours, which is the one burst of I/O
+worth refusing next to a member whose heartbeats are measured in hundreds of
+milliseconds, and at steady state it reclaims nothing that SQLite would not
+reuse anyway. `pinned-app-on-witness` still warns, because the rule is generic
+and the risk is real.
+
+**At the edge** the gateway refuses `/status*`, `/badge/*`, `/metrics` and
+`/api/*` with 404 whatever the app's own settings say. The status page would
+list every monitor, mesh addresses included, and `/metrics` is public whenever
+no API token exists, which here is always. `/ping/*` stays open for heartbeat
+monitors added by hand.
+
+**Sign in** is the identity provider, admitting exactly the group named in
+`settings.admin_group`, which is required. Password sign in stays on as the
+break glass: Pocket ID is one of the things being watched, and a monitor you
+cannot open while it is down is no use. `ADMIN_PASS` is generated at `init`.
+
+**It starts as root and drops.** `apply` writes the seed through `sudo`, so it
+is root's, 0600, because it carries the SMTP password; the data directory is a
+bind mount Docker creates as root. The fork's entrypoint hands both to `node`
+and drops to it. An image older than that entrypoint ignores the seed.
+
 ## Adding a site, and the constraint that shapes it
 
 etcd quorum is a majority: 1 member survives nothing but works; 3 members
@@ -718,7 +776,7 @@ Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.
 | Kind | Examples | Origin |
 |------|----------|--------|
 | **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys, Mercure JWT, RabbitMQ and Valkey passwords, Mbin's OAuth2 server keypair | created at `init`, never typed or seen |
-| **Pasted** | Cloudflare API token, SMTP credentials | issued elsewhere, supplied by a human |
+| **Pasted** | Cloudflare API token, SMTP password (`external.smtp_password`, or per app) | issued elsewhere, supplied by a human |
 | **Captured** | OIDC client secrets | belong to a running service; recorded here, by `oidc client create` for Pocket ID |
 
 **Mbin's OAuth2 keypair is generated, not placed.** Mbin signs the tokens it
@@ -795,6 +853,27 @@ it for `init`, and `render` and `apply` both call it themselves right after
 `Fill`: a key hand edited into the file after the last `init` has to be
 caught on every path that can reach a host, not only on the one that
 happens to regenerate secrets.
+
+### Mail is declared once and overridden per app
+
+An app that sends mail reads a deployment wide `smtp:` block: `host`, `port`,
+`security` (`starttls` or `tls`), `username`, `from_address`, `from_name`. An
+app may declare its own `smtp:` with any of those fields, and each one it names
+replaces the deployment's while the rest are inherited, so a different sender
+or a different account is one line rather than a copy of the whole block. The
+password is a secret: `apps.<app>.smtp_password` when present, otherwise
+`external.smtp_password`, which `init` lists as owed once something resolves a
+mail host.
+
+Today only the uptime monitor reads it (`kinds.SendsMail`). An `smtp:` block on
+any other kind is refused, `smtp-on-a-kind-without-mail`, because an override
+nothing reads is ignored without a word. Pocket ID keeps its own SMTP settings
+in its database and is set in its admin UI; rendering it from this block would
+be a change to that kind, and would add it to the list.
+
+There is no `security: none`. Nothing needs it, and the uptime fork cannot say
+it: its `smtp_secure` is nodemailer's boolean `secure`, and `false` already
+means STARTTLS.
 
 ### Rendered configuration is a build artifact
 
