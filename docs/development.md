@@ -518,6 +518,15 @@ user on the host. Each write lands in a temporary file that is then moved, so a
 failed transfer leaves the previous file intact rather than a truncated one an
 application would happily read.
 
+A connection that never opened is retried, twice, inside `SSHTransport` itself
+(README, *A connection that never opened is tried again*), so every caller gets
+it without asking. Running the ssh binary is a package variable, `runSSH`, and
+the tests in `transport_test.go` replace it with a fake that chooses the output
+and exit status, which is how the "255 and a connection error, nothing else"
+rule is pinned. When every attempt fails the error wraps `apply.ErrUnreachable`,
+which is what a caller tests with `errors.Is` before it reads a failed probe as
+anything at all.
+
 ## Refuse and warn
 
 The distinction is the point of the tool and it is not a matter of severity

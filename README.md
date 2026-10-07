@@ -1730,6 +1730,33 @@ the `user@` win over that file's `Port` and `User`, since ssh_config(5) takes
 not set, so a first connection can still ask the operator to accept a host key;
 refusing that would push them to turn host key checking off instead.
 
+#### A connection that never opened is tried again
+
+A connect timeout on a host that answers seconds later stopped the first real
+`storage add` twice, half way through. So a command whose connection never
+opened is tried again: three attempts in all, two and then four seconds apart,
+with one line on stderr per retry naming the destination. After the third, the
+error says the host could not be reached, and a caller never reads that as an
+answer about the host (see *Never infer host state from a failed probe*).
+
+Only that failure is retried, and it is recognised by both of two signs. ssh
+"exits with the exit status of the remote command or with 255 if an error
+occurred" (ssh(1)), so 255 alone cannot tell ssh's error from a remote command
+that exited 255 itself; and its last line must be one of ssh's connection
+errors (`Operation timed out`, `Connection timed out`, `Connection refused`,
+`Connection reset`, `No route to host`, `kex_exchange_identification`, or the
+pre authentication `Connection closed by <host> port <port>`). A session that
+had opened before it dropped (`client_loop: ...`, or `Connection to <host>
+closed by remote host`) is not retried, because the command may have run.
+
+Retrying every failure was rejected: a command that ran and failed is the
+host's answer, and running it again could repeat whatever it did first. A
+connection that never opened ran nothing, so a retry cannot do anything twice.
+File writes are retried too, safely, because each lands in a temporary file
+that is then renamed. Setting `ConnectionAttempts` in the operator's
+`~/.ssh/config` was the alternative, and it is still honoured, but a default
+that depends on every admin's own file is not a default.
+
 #### `--ssh` replaces the whole section
 
 Every command that reaches a host takes `--ssh <destination>`, the escape hatch

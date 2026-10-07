@@ -1,6 +1,11 @@
 package apply
 
-import "time"
+import (
+	"fmt"
+	"io"
+	"os/exec"
+	"time"
+)
 
 // SetPrimaryWait shortens the wait for a Patroni primary and replaces the
 // sleep between polls, so a test of the timeout neither sleeps three minutes
@@ -52,3 +57,32 @@ func SetStandbyWait(wait, poll time.Duration, sleeper func(time.Duration)) func(
 func InstanceCommand(app, address string, port int) string {
 	return instanceCommand(app, address, port)
 }
+
+// FakeSSH stands in for the ssh binary: each call gets the command's
+// arguments and its stdin, and says what ssh printed and how it exited. It
+// also replaces the retry delays and the sleep between them, and captures the
+// retry log. It returns a function restoring the real ones.
+func FakeSSH(fake func(args []string, stdin string) (out string, exit int), delays []time.Duration, sleeper func(time.Duration), log io.Writer) func() {
+	oldRun, oldDelays, oldSleep, oldLog := runSSH, sshRetryDelays, sleep, retryLog
+	runSSH = func(cmd *exec.Cmd) error {
+		var stdin string
+		if cmd.Stdin != nil {
+			b, _ := io.ReadAll(cmd.Stdin)
+			stdin = string(b)
+		}
+		out, exit := fake(cmd.Args, stdin)
+		io.WriteString(cmd.Stdout, out)
+		if exit != 0 {
+			return exitStatus(exit)
+		}
+		return nil
+	}
+	sshRetryDelays, sleep, retryLog = delays, sleeper, log
+	return func() { runSSH, sshRetryDelays, sleep, retryLog = oldRun, oldDelays, oldSleep, oldLog }
+}
+
+// exitStatus is an error carrying an exit status, as *exec.ExitError does.
+type exitStatus int
+
+func (e exitStatus) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
+func (e exitStatus) ExitCode() int { return int(e) }
