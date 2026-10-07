@@ -802,3 +802,7 @@ func (p *planner) electionTimeoutMS() int {
 	}
 	return p.cfg.Etcd.ElectionTimeoutMS
 }
+
+// PublicKey derives a site's WireGuard public key from its private key, for a
+// command that reads a peer's key back from `wg show`.
+func PublicKey(private string) (string, error) { return publicKey(private) }
