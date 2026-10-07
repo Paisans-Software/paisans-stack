@@ -36,7 +36,7 @@ const garageImage = "dxflrs/garage:v1.0.1"
 
 // dockerTransport satisfies Transport by execing straight into a container
 // this test started, rather than through the `docker compose ... exec`
-// form garageCmd hard codes for a deployed host. Build's commands all carry
+// form Command hard codes for a deployed host. Build's commands all carry
 // that compose prefix; Run strips it off and replaces it with a plain
 // `docker exec <container> /garage`, which is the part of the command that
 // actually matters here. That is also why the command prefix this test cares
@@ -49,9 +49,9 @@ type dockerTransport struct {
 func (d dockerTransport) Describe() string { return "container " + d.container }
 
 func (d dockerTransport) Run(command string) (string, error) {
-	rest := strings.TrimPrefix(command, garageCmd)
+	rest := strings.TrimPrefix(command, Command)
 	if rest == command {
-		return "", fmt.Errorf("command %q does not start with the expected prefix %q", command, garageCmd)
+		return "", fmt.Errorf("command %q does not start with the expected prefix %q", command, Command)
 	}
 	args := append([]string{"exec", d.container, "/garage"}, strings.Fields(rest)...)
 	out, err := exec.Command("docker", args...).CombinedOutput()
@@ -226,7 +226,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 	// ID Garage actually holds, read back from Garage rather than compared
 	// against the toolkit's own record of what it sent.
 	for name, keyID := range map[string]string{"talk": talkKeyID, "docs": docsKeyID} {
-		out, err := transport.Run(garageCmd + " key info " + keyID)
+		out, err := transport.Run(Command + " key info " + keyID)
 		if err != nil {
 			t.Fatalf("reading back %s's key %s from Garage: %v\n%s", name, keyID, err, out)
 		}
@@ -240,7 +240,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 
 	// Both buckets exist.
 	for _, bucket := range []string{"talk-uploads", "docs-uploads"} {
-		out, err := transport.Run(garageCmd + " bucket info " + bucket)
+		out, err := transport.Run(Command + " bucket info " + bucket)
 		if err != nil {
 			t.Fatalf("reading back bucket %s from Garage: %v\n%s", bucket, err, out)
 		}
@@ -251,7 +251,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 
 	// One key per app is the whole point of this design: a key is allowed on
 	// its own bucket and not on the other app's. Prove both directions.
-	talkBucket, err := transport.Run(garageCmd + " bucket info talk-uploads")
+	talkBucket, err := transport.Run(Command + " bucket info talk-uploads")
 	if err != nil {
 		t.Fatalf("reading talk-uploads: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 		t.Errorf("docs's key %s must not be allowed on talk-uploads, got:\n%s", docsKeyID, talkBucket)
 	}
 
-	docsBucket, err := transport.Run(garageCmd + " bucket info docs-uploads")
+	docsBucket, err := transport.Run(Command + " bucket info docs-uploads")
 	if err != nil {
 		t.Fatalf("reading docs-uploads: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 	// The same cross check from the key's own point of view: `key info`
 	// lists the buckets a key is authorized on, and it should be exactly the
 	// one bucket that belongs to it.
-	talkKeyInfo, err := transport.Run(garageCmd + " key info " + talkKeyID)
+	talkKeyInfo, err := transport.Run(Command + " key info " + talkKeyID)
 	if err != nil {
 		t.Fatalf("reading talk's key info: %v", err)
 	}
@@ -611,32 +611,28 @@ func startMediaCluster(t *testing.T) *mediaCluster {
 		}
 	}
 
-	// Joining the nodes is this test's own scaffolding, and it is a step the
-	// toolkit never plans. garage.Build plans a layout, keys and buckets, and
-	// nothing in it runs `node connect`; nothing it renders carries
-	// bootstrap_peers, Consul discovery or Kubernetes discovery either. A
+	// Joining the nodes is this test's own scaffolding. Nothing rendered
+	// carries bootstrap_peers, Consul discovery or Kubernetes discovery: a
 	// shared rpc_secret authenticates a peer, it does not find one, so two
 	// nodes started from these very files sit alone until something joins
-	// them. The join below is that something, performed by the test.
+	// them.
 	//
-	// It is also why `paisans storage init` cannot converge on a multi site
-	// deployment by itself: with each node alone, `layout apply` is refused
-	// because the node count is below the replication factor, and Execute
-	// stops at the first failing step, so no key, no bucket and no website
-	// grant is ever created. README.md says so where an operator will look.
+	// `paisans storage add` is what performs this join on a real
+	// deployment; this test does it by hand because what it tests is the
+	// routing, not the join.
 	first := cluster.Nodes[garageNodes[0].Site]
 	for _, node := range garageNodes[1:] {
-		idOut, err := cluster.Nodes[node.Site].Run(garageCmd + " node id -q")
+		idOut, err := cluster.Nodes[node.Site].Run(Command + " node id -q")
 		if err != nil {
 			t.Fatalf("reading %s's node ID: %v\n%s", node.Site, err, idOut)
 		}
-		if out, err := first.Run(garageCmd + " node connect " + strings.TrimSpace(idOut)); err != nil {
+		if out, err := first.Run(Command + " node connect " + strings.TrimSpace(idOut)); err != nil {
 			t.Fatalf("joining %s to the cluster: %v\n%s", node.Site, err, out)
 		}
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		out, err := first.Run(garageCmd + " status")
+		out, err := first.Run(Command + " status")
 		if err == nil && strings.Count(out, ":3901") >= len(garageNodes) {
 			break
 		}
@@ -695,36 +691,55 @@ http://%s {
 	return cluster
 }
 
-// provision drives the real garage.Build and garage.Execute over both sites.
+// provision lays both nodes out, then drives the real garage.Build and
+// garage.Execute against home-a for the keys, buckets, grants and website
+// access.
 //
-// It takes three passes, and the shape is Garage's rather than a
-// convenience. Build and Execute are per node, and the layout steps they plan
-// are "assign this node" followed by "apply". With replication 2 the apply
-// cannot succeed while only one node has been staged, so home-a's first pass
-// fails there and nothing after it runs. The staged role survives the
-// refusal, so home-b's pass stages the second node and applies both roles at
-// once, and home-a's second pass then finds its layout present and gets on
-// with its keys and buckets. All of that was observed against
-// dxflrs/garage:v1.0.1; none of it is read from Garage's documentation.
+// The layout is this test's own scaffolding, as the join above is. A node
+// joining a cluster of several is `paisans storage add`'s job, which this
+// package's planner refuses and names; storage add's own Docker test
+// (internal/storageadd, tag garage_integration) drives that path end to end.
+// What is under test here is the routing, so the layout is assigned the way
+// storage add assigns it, both roles in one version, zone named after site.
+// Keys and buckets live in tables every node with a role holds, so planning
+// them against one node provisions the cluster.
 func (c *mediaCluster) provision(t *testing.T, cfg *config.Config, secrets *config.Secrets) {
 	t.Helper()
-	passes := []struct {
-		site        string
-		mustSucceed bool
-	}{
-		{site: "home-a", mustSucceed: false},
-		{site: "home-b", mustSucceed: true},
-		{site: "home-a", mustSucceed: true},
-	}
-	for i, pass := range passes {
-		plan, err := Build(pass.site, cfg, secrets, c.Nodes[pass.site])
+	first := c.Nodes[garageNodes[0].Site]
+	for _, node := range garageNodes {
+		idOut, err := c.Nodes[node.Site].Run(Command + " node id -q")
 		if err != nil {
-			t.Fatalf("pass %d, building %s's plan: %v", i+1, pass.site, err)
+			t.Fatalf("reading %s's node ID: %v\n%s", node.Site, err, idOut)
 		}
-		err = Execute(plan, c.Nodes[pass.site])
-		if err != nil && pass.mustSucceed {
-			t.Fatalf("pass %d, provisioning %s: %v", i+1, pass.site, err)
+		id := strings.TrimSpace(idOut)
+		if at := strings.Index(id, "@"); at >= 0 {
+			id = id[:at]
 		}
+		if out, err := first.Run(Command + " layout assign -z " + node.Site + " -c 1G " + id); err != nil {
+			t.Fatalf("assigning %s a role: %v\n%s", node.Site, err, out)
+		}
+	}
+	if out, err := first.Run(Command + " layout apply --version 1"); err != nil {
+		t.Fatalf("applying the layout: %v\n%s", err, out)
+	}
+	plan, err := Build(garageNodes[0].Site, cfg, secrets, first)
+	if err != nil {
+		t.Fatalf("building %s's plan: %v", garageNodes[0].Site, err)
+	}
+	if err := Execute(plan, first); err != nil {
+		t.Fatalf("provisioning %s: %v", garageNodes[0].Site, err)
+	}
+	// The second node holds the same keys and buckets without being asked.
+	plan, err = Build(garageNodes[1].Site, cfg, secrets, c.Nodes[garageNodes[1].Site])
+	if err != nil {
+		t.Fatalf("building %s's plan: %v", garageNodes[1].Site, err)
+	}
+	if len(plan.Steps) != 0 {
+		var left []string
+		for _, s := range plan.Steps {
+			left = append(left, s.Describe)
+		}
+		t.Fatalf("%s should find every key, bucket and grant present, being in the same cluster; it planned: %s", garageNodes[1].Site, strings.Join(left, "; "))
 	}
 }
 
@@ -826,15 +841,15 @@ func presignGet(keyID, secret, host, path string) string {
 // the provisioner granted and into the same bucket the gateway routes.
 func appCredential(t *testing.T, cfg *config.Config, secrets *config.Secrets, app string) (bucket, keyID, secret string) {
 	t.Helper()
-	keyID, ok := secretString(secrets, app, "s3_access_key_id")
+	keyID, ok := SecretString(secrets, app, "s3_access_key_id")
 	if !ok || keyID == "" {
 		t.Fatalf("the fixture holds no S3 access key for %s", app)
 	}
-	secret, ok = secretString(secrets, app, "s3_secret_access_key")
+	secret, ok = SecretString(secrets, app, "s3_secret_access_key")
 	if !ok || secret == "" {
 		t.Fatalf("the fixture holds no S3 secret for %s", app)
 	}
-	return bucketName(cfg.Apps[app], app), keyID, secret
+	return BucketName(cfg.Apps[app], app), keyID, secret
 }
 
 // putObject uploads one object straight to Garage's S3 API with a signed
@@ -899,7 +914,7 @@ func throughGateway(t *testing.T, cluster *mediaCluster, path, rawQuery string) 
 // bucketWebsiteAccess reads one bucket's website flag back out of Garage.
 func bucketWebsiteAccess(t *testing.T, node dockerTransport, bucket string) string {
 	t.Helper()
-	out, err := node.Run(garageCmd + " bucket info " + bucket)
+	out, err := node.Run(Command + " bucket info " + bucket)
 	if err != nil {
 		t.Fatalf("reading bucket %s: %v\n%s", bucket, err, out)
 	}
@@ -995,5 +1010,22 @@ func TestAnonymousFetchReadsMbinsMediaAndNotOutlines(t *testing.T) {
 	}
 	if body != privateBody {
 		t.Errorf("a presigned fetch of %s must return the object's bytes, got %q", privateBucket, body)
+	}
+
+	// 4. The first listed node gone. The media routes name every Garage node
+	// in storage.garage.sites order, so the gateway must find the object on
+	// the second: the request that meets the dead node is retried there
+	// (lb_try_duration), and every node holds a copy at replication 2.
+	// Asserted at once, without waiting for Garage to notice the node is
+	// down, because a reader does not wait either.
+	if out, err := exec.Command("docker", "stop", cluster.Nodes[garageNodes[0].Site].container).CombinedOutput(); err != nil {
+		t.Fatalf("stopping %s: %v\n%s", garageNodes[0].Site, err, out)
+	}
+	for i := 0; i < 3; i++ {
+		status, body = throughGateway(t, cluster, "/"+publicBucket+"/"+publicKey, "")
+		t.Logf("anonymous GET /%s/%s with %s stopped, attempt %d: HTTP %d", publicBucket, publicKey, garageNodes[0].Site, i+1, status)
+		if status != http.StatusOK || body != publicBody {
+			t.Errorf("with %s stopped, the gateway must serve %s from %s, got %d:\n%s", garageNodes[0].Site, publicBucket, garageNodes[1].Site, status, body)
+		}
 	}
 }

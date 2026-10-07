@@ -38,11 +38,11 @@ type Transport interface {
 	Describe() string
 }
 
-// garageCmd is the prefix every command in this package runs through: the
+// Command is the prefix every command in this package runs through: the
 // Garage binary inside its own container, on the infra stack this toolkit
 // renders. It matches how apply reaches into the same stack for other
 // commands, so an operator reading a transcript sees one shape throughout.
-const garageCmd = "docker compose -f /srv/infra/compose.yaml exec -T garage /garage"
+const Command = "docker compose -f /srv/infra/compose.yaml exec -T garage /garage"
 
 // Step is one command this plan still needs to run, in order.
 type Step struct {
@@ -149,11 +149,11 @@ func absent(out string, err error, marker string) (bool, error) {
 	return false, fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
 }
 
-// bucketName is the bucket an app's objects live in: a declared s3_bucket
+// BucketName is the bucket an app's objects live in: a declared s3_bucket
 // setting, or <app>-uploads. This mirrors internal/render's appValues.S3.Bucket
 // derivation (see internal/render/appview.go), because the bucket this package
 // creates has to be the same one the rendered application is told to use.
-func bucketName(app config.App, name string) string {
+func BucketName(app config.App, name string) string {
 	if v, ok := app.Settings["s3_bucket"].(string); ok && v != "" {
 		return v
 	}
@@ -163,14 +163,12 @@ func bucketName(app config.App, name string) string {
 // Build checks what already exists on the target site's node and returns a
 // plan of only what is missing, in the order it must run.
 //
-// The layout check is per node, not per cluster. A deployment with more than
-// one Garage site (storage.garage.sites, replication 2 in the fixture) applies
-// a layout once and then grows it: the second site's node has never appeared
-// in it. Reading only "is the layout version 0" would find version 1 after the
-// first site is provisioned and conclude, wrongly, that the second site is
-// done, leaving it with no role while reporting success. So this checks
-// whether this node's own ID appears in `layout show`'s rows, not whether the
-// version is zero.
+// The layout check is per node, not per cluster: reading only "is the layout
+// version 0" would find version 1 on a cluster this node has not joined and
+// conclude, wrongly, that it is done. So this checks whether this node's own
+// ID appears in `layout show`'s rows. It lays a node out only when it is the
+// one Garage site; a node joining a cluster of several is refused and sent to
+// `paisans storage add` (internal/storageadd), which joins them all at once.
 func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport) (*Plan, error) {
 	if !slices.Contains(cfg.Storage.Garage.Sites, site) {
 		return nil, fmt.Errorf("garage: %s holds no Garage role. Sites with one are %s", site, strings.Join(cfg.Storage.Garage.Sites, ", "))
@@ -178,7 +176,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 
 	plan := &Plan{Site: site}
 
-	out, err := t.Run(garageCmd + " layout show")
+	out, err := t.Run(Command + " layout show")
 	if err != nil {
 		return nil, fmt.Errorf("checking the layout on %s: %w: %s", t.Describe(), err, strings.TrimSpace(out))
 	}
@@ -192,7 +190,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 	// running it during Build (rather than deferring it into a closure run at
 	// Execute time) is safe, and it is what lets Build decide, right now,
 	// whether this node's ID is already a row in the layout.
-	nodeOut, err := t.Run(garageCmd + " node id -q")
+	nodeOut, err := t.Run(Command + " node id -q")
 	if err != nil {
 		return nil, fmt.Errorf("reading the node ID on %s: %w: %s", t.Describe(), err, strings.TrimSpace(nodeOut))
 	}
@@ -215,17 +213,28 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		shortNodeID = shortNodeID[:16]
 	}
 
-	if shortNodeID != "" && strings.Contains(layoutTable(out), shortNodeID) {
+	hasRole := shortNodeID != "" && strings.Contains(layoutTable(out), shortNodeID)
+	switch {
+	case hasRole:
 		plan.Present = append(plan.Present, fmt.Sprintf("layout: %s already has a role (version %d)", site, version))
-	} else {
+	case len(cfg.Storage.Garage.Sites) > 1:
+		// A node joining a cluster is `storage add`'s: it connects the
+		// nodes, assigns every role in one layout version, and waits for the
+		// data to move. Assigning one node here, as this used to, either
+		// fails (`layout apply` refuses fewer nodes than the replication
+		// factor) or, at replication 1, starts a second cluster that never
+		// meets the first. Nothing after the layout can work without it:
+		// every key and bucket command needs a role to reach quorum.
+		return nil, fmt.Errorf("garage: %s has no role in the cluster layout, and storage.garage.sites lists %d sites. Joining a node is `paisans storage add`, which lays out every site at once; run it, then storage init has nothing left to do", site, len(cfg.Storage.Garage.Sites))
+	default:
 		capacity := cfg.Storage.Garage.Capacity
 		plan.Steps = append(plan.Steps, Step{
 			Describe: fmt.Sprintf("assign %s a role in the cluster layout", site),
-			Command:  fmt.Sprintf("%s layout assign -z %s -c %s %s", garageCmd, site, capacity, nodeID),
+			Command:  fmt.Sprintf("%s layout assign -z %s -c %s %s", Command, site, capacity, nodeID),
 		})
 		plan.Steps = append(plan.Steps, Step{
 			Describe: fmt.Sprintf("apply the layout at version %d", version+1),
-			Command:  fmt.Sprintf("%s layout apply --version %d", garageCmd, version+1),
+			Command:  fmt.Sprintf("%s layout apply --version %d", Command, version+1),
 		})
 	}
 
@@ -234,11 +243,11 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		if !kinds.UsesObjectStorage(app.Kind) {
 			continue
 		}
-		keyID, _ := secretString(secrets, name, "s3_access_key_id")
-		secretKey, _ := secretString(secrets, name, "s3_secret_access_key")
-		bucket := bucketName(app, name)
+		keyID, _ := SecretString(secrets, name, "s3_access_key_id")
+		secretKey, _ := SecretString(secrets, name, "s3_secret_access_key")
+		bucket := BucketName(app, name)
 
-		keyOut, keyErr := t.Run(garageCmd + " key info " + keyID)
+		keyOut, keyErr := t.Run(Command + " key info " + keyID)
 		keyAbsent, err := absent(keyOut, keyErr, "0 matching keys")
 		if err != nil {
 			return nil, fmt.Errorf("checking key %s on %s: %w", keyID, t.Describe(), err)
@@ -270,14 +279,14 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 			// text that Secret already fixes.
 			plan.Steps = append(plan.Steps, Step{
 				Describe: fmt.Sprintf("import the S3 key for %s", name),
-				Command:  fmt.Sprintf("%s key import %s %s --yes -n %s", garageCmd, keyID, secretKey, name),
+				Command:  fmt.Sprintf("%s key import %s %s --yes -n %s", Command, keyID, secretKey, name),
 				Secret:   secretKey,
 			})
 		} else {
 			plan.Present = append(plan.Present, fmt.Sprintf("key: %s already has an S3 key", name))
 		}
 
-		bucketOut, bucketErr := t.Run(garageCmd + " bucket info " + bucket)
+		bucketOut, bucketErr := t.Run(Command + " bucket info " + bucket)
 		bucketAbsent, err := absent(bucketOut, bucketErr, "Bucket not found")
 		if err != nil {
 			return nil, fmt.Errorf("checking bucket %s on %s: %w", bucket, t.Describe(), err)
@@ -285,7 +294,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		if bucketAbsent {
 			plan.Steps = append(plan.Steps, Step{
 				Describe: fmt.Sprintf("create the bucket for %s", name),
-				Command:  fmt.Sprintf("%s bucket create %s", garageCmd, bucket),
+				Command:  fmt.Sprintf("%s bucket create %s", Command, bucket),
 			})
 		} else {
 			plan.Present = append(plan.Present, fmt.Sprintf("bucket: %s already exists", bucket))
@@ -316,7 +325,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		} else {
 			plan.Steps = append(plan.Steps, Step{
 				Describe: fmt.Sprintf("grant %s's key read/write/owner on its bucket%s", name, unread),
-				Command:  fmt.Sprintf("%s bucket allow --read --write --owner %s --key %s", garageCmd, bucket, keyID),
+				Command:  fmt.Sprintf("%s bucket allow --read --write --owner %s --key %s", Command, bucket, keyID),
 			})
 		}
 
@@ -337,7 +346,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 			} else {
 				plan.Steps = append(plan.Steps, Step{
 					Describe: fmt.Sprintf("allow website access on %s's bucket%s", name, unread),
-					Command:  fmt.Sprintf("%s bucket website --allow %s", garageCmd, bucket),
+					Command:  fmt.Sprintf("%s bucket website --allow %s", Command, bucket),
 				})
 			}
 		}
@@ -407,10 +416,10 @@ func parseBucketInfo(out string) bucketInfo {
 	return info
 }
 
-// secretString reads one string secret for an app, empty when unset. It
+// SecretString reads one string secret for an app, empty when unset. It
 // mirrors internal/render/appview.go's Secret helper, which is unexported
 // there.
-func secretString(secrets *config.Secrets, app, key string) (string, bool) {
+func SecretString(secrets *config.Secrets, app, key string) (string, bool) {
 	m, ok := secrets.Apps[app]
 	if !ok {
 		return "", false

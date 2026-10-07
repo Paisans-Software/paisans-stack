@@ -43,6 +43,17 @@ func fixtureConfig(t *testing.T) *config.Config {
 	return cfg
 }
 
+// singleSiteConfig is the fixture with Garage on home-a alone, at replication
+// 1: the only shape in which storage init lays a node out itself. With more
+// than one Garage site, a node with no role is `storage add`'s to join.
+func singleSiteConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg := fixtureConfig(t)
+	cfg.Storage.Garage.Sites = []string{"home-a"}
+	cfg.Storage.Garage.Replication = 1
+	return cfg
+}
+
 func fixtureSecrets(t *testing.T) *config.Secrets {
 	t.Helper()
 	secrets, err := config.LoadSecrets(filepath.Join("..", "render", "testdata", "secrets.fixture.yaml"))
@@ -84,7 +95,7 @@ func TestAFreshNodeIsLaidOutBeforeAnyKeyIsImported(t *testing.T) {
 		"bucket info": {out: "Error: Bucket not found / several matching buckets: talk-uploads", err: errors.New("exit status 1")},
 	}}
 
-	plan, err := garage.Build("home-a", fixtureConfig(t), fixtureSecrets(t), transport)
+	plan, err := garage.Build("home-a", singleSiteConfig(t), fixtureSecrets(t), transport)
 	if err != nil {
 		t.Fatalf("building the plan: %v", err)
 	}
@@ -161,7 +172,7 @@ func TestAHalfProvisionedNodePlansOnlyWhatIsMissing(t *testing.T) {
 		"bucket info": {out: "Error: Bucket not found / several matching buckets: talk-uploads", err: errors.New("exit status 1")},
 	}}
 
-	plan, err := garage.Build("home-a", fixtureConfig(t), fixtureSecrets(t), transport)
+	plan, err := garage.Build("home-a", singleSiteConfig(t), fixtureSecrets(t), transport)
 	if err != nil {
 		t.Fatalf("building the plan: %v", err)
 	}
@@ -190,43 +201,29 @@ func TestAnUnreachableNodeIsAnErrorRatherThanAnEmptyPlan(t *testing.T) {
 	}
 }
 
-// This is the ruling that overrides the brief's literal wording: the fixture
-// deployment declares two Garage sites, home-a and home-b, at replication 2.
-// Layout detection has to be per node, not per cluster. A layout already at
-// version 1 (home-a's role was assigned by an earlier run) still leaves
-// home-b without a role, and home-b's node ID is absent from the "layout
-// show" rows. A planner that only checked the layout version against 0 would
-// see version 1, plan nothing, and leave home-b serving nothing while
-// reporting success.
-func TestASecondSiteIsAssignedEvenWhenTheLayoutIsAlreadyAtVersionOne(t *testing.T) {
+// The fixture declares two Garage sites, home-a and home-b, at replication 2,
+// and home-b's node is absent from a layout already at version 1. Layout
+// detection is still per node rather than per cluster, but a node joining a
+// cluster is now `storage add`'s job: it lays every site out in one version
+// and waits for the data to move. storage init used to assign home-b alone,
+// which either fails `layout apply` for having fewer nodes than the factor or,
+// at replication 1, starts a second cluster. It must refuse, name storage add,
+// and plan nothing.
+func TestASecondSiteIsLeftToStorageAdd(t *testing.T) {
 	transport := &fakeTransport{responses: map[string]response{
 		"layout show": {out: "==== CURRENT CLUSTER LAYOUT ====\nID        Tags  Zone    Capacity\n51494feb  []    home-a  100.0 GB\n\nCurrent cluster layout version: 1\n"},
 		"node id -q":  {out: "aabbccdd5444d466aaaabbbbccccddddeeeeffff00001111222233334444abcd@127.0.0.1:3901\n"},
-		"key info":    {out: "Key name: talk\nKey ID: GK00112233445566778899aabb\n"},
-		"bucket info": {out: "Bucket: cfc236316d4a81858f84f84c287f5a0d\nSize: 0 B\nObjects: 0\n"},
 	}}
 
 	plan, err := garage.Build("home-b", fixtureConfig(t), fixtureSecrets(t), transport)
-	if err != nil {
-		t.Fatalf("building the plan: %v", err)
+	if err == nil {
+		t.Fatalf("storage init planned a join for a node with no role in a two site cluster: %+v", plan)
 	}
-
-	var commands []string
-	for _, s := range plan.Steps {
-		commands = append(commands, s.Command)
+	if !strings.Contains(err.Error(), "storage add") {
+		t.Errorf("the refusal does not send the operator to storage add:\n%v", err)
 	}
-	joined := strings.Join(commands, "\n")
-	if !strings.Contains(joined, "layout assign") {
-		t.Fatalf("home-b has no role in a layout that only lists home-a's node, so it must be assigned, got:\n%s", joined)
-	}
-	if !strings.Contains(joined, "aabbccdd") {
-		t.Errorf("the assign step must carry home-b's own node ID, got:\n%s", joined)
-	}
-	if !strings.Contains(joined, "-z home-b") {
-		t.Errorf("the assign step must carry home-b's zone, got:\n%s", joined)
-	}
-	if !strings.Contains(joined, "layout apply --version 2") {
-		t.Errorf("a layout already at version 1 is applied as version 2, got:\n%s", joined)
+	if i := indexOfContaining(transport.ran, "key info"); i >= 0 {
+		t.Errorf("it went on to read keys after deciding the node cannot be provisioned: %v", transport.ran)
 	}
 }
 
@@ -303,7 +300,7 @@ func TestWebsiteAccessIsPlannedAfterTheBucketExists(t *testing.T) {
 		"bucket info": {out: "Error: Bucket not found / several matching buckets: talk-uploads", err: errors.New("exit status 1")},
 	}}
 
-	plan, err := garage.Build("home-a", fixtureConfig(t), fixtureSecrets(t), transport)
+	plan, err := garage.Build("home-a", singleSiteConfig(t), fixtureSecrets(t), transport)
 	if err != nil {
 		t.Fatalf("building the plan: %v", err)
 	}
@@ -363,7 +360,7 @@ func TestExecuteStopsAtTheFirstFailingStepAndNamesIt(t *testing.T) {
 // Garage also quotes an offending argument back in some of its messages, so
 // the command output is checked too rather than only the command text.
 func TestAFailingKeyImportDoesNotPutTheSecretInItsError(t *testing.T) {
-	cfg := fixtureConfig(t)
+	cfg := singleSiteConfig(t)
 	secrets := fixtureSecrets(t)
 	transport := &fakeTransport{responses: map[string]response{
 		"layout show": {out: "==== CURRENT CLUSTER LAYOUT ====\nno nodes\nCurrent cluster layout version: 0\n"},
