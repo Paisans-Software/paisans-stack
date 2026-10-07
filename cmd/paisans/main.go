@@ -24,6 +24,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/storageadd"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -42,6 +43,8 @@ Usage:
                [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
+  paisans storage add [--config paisans.yaml] [--secrets secrets.enc.yaml]
+               [--change-replication] [--wait <duration>] [--execute]
   paisans preflight --site <new site> [--config paisans.yaml]
   paisans failover test [--config paisans.yaml] [--execute]
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
@@ -71,9 +74,15 @@ Commands:
              Patroni replica, synchronous mode, HAProxy. Reads every site
              and plans only what differs, so a re-run resumes. Writes
              nothing without --execute.
-  storage    Provision object storage on a site: the cluster layout, each
-             app's key, and its bucket. Creates only what is missing.
-             Writes nothing without --execute.
+  storage    init: provision object storage on a site: each app's key and
+             bucket, and the layout when it is the only Garage site.
+             add: join every site in storage.garage.sites into one Garage
+             cluster, in gated stages: connect, layout, sync, provision,
+             media routes, a smoke test; and, with --change-replication,
+             Garage's reset for another replication factor. Exits at a
+             stage waiting on Garage (status 75) and resumes on the next
+             run. Both create only what is missing, and write nothing
+             without --execute.
   preflight  The read only checks site add runs first, for the site being
              added and every site already running. Changes nothing.
   failover   test: switch the Patroni primary to another data site and
@@ -98,8 +107,9 @@ Commands:
              secret in the secrets file. The secret is never printed.
              Writes nothing without --execute. Mbin only, so far.
 
-host prepare, apply, site add, storage init, app admin create, oidc client
-create, preflight and failover test are the only commands that reach a host.
+host prepare, apply, site add, storage init, storage add, app admin create,
+oidc client create, preflight and failover test are the only commands that
+reach a host.
 Each reads it to plan, and changes it only with --execute. dns init reaches no
 host, only the DNS provider's API, and changes it only with --execute.
 Everything else writes files locally and stops.
@@ -139,11 +149,15 @@ func main() {
 	case "oidc":
 		err = runOIDC(os.Args[2:])
 	case "storage":
-		if len(os.Args) < 3 || os.Args[2] != "init" {
-			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init\n\n%s", usage)
+		switch {
+		case len(os.Args) >= 3 && os.Args[2] == "init":
+			err = runStorageInit(os.Args[3:])
+		case len(os.Args) >= 3 && os.Args[2] == "add":
+			err = runStorageAdd(os.Args[3:])
+		default:
+			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init or add\n\n%s", usage)
 			os.Exit(2)
 		}
-		err = runStorageInit(os.Args[3:])
 	case "preflight":
 		err = runPreflight(os.Args[2:])
 	case "failover":
@@ -163,6 +177,12 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "paisans: %v\n", err)
+		// Not a failure: a gate is waiting on Garage, and the next run
+		// resumes there. EX_TEMPFAIL (sysexits.h), "try again later", so a
+		// script can tell it from one.
+		if errors.Is(err, storageadd.ErrWaiting) {
+			os.Exit(75)
+		}
 		os.Exit(1)
 	}
 }
