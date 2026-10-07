@@ -437,3 +437,39 @@ behaviour outside this toolkit is unchanged. `setpriv` is in the image already
   `SEED_FILE`: monitors are not seeded and the container runs as root with no
   entrypoint to drop. The render and its tests are complete either way; the
   bump is one line in `internal/kinds` plus its `ImageVolumes` row.
+
+## Amendment, 2026-10-07: health routes, the public check's path, port, proxy trust
+
+**Health routes**, established from the source at each pinned tag and, where
+marked, by running the image (research recorded in the plan):
+
+| Kind | Path | Expect | How established |
+|---|---|---|---|
+| pocket-id | `/healthz` | `204` | source `healthz_controller.go:18,30-31` at v2.14.0; ran the image |
+| outline | `/_health` | `200` | source `server/main.ts:78-105` at v1.10.0 (runs `SELECT 1` and pings Redis) |
+| synapse | `/health` | `200` | source `synapse/rest/health.py:38-50` at v1.160.0; ran the image |
+| element | `/version` | `200` | ran the image: `/version` 200, `/health` 404 |
+| oauth2-proxy | `/ping` | `200` | source `pkg/middleware/healthcheck.go:44-53` at v7.15.4; ran the image |
+| mbin | `/` | `200,302` | no health route at `v1.13.3+paisans`; `/` is a deep check, 302 when the instance is private |
+| writefreely | `/` | `200,302` | no health route at `sha-ff9dceb`; `/` renders sign in on a private instance |
+| uptime | `/healthz` | `200` | source `src/server.js:63` at `1.1.0-oidc.1` (never used: a monitor does not watch itself) |
+
+The fork's `expected_status` is a comma separated list of exact codes, with no
+ranges (`src/lib/checker.js:55-61`), which is why each row is a list.
+
+**The public check requests the health path too**, not `/`, at the public
+hostname, and also accepts `302` when the app has a gate. `/` answers
+differently per kind (an oauth2-proxy answers 403 there), and the health path
+makes the public and direct checks of one app ask the same question.
+
+**Port 3001.** The fork defaults to 3000, which Outline also uses, and two apps
+on one site publish on the same mesh address. The kind renders `PORT=3001`.
+
+**`TRUST_PROXY`, a fork change.** The fork sets `trust proxy` to loopback, so
+behind the gateway every request has the gateway's address and the login rate
+limiter (keyed on `req.ip`) would let one attacker lock every admin out of the
+break glass password. The fork reads `TRUST_PROXY` (default `loopback`, so
+unchanged elsewhere) and the kind renders the mesh subnet, as Pocket ID's does.
+
+**OIDC redirect URI** for the client: `https://<hostname>/login/oidc/callback`
+(`src/lib/oidc.js:26`), named by `paisans init` when the client is owed.
