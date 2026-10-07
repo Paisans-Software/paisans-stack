@@ -44,7 +44,7 @@ Usage:
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
   paisans storage add [--config paisans.yaml] [--secrets secrets.enc.yaml]
-               [--change-replication] [--wait <duration>] [--execute]
+               [--change-replication] [--wait <duration>] [--stop-test] [--execute]
   paisans storage rotate-key --app <name> [--config paisans.yaml]
                [--secrets secrets.enc.yaml] [--execute]
   paisans prune    --site <name> [--config paisans.yaml] [--ssh <destination>] [--execute]

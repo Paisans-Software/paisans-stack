@@ -344,3 +344,115 @@ func mediaBuckets(cfg *config.Config) map[string]string {
 	}
 	return out
 }
+
+// TestStorageAddGrowsToThreeWithAStorageSite is the founder's growth path:
+// Garage on home-a alone at replication 1, then home-b and a host with only
+// the storage role and its own capacity, at replication 3, joined in one
+// reset, and the stop test proving reads and an upload survive the storage
+// host going down.
+func TestStorageAddGrowsToThreeWithAStorageSite(t *testing.T) {
+	requireDocker(t)
+	cfg, secrets := fixture(t)
+	const sub, gw = "10.48.0.0/24", "10.48.0.254"
+	cfg.Mesh.Subnet = sub
+	addresses := map[string]string{"home-a": "10.48.0.1", "home-b": "10.48.0.2", "vm": "10.48.0.3", "store": "10.48.0.4"}
+	cfg.Sites["store"] = config.Site{Roles: []config.Role{config.RoleStorage}, Endpoint: "203.0.113.40:51820"}
+	secrets.Sites["store"] = config.SiteSecrets{WireGuardPrivateKey: "Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0M="}
+	for name, addr := range addresses {
+		s := cfg.Sites[name]
+		s.Address = addr
+		cfg.Sites[name] = s
+	}
+
+	stamp := time.Now().UnixNano()
+	network := fmt.Sprintf("paisans-storageadd3-%d", stamp)
+	t.Cleanup(func() { exec.Command("docker", "network", "rm", network).Run() })
+	mustRun(t, "docker", "network", "create", "--subnet", sub, "--gateway", gw, network)
+
+	dir := t.TempDir()
+	hosts := map[string]*dockerHost{}
+	for _, site := range []string{"home-a", "home-b", "vm", "store"} {
+		h := &dockerHost{t: t, site: site, root: filepath.Join(dir, site), container: fmt.Sprintf("paisans-storageadd3-%s-%d", site, stamp), network: network}
+		for _, d := range []string{"srv/infra/garage/meta", "srv/infra/garage/data"} {
+			if err := os.MkdirAll(h.local("/"+d), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		hosts[site] = h
+	}
+	create := func(h *dockerHost) {
+		t.Cleanup(func() { exec.Command("docker", "rm", "-f", h.container).Run() })
+		mustRun(t, "docker", "create", "--name", h.container, "--network", h.network, "--ip", cfg.Sites[h.site].Address,
+			"-v", h.local("/srv/infra/garage/garage.toml")+":/etc/garage.toml",
+			"-v", h.local("/srv/infra/garage/meta")+":/var/lib/garage/meta",
+			"-v", h.local("/srv/infra/garage/data")+":/var/lib/garage/data",
+			garageImage)
+		mustRun(t, "docker", "start", h.container)
+		waitAnswers(t, h)
+	}
+
+	// Before: home-a alone at replication 1, provisioned, with an object.
+	cfg.Storage.Garage.Sites = []string{"home-a"}
+	cfg.Storage.Garage.Replication = 1
+	cfg.Storage.Garage.Capacity = "3G"
+	renderFor(t, cfg, secrets, hosts, "home-a", "vm")
+	create(hosts["home-a"])
+	plan, err := garage.Build("home-a", cfg, secrets, hosts["home-a"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := garage.Execute(plan, hosts["home-a"]); err != nil {
+		t.Fatal(err)
+	}
+	keyID, _ := garage.SecretString(secrets, "talk", "s3_access_key_id")
+	secret, _ := garage.SecretString(secrets, "talk", "s3_secret_access_key")
+	bucket := garage.BucketName(cfg.Apps["talk"], "talk")
+	get := func(node string) (string, error) {
+		conf := fmt.Sprintf("url = \"http://%s:3900/%s/before\"\nrequest = \"GET\"\nuser = \"%s:%s\"\naws-sigv4 = \"aws:amz:garage:s3\"\nheader = \"x-amz-content-sha256: UNSIGNED-PAYLOAD\"\n", node, bucket, keyID, secret)
+		return hosts["home-a"].RunInput("curl -fsS --max-time 20 -K -", conf)
+	}
+	put := fmt.Sprintf("url = \"http://%s:3900/%s/before\"\nrequest = \"PUT\"\nuser = \"%s:%s\"\naws-sigv4 = \"aws:amz:garage:s3\"\nheader = \"x-amz-content-sha256: UNSIGNED-PAYLOAD\"\ndata-binary = \"written at replication 1\"\n", addresses["home-a"], bucket, keyID, secret)
+	if out, err := hosts["home-a"].RunInput("curl -fsS --max-time 20 -K -", put); err != nil {
+		t.Fatalf("writing the object: %v\n%s", err, out)
+	}
+
+	// After: three sites at replication 3, the storage host last and smaller.
+	cfg.Storage.Garage.Sites = []string{"home-a", "home-b", "store"}
+	cfg.Storage.Garage.Replication = 3
+	cfg.Storage.Garage.Capacities = map[string]string{"store": "2G"}
+	renderFor(t, cfg, secrets, hosts, "home-b", "store")
+	create(hosts["home-b"])
+	create(hosts["store"])
+
+	transports := map[string]apply.Transport{
+		"home-a": hosts["home-a"], "home-b": hosts["home-b"], "store": hosts["store"],
+		"vm": &gatewayHost{dockerHost: *hosts["vm"], first: addresses["home-a"], buckets: mediaBuckets(cfg)},
+	}
+	p, err := storageadd.Build(cfg, secrets, transports, storageadd.Options{ChangeReplication: true, StopTest: true, Wait: 5 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress strings.Builder
+	p.Print(&progress)
+	p.Progress = &progress
+	if err := storageadd.Execute(p); err != nil {
+		t.Fatalf("storage add: %v\n%s", err, progress.String())
+	}
+	t.Logf("storage add:\n%s", progress.String())
+
+	out, err := hosts["home-a"].Run(garage.Command + " layout show")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)\sstore\s+2\.0 GB`).MatchString(out) || !regexp.MustCompile(`(?m)\shome-b\s+3\.0 GB`).MatchString(out) {
+		t.Errorf("the layout does not give each site its capacity:\n%s", out)
+	}
+	for _, site := range []string{"home-a", "home-b", "store"} {
+		if body, err := get(addresses[site]); err != nil || body != "written at replication 1" {
+			t.Errorf("the object written at replication 1, read through %s: %v %q", site, err, body)
+		}
+	}
+	if running, _ := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", hosts["store"].container).CombinedOutput(); strings.TrimSpace(string(running)) != "true" {
+		t.Error("the stop test left the storage host stopped")
+	}
+}

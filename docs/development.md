@@ -381,6 +381,12 @@ accident:
   listed node. The stage writes every `<app>-media.caddy` the gateway renders,
   one per app that stores objects.
 
+* **The stop test always starts the node again**, in a deferred call, even
+  when a read failed, and only ever stops the last listed site. A refactor that
+  returns early from `stopTest` without the deferred start leaves a site down.
+* **Capacities are compared in bytes, within 2%**, because `layout show`
+  rounds. Comparing the strings would reassign, and rebalance, on every run.
+
 The tests in `internal/storageadd` run a Garage cluster in maps: each host's
 files, its node, its copy of the layout and the peers it has met, with output
 shaped like `dxflrs/garage:v1.0.1`'s. They cover the refusal without
@@ -558,7 +564,10 @@ routes media through the rendered snippet in the real gateway image,
 including a read with the first listed node stopped. `internal/storageadd`'s
 drives `storage add` from one node at replication 1 to two at replication 2,
 `dangerous`, through the reset, and reads an object written before it back
-through both nodes. It runs its probe in `curlimages/curl`, which it pulls.
+through both nodes. A second grows to three nodes at replication 3, one a
+`storage` host with a smaller capacity, and runs `--stop-test`. Under the tag
+the Docker tests run alone and at real timing: the fake-cluster tests, whose
+`TestMain` makes every wait instant, are left out of that build. It runs its probe in `curlimages/curl`, which it pulls.
 
 ## Fixtures and secrets
 
@@ -789,10 +798,10 @@ before.
 ## What is not here yet
 
 No `backup`. `site add` exists for sites that all declare an endpoint; the
-relay for sites behind NAT is still design. `storage add` joins Garage nodes
-and changes the replication factor, and has run against containers but not
-yet against a real host; removing or replacing a Garage node, and a site with
-no role other than storage, are not built. Its first stage is `preflight`, and
+relay for sites behind NAT is still design. `storage add` joins Garage nodes,
+changes the replication factor, sizes each node and can stop one to prove
+failover, and has run against containers; removing or replacing a Garage node
+is not built. Its first stage is `preflight`, and
 `failover test` exists; both are described above. `apply`
 pushes files, brings up `wg0`, creates clustered apps' roles and databases, and
 takes the narrowest action that makes the rest live. `site add` has never been

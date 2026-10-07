@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/config"
 )
 
 // Paths on a Garage site, as infra-compose.yaml.tmpl mounts them.
@@ -135,6 +136,29 @@ type layout struct {
 	version int
 	// rows maps a node's short ID to its zone.
 	rows map[string]string
+	// capacity maps a node's short ID to its capacity in bytes, as shown:
+	// decimal units to one decimal place, so only approximately.
+	capacity map[string]int64
+}
+
+// shownSize matches a capacity as `layout show` prints it, Eg: 100.0 GB.
+var shownSize = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)$`)
+
+// capacityTolerance is how far a shown capacity may sit from the configured
+// one before the node is assigned again. One decimal place hides at most 5%
+// on a value just above a unit boundary (Eg: 1.05 GB shown as 1.0 GB) but
+// under 2% on anything from 5 units up, which covers every capacity a node
+// here will declare; a smaller change than that is not worth a rebalance.
+const capacityTolerance = 0.02
+
+// sameCapacity reports whether a shown capacity matches the configured one
+// within capacityTolerance.
+func sameCapacity(shown, want int64) bool {
+	if want <= 0 {
+		return true
+	}
+	diff := float64(shown-want) / float64(want)
+	return diff <= capacityTolerance && diff >= -capacityTolerance
 }
 
 // ansi matches the colour codes Garage's log lines carry.
@@ -149,7 +173,7 @@ var shortID = regexp.MustCompile(`^[0-9a-f]{16}$`)
 // "Connection established to <ID>" log line before the banner names a node
 // whether or not it has a role.
 func parseLayout(out string) (layout, error) {
-	l := layout{rows: map[string]string{}}
+	l := layout{rows: map[string]string{}, capacity: map[string]int64{}}
 	text := ansi.ReplaceAllString(out, "")
 	const banner = "==== CURRENT CLUSTER LAYOUT ===="
 	const marker = "Current cluster layout version:"
@@ -175,11 +199,17 @@ func parseLayout(out string) (layout, error) {
 		if len(fields) < 2 || !shortID.MatchString(fields[0]) {
 			continue
 		}
-		zone := fields[1]
-		if zone == "[]" && len(fields) > 2 {
-			zone = fields[2]
+		rest := fields[1:]
+		if rest[0] == "[]" && len(rest) > 1 {
+			rest = rest[1:]
 		}
-		l.rows[fields[0]] = zone
+		l.rows[fields[0]] = rest[0]
+		// Capacity follows the zone as a number and a decimal unit.
+		if len(rest) >= 3 && shownSize.MatchString(rest[1]) {
+			if n, err := config.ParseSize(rest[1] + strings.TrimSuffix(rest[2], "B")); err == nil {
+				l.capacity[fields[0]] = n
+			}
+		}
 	}
 	return l, nil
 }

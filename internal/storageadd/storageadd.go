@@ -64,6 +64,10 @@ type Options struct {
 	// Wait is how long a waiting gate polls before the run exits. Zero reads
 	// it once.
 	Wait time.Duration
+	// StopTest stops Garage on the last listed site during the smoke stage,
+	// to prove reads and uploads survive it, then starts it again. Refused
+	// unless uploads survive one node down.
+	StopTest bool
 }
 
 // Plan is a whole join, decided from the live deployment.
@@ -196,6 +200,11 @@ func Build(cfg *config.Config, secrets *config.Secrets, transports map[string]ap
 		p.nodes = append(p.nodes, n)
 	}
 	p.anchor = p.chooseAnchor()
+	if opts.StopTest {
+		if err := p.stopTestAllowed(); err != nil {
+			return nil, fmt.Errorf("storage add: %w", err)
+		}
+	}
 	want := p.replication()
 	for _, n := range p.nodes {
 		if n.deployed && n.factor != want {
