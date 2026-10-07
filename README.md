@@ -2324,6 +2324,49 @@ site's own `wg0` holds 51820/udp, so preflight is the gate for a join that
 has not begun, and a join resumed past stage 1 must not be sent back through
 it.
 
+### `failover test`: a switchover on purpose
+
+A cluster that has never failed over has an untested failover, and the first
+test should not be an outage. `paisans failover test` moves the Patroni
+primary to another data site and back, and it is gated like `site add`: it
+checks before it moves anything, every switch ends at a gate, and a gate that
+does not pass stops it where it is rather than switching back blind.
+
+1. **Checks.** Every member of `cluster.sites` is in the cluster, the leader
+   is `running` and every other member `streaming` with lag zero; a Sync
+   Standby exists when `cluster.synchronous` is true; every app stack is
+   healthy on every site it runs on, by the same judgement as `apply`'s health
+   gate; and every app answers through the gateway, an HTTPS request from the
+   workstation to its hostname answering under 500 (a redirect to a login page
+   counts). Pocket ID is asked for `/.well-known/openid-configuration`, the
+   document every client of it fetches first. Lag is looked at up to three
+   times, because Patroni compares a replica with the leader's last reported
+   position and a busy moment shows bytes that are gone on the next look.
+2. **Switch.** In the leader's Patroni container, `patronictl -c
+   /home/postgres/postgres.yml switchover --leader <current> --candidate
+   <other> --force`. The candidate is the Sync Standby where there is one,
+   since that is who Patroni would promote on a real failure. The flags are
+   Patroni v4.1.0's (`patroni/ctl.py`): `--leader` is checked against the
+   live leader, so a plan made against a leader that has since changed fails
+   rather than switching the wrong way, and `--force` with no `--scheduled`
+   means now. The config path is the one Spilo runs Patroni with
+   (`postgres-appliance/runit/patroni/run`, at every Spilo tag the toolkit
+   pins), a link to the `/run/postgres.yml` Spilo writes at start.
+3. **Gate.** Polled for up to three minutes: the candidate leads, the old
+   leader is `streaming`, and every app is healthy and answering again. The
+   gate reads `/cluster` rather than trusting patronictl's exit status,
+   because when Patroni refuses a switchover patronictl prints `Switchover
+   failed` and exits normally.
+4. **Switch back**, the same way, through the same gate.
+
+It is a dry run by default, which prints the checks, both commands and the
+expected interruption: writes fail from the old primary's demotion until each
+site's HAProxy marks the new one up, which with the rendered `inter 3s` and
+`rise 2` is several seconds after promotion, twice. Connections to the old
+primary are closed when it is marked down (`on-marked-down
+shutdown-sessions`), and reads through HAProxy pause too, since it routes only
+to the primary.
+
 ## Moving the gateway
 
 A single site runs `roles: [data, apps, gateway]` — the same machine serving the

@@ -16,7 +16,8 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 validate, init and render touch nothing outside the working directory.
 `host prepare`, `apply`, `storage init`, `app admin create` and `oidc client
 create` reach a machine, and each changes it only with `--execute`. `preflight`
-reaches every site and never changes one. `dns init` reaches no machine, only
+reaches every site and never changes one; `failover test` changes which site
+is primary, only with `--execute`. `dns init` reaches no machine, only
 the DNS provider's API, and changes it only with `--execute`.
 
 ```
@@ -28,6 +29,7 @@ paisans host prepare --site home-a        # shows what a blank host lacks
 paisans apply    --site home-a            # shows what would change
 paisans apply    --site home-a --execute  # does it
 paisans preflight --site home-b           # site add's read only checks
+paisans failover test                     # checks, and prints the plan
 paisans dns init                          # shows which records it would create
 security find-generic-password -s acme -w \
   | paisans secrets set external.acme_dns_token
@@ -106,6 +108,13 @@ prints each as `ok`, `WARNING` or `REFUSED`. It exits non zero on a refusal.
 It reaches every site through its ssh section and takes no `--ssh`, since one
 override cannot name several hosts. The table of checks and the reasoning for
 each are in *Preflight* in `README.md`.
+
+`failover test` switches the Patroni primary to another data site and back,
+and only with `--execute`; without it, it checks the cluster and every app and
+prints both switchover commands and the expected write interruption. Each
+switch is gated on the new leader, the old one streaming, and every app stack
+healthy and answering through the gateway, polled for three minutes. See
+*`failover test`: a switchover on purpose* in `README.md`.
 
 `render` and `apply` refuse a gateway site when `external.acme_dns_token` is
 empty. `init` lists it as owed, but rendering without it produced a Caddy that
@@ -411,6 +420,7 @@ installed, on a workstation or anywhere else.
 | `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin |
 | `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
 | `internal/preflight` | `site add`'s first stage: read only checks on the new site and every running one, as a report |
+| `internal/failover` | `failover test`: its checks, the switchover and its gates |
 | `internal/patroni` | reading a Patroni cluster through the Spilo container: `/cluster`, the leader, lag, database size |
 | `internal/hostprep` | taking a blank host to what `apply` assumes; one profile per operating system, its shell under `profiles/<id>-<version>/` |
 | `internal/render/templates` | the infrastructure templates, plus one directory per kind |
@@ -579,7 +589,7 @@ before.
 ## What is not here yet
 
 No etcd growth and no `backup`. Of `site add`, only its first stage,
-`preflight`, is described here. `apply`
+`preflight`, is described here. `failover test` exists and is described above. `apply`
 pushes files, brings up `wg0`, creates clustered apps' roles and databases, and
 takes the narrowest action that makes the rest live. It has never been run
 against a real host, so every command it sends is reasoned from upstream source
