@@ -160,4 +160,17 @@ func TestRunDNSInitRefusesBeforeContactingAProvider(t *testing.T) {
 	if strings.Contains(err.Error(), "fixture-not-a-secret-desec") {
 		t.Fatalf("the token leaked into an error: %v", err)
 	}
+
+	// dns prune shares the same setup, so it refuses in the same places.
+	err = runDNSPrune([]string{"--config", fixture, "--secrets", secrets})
+	if err == nil || !strings.Contains(err.Error(), "sites.vm.public_address is not set") {
+		t.Fatalf("prune: want a refusal naming the missing public_address, got %v", err)
+	}
+	err = runDNSPrune([]string{"--config", edited, "--secrets", secrets})
+	if err == nil || !strings.Contains(err.Error(), "desec record management is not implemented yet") {
+		t.Fatalf("prune: want the unimplemented provider refusal, got %v", err)
+	}
+	if strings.Contains(err.Error(), "fixture-not-a-secret-desec") {
+		t.Fatalf("prune: the token leaked into an error: %v", err)
+	}
 }

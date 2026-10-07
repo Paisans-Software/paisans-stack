@@ -18,8 +18,8 @@ validate, init and render touch nothing outside the working directory.
 `app admin create` and `oidc client create` reach a machine, and each changes
 it only with `--execute`. `preflight`
 reaches every site and never changes one; `failover test` changes which site
-is primary, only with `--execute`. `dns init` reaches no machine, only
-the DNS provider's API, and changes it only with `--execute`.
+is primary, only with `--execute`. `dns init` and `dns prune` reach no
+machine, only the DNS provider's API, and change it only with `--execute`.
 
 ```
 paisans validate --config examples/paisans.example.yaml
@@ -34,6 +34,7 @@ paisans preflight --site home-b           # site add's read only checks
 paisans storage add                       # every Garage stage, from live state
 paisans failover test                     # checks, and prints the plan
 paisans dns init                          # shows which records it would create
+paisans dns prune                         # shows which records it would delete
 security find-generic-password -s acme -w \
   | paisans secrets set external.acme_dns_token
 ```
@@ -386,7 +387,7 @@ a reset interrupted between rewriting and starting, the order rule, a site
 with no `garage.toml`, a join without a reset, the probe's secret, and a
 shortfall in object counts.
 
-## `dns init`, and why it can only create
+## `dns init`, `dns prune`, and why init can only create
 
 `dns init` is the one command that talks to something other than a host or the
 local disk: the DNS provider's API, from the workstation. It is a dry run unless
@@ -396,15 +397,21 @@ because it reaches no site.
 ```
 paisans dns init                 # shows present, create and conflict per record
 paisans dns init --execute       # creates what is missing, then reads each back
+paisans dns prune                # shows remove and keep per toolkit record
+paisans dns prune --execute      # deletes the removes, then lists the zone again
 ```
 
 The rules are in `README.md` under *`dns init` creates the records a deployment
-needs*. Three things about the code are easy to undo by accident:
+needs*. Four things about the code are easy to undo by accident:
 
-* **`internal/dns.Provider` has no update and no delete.** A method that does
-  not exist cannot be called by mistake, and a conflict is reported for a human
-  to resolve rather than handed to an overwrite. Adding either is a design
-  change, not a convenience.
+* **`internal/dns.Provider` has no update.** A method that does not exist
+  cannot be called by mistake, and a conflict is reported for a human to
+  resolve rather than handed to an overwrite. Adding one is a design change,
+  not a convenience.
+* **`Delete` exists for prune alone.** Its one caller is `ExecutePrune`, which
+  deletes only what `BuildPrune` marked remove after every rule in
+  `internal/dns/prune.go`. Loosening a rule, and above all deciding by the
+  comment alone, reopens a founder decision; the README section says why.
 * **The provider's base URL is a struct field, not a flag.** Tests point it at
   an `httptest` server; an operator has no reason to send the zone token
   anywhere but the provider. No test calls a real provider, and none may.
@@ -543,7 +550,7 @@ installed, on a workstation or anywhere else.
 | `internal/secretsgen` | what a deployment's secrets are, and which of them the toolkit may invent |
 | `internal/kinds` | what an application kind is: its compose services, and the image each runs by default |
 | `internal/render` | placement, templates, and the writer |
-| `internal/dns` | which public records a deployment needs, and creating the missing ones at the DNS provider |
+| `internal/dns` | which public records a deployment needs, creating the missing ones at the DNS provider, and pruning the ones it created that nothing wants |
 | `internal/apply` | what to push to a host, what to restart, and the gates before either |
 | `internal/siteadd` | joining a new data site: six staged, gated, resumable stages |
 | `internal/appadmin` | an app's first administrator: probe, plan, and the per kind commands or API calls |

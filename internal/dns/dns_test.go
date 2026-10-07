@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,9 +26,15 @@ type fakeCloudflare struct {
 	zones   map[string]string     // zone name -> id
 	records map[string][]cfRecord // zone id -> records
 	posts   []cfRecord
+	deletes []string // record ids, in order
 	lookups []string // zone names asked about, in order
+	pages   []string // page numbers asked for by whole zone listings
+	nextID  int
 	// dropWrites accepts a POST and stores nothing, to prove the read-back.
 	dropWrites bool
+	// dropDeletes answers a DELETE with success and removes nothing, to
+	// prove prune's confirming listing.
+	dropDeletes bool
 	// echoToken makes every response an error quoting the Authorization
 	// header back, the worst thing a provider could do with it.
 	echoToken bool
@@ -83,11 +91,35 @@ func (f *fakeCloudflare) handle(w http.ResponseWriter, r *http.Request) {
 			result = append(result, map[string]string{"id": id, "name": name})
 		}
 		writeEnvelope(w, http.StatusOK, result)
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/zones/") && strings.Contains(path, "/dns_records/"):
+		zoneID, recordID, _ := strings.Cut(strings.TrimPrefix(path, "/zones/"), "/dns_records/")
+		f.deletes = append(f.deletes, recordID)
+		kept := f.records[zoneID][:0:0]
+		found := false
+		for _, rec := range f.records[zoneID] {
+			if rec.ID == recordID {
+				found = true
+				continue
+			}
+			kept = append(kept, rec)
+		}
+		if !found {
+			writeEnvelope(w, http.StatusNotFound, nil, "Record does not exist.")
+			return
+		}
+		if !f.dropDeletes {
+			f.records[zoneID] = kept
+		}
+		writeEnvelope(w, http.StatusOK, map[string]string{"id": recordID})
 	case strings.HasPrefix(path, "/zones/") && strings.HasSuffix(path, "/dns_records"):
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "/zones/"), "/dns_records")
 		switch r.Method {
 		case http.MethodGet:
 			name := r.URL.Query().Get("name.exact")
+			if name == "" {
+				f.listPage(w, r, id)
+				return
+			}
 			result := []any{}
 			for _, rec := range f.records[id] {
 				if rec.Name == name {
@@ -102,6 +134,8 @@ func (f *fakeCloudflare) handle(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			f.posts = append(f.posts, rec)
+			f.nextID++
+			rec.ID = fmt.Sprintf("rec-new-%d", f.nextID)
 			if !f.dropWrites {
 				f.records[id] = append(f.records[id], rec)
 			}
@@ -110,6 +144,34 @@ func (f *fakeCloudflare) handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeEnvelope(w, http.StatusNotFound, nil, "no route")
 	}
+}
+
+// listPage answers a whole zone listing one page at a time, as Cloudflare's
+// page and per_page parameters do.
+func (f *fakeCloudflare) listPage(w http.ResponseWriter, r *http.Request, zoneID string) {
+	page, err := strconv.Atoi(r.URL.Query().Get("page"))
+	if err != nil || page < 1 {
+		page = 1
+	}
+	perPage, err := strconv.Atoi(r.URL.Query().Get("per_page"))
+	if err != nil || perPage < 1 {
+		perPage = 20
+	}
+	f.pages = append(f.pages, strconv.Itoa(page))
+	all := f.records[zoneID]
+	totalPages := (len(all) + perPage - 1) / perPage
+	if totalPages == 0 {
+		totalPages = 1
+	}
+	result := []cfRecord{}
+	for i := (page - 1) * perPage; i < len(all) && i < page*perPage; i++ {
+		result = append(result, all[i])
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success": true, "errors": []any{}, "result": result,
+		"result_info": map[string]int{"page": page, "per_page": perPage, "count": len(result), "total_count": len(all), "total_pages": totalPages},
+	})
 }
 
 // deployment is a gateway with a public address, two apps that each serve

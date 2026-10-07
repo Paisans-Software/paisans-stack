@@ -8,11 +8,16 @@
 // public_address. A second list of records in the configuration would be a
 // second source of truth for the same names, and the one that drifts.
 //
-// It only ever creates. It never updates and never deletes, because a record
-// it did not create is somebody else's, exactly as a file on a host that no
-// apply wrote is somebody else's. A record that disagrees with what the
-// deployment needs is a conflict, and any conflict stops the whole run before
-// a single record is written.
+// Init only ever creates. It never updates and never deletes, because a
+// record it did not create is somebody else's, exactly as a file on a host
+// that no apply wrote is somebody else's. A record that disagrees with what
+// the deployment needs is a conflict, and any conflict stops the whole run
+// before a single record is written.
+//
+// Prune is the one path that deletes, and only an address record that passes
+// every rule in prune.go: the toolkit's comment, a name and an address that
+// are this deployment's, and no longer wanted. Nothing in this package
+// updates a record.
 //
 // It reaches no host. The only thing it talks to is the DNS provider's API,
 // from the workstation, with the token from the decrypted secrets.
@@ -39,6 +44,12 @@ type Record struct {
 	// Cloudflare calls this proxying. A proxied record that otherwise matches is
 	// a conflict, not a match: see the README section on `dns init`.
 	Proxied bool
+	// ID is the provider's identifier for the record, which is what a delete
+	// names. It is empty on a record about to be created.
+	ID string
+	// Comment is the provider's free text note on the record. Prune reads it
+	// as necessary and never as sufficient: anyone with the zone can edit it.
+	Comment string
 }
 
 // Want is a record the deployment needs.
@@ -51,9 +62,11 @@ type Want struct {
 	Sources []string
 }
 
-// Provider is a DNS provider's API, reduced to the three things this package
-// does with it. There is no update and no delete here on purpose: a method
-// that does not exist cannot be called by mistake.
+// Provider is a DNS provider's API, reduced to the things this package does
+// with it. There is no update here on purpose: a method that does not exist
+// cannot be called by mistake. Delete exists for prune alone, and the only
+// caller is ExecutePrune, which deletes nothing its plan did not pass through
+// every prune rule.
 type Provider interface {
 	// Name is the provider's name as acme.provider spells it, for messages.
 	Name() string
@@ -64,6 +77,11 @@ type Provider interface {
 	Records(ctx context.Context, zoneID, name string) ([]Record, error)
 	// Create adds one record. It must never replace an existing one.
 	Create(ctx context.Context, zoneID string, record Record) error
+	// AllRecords returns every record in the zone, every page of them. A
+	// partial list must be an error, never a short answer.
+	AllRecords(ctx context.Context, zoneID string) ([]Record, error)
+	// Delete removes the one record with this identifier.
+	Delete(ctx context.Context, zoneID, recordID string) error
 }
 
 // Desired derives the records a deployment needs from its configuration.
