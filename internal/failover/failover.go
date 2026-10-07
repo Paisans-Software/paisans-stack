@@ -284,7 +284,30 @@ func (r *runner) appProblems() []string {
 			r.line("ok", "answers", detail)
 		}
 	}
+	// A Pocket ID on more than one apps site passes the stack check above
+	// whether it is active or standing by, and the gateway answers from
+	// whichever site is first, so neither can see two active or none. A
+	// switchover drops the active instance's database connection and the
+	// gate restarts it, so the handover is checked here, every time.
+	for _, app := range apply.StandbyApps(r.cfg) {
+		list := apply.LookAtInstances(r.cfg, app, r.o.Transports)
+		if _, err := apply.OneActive(app, list); err != nil {
+			problems = append(problems, err.Error())
+			r.line("REFUSED", "standby", fmt.Sprintf("%v: %s", err, summary(list)))
+		} else {
+			r.line("ok", "standby", fmt.Sprintf("pocket-id %s: %s", app, summary(list)))
+		}
+	}
 	return problems
+}
+
+// summary is each site's instance state on one line.
+func summary(list []apply.Instance) string {
+	var parts []string
+	for _, in := range list {
+		parts = append(parts, fmt.Sprintf("%s %s", in.Site, in.State))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // answer requests one app through the gateway. Anything under 500 means the
@@ -365,6 +388,11 @@ func (r *runner) printPlan(leader, candidate string) {
 	if len(stacks) > 0 {
 		fmt.Fprintf(out, "Not every app reconnects (Mbin's workers do not), so each app above is\n")
 		fmt.Fprintf(out, "restarted after each switch, a further outage of a few seconds per app.\n")
+	}
+	for _, app := range apply.StandbyApps(r.cfg) {
+		fmt.Fprintf(out, "Restarting %s's active Pocket ID hands it to a standby site, which takes over\n", app)
+		fmt.Fprintf(out, "at its next retry (15 s by default); sign in pauses until then. Each gate\n")
+		fmt.Fprintf(out, "waits for exactly one active instance.\n")
 	}
 }
 
