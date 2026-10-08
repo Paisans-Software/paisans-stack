@@ -183,9 +183,8 @@ what the command reaches the host with.
 
 A gateway's Caddy also serves the host owner's sites in `/srv/caddy.d`
 (README, *The gateway host's own sites live in `/srv/caddy.d`*). Removing it
-would take those sites down. When `internal/ownership` reports a foreign user
-of it, a `*.caddy` file there or a foreign container on one of its networks,
-the Caddy is handed over:
+would take those sites down. When `internal/ownership` reports a `*.caddy`
+file there, the Caddy is handed over:
 
 1. `/srv/caddy/` is written: `compose.yaml` with project `caddy`, no
    deployment label, the same image and host networking, mounting

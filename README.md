@@ -3,30 +3,30 @@
 Toolkit for installing and operating a paisans community stack: a private,
 federated community on hardware its organizers control.
 
-**Status: nothing is implemented yet.** This repository holds the design and
-will hold the implementation. Do not expect anything here to run.
+**Status: in development.** It runs a staging deployment; nothing runs on it
+in production yet.
 
 Written in **Go**, distributed as a single static binary so an operator needs no
-runtime — see [docs/decisions.md](docs/decisions.md) for why, and why not
-Terraform, Ansible or shell.
+runtime. [docs/decisions.md](docs/decisions.md) records why.
 
-## What it is meant to do
+## What it does
 
-Install a complete community stack on one machine, then let a second site be
-added later as a manually invoked, additive step — without touching application
-configuration and without a migration.
+It installs a complete community stack on one machine, then adds sites later as
+a manually invoked, additive step, without touching application configuration.
+Every command that changes a host prints its plan and changes nothing unless
+given `--execute`.
 
 ```
-paisans init --domain example.org          # site 1, standalone, HA-ready
-paisans site add --role witness  vm.example.org
-paisans site add --role standby  home-b.example.org
-paisans site remove home-b.example.org
-paisans failover status
-paisans failover switchover
-paisans check
+paisans init                               # an id, a mesh subnet and the secrets for paisans.yaml
+paisans host prepare --site vm --execute   # Docker, WireGuard and a firewall on a blank host
+paisans apply --site vm --execute          # render the site and bring it up
+paisans site add home-b --execute          # join another data site to the running cluster
+paisans app remove blog --execute          # take an app that has left paisans.yaml off its hosts
+paisans site remove home-b --execute       # take a site out of the deployment
+paisans doctor                             # what is unhealthy, and how to recover
 ```
 
-Command names are provisional.
+`paisans help` lists every command.
 
 ## Design rules that everything else follows from
 
@@ -4009,9 +4009,8 @@ left, because they may be what the command reaches the host with.
 **A gateway's Caddy is handed over when somebody else relies on it.** The
 host owner's site blocks in `/srv/caddy.d` (see *The gateway host's own sites
 live in `/srv/caddy.d`*) go dark if the gateway's Caddy simply stops. So when
-`internal/ownership` finds a foreign user of it, a `*.caddy` file there or a
-foreign container on one of its networks, the Caddy is handed over to the
-host's owner:
+`internal/ownership` finds a `*.caddy` file there, the Caddy is handed over to
+the host's owner:
 
 1. `/srv/caddy/compose.yaml` (project `caddy`, no deployment label, the same
    image, host networking, mounting `/srv/caddy.d` read only) and a
@@ -4226,7 +4225,7 @@ that the first `FAIL` is usually the cause of those after it:
 | Containers | `docker ps -a --filter label=community.paisans.deployment=<id>` on every site, then `docker inspect` and the end of `docker logs` for each container not running | any container is not running |
 | Pocket ID | the same question `apply` asks after acting on a Pocket ID stack on more than one site, asked once | no site, or more than one, has an active instance |
 | Clocks | `date +%s.%N` on each site, against the workstation's clock taken on either side of the call, less half the round trip | never; more than 1 s off is a `WARN` |
-| Leftovers | the host check's inventory (*The host check: what is already on a host decides how much is touched*) on every site that answered, and the manifest; skipped under `--sudo=false`, since the inventory reads as root | never. Anything of this deployment's the site no longer renders (a compose project by label and name, a manifest entry marked left over) is a `WARN`, with the note that `apply` does not remove it. On the gateway, each `*.caddy` in `/srv/caddy.d` and each container without this deployment's label on one of its Caddy's Docker networks is listed as `info`: foreign, and served by this deployment's Caddy |
+| Leftovers | the host check's inventory (*The host check: what is already on a host decides how much is touched*) on every site that answered, and the manifest; skipped under `--sudo=false`, since the inventory reads as root | never. Anything of this deployment's the site no longer renders (a compose project by label and name, a manifest entry marked left over) is a `WARN`, with the note that `apply` does not remove it. On the gateway, each `*.caddy` in `/srv/caddy.d` is listed as `info`: foreign, and served by this deployment's Caddy. That directory is the only way anything foreign is served by it, since the Caddyfile is this deployment's and Caddy runs in the host's network namespace |
 
 The health check names each member rather than using `--cluster`, because
 `--cluster` first asks the cluster for its member list (etcd v3.5.16,

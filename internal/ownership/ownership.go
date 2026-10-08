@@ -7,7 +7,10 @@
 // Everything else is foreign. Neither kind is changed here or by apply: a
 // leftover is reported so the operator knows it is there, and a foreign thing
 // relying on the gateway's Caddy is reported so whoever moves or stops the
-// gateway knows what else goes with it.
+// gateway knows what else goes with it. The Caddyfile is this deployment's
+// and Caddy runs in the host's network namespace, so the one way something
+// foreign is served through it is a site block in /srv/caddy.d, and that
+// directory is what counts.
 //
 // Classify is a pure function of the configuration, an inventory from
 // internal/hostcheck and the manifest's entries, so every judgement is tested
@@ -38,9 +41,6 @@ type Report struct {
 	// HostSites are the *.caddy files in render.HostSitesDir, which the
 	// gateway's Caddy serves, on a gateway site only.
 	HostSites []string
-	// Neighbours are containers without this deployment's label attached
-	// to a network the gateway's Caddy is attached to.
-	Neighbours []Neighbour
 }
 
 // Stack is one left over compose project.
@@ -53,21 +53,11 @@ type Stack struct {
 	Running    int
 }
 
-// Neighbour is a foreign container on one of Caddy's networks.
-type Neighbour struct {
-	Container, Network string
-}
-
 // Leftover reports whether anything of this deployment's is left over.
 func (r Report) Leftover() bool { return len(r.Stacks) > 0 || len(r.Files) > 0 }
 
 // Foreign reports whether anything foreign relies on this site's Caddy.
-func (r Report) Foreign() bool { return len(r.HostSites) > 0 || len(r.Neighbours) > 0 }
-
-// sharedNamespaces are the networks that attach nothing to anything: "host"
-// is the host's own namespace, which every host networked container shares
-// whether or not it talks to Caddy, and "none" has no interface at all.
-var sharedNamespaces = map[string]bool{"host": true, "none": true}
+func (r Report) Foreign() bool { return len(r.HostSites) > 0 }
 
 // Classify builds site's report from inv, the inventory of its host, and
 // manifest, the entries this deployment's manifest holds for it.
@@ -89,17 +79,13 @@ func Classify(cfg *config.Config, site string, inv *hostcheck.Inventory, manifes
 	prefix := d.Prefix() + "-"
 
 	left := map[string]*Stack{}
-	var caddy *hostcheck.Container
-	for i, c := range inv.Containers {
+	for _, c := range inv.Containers {
 		if c.Deployment != d.ID {
 			continue
 		}
 		name, ok := strings.CutPrefix(c.Project, prefix)
 		if !ok || name == "" {
 			continue
-		}
-		if c.Project == d.Project("infra") && c.Service == "caddy" {
-			caddy = &inv.Containers[i]
 		}
 		if rendered[name] {
 			continue
@@ -132,25 +118,6 @@ func Classify(cfg *config.Config, site string, inv *hostcheck.Inventory, manifes
 		sort.Strings(out.HostSites)
 	}
 
-	if caddy != nil {
-		for _, network := range caddy.Networks {
-			if sharedNamespaces[network] {
-				continue
-			}
-			for _, c := range inv.Containers {
-				if c.Deployment == d.ID || !contains(c.Networks, network) {
-					continue
-				}
-				out.Neighbours = append(out.Neighbours, Neighbour{Container: c.Name, Network: network})
-			}
-		}
-		sort.Slice(out.Neighbours, func(i, j int) bool {
-			if out.Neighbours[i].Network != out.Neighbours[j].Network {
-				return out.Neighbours[i].Network < out.Neighbours[j].Network
-			}
-			return out.Neighbours[i].Container < out.Neighbours[j].Container
-		})
-	}
 	return out, nil
 }
 
@@ -179,9 +146,6 @@ func (r Report) ForeignLines() []string {
 	var out []string
 	for _, f := range r.HostSites {
 		out = append(out, "site block "+f+", served by this deployment's Caddy")
-	}
-	for _, n := range r.Neighbours {
-		out = append(out, fmt.Sprintf("container %s, on network %s with this deployment's Caddy", n.Container, n.Network))
 	}
 	return out
 }
@@ -255,15 +219,6 @@ func RouteOf(app, name string) bool {
 	}
 	for _, s := range RouteSuffixes() {
 		if suffix == s {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(list []string, s string) bool {
-	for _, item := range list {
-		if item == s {
 			return true
 		}
 	}

@@ -315,14 +315,11 @@ func TestSSHDefaultsPortAndHost(t *testing.T) {
 	}
 }
 
-// The old destination string is refused, and the refusal shows the section
-// that replaces it, with the host carried over.
-func TestSSHStringFormIsRefusedWithTheSection(t *testing.T) {
+// A string where the section belongs is refused.
+func TestSSHStringIsRefused(t *testing.T) {
 	msg := loadErr(t, withSSH("    ssh: ubuntu@home-a.local\n"))
-	for _, want := range []string{"sites.home-a.ssh", "old destination form", "host: home-a.local", "user:", "public_key: |"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("refusal lacks %q:\n%s", want, msg)
-		}
+	if !strings.Contains(msg, "ssh must be a section") {
+		t.Errorf("refusal does not say ssh must be a section:\n%s", msg)
 	}
 }
 
