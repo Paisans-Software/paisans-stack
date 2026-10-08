@@ -55,7 +55,10 @@ type Report struct {
 	Conflicts  []Conflict
 	// Foreign is everything found that is neither the toolkit's nor the base
 	// system's, one line each. It is what makes a host shared.
-	Foreign   []string
+	Foreign []string
+	// Notes are things found that are neither foreign nor a conflict but
+	// worth an operator's eye, one line each.
+	Notes     []string
 	Inventory *Inventory
 }
 
@@ -204,12 +207,23 @@ func Classify(claims Claims, inv *Inventory) *Report {
 			}
 		}
 	}
+	// A route equal to the mesh or inside it captures mesh traffic: the
+	// kernel picks the longest matching prefix, and it is at least as long
+	// as wg0's. A broader one (a provider's 10.0.0.0/8 private network) is
+	// shorter than wg0's route, so the mesh still wins, and it is noted.
 	for _, route := range inv.Routes {
 		if route.Dst == "default" || route.Dev == claims.Interface || bridges[route.Dev] {
 			continue
 		}
-		if overlapsMesh(claims.Mesh, route.Dst) {
-			conflict(Conflict{Resource: "route " + route.Dst + " dev " + route.Dev, Key: "mesh.subnet", Holder: "the host's routing table"})
+		n, ok := network(route.Dst)
+		if !ok || !(n.Contains(claims.Mesh.IP) || claims.Mesh.Contains(n.IP)) {
+			continue
+		}
+		resource := "route " + route.Dst + " dev " + route.Dev
+		if within(n, claims.Mesh) {
+			conflict(Conflict{Resource: resource, Key: "mesh.subnet", Holder: "the host's routing table"})
+		} else {
+			r.Notes = append(r.Notes, fmt.Sprintf("%s contains the mesh subnet %s; wg0's route is more specific and takes the mesh's traffic", resource, claims.Mesh))
 		}
 	}
 
@@ -263,9 +277,22 @@ func networkDesc(n Network) string {
 	return fmt.Sprintf("docker network %s (compose project %s)", n.Name, n.Project)
 }
 
-// overlapsMesh reports whether a network or route, as CIDR or as a bare
-// address, overlaps the mesh subnet.
+// overlapsMesh reports whether a network, as CIDR or as a bare address,
+// overlaps the mesh subnet at all.
 func overlapsMesh(mesh *net.IPNet, cidr string) bool {
+	n, ok := network(cidr)
+	return ok && (n.Contains(mesh.IP) || mesh.Contains(n.IP))
+}
+
+// within reports whether n equals the mesh or lies inside it.
+func within(n, mesh *net.IPNet) bool {
+	nOnes, _ := n.Mask.Size()
+	meshOnes, _ := mesh.Mask.Size()
+	return mesh.Contains(n.IP) && nOnes >= meshOnes
+}
+
+// network reads a CIDR, or a bare address as a host route.
+func network(cidr string) (*net.IPNet, bool) {
 	if !strings.Contains(cidr, "/") {
 		if ip := net.ParseIP(cidr); ip != nil && ip.To4() == nil {
 			cidr += "/128"
@@ -274,10 +301,7 @@ func overlapsMesh(mesh *net.IPNet, cidr string) bool {
 		}
 	}
 	_, n, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return false
-	}
-	return n.Contains(mesh.IP) || mesh.Contains(n.IP)
+	return n, err == nil
 }
 
 func loopback(address string) bool {
@@ -344,6 +368,9 @@ func (r *Report) Print(w io.Writer) {
 	line("firewall", firewallSummary(inv.Firewall))
 	for _, f := range r.Foreign {
 		line("foreign", f)
+	}
+	for _, n := range r.Notes {
+		line("note", n)
 	}
 	for _, c := range r.Conflicts {
 		line("CONFLICT", c.String())

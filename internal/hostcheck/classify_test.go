@@ -229,3 +229,19 @@ func TestACleanHostNeedsNoFirewallYet(t *testing.T) {
 		t.Errorf("a clean host without ufw is refused: %v", err)
 	}
 }
+
+// A route broader than the mesh, such as a provider's private network
+// (10.0.0.0/8 via its gateway), is less specific than the route wg0 adds,
+// so the mesh still wins and nothing is captured. It is noted, not refused.
+// A route equal to the mesh or inside it would capture mesh traffic, and
+// conflicts.
+func TestABroaderRouteIsANoteNotAConflict(t *testing.T) {
+	h := cleanHost()
+	h.answers["ip -j route"] = `[{"dst":"default","dev":"eth0"},{"dst":"10.0.0.0/8","gateway":"10.0.0.1","dev":"enp7s0"}]`
+	r := check(t, "home-a", h)
+	wantClass(t, r, hostcheck.Clean)
+	wantLine(t, r, "note      route 10.0.0.0/8 dev enp7s0 contains the mesh subnet 10.44.0.0/24")
+
+	h.answers["ip -j route"] = `[{"dst":"10.44.0.0/24","dev":"tun0"}]`
+	wantClass(t, check(t, "home-a", h), hostcheck.Conflicted)
+}
