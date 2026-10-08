@@ -206,14 +206,6 @@ func dockerAfterWireGuard(d deployment.Deployment) string {
 	return "/etc/systemd/system/docker.service.d/" + d.Prefix() + "-after-wireguard.conf"
 }
 
-// dockerAfterWG0 is where this deployment's drop-in was written while the mesh
-// interface was wg0 on every deployment. It names a unit that no longer
-// carries the mesh, and its Wants= would still start that unit at boot, so
-// Services removes it.
-func dockerAfterWG0(d deployment.Deployment) string {
-	return "/etc/systemd/system/docker.service.d/" + d.Prefix() + "-after-wg0.conf"
-}
-
 // Services makes Docker start at boot and now, and after the deployment's
 // mesh interface at boot. Docker's
 // packages enable it on install, so on a freshly installed host enabling it is
@@ -242,14 +234,6 @@ func (u ubuntu) Services(t Transport, d deployment.Deployment) (Section, error) 
 			Describe: "service: start docker after " + d.Interface() + " at boot, so containers can bind the mesh address (" + dropInPath + ")",
 			File:     &File{Path: dropInPath, Content: dropIn, Mode: 0o644},
 			Command:  "systemctl daemon-reload",
-		})
-	}
-	if _, stale, err := t.ReadFile(dockerAfterWG0(d)); err != nil {
-		return out, err
-	} else if stale {
-		out.Steps = append(out.Steps, Step{
-			Describe: "service: remove " + dockerAfterWG0(d) + ", which orders docker after wg0, an interface this deployment no longer uses",
-			Command:  "rm -f " + dockerAfterWG0(d) + " && systemctl daemon-reload",
 		})
 	}
 	enabled, active, err := u.unitState(t, "docker")

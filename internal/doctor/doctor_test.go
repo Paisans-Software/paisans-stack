@@ -29,7 +29,7 @@ const (
 paisans-f2a9-infra-patroni-1  | 2026-10-07 21:14:13,498 INFO: following a different leader because i am not the healthiest node`
 
 	// docker inspect on a container Docker could not start at boot, seen live.
-	wg0Inspect = `{"State":{"Status":"exited","Running":false,"Paused":false,"Restarting":false,"OOMKilled":false,"Dead":false,"Pid":0,"ExitCode":128,"Error":"failed to set up container networking: driver failed programming external connectivity on endpoint paisans-f2a9-talk-app-1 (2238d4...): failed to bind host port 10.44.0.2:8080/tcp: cannot assign requested address","StartedAt":"2026-10-07T20:01:12Z","FinishedAt":"2026-10-07T20:01:12Z"},"RestartCount":0}`
+	bindFailedInspect = `{"State":{"Status":"exited","Running":false,"Paused":false,"Restarting":false,"OOMKilled":false,"Dead":false,"Pid":0,"ExitCode":128,"Error":"failed to set up container networking: driver failed programming external connectivity on endpoint paisans-f2a9-talk-app-1 (2238d4...): failed to bind host port 10.44.0.2:8080/tcp: cannot assign requested address","StartedAt":"2026-10-07T20:01:12Z","FinishedAt":"2026-10-07T20:01:12Z"},"RestartCount":0}`
 )
 
 func fixture(t *testing.T) *config.Config {
@@ -342,7 +342,7 @@ func TestContainerThatStartedBeforeWg0(t *testing.T) {
 {"Names":"paisans-f2a9-talk-app-1","State":"exited","Status":"Exited (128) 3 minutes ago","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01,com.docker.compose.service=app,com.docker.compose.project=paisans-f2a9-talk"}`,
 		Down: []ContainerProbe{{
 			Entry:   PSEntry{Names: "paisans-f2a9-talk-app-1", State: "exited", Status: "Exited (128) 3 minutes ago", Labels: "community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01,com.docker.compose.service=app,com.docker.compose.project=paisans-f2a9-talk"},
-			Inspect: wg0Inspect,
+			Inspect: bindFailedInspect,
 		}},
 	}}
 	f := find(t, Containers(fixture(t).Deployment(), sites, ""), SectionContainers, "home-b: paisans-f2a9-talk-app-1 exited (exit 128, restarted 0 time(s)): failed to set up container networking")

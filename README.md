@@ -2284,10 +2284,7 @@ not retry a container that failed while setting up its network, so the site
 comes back with its app stacks down. `host prepare` therefore writes a systemd
 drop-in, `/etc/systemd/system/docker.service.d/paisans-<token>-after-wireguard.conf`, with
 `Wants=` and `After=wg-quick@psns-<token>.service`. Each deployment on a host
-writes its own, so Docker waits for every mesh a container binds. A drop-in
-this deployment wrote as `paisans-<token>-after-wg0.conf`, from when every
-deployment's interface was `wg0`, is removed, because its `Wants=` would still
-start `wg-quick@wg0` at boot. Installing it is a
+writes its own, so Docker waits for every mesh a container binds. Installing it is a
 `systemctl daemon-reload` and nothing else: the order matters only at boot, so
 Docker and its containers keep running. A drop-in leaves Docker's own unit,
 which a package upgrade replaces, untouched.
