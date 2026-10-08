@@ -66,15 +66,25 @@ func StandbyApps(cfg *config.Config) []string {
 }
 
 // instanceCommand asks a site in one shell command, printing one word. The
-// state file first, through `docker compose exec`, which fails for a
-// container that is not running and so falls through; then /healthz on the
-// mesh address, the same address and port the gateway dials.
+// compose file first, for whether the site has the stack at all. Then the
+// state file, through `docker exec` on the running app container, found by
+// the deployment's label and its compose project and service; a container
+// that is not running is not listed, and so falls through. Then /healthz on
+// the mesh address, the same address and port the gateway dials.
+//
+// The container is found with `docker ps` rather than reached through
+// `docker compose`, because Compose loads every env_file to build the project,
+// exec included, and the stack's .env is root's and 0600. The admin commands
+// and apply's client step ask without sudo, as a deploy user in the docker
+// group, and there `docker compose` fails before it reaches the daemon, which
+// made every standby read as down.
 func instanceCommand(d deployment.Deployment, app, address string, port int) string {
-	compose := d.Compose(app)
+	running := fmt.Sprintf("docker ps -q --filter %s --filter label=com.docker.compose.project=%s --filter label=com.docker.compose.service=app",
+		d.LabelFilter(), d.Project(app))
 	return fmt.Sprintf("if [ ! -f %[1]s ]; then echo absent; "+
-		"elif docker compose -f %[1]s exec -T app test -f /tmp/paisans-standby >/dev/null 2>&1; then echo standby; "+
-		"elif curl --silent --fail --max-time 5 --output /dev/null http://%[2]s:%[3]d/healthz; then echo active; "+
-		"else echo down; fi", compose, address, port)
+		"elif c=$(%[2]s 2>/dev/null) && [ -n \"$c\" ] && docker exec \"$c\" test -f /tmp/paisans-standby >/dev/null 2>&1; then echo standby; "+
+		"elif curl --silent --fail --max-time 5 --output /dev/null http://%[3]s:%[4]d/healthz; then echo active; "+
+		"else echo down; fi", d.Compose(app), running, address, port)
 }
 
 // LookAtInstances asks every site an app runs on what its instance is doing,

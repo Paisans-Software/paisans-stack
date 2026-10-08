@@ -73,7 +73,8 @@ func TestTheInstanceQuestionAsksTheStateFileThenTheMeshPort(t *testing.T) {
 	cmd := apply.InstanceCommand(deployment.Deployment{ID: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}, "auth", "10.44.0.1", 1411)
 	for _, want := range []string{
 		"if [ ! -f /srv/paisans/f2a9/auth/compose.yaml ]; then echo absent;",
-		"docker compose -f /srv/paisans/f2a9/auth/compose.yaml exec -T app test -f /tmp/paisans-standby",
+		"docker ps -q --filter label=community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01 --filter label=com.docker.compose.project=paisans-f2a9-auth --filter label=com.docker.compose.service=app",
+		`docker exec "$c" test -f /tmp/paisans-standby`,
 		"curl --silent --fail --max-time 5 --output /dev/null http://10.44.0.1:1411/healthz",
 	} {
 		if !strings.Contains(cmd, want) {
@@ -82,6 +83,9 @@ func TestTheInstanceQuestionAsksTheStateFileThenTheMeshPort(t *testing.T) {
 	}
 	if strings.Index(cmd, "paisans-standby") > strings.Index(cmd, "/healthz") {
 		t.Error("the state file must be asked before /healthz: a standby's port refuses, so the other order would call it down")
+	}
+	if strings.Contains(cmd, "docker compose") {
+		t.Error("the state file must not be asked through docker compose, which reads the root only .env and fails without sudo")
 	}
 }
 
