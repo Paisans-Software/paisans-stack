@@ -5,11 +5,12 @@ import (
 	"sort"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // Rule is one inbound allowance. Either Port and Proto are set, or Interface
-// is, never both: "everything arriving on wg0" is a rule about where traffic
+// is, never both: "everything arriving on psns-f2a9" is a rule about where traffic
 // comes from, not which port it is for.
 type Rule struct {
 	Port      int
@@ -41,16 +42,7 @@ func (r Rule) String() string {
 	return fmt.Sprintf("%d/%s", r.Port, r.Proto)
 }
 
-// meshInterface is the interface wg0.conf creates. Every host network service
-// (etcd, Patroni, Garage, HAProxy) listens on the site's mesh address, so the
-// mesh is let in whole rather than port by port: a new mesh service would
-// otherwise be one more rule to remember on every site.
-const meshInterface = "wg0"
-
-// wireguardPort matches ListenPort in the rendered wg0.conf.
-const wireguardPort = 51820
-
-// Rules derives a site's inbound rules from its roles. Nothing is listed per
+// Rules derives a site's inbound rules from its roles and its endpoint. Nothing is listed per
 // site: a site that gains the gateway role gains 80 and 443 on its next
 // prepare, and one that loses it has them removed by the same prepare, since
 // the profile removes a rule it added once nothing derives it any more. SSH is
@@ -59,15 +51,25 @@ const wireguardPort = 51820
 //
 // Why is written into the host's firewall as part of the rule's ownership
 // comment, so it must not contain a single quote: ufw refuses one in a comment.
-func Rules(site config.Site) []Rule {
+//
+// The mesh interface is d's own, psns-<token>, and every host network service
+// (etcd, Patroni, Garage, HAProxy) listens on the site's mesh address, so the
+// mesh is let in whole rather than port by port: a new mesh service would
+// otherwise be one more rule to remember on every site. WireGuard's own port
+// is the site's endpoint port, the ListenPort its file is rendered with; a
+// site with no endpoint is never dialled and opens none, since the replies
+// to the packets it sends out are let in as part of that exchange.
+func Rules(d deployment.Deployment, site config.Site) []Rule {
 	rules := []Rule{
 		// First, and on every site: the firewall is enabled after it, and an
 		// enabled firewall without it would lock the operator out of the
 		// connection running this command.
 		{Port: site.SSH.PortOrDefault(), Proto: "tcp", Why: sshWhy, SSH: true},
-		{Port: wireguardPort, Proto: "udp", Why: "WireGuard, the mesh"},
-		{Interface: meshInterface, Why: "the mesh: etcd, Patroni, Garage, HAProxy"},
 	}
+	if port := site.ListenPort(); port != 0 {
+		rules = append(rules, Rule{Port: port, Proto: "udp", Why: "WireGuard, the mesh"})
+	}
+	rules = append(rules, Rule{Interface: d.Interface(), Why: "the mesh: etcd, Patroni, Garage, HAProxy"})
 	if site.Has(config.RoleGateway) {
 		rules = append(rules,
 			Rule{Port: 80, Proto: "tcp", Why: "the gateway, HTTP"},
@@ -86,7 +88,7 @@ const garageS3Port = 3900
 
 // ContainerRules lets an app's containers reach the host network services they
 // connect to on this site's mesh address. A container's packets to a host
-// address arrive on its compose project's bridge, not on wg0, so the default
+// address arrive on its compose project's bridge, not on the mesh interface, so the default
 // deny drops them: on the first real host Mbin waited forever for its database
 // with "[UFW BLOCK] IN=br-... DST=<mesh> DPT=5000" in the kernel log.
 //
@@ -118,7 +120,7 @@ func ContainerRules(cfg *config.Config, name string) []Rule {
 }
 
 // monitorRules lets an uptime monitor's direct checks reach the apps that run
-// on its own site. To another site they leave over wg0, which is let in whole;
+// on its own site. To another site they leave over the mesh, which is let in whole;
 // to its own site they arrive on a compose bridge, where the default deny drops
 // them, and on a single site that would fail every direct check.
 func monitorRules(cfg *config.Config, name string, site config.Site) []Rule {

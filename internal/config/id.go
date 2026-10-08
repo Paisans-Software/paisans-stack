@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 
 	"gopkg.in/yaml.v3"
@@ -48,27 +47,7 @@ func EnsureID(path string) (id string, added bool, err error) {
 	fmt.Fprintf(&out, "id: %s\n", id)
 	out.Write(data[loc[1]:])
 
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", false, err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return "", false, err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(out.Bytes()); err != nil {
-		tmp.Close()
-		return "", false, err
-	}
-	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
-		tmp.Close()
-		return "", false, err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", false, err
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err := replaceFile(path, out.Bytes()); err != nil {
 		return "", false, err
 	}
 	return id, true, nil

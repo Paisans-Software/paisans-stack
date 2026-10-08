@@ -223,3 +223,99 @@ func TestClaimMergeAgreesWithMerge(t *testing.T) {
 		t.Errorf("a registry in another layout exited %d, want 4", code)
 	}
 }
+
+// meshEntry is entry with a mesh: interface, listen port and subnet.
+func meshEntry(token, domain, site string, port int, subnet string) Entry {
+	e := entry(token, domain, site)
+	e.Interface = "psns-" + token
+	e.ListenPort = port
+	e.Subnet = subnet
+	return e
+}
+
+// The mesh fields refuse a claim the same way a token does, in Merge and in
+// the awk merge alike, and two deployments with nothing in common coexist.
+func TestMeshConflicts(t *testing.T) {
+	base := Registry{Version: Version, Deployments: map[string]Entry{
+		other: meshEntry("0c1d", "example.net", "vm", 51820, "10.44.0.0/24"),
+	}}
+	input, err := Encode(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		e     Entry
+		clash string
+	}{
+		{"same interface", func() Entry {
+			e := meshEntry("f2a9", "example.org", "vm", 51821, "10.45.0.0/24")
+			e.Interface = "psns-0c1d"
+			return e
+		}(), "WireGuard interface psns-0c1d"},
+		{"same listen port", meshEntry("f2a9", "example.org", "vm", 51820, "10.45.0.0/24"), "WireGuard listen port 51820/udp"},
+		{"same subnet", meshEntry("f2a9", "example.org", "vm", 51821, "10.44.0.0/24"), "mesh subnet 10.44.0.0/24"},
+		{"a subnet containing theirs", meshEntry("f2a9", "example.org", "vm", 51821, "10.0.0.0/8"), "mesh subnet 10.44.0.0/24, which overlaps this deployment's 10.0.0.0/8"},
+		{"a subnet inside theirs", meshEntry("f2a9", "example.org", "vm", 0, "10.44.0.128/25"), "mesh subnet 10.44.0.0/24, which overlaps this deployment's 10.44.0.128/25"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Merge(base, ours, tc.e)
+			var c Conflict
+			if !errors.As(err, &c) || c.ID != other {
+				t.Fatalf("Merge = %v, want a conflict with %s", err, other)
+			}
+			if !strings.Contains(err.Error(), tc.clash) || !strings.Contains(err.Error(), "example.net") {
+				t.Errorf("the refusal %q does not name %q and the other deployment", err, tc.clash)
+			}
+			stdout, stderr, code := runMerge(t, string(input), ours, tc.e)
+			if code != 3 || stdout != "" {
+				t.Fatalf("the awk merge did not refuse: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+			}
+			if err := ParseClaim(stderr); !errors.As(err, &c) || c.ID != other {
+				t.Errorf("the awk refusal parsed to %v", err)
+			}
+			if got := clashes(c.Entry, tc.e); len(got) == 0 || got[0] != tc.clash {
+				t.Errorf("clashes = %q, want %q first", got, tc.clash)
+			}
+		})
+	}
+
+	t.Run("disjoint meshes coexist", func(t *testing.T) {
+		e := meshEntry("f2a9", "example.org", "vm", 51821, "10.45.0.0/24")
+		got, err := Merge(base, ours, e)
+		if err != nil || len(got.Deployments) != 2 {
+			t.Fatalf("Merge = %+v, %v", got, err)
+		}
+		stdout, stderr, code := runMerge(t, string(input), ours, e)
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr)
+		}
+		back, err := Parse([]byte(stdout))
+		if err != nil || back.Deployments[ours] != e || back.Deployments[other] != base.Deployments[other] {
+			t.Errorf("the awk merge wrote %+v, %v", back, err)
+		}
+	})
+	t.Run("no listen port on either side is no clash", func(t *testing.T) {
+		start := Registry{Version: Version, Deployments: map[string]Entry{other: meshEntry("0c1d", "example.net", "home-a", 0, "10.44.0.0/24")}}
+		in, _ := Encode(start)
+		e := meshEntry("f2a9", "example.org", "home-a", 0, "10.45.0.0/24")
+		if _, err := Merge(start, ours, e); err != nil {
+			t.Fatal(err)
+		}
+		if _, stderr, code := runMerge(t, string(in), ours, e); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr)
+		}
+	})
+}
+
+func TestMeshesListsOtherDeploymentsSubnets(t *testing.T) {
+	r := Registry{Version: Version, Deployments: map[string]Entry{
+		ours:   meshEntry("f2a9", "example.org", "home-a", 0, "10.44.0.0/24"),
+		other:  meshEntry("0c1d", "example.net", "home-a", 0, "10.45.0.0/24"),
+		theirs: entry("f2a9", "example.com", "home-a"),
+	}}
+	got := Meshes(r, ours, "home-a")
+	if len(got) != 1 || got[0].Prefix.String() != "10.45.0.0/24" || !strings.Contains(got[0].What, other) || !strings.Contains(got[0].What, "on home-a") {
+		t.Errorf("Meshes = %+v", got)
+	}
+}

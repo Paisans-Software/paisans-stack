@@ -23,8 +23,11 @@ mesh:
   # are rendered to trust this subnet for forwarded client addresses, so it has
   # to be a value that never changes. Deriving the tightest network around
   # today's addresses would widen it the moment a site was added, silently
-  # rewriting TRUSTED_PROXIES in every app. Pick a range your hosts do not
-  # already route.
+  # rewriting TRUSTED_PROXIES in every app. `paisans init` checks it against
+  # every site before the first apply, and rolls a random 10.x.y.0/24 (moving
+  # each site's address with it) when it overlaps another deployment's mesh,
+  # a route, an address or a Docker network on any of them. Once deployed it
+  # never changes.
   subnet: 10.44.0.0/24
 
 # Certificates are issued over DNS-01, always. A gateway has to be able to hold

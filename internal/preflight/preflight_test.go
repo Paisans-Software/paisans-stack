@@ -71,6 +71,8 @@ func healthy(name string) *fakeHost {
 			{match: "/dev/watchdog"},
 			{match: "ss -Hltnu", out: "tcp LISTEN 0 4096 0.0.0.0:22 0.0.0.0:*\nudp UNCONN 0 0 127.0.0.53%lo:53 0.0.0.0:*\n"},
 			{match: "ip -j route", out: `[{"dst":"default","dev":"eth0"},{"dst":"203.0.113.0/24","dev":"eth0"},{"dst":"172.17.0.0/16","dev":"docker0"}]`},
+			{match: "ip -j addr", out: `[{"ifname":"eth0","addr_info":[{"family":"inet","local":"203.0.113.20","prefixlen":24}]}]`},
+			{match: "docker network", out: `[{"Name":"bridge","IPAM":{"Config":[{"Subnet":"172.17.0.0/16"}]}}]`},
 			{match: "/cluster", out: cluster},
 			{match: "pg_database_size", out: fmt.Sprintf("%d\n", int64(1)<<30)},
 			{match: "df -B1", out: "Avail\n" + fmt.Sprint(int64(40)<<30) + "\n"},
@@ -166,7 +168,7 @@ func TestAHealthyJoinPassesEveryCheck(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"prepared", "platform", "wireguard", "watchdog", "ports", "routes", "disk", "storage"} {
+	for _, name := range []string{"prepared", "platform", "wireguard", "watchdog", "ports", "mesh", "disk", "storage"} {
 		if len(find(r, "home-b", name)) == 0 {
 			t.Errorf("%s not checked on the new site", name)
 		}
@@ -247,9 +249,17 @@ func TestPreflightRefuses(t *testing.T) {
 			setup: func(h map[string]*fakeHost) {
 				h["home-b"].override(rule{match: "ss -Hltnu", out: "tcp LISTEN 0 244 [::]:5432 [::]:*\n"})
 			}},
-		{name: "route collides", site: "home-b", check: "routes", want: "10.44.0.0/16 dev br-lan",
+		{name: "route collides", site: "home-b", check: "mesh", want: "10.44.0.0/16 dev br-lan",
 			setup: func(h map[string]*fakeHost) {
 				h["home-b"].override(rule{match: "ip -j route", out: `[{"dst":"10.44.0.0/16","dev":"br-lan"}]`})
+			}},
+		{name: "another deployment's mesh", site: "home-b", check: "mesh", want: "route 10.44.0.0/24 dev psns-0c1d",
+			setup: func(h map[string]*fakeHost) {
+				h["home-b"].override(rule{match: "ip -j route", out: `[{"dst":"10.44.0.0/24","dev":"psns-0c1d"}]`})
+			}},
+		{name: "docker network collides", site: "home-b", check: "mesh", want: "Docker network lan (10.44.0.0/24)",
+			setup: func(h map[string]*fakeHost) {
+				h["home-b"].override(rule{match: "docker network", out: `[{"Name":"lan","IPAM":{"Config":[{"Subnet":"10.44.0.0/24"}]}}]`})
 			}},
 		{name: "disk short", site: "home-b", check: "disk", want: "needs 3.0 GiB",
 			setup: func(h map[string]*fakeHost) {
@@ -377,12 +387,15 @@ func TestHeartbeatUnderOneRoundTripWarns(t *testing.T) {
 	}
 }
 
-// A route through wg0 is the mesh itself, which a re-run after stage 2 will
-// find on the new host.
+// A route and an address on this deployment's own interface are the mesh
+// itself, which a re-run after stage 2 will find on the new host.
 func TestTheMeshsOwnRouteIsNotACollision(t *testing.T) {
 	prepared(t)
 	h := hosts()
-	h["home-b"].override(rule{match: "ip -j route", out: `[{"dst":"10.44.0.0/24","dev":"wg0"}]`})
+	h["home-b"].override(
+		rule{match: "ip -j route", out: `[{"dst":"10.44.0.0/24","dev":"psns-f2a9"}]`},
+		rule{match: "ip -j addr", out: `[{"ifname":"psns-f2a9","addr_info":[{"family":"inet","local":"10.44.0.2","prefixlen":24}]}]`},
+	)
 	if r := run(t, fixture(t), h); r.Refused() {
 		t.Fatalf("refused:\n%s", printed(r))
 	}

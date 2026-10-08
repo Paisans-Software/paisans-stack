@@ -9,11 +9,9 @@
 package preflight
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"path"
 	"sort"
 	"strconv"
@@ -23,6 +21,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
+	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -102,7 +101,7 @@ func Run(cfg *config.Config, newSite string, transports map[string]apply.Transpo
 		r.wireguard(t)
 		r.watchdog(t)
 		r.ports(t)
-		r.routes(t)
+		r.meshClear(t)
 		r.disk(t)
 		r.storage(t)
 		r.rtt(t)
@@ -328,7 +327,10 @@ type port struct {
 
 // wanted is every port the site will bind, by role.
 func (r *runner) wanted() []port {
-	ports := []port{{"udp", render.WireGuardPort, "WireGuard"}}
+	var ports []port
+	if listen := r.site.ListenPort(); listen != 0 {
+		ports = append(ports, port{"udp", listen, "WireGuard"})
+	}
 	for _, m := range r.cfg.Etcd.Members {
 		if m == r.newSite {
 			ports = append(ports, port{"tcp", render.EtcdClientPort, "etcd client"}, port{"tcp", render.EtcdPeerPort, "etcd peer"})
@@ -390,51 +392,37 @@ func (r *runner) ports(t apply.Transport) {
 	r.pass(r.newSite, "ports", "free: %s", strings.Join(free, ", "))
 }
 
-// routes checks the mesh subnet overlaps no route the host already has: a
-// Docker bridge, a LAN or another VPN on the same range would capture mesh
-// traffic, or have its own captured. A route through wg0 is the mesh itself
-// and is not a collision.
-func (r *runner) routes(t apply.Transport) {
-	_, mesh, err := net.ParseCIDR(r.cfg.Mesh.Subnet)
+// meshClear checks the mesh subnet overlaps nothing the host already holds:
+// a route or address outside this deployment's own interface (a LAN, a
+// Docker bridge, another VPN or another deployment's mesh), a Docker network,
+// or a range Docker allocates new networks from. Any of those would capture
+// mesh traffic, or have its own captured. A route through this deployment's
+// own interface is the mesh itself and is not a collision. See internal/mesh.
+func (r *runner) meshClear(t apply.Transport) {
+	subnet, err := mesh.ParsePrefix(r.cfg.Mesh.Subnet)
 	if err != nil {
-		r.refuse(r.newSite, "routes", "mesh.subnet %q is not a network", r.cfg.Mesh.Subnet)
+		r.refuse(r.newSite, "mesh", "mesh.subnet %q is not a network", r.cfg.Mesh.Subnet)
 		return
 	}
-	out, err := t.Run("ip -j route")
+	probed, err := mesh.Probe(t)
 	if err != nil {
-		r.refuse(r.newSite, "routes", "could not list routes: %s", firstLine(errText(out, err)))
+		r.refuse(r.newSite, "mesh", "%v", err)
 		return
 	}
-	var routes []struct {
-		Dst string `json:"dst"`
-		Dev string `json:"dev"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &routes); err != nil {
-		r.refuse(r.newSite, "routes", "unreadable `ip -j route` output: %v", err)
+	taken, err := probed.Taken(r.cfg.Deployment().Interface(), "")
+	if err != nil {
+		r.refuse(r.newSite, "mesh", "%v", err)
 		return
 	}
-	var clash []string
-	for _, route := range routes {
-		if route.Dst == "default" || route.Dev == "wg0" {
-			continue
+	if clash := mesh.Clashes(subnet, taken); len(clash) > 0 {
+		var what []string
+		for _, c := range clash {
+			what = append(what, c.What)
 		}
-		dst := route.Dst
-		if !strings.Contains(dst, "/") {
-			dst += "/32"
-		}
-		_, network, err := net.ParseCIDR(dst)
-		if err != nil {
-			continue
-		}
-		if network.Contains(mesh.IP) || mesh.Contains(network.IP) {
-			clash = append(clash, fmt.Sprintf("%s dev %s", route.Dst, route.Dev))
-		}
-	}
-	if len(clash) > 0 {
-		r.refuse(r.newSite, "routes", "mesh subnet %s overlaps %s", r.cfg.Mesh.Subnet, strings.Join(clash, ", "))
+		r.refuse(r.newSite, "mesh", "mesh subnet %s overlaps %s. The subnet is fixed once a site is deployed, so the other network has to move", r.cfg.Mesh.Subnet, strings.Join(what, ", "))
 		return
 	}
-	r.pass(r.newSite, "routes", "no route overlaps the mesh subnet %s", r.cfg.Mesh.Subnet)
+	r.pass(r.newSite, "mesh", "nothing on the host overlaps the mesh subnet %s", r.cfg.Mesh.Subnet)
 }
 
 // registry checks the new site's host can be claimed for this deployment: no
@@ -446,7 +434,7 @@ func (r *runner) registry(t apply.Transport) {
 		return
 	}
 	d := r.cfg.Deployment()
-	r.pass(r.newSite, "registry", "no other deployment on the host holds token %s or %s", d.Token(), d.Root())
+	r.pass(r.newSite, "registry", "no other deployment on the host holds token %s, %s, interface %s or an overlapping mesh", d.Token(), d.Root(), d.Interface())
 }
 
 // diskProbe reads free bytes on the deepest directory that exists on the way

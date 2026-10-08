@@ -12,6 +12,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/doctor"
+	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -95,6 +96,25 @@ func gatherDoctor(cfg *config.Config, sites []string, transports map[string]appl
 			reached[name] = true
 		}
 		in.Reach = append(in.Reach, r)
+	}
+
+	for _, name := range sites {
+		if !reached[name] {
+			continue
+		}
+		t := transports[name]
+		p := doctor.MeshProbe{Site: name}
+		if out, err := t.Run(mesh.LinkCommand(cfg.Deployment().Interface())); err != nil {
+			p.LinkErr = errText(out, err)
+		} else {
+			p.Link = out
+		}
+		if probed, err := mesh.Probe(t); err != nil {
+			p.ProbeErr = err.Error()
+		} else {
+			p.Probed = probed
+		}
+		in.Mesh = append(in.Mesh, p)
 	}
 
 	// etcd, from the first member that answers it, which also reads /sync.

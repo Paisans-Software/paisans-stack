@@ -10,6 +10,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/doctor"
+	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
 )
 
@@ -61,6 +62,11 @@ func readOnly(cfg *config.Config) (exact []string, prefixes []string) {
 		doctor.SyncCommand(cfg.Deployment()),
 		doctor.PatroniLogCommand(cfg.Deployment()),
 		doctor.ContainersCommand(cfg.Deployment()),
+		mesh.LinkCommand(cfg.Deployment().Interface()),
+		mesh.RouteCommand,
+		mesh.AddrCommand,
+		mesh.NetworksCommand,
+		"read " + mesh.DaemonConfig,
 		patroni.ClusterCommand(cfg.Deployment(), "10.44.0.1:8008"),
 		patroni.ClusterCommand(cfg.Deployment(), "10.44.0.2:8008"),
 	}
@@ -109,8 +115,16 @@ func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
 		inspect:        `{"State":{"Status":"restarting","Restarting":true,"ExitCode":1,"Error":""},"RestartCount":9}`,
 		"docker logs ": "booting\nSQLSTATE[08006] [7] connection to server at \"127.0.0.1\", port 5000 failed: Connection refused\n",
 		"if [ ! -f /srv/paisans/f2a9/auth/compose.yaml ]": "standby\n",
+		mesh.LinkCommand("psns-f2a9"):                     `[{"ifname":"psns-f2a9","flags":["POINTOPOINT","NOARP","UP","LOWER_UP"]}]`,
+		mesh.RouteCommand:                                 `[{"dst":"10.44.0.0/24","dev":"psns-f2a9"}]`,
+		mesh.AddrCommand:                                  `[{"ifname":"psns-f2a9","addr_info":[{"family":"inet","local":"10.44.0.1","prefixlen":24}]}]`,
+		mesh.NetworksCommand:                              "[]",
 	}
 	vm := map[string]string{
+		mesh.LinkCommand("psns-f2a9"):              `[{"ifname":"psns-f2a9","flags":["POINTOPOINT","NOARP","UP","LOWER_UP"]}]`,
+		mesh.RouteCommand:                          `[{"dst":"10.44.0.0/24","dev":"psns-f2a9"},{"dst":"10.44.0.0/16","dev":"wg9"}]`,
+		mesh.AddrCommand:                           "[]",
+		mesh.NetworksCommand:                       "[]",
 		doctor.ReachCommand:                        "",
 		doctor.ClockCommand:                        "1760000000.000000000\n",
 		doctor.ContainersCommand(cfg.Deployment()): `{"Names":"paisans-f2a9-infra-etcd-1","State":"running","Status":"Up 2 days","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}`,
@@ -129,6 +143,9 @@ func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
 
 	for _, want := range []string{
 		"doctor: 3 site(s), 2 reached",
+		"ok    home-a: psns-f2a9 is up",
+		"ok    home-a: nothing on the host overlaps the mesh subnet 10.44.0.0/24",
+		"FAIL  vm: the mesh subnet 10.44.0.0/24 overlaps route 10.44.0.0/16 dev wg9",
 		"FAIL  home-b: ssh to ubuntu@home-b.local did not answer (ssh: connect to host home-b.local port 22: Operation timed out)",
 		"WARN  quorum: 2 of 3 members healthy (needs 2), asked from home-a",
 		"FAIL  no primary: home-a is a replica and will not promote while home-b, which led, is gone",

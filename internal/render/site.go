@@ -160,7 +160,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	if err != nil {
 		return nil, err
 	}
-	files = append(files, File{Path: base + "etc/wireguard/wg0.conf", Content: wg, Mode: 0o600})
+	files = append(files, File{Path: base + p.cfg.Deployment().WireGuardConf(), Content: wg, Mode: 0o600})
 
 	spilo, ok := spiloTag[p.postgresVersion()]
 	if !ok {
@@ -614,13 +614,13 @@ func (p *planner) renderWireGuard(site *siteView) (string, error) {
 		}
 	}
 
-	return p.renderTemplate("wg0.conf.tmpl", map[string]any{
+	return p.renderTemplate("wireguard.conf.tmpl", map[string]any{
 		"Site":       site,
 		"PrivateKey": private,
 		"MeshPrefix": p.cfg.Mesh.Prefix(),
 		"IsRelay":    isRelay,
 		"Peers":      peers,
-		"ListenPort": wireguardPort,
+		"ListenPort": p.cfg.Sites[site.Name].ListenPort(),
 	})
 }
 

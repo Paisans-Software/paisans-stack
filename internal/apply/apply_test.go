@@ -29,7 +29,7 @@ type fakeHost struct {
 	// host has none, which is the ordinary case on a first apply and the one
 	// that used to make apply impossible to complete.
 	running bool
-	// wgUp is whether wg0 exists. Starting or restarting the unit brings it
+	// wgUp is whether psns-f2a9 exists. Starting or restarting the unit brings it
 	// up, the way systemd would.
 	wgUp bool
 	// inputs is what each RunInput call sent on stdin, in order, beside its
@@ -153,13 +153,13 @@ func (h *fakeHost) Run(command string) (string, error) {
 		delete(h.files, strings.Trim(strings.TrimPrefix(command, "rm -f "), "'"))
 		return "", nil
 	}
-	if strings.Contains(command, "ip link show wg0") {
+	if strings.Contains(command, "ip link show psns-f2a9") {
 		if h.wgUp {
 			return "up\n", nil
 		}
 		return "down\n", nil
 	}
-	if strings.Contains(command, "enable --now wg-quick@wg0") || strings.Contains(command, "restart wg-quick@wg0") {
+	if strings.Contains(command, "enable --now wg-quick@psns-f2a9") || strings.Contains(command, "restart wg-quick@psns-f2a9") {
 		h.wgUp = true
 		return "", nil
 	}
@@ -708,7 +708,7 @@ func applied(t *testing.T, site string) *fakeHost {
 	return host
 }
 
-// Every service binds the site's mesh address, so on a first apply wg0 has to
+// Every service binds the site's mesh address, so on a first apply psns-f2a9 has to
 // be up before anything is started or checked. It used to be written and
 // never started at all, which left every container failing to bind.
 func TestAFirstApplyBringsUpTheMeshFirst(t *testing.T) {
@@ -719,22 +719,22 @@ func TestAFirstApplyBringsUpTheMeshFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 		if p.WireGuard != apply.WireGuardStart {
-			t.Fatalf("%s: a first apply plans %v for wg0, want a start", site, p.WireGuard)
+			t.Fatalf("%s: a first apply plans %v for psns-f2a9, want a start", site, p.WireGuard)
 		}
 		if err := apply.Execute(p, host); err != nil {
 			t.Fatal(err)
 		}
-		start := host.indexOf("systemctl enable --now wg-quick@wg0")
+		start := host.indexOf("systemctl enable --now wg-quick@psns-f2a9")
 		if start < 0 {
-			t.Fatalf("%s: wg0 was written and never started", site)
+			t.Fatalf("%s: psns-f2a9 was written and never started", site)
 		}
 		if compose := host.firstCompose(); compose >= 0 && compose < start {
-			t.Errorf("%s: %q ran before wg0 was up", site, host.commands[compose])
+			t.Errorf("%s: %q ran before psns-f2a9 was up", site, host.commands[compose])
 		}
 	}
 }
 
-// A dry run may ask whether wg0 is up, and must do nothing else to it.
+// A dry run may ask whether psns-f2a9 is up, and must do nothing else to it.
 func TestPlanningOnlyProbesTheMesh(t *testing.T) {
 	host := applied(t, "home-a")
 	host.wgUp = false
@@ -743,10 +743,10 @@ func TestPlanningOnlyProbesTheMesh(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.WireGuard != apply.WireGuardStart {
-		t.Errorf("an unchanged wg0.conf on a host whose wg0 is down plans %v, want a start", p.WireGuard)
+		t.Errorf("an unchanged psns-f2a9.conf on a host whose psns-f2a9 is down plans %v, want a start", p.WireGuard)
 	}
 	for _, command := range host.commands {
-		if !strings.Contains(command, "ip link show wg0") {
+		if !strings.Contains(command, "ip link show psns-f2a9") {
 			t.Errorf("building a plan ran %q, which is more than a probe", command)
 		}
 	}
@@ -761,7 +761,7 @@ func TestAnUpMeshWithAnUnchangedFileIsLeftAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.WireGuard != apply.WireGuardNone {
-		t.Errorf("an up wg0 with an unchanged file plans %v", p.WireGuard)
+		t.Errorf("an up psns-f2a9 with an unchanged file plans %v", p.WireGuard)
 	}
 }
 
@@ -770,9 +770,9 @@ func TestAnUpMeshWithAnUnchangedFileIsLeftAlone(t *testing.T) {
 // enough to start an election.
 func TestAPeerChangeIsSyncedNotRestarted(t *testing.T) {
 	host := applied(t, "home-a")
-	host.files["/etc/wireguard/wg0.conf"] = strings.Replace(
-		host.files["/etc/wireguard/wg0.conf"], "PersistentKeepalive = 25", "PersistentKeepalive = 30", 1)
-	adopt(t, host, "/etc/wireguard/wg0.conf")
+	host.files["/etc/wireguard/psns-f2a9.conf"] = strings.Replace(
+		host.files["/etc/wireguard/psns-f2a9.conf"], "PersistentKeepalive = 25", "PersistentKeepalive = 30", 1)
+	adopt(t, host, "/etc/wireguard/psns-f2a9.conf")
 
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
@@ -784,10 +784,10 @@ func TestAPeerChangeIsSyncedNotRestarted(t *testing.T) {
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	if !host.ran("wg syncconf wg0") {
-		t.Error("the new peers were never handed to wg0")
+	if !host.ran("wg syncconf psns-f2a9") {
+		t.Error("the new peers were never handed to psns-f2a9")
 	}
-	if host.ran("restart wg-quick@wg0") {
+	if host.ran("restart wg-quick@psns-f2a9") {
 		t.Error("a peer change took the mesh down")
 	}
 }
@@ -796,9 +796,9 @@ func TestAPeerChangeIsSyncedNotRestarted(t *testing.T) {
 // leave the old one in place. That change needs a restart.
 func TestAnAddressChangeRestartsTheMesh(t *testing.T) {
 	host := applied(t, "home-a")
-	host.files["/etc/wireguard/wg0.conf"] = strings.Replace(
-		host.files["/etc/wireguard/wg0.conf"], "Address = 10.44.0.1/24", "Address = 10.44.0.9/24", 1)
-	adopt(t, host, "/etc/wireguard/wg0.conf")
+	host.files["/etc/wireguard/psns-f2a9.conf"] = strings.Replace(
+		host.files["/etc/wireguard/psns-f2a9.conf"], "Address = 10.44.0.1/24", "Address = 10.44.0.9/24", 1)
+	adopt(t, host, "/etc/wireguard/psns-f2a9.conf")
 
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
@@ -813,16 +813,16 @@ func TestAnAddressChangeRestartsTheMesh(t *testing.T) {
 // since every one of them would fail to bind.
 func TestAMeshThatWillNotStartStopsTheApply(t *testing.T) {
 	host := newHost()
-	host.fail = "wg-quick@wg0"
+	host.fail = "wg-quick@psns-f2a9"
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = apply.Execute(p, host)
 	if err == nil {
-		t.Fatal("an apply carried on with wg0 down")
+		t.Fatal("an apply carried on with psns-f2a9 down")
 	}
-	if !strings.Contains(err.Error(), "wg0") {
+	if !strings.Contains(err.Error(), "psns-f2a9") {
 		t.Errorf("the error does not name the interface:\n%v", err)
 	}
 	if host.firstCompose() >= 0 {
