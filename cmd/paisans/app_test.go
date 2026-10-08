@@ -13,91 +13,8 @@ import (
 
 const adminPassword = "not-a-real-password-0002"
 
-// adminFake answers every probe with one fixed line and records each call.
-type adminFake struct {
-	destination string
-	probe       string
-	commands    []string
-	mutated     bool
-}
-
-func (f *adminFake) Describe() string { return f.destination }
-func (f *adminFake) Run(command string) (string, error) {
-	f.commands = append(f.commands, command)
-	return "", errors.New("unexpected Run")
-}
-func (f *adminFake) RunInput(command, stdin string) (string, error) {
-	f.commands = append(f.commands, command)
-	if !strings.Contains(stdin, "findOneByUsername") {
-		f.mutated = true
-	}
-	return f.probe, nil
-}
-
-func withAdminFake(t *testing.T, probe string) *adminFake {
-	t.Helper()
-	fake := &adminFake{probe: probe}
-	saved := adminTransport
-	adminTransport = func(tr apply.SSHTransport) appadmin.Transport {
-		fake.destination = tr.Describe()
-		return fake
-	}
-	t.Cleanup(func() { adminTransport = saved })
-	return fake
-}
-
 func fixtureConfig() string {
 	return filepath.Join("..", "..", "internal", "render", "testdata", "deployment.yaml")
-}
-
-func TestAppAdminCreateDryRunPlansAndChangesNothing(t *testing.T) {
-	fake := withAdminFake(t, "paisans-admin-probe {\"exists\":false,\"verified\":false,\"admin\":false}\n")
-	var err error
-	printed := captureStdout(t, func() {
-		err = runAppAdminCreate([]string{"--config", fixtureConfig(), "--app", "talk", "--username", "founder", "--email", "founder@example.org"}, strings.NewReader(adminPassword+"\n"))
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"talk on home-a (mbin)", "create user founder", "verify founder", "grant admin founder", "Nothing was changed"} {
-		if !strings.Contains(printed, want) {
-			t.Errorf("output lacks %q:\n%s", want, printed)
-		}
-	}
-	if fake.mutated {
-		t.Error("a dry run ran a mutating script")
-	}
-	if fake.destination != "ubuntu@home-a.local" {
-		t.Errorf("reached %q, want the first apps site's ssh section", fake.destination)
-	}
-	if strings.Contains(printed, adminPassword) {
-		t.Error("the output carries the password")
-	}
-	for _, c := range fake.commands {
-		if strings.Contains(c, adminPassword) {
-			t.Errorf("a command line carries the password: %s", c)
-		}
-	}
-}
-
-func TestAppAdminCreateRefusesAnUnimplementedKind(t *testing.T) {
-	withAdminFake(t, "")
-	err := runAppAdminCreate([]string{"--config", fixtureConfig(), "--app", "docs", "--username", "u", "--email", "u@example.org"}, strings.NewReader(adminPassword))
-	if err == nil || !strings.Contains(err.Error(), "outline admin creation is not implemented yet. Implemented kinds: mbin, pocket-id") {
-		t.Errorf("got %v", err)
-	}
-}
-
-func TestReadPassword(t *testing.T) {
-	if got, err := readPassword(strings.NewReader("pw\n")); err != nil || got != "pw" {
-		t.Errorf("got %q, %v; want one trailing newline stripped", got, err)
-	}
-	if got, _ := readPassword(strings.NewReader("pw\n\n")); got != "pw\n" {
-		t.Errorf("got %q; want only one newline stripped", got)
-	}
-	if _, err := readPassword(strings.NewReader("\n")); err == nil {
-		t.Error("an empty password was accepted")
-	}
 }
 
 func TestAdminSite(t *testing.T) {
@@ -119,8 +36,8 @@ func TestAdminSite(t *testing.T) {
 	}
 }
 
-// pidFake is a Pocket ID with no users until one is created, reached through
-// curl configs.
+// pidFake is a Pocket ID with no users and no groups until they are created,
+// reached through curl configs.
 type pidFake struct {
 	destination string
 	sudo        bool
@@ -128,6 +45,8 @@ type pidFake struct {
 	commands    []string
 	mutated     bool
 	created     bool
+	group       bool
+	joined      bool
 }
 
 func (f *pidFake) Describe() string           { return f.destination }
@@ -136,9 +55,26 @@ func (f *pidFake) RunInput(command, stdin string) (string, error) {
 	f.commands = append(f.commands, command)
 	f.stdins = append(f.stdins, stdin)
 	switch {
+	case strings.Contains(stdin, `request = "GET"`) && strings.Contains(stdin, "/api/user-groups"):
+		if f.group {
+			return `{"data":[{"id":"g-1","name":"admins","friendlyName":"admins"}],"pagination":{"totalPages":1}}` + "\npaisans-http-status:200", nil
+		}
+		return `{"data":[],"pagination":{"totalPages":0}}` + "\npaisans-http-status:200", nil
+	case strings.Contains(stdin, `request = "POST"`) && strings.Contains(stdin, "/api/user-groups"):
+		f.mutated = true
+		f.group = true
+		return `{"id":"g-1","name":"admins","friendlyName":"admins"}` + "\npaisans-http-status:201", nil
+	case strings.Contains(stdin, `request = "PUT"`) && strings.Contains(stdin, "/api/users/u-1/user-groups"):
+		f.mutated = true
+		f.joined = strings.Contains(stdin, "g-1")
+		return `{}` + "\npaisans-http-status:200", nil
 	case strings.Contains(stdin, `request = "GET"`) && strings.Contains(stdin, "/api/users?"):
 		if f.created {
-			return `{"data":[{"id":"u-1","username":"founder","isAdmin":true}],"pagination":{"totalPages":1}}` + "\npaisans-http-status:200", nil
+			groups := ""
+			if f.joined {
+				groups = `,"userGroups":[{"id":"g-1","name":"admins"}]`
+			}
+			return `{"data":[{"id":"u-1","username":"founder","isAdmin":true` + groups + `}],"pagination":{"totalPages":1}}` + "\npaisans-http-status:200", nil
 		}
 		return `{"data":[],"pagination":{"totalPages":0}}` + "\npaisans-http-status:200", nil
 	case strings.Contains(stdin, "one-time-access-token"):
@@ -252,14 +188,32 @@ func TestPocketIDAdminRefusesAPipedPassword(t *testing.T) {
 	}
 }
 
-func TestAdminFlagsBelongToTheirKinds(t *testing.T) {
-	withPIDFake(t)
-	if err := runAppAdminCreate(pidArgs("--reset-password"), strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "--login-link") {
-		t.Errorf("pocket-id --reset-password: %v", err)
+func TestAppAdminCreateRefusesAnUnimplementedKind(t *testing.T) {
+	fake := withPIDFake(t)
+	err := runAppAdminCreate([]string{"--config", fixtureConfig(), "--app", "docs", "--username", "u", "--email", "u@example.org"}, strings.NewReader(""))
+	if err == nil || !strings.Contains(err.Error(), "outline admin creation is not implemented yet. Implemented kinds: pocket-id") {
+		t.Errorf("got %v", err)
 	}
-	withAdminFake(t, "")
-	err := runAppAdminCreate([]string{"--config", fixtureConfig(), "--app", "talk", "--username", "u", "--email", "u@example.org", "--login-link"}, strings.NewReader(adminPassword))
-	if err == nil || !strings.Contains(err.Error(), "passwordless") {
-		t.Errorf("mbin --login-link: %v", err)
+	if len(fake.commands) != 0 {
+		t.Error("a host was reached")
+	}
+}
+
+// An Mbin app's administrators come only through single sign on, so it is
+// refused before a site is resolved, pointing at the command run against
+// Pocket ID.
+func TestAppAdminCreateRefusesMbinWithTheSSORoute(t *testing.T) {
+	fake := withPIDFake(t)
+	saved := standbyLook
+	looked := false
+	standbyLook = func(tr apply.SSHTransport) apply.Transport { looked = true; return tr }
+	t.Cleanup(func() { standbyLook = saved })
+	err := runAppAdminCreate([]string{"--config", fixtureConfig(), "--app", "talk", "--username", "founder", "--execute"}, strings.NewReader(""))
+	want := "talk is mbin, whose administrators come only through single sign on. Run `paisans app admin create --app auth --username founder --email <e>`"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("got %v", err)
+	}
+	if len(fake.commands) != 0 || looked {
+		t.Error("a host was reached")
 	}
 }

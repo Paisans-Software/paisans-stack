@@ -156,14 +156,6 @@ func TestOIDCClientCreateExecuteRecordsTheSecretWithoutPrintingIt(t *testing.T) 
 	}
 }
 
-func TestOIDCClientCreateRefusesAnAdminUserWithNoGroup(t *testing.T) {
-	withIDPFake(t)
-	err := runOIDCClientCreate([]string{"--config", fixtureConfig(), "--secrets", tempSecrets(t), "--app", "talk", "--admin-user", "founder"})
-	if err == nil || !strings.Contains(err.Error(), "admin group") {
-		t.Fatalf("got %v", err)
-	}
-}
-
 func TestOIDCClientCreateRefusesAKindItDoesNotKnow(t *testing.T) {
 	fake := withIDPFake(t)
 	err := runOIDCClientCreate([]string{"--config", fixtureConfig(), "--secrets", tempSecrets(t), "--app", "docs"})

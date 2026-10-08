@@ -230,7 +230,7 @@ const (
 )
 
 func talk() Desired {
-	return Desired{App: "talk", CallbackURL: "https://talk.example.org/oauth/oidc/verify", LaunchURL: connect, ToolkitLaunchURLs: []string{bare, connect}, PKCE: true, AdminGroup: "admins", AdminUser: "founder"}
+	return Desired{App: "talk", CallbackURL: "https://talk.example.org/oauth/oidc/verify", LaunchURL: connect, ToolkitLaunchURLs: []string{bare, connect}, PKCE: true, AdminGroup: "admins"}
 }
 
 func secretSource(values ...string) func() (string, error) {
@@ -262,17 +262,12 @@ func kinds(p *Plan) []StepKind {
 	return out
 }
 
-func withFounder(f *fakeIDP) *fakeIDP {
-	f.users = append(f.users, &pocketid.User{ID: "u-1", Username: "founder", IsAdmin: true})
-	return f
-}
-
-// From nothing, the plan creates the group, the client, the secret and the
-// membership, shows the client body exactly, and probing changed nothing.
+// From nothing, the plan creates the group, the client and the secret, shows
+// the client body exactly, and probing changed nothing.
 func TestAFreshPlanShowsEverythingAndChangesNothing(t *testing.T) {
-	f := withFounder(newFake())
+	f := newFake()
 	p := plan(t, f, talk(), Recorded{})
-	want := []StepKind{CreateGroup, CreateClient, AddSecret, AddUserToGroup}
+	want := []StepKind{CreateGroup, CreateClient, AddSecret}
 	if fmt.Sprint(kinds(p)) != fmt.Sprint(want) {
 		t.Fatalf("planned %v, want %v", kinds(p), want)
 	}
@@ -287,7 +282,7 @@ func TestAFreshPlanShowsEverythingAndChangesNothing(t *testing.T) {
 // The secret is recorded before Pocket ID is sent it, never appears in a
 // command line, and a fresh plan afterwards is empty.
 func TestExecuteRecordsFirstAndConverges(t *testing.T) {
-	f := withFounder(newFake())
+	f := newFake()
 	rec := &memRecorder{}
 	f.onMutation = func(method, path string) {
 		if strings.HasSuffix(path, "/secrets") && rec.rec.ClientSecret == "" {
@@ -315,10 +310,6 @@ func TestExecuteRecordsFirstAndConverges(t *testing.T) {
 			t.Error("a plan line carries the secret")
 		}
 	}
-	if !f.users[0].InGroup("g-1") {
-		t.Error("founder is not in admins")
-	}
-
 	again := plan(t, f, talk(), rec.rec)
 	if len(again.Steps) != 0 {
 		t.Errorf("a second run plans %v", kinds(again))
@@ -326,7 +317,7 @@ func TestExecuteRecordsFirstAndConverges(t *testing.T) {
 }
 
 func TestRotateAddsASecretAndKeepsTheOldOne(t *testing.T) {
-	f := withFounder(newFake())
+	f := newFake()
 	rec := &memRecorder{}
 	if err := Execute(plan(t, f, talk(), Recorded{}), api(f), rec, secretSource("first-secret-not-real-0001")); err != nil {
 		t.Fatal(err)
@@ -348,7 +339,7 @@ func TestRotateAddsASecretAndKeepsTheOldOne(t *testing.T) {
 // A run that recorded its secret and stopped before sending it resumes by
 // sending the recorded one, not by minting another.
 func TestAnInterruptedRunSendsTheRecordedSecret(t *testing.T) {
-	f := withFounder(newFake())
+	f := newFake()
 	rec := &memRecorder{}
 	if err := Execute(plan(t, f, talk(), Recorded{}), api(f), rec, secretSource("first-secret-not-real-0001")); err != nil {
 		t.Fatal(err)
@@ -368,7 +359,7 @@ func TestAnInterruptedRunSendsTheRecordedSecret(t *testing.T) {
 
 // If the secret cannot be recorded, Pocket ID is sent nothing.
 func TestARecordFailureSendsNothing(t *testing.T) {
-	f := withFounder(newFake())
+	f := newFake()
 	err := Execute(plan(t, f, talk(), Recorded{}), api(f), &memRecorder{fail: true}, secretSource("never-sent-secret-not-real-01"))
 	if err == nil || !strings.Contains(err.Error(), "sent nothing") {
 		t.Fatalf("got %v", err)
@@ -382,7 +373,7 @@ func TestARecordFailureSendsNothing(t *testing.T) {
 }
 
 func TestAnExistingClientThatDiffersIsRefused(t *testing.T) {
-	f := withFounder(newFake())
+	f := newFake()
 	f.clients = []*pocketid.OIDCClient{{ID: "c-9", Name: "talk", CallbackURLs: []string{"https://talk.example.org/oauth/callback"}}}
 	s, err := Probe(api(f), talk())
 	if err != nil {
@@ -396,11 +387,11 @@ func TestAnExistingClientThatDiffersIsRefused(t *testing.T) {
 
 // A member group restricts the client to the member and admin groups.
 func TestAMemberGroupRestrictsTheClient(t *testing.T) {
-	f := withFounder(newFake())
+	f := newFake()
 	d := talk()
 	d.MemberGroup = "members"
 	p := plan(t, f, d, Recorded{})
-	want := []StepKind{CreateGroup, CreateGroup, CreateClient, AllowGroups, AddSecret, AddUserToGroup}
+	want := []StepKind{CreateGroup, CreateGroup, CreateClient, AllowGroups, AddSecret}
 	if fmt.Sprint(kinds(p)) != fmt.Sprint(want) {
 		t.Fatalf("planned %v", kinds(p))
 	}
@@ -414,22 +405,11 @@ func TestAMemberGroupRestrictsTheClient(t *testing.T) {
 	}
 }
 
-func TestAdminUserNeedsAGroupAndAnAccount(t *testing.T) {
-	d := talk()
-	d.AdminGroup = ""
-	if _, err := Build(d, Recorded{}, State{}); err == nil || !strings.Contains(err.Error(), "admin group") {
-		t.Errorf("no group: %v", err)
-	}
-	if _, err := Build(talk(), Recorded{}, State{Groups: map[string]*pocketid.Group{}}); err == nil || !strings.Contains(err.Error(), "app admin create") {
-		t.Errorf("no user: %v", err)
-	}
-}
-
 // A client made before the launch URL was set, restricted and holding its
 // allowed groups, plans only the launch URL. The update sends everything else
 // back as it was, so nothing else about the client changes.
 func TestAClientWithoutALaunchURLGetsOne(t *testing.T) {
-	f := withFounder(newFake())
+	f := newFake()
 	d := talk()
 	d.MemberGroup = "members"
 	rec := &memRecorder{}
@@ -487,7 +467,7 @@ func TestAClientWithoutALaunchURLGetsOne(t *testing.T) {
 
 // A launch URL set to something else is left alone and reported.
 func TestACustomisedLaunchURLIsLeftAlone(t *testing.T) {
-	f := withFounder(newFake())
+	f := newFake()
 	rec := &memRecorder{}
 	if err := Execute(plan(t, f, talk(), Recorded{}), api(f), rec, secretSource("custom-secret-not-real-0001")); err != nil {
 		t.Fatal(err)
@@ -510,7 +490,7 @@ func TestACustomisedLaunchURLIsLeftAlone(t *testing.T) {
 // Mbin's tile pointed at the connect route, is moved to the connect route,
 // and a second run plans nothing.
 func TestAClientOnTheOldDefaultMovesToTheConnectRoute(t *testing.T) {
-	f := withFounder(newFake())
+	f := newFake()
 	rec := &memRecorder{}
 	if err := Execute(plan(t, f, talk(), Recorded{}), api(f), rec, secretSource("bare-secret-not-real-0001")); err != nil {
 		t.Fatal(err)
@@ -543,7 +523,7 @@ func TestAClientOnTheOldDefaultMovesToTheConnectRoute(t *testing.T) {
 // a value the toolkit did not set is still left alone, with a warning naming
 // both values, because the configuration and the client now disagree.
 func TestAChosenLinkNeverOverwritesACustomValue(t *testing.T) {
-	f := withFounder(newFake())
+	f := newFake()
 	rec := &memRecorder{}
 	if err := Execute(plan(t, f, talk(), Recorded{}), api(f), rec, secretSource("chosen-secret-not-real-0001")); err != nil {
 		t.Fatal(err)

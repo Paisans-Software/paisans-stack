@@ -3,6 +3,7 @@ package appadmin
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -52,8 +53,6 @@ type pocketID struct{}
 // character code, which the page accepts either way.
 const loginTTL = 20 * time.Minute
 
-func (pocketID) Passwordless() {}
-
 func (pocketID) client(t Transport, req Request) *pocketid.Client {
 	return &pocketid.Client{Transport: t, BaseURL: req.APIBase, APIKey: req.APIKey}
 }
@@ -64,23 +63,38 @@ func (p pocketID) Probe(t Transport, req Request) (State, error) {
 		return State{}, fmt.Errorf("looking up %s in %s: %w", req.Username, req.App, err)
 	}
 	if u == nil {
-		return State{}, nil
+		return State{MissingGroups: append([]string(nil), req.AdminGroups...)}, nil
 	}
 	if u.Disabled {
 		return State{}, fmt.Errorf("%s exists in %s and is disabled. Re-enabling an account is not something this command decides; do it deliberately, then re-run", req.Username, req.App)
 	}
 	// An account without an email has nothing to verify, and no address an
 	// app could match against one of its own.
-	return State{Exists: true, Verified: u.Email == nil || u.EmailVerified, Admin: u.IsAdmin}, nil
+	state := State{Exists: true, Verified: u.Email == nil || u.EmailVerified, Admin: u.IsAdmin}
+	for _, name := range req.AdminGroups {
+		g, err := p.client(t, req).FindGroup(name)
+		if err != nil {
+			return State{}, fmt.Errorf("looking up group %s in %s: %w", name, req.App, err)
+		}
+		if g == nil || !u.InGroup(g.ID) {
+			state.MissingGroups = append(state.MissingGroups, name)
+		}
+	}
+	return state, nil
 }
 
-// Steps for a passkey account: a new one is created as an administrator and
-// given a link, since it cannot sign in without one. An existing one is only
-// made an administrator if it is not, has its email marked verified if it is
-// not, and is given a link only if asked.
+// Steps for a passkey account: a new one is created as an administrator, put
+// in every app's admin group, and given a link, since it cannot sign in
+// without one. An existing one is only made an administrator if it is not,
+// has its email marked verified if it is not, is put in the admin groups it
+// is missing, and is given a link only if asked.
 func (pocketID) Steps(state State, req Request) []Action {
 	if !state.Exists {
-		return []Action{ActionCreate, ActionLoginLink}
+		out := []Action{ActionCreate}
+		if len(state.MissingGroups) > 0 {
+			out = append(out, ActionJoinGroups)
+		}
+		return append(out, ActionLoginLink)
 	}
 	var out []Action
 	if !state.Verified {
@@ -88,6 +102,9 @@ func (pocketID) Steps(state State, req Request) []Action {
 	}
 	if !state.Admin {
 		out = append(out, ActionGrantAdmin)
+	}
+	if len(state.MissingGroups) > 0 {
+		out = append(out, ActionJoinGroups)
 	}
 	if req.LoginLink {
 		out = append(out, ActionLoginLink)
@@ -125,6 +142,8 @@ func (p pocketID) Describe(a Action, req Request) string {
 		return fmt.Sprintf("mark email verified for %s: PUT /api/users/<id> with emailVerified true and every other field sent back as it is now", req.Username)
 	case ActionGrantAdmin:
 		return fmt.Sprintf("grant admin %s: PUT /api/users/<id> with isAdmin true and every other field sent back as it is now", req.Username)
+	case ActionJoinGroups:
+		return fmt.Sprintf("add %s to admin groups %s: POST /api/user-groups for any that does not exist yet, then PUT /api/users/<id>/user-groups with the groups %s is in now, plus these", req.Username, strings.Join(req.AdminGroups, ", "), req.Username)
 	case ActionLoginLink:
 		return fmt.Sprintf("issue one-time login link for %s: valid %s and for one sign in, printed once and only with --execute", req.Username, loginTTL)
 	}
@@ -175,6 +194,36 @@ func (p pocketID) Execute(t Transport, req Request, actions []Action) (Outcome, 
 				return Outcome{}, fmt.Errorf("making %s an administrator: %w", req.Username, err)
 			}
 			user.IsAdmin = true
+		case ActionJoinGroups:
+			if err := load(); err != nil {
+				return Outcome{}, err
+			}
+			ids := map[string]bool{}
+			for _, g := range user.UserGroups {
+				ids[g.ID] = true
+			}
+			for _, name := range req.AdminGroups {
+				g, err := c.FindGroup(name)
+				if err != nil {
+					return Outcome{}, fmt.Errorf("looking up group %s: %w", name, err)
+				}
+				if g == nil {
+					created, err := c.CreateGroup(name)
+					if err != nil {
+						return Outcome{}, fmt.Errorf("creating group %s: %w", name, err)
+					}
+					g = &created
+				}
+				ids[g.ID] = true
+			}
+			all := make([]string, 0, len(ids))
+			for id := range ids {
+				all = append(all, id)
+			}
+			sort.Strings(all)
+			if err := c.SetUserGroups(user.ID, all); err != nil {
+				return Outcome{}, fmt.Errorf("adding %s to %s: %w", req.Username, strings.Join(req.AdminGroups, ", "), err)
+			}
 		case ActionLoginLink:
 			if err := load(); err != nil {
 				return Outcome{}, err

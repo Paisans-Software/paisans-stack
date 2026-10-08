@@ -53,13 +53,11 @@ Usage:
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
   paisans dns prune [--config paisans.yaml] [--secrets secrets.enc.yaml] [--name <fqdn>]... [--execute]
   paisans secrets set <dotted.key> [--config paisans.yaml] [--secrets secrets.enc.yaml] < value
-  paisans app admin create --app <name> --username <u> --email <e> [--site <name>]
-               [--config paisans.yaml] [--ssh <destination>] [--reset-password]
-               [--execute] < password
-  paisans app admin create --app <pocket-id app> --username <u> [--email <e>]
+  paisans app admin create --app <pocket-id app> --username <u> --email <e>
                [--first-name <f>] [--last-name <l>] [--login-link]
-               [--secrets secrets.enc.yaml] [--site <name>] [--execute]
-  paisans oidc client create --app <name> [--admin-user <u>] [--rotate-secret]
+               [--config paisans.yaml] [--secrets secrets.enc.yaml]
+               [--site <name>] [--ssh <destination>] [--execute]
+  paisans oidc client create --app <name> [--rotate-secret]
                [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--site <name>] [--ssh <destination>] [--execute]
 
@@ -119,11 +117,10 @@ Commands:
              secrets file, printing only its name. For credentials issued
              elsewhere, so they never touch a terminal or an editor.
   app        admin create: make sure a user exists, is verified and is an
-             administrator of one app, reading the password from stdin.
-             Never changes an existing password without --reset-password.
-             For pocket-id there is no password: a created account gets a
-             one-time login link, printed once, to register a passkey with.
-             Writes nothing without --execute. Mbin and pocket-id, so far.
+             administrator of Pocket ID, and is in every admin group the
+             apps signing in through it read. There is no password: a
+             created account gets a one-time login link, printed once, to
+             register a passkey with. Writes nothing without --execute.
   oidc       client create: create an app's client at the deployment's
              Pocket ID, with the groups the app reads, and record its ID and
              secret in the secrets file. The secret is never printed.
