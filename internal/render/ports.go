@@ -120,6 +120,12 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 		add("Caddy", roles(config.RoleGateway), "tcp", "", caddyHTTPPort)
 		add("Caddy", roles(config.RoleGateway), "tcp", "", caddyHTTPSPort)
 	}
+	// A monitor in ingress mode paisans runs the gateway's Caddy image for its
+	// own apps, binding the same two ports on every interface.
+	if s.Has(config.RoleMonitor) && s.IngressMode() == config.IngressPaisans {
+		add("Caddy", roles(config.RoleMonitor), "tcp", "", caddyHTTPPort)
+		add("Caddy", roles(config.RoleMonitor), "tcp", "", caddyHTTPSPort)
+	}
 
 	var apps []string
 	for name, sites := range AppSites(cfg) {
@@ -133,6 +139,11 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 		owner := fmt.Sprintf("app %s (%s)", name, kind)
 		if port, ok := appPort[kind]; ok {
 			add(owner, "apps."+name, "tcp", addr, port)
+		}
+		// In ingress mode external the app is published a second time, on
+		// listen, for the operator's own web server.
+		if host, port, ok := ExternalListen(cfg, name); ok {
+			add(owner, fmt.Sprintf("sites.%s.ingress.listen", site), "tcp", host, port)
 		}
 		switch kind {
 		case config.KindOAuth2Proxy:
