@@ -81,6 +81,14 @@ type SSHTransport struct {
 	// the transport so a site is asked once. Nil runs sudo as it is, which
 	// works only where it asks for no password.
 	Auth *SudoAuth
+	// ConnectTimeout, in seconds, is ssh's -o ConnectTimeout. Zero leaves
+	// ssh's own, which is the operating system's TCP connect timeout and can
+	// be over a minute for a host that is switched off. A command that asks
+	// every site whether it is up (`paisans doctor`) sets it, so a dead
+	// site costs seconds rather than minutes per attempt. It is given on the
+	// command line, so it takes precedence over ~/.ssh/config. Like every
+	// other field here it is not used with Destination, which stays verbatim.
+	ConnectTimeout int
 }
 
 func (t SSHTransport) Describe() string {
@@ -130,6 +138,9 @@ func (t SSHTransport) SSHArgs(keyFiles []string, command string) []string {
 		return []string{t.Destination, command}
 	}
 	args := []string{"-p", strconv.Itoa(t.port()), "-o", "IdentitiesOnly=yes"}
+	if t.ConnectTimeout > 0 {
+		args = append(args, "-o", "ConnectTimeout="+strconv.Itoa(t.ConnectTimeout))
+	}
 	for _, f := range keyFiles {
 		args = append(args, "-i", f)
 	}

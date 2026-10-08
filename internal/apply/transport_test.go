@@ -33,6 +33,16 @@ func TestSSHArgsForASection(t *testing.T) {
 	}
 }
 
+// A connect timeout is one more option before the keys, and only when set.
+func TestSSHArgsConnectTimeout(t *testing.T) {
+	tr := apply.SSHTransport{User: "ubuntu", Host: "vm.example.org", PublicKeys: []string{keyA}, ConnectTimeout: 10}
+	got := tr.SSHArgs([]string{"k1"}, "true")
+	want := []string{"-p", "22", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=10", "-i", "k1", "ubuntu@vm.example.org", "true"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ssh args:\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestSSHArgsDefaultToPort22(t *testing.T) {
 	tr := apply.SSHTransport{User: "ubuntu", Host: "vm.example.org", PublicKeys: []string{keyA}}
 	got := tr.SSHArgs([]string{"k1"}, "true")
