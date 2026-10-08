@@ -64,6 +64,10 @@ func runStorageAdd(args []string) error {
 	for _, name := range cfg.SiteNames() {
 		transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
 	}
+	// Every Garage site, and the gateway, which takes the media routes.
+	if err := claimSites(cfg, *execute, *sudo, union(cfg.Storage.Garage.Sites, cfg.GatewaySites())...); err != nil {
+		return err
+	}
 	plan, err := storageadd.Build(cfg, secrets, transports, storageadd.Options{
 		ChangeReplication: *changeReplication,
 		Wait:              *wait,

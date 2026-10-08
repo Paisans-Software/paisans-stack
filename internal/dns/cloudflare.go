@@ -14,14 +14,6 @@ import (
 	"time"
 )
 
-// recordComment is written on every record this package creates, so that a
-// person looking at the zone can tell which records the toolkit made. Prune
-// reads it back, but as a necessary condition and never a sufficient one: a
-// comment anyone can edit is not a claim anyone can trust, so a record also
-// has to sit at one of this deployment's names and point at one of its sites'
-// addresses before prune will remove it.
-const recordComment = "created by paisans dns init"
-
 // cloudflare is Cloudflare's API v4.
 //
 // Request and response shapes are from Cloudflare's API reference:
@@ -177,8 +169,8 @@ func (c *cloudflare) Delete(ctx context.Context, zoneID, recordID string) error 
 	return err
 }
 
-// Create adds an unproxied record with automatic TTL. In Cloudflare's API a
-// ttl of 1 means automatic.
+// Create adds an unproxied record with automatic TTL, carrying the record's
+// Comment. In Cloudflare's API a ttl of 1 means automatic.
 func (c *cloudflare) Create(ctx context.Context, zoneID string, record Record) error {
 	body := cfRecord{
 		Type:    record.Type,
@@ -186,7 +178,7 @@ func (c *cloudflare) Create(ctx context.Context, zoneID string, record Record) e
 		Content: record.Content,
 		TTL:     1,
 		Proxied: false,
-		Comment: recordComment,
+		Comment: record.Comment,
 	}
 	var created cfRecord
 	_, err := c.do(ctx, http.MethodPost, "/zones/"+url.PathEscape(zoneID)+"/dns_records", nil, body, &created)

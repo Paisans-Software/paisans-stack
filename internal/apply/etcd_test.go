@@ -25,26 +25,26 @@ func TestTheEtcdRecordAloneActsOnNoStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	// As an older toolkit left it: no record, and none in the manifest.
-	delete(host.files, "/"+render.EtcdInitialPath)
+	delete(host.files, "/"+"srv/paisans/f2a9/infra/etcd-initial")
 	var m render.Manifest
-	if err := json.Unmarshal([]byte(host.files["/srv/.paisans-manifest.json"]), &m); err != nil {
+	if err := json.Unmarshal([]byte(host.files["/srv/paisans/f2a9/.paisans-manifest.json"]), &m); err != nil {
 		t.Fatal(err)
 	}
 	var kept []render.ManifestFile
 	for _, f := range m.Files {
-		if f.Path != render.EtcdInitialPath {
+		if f.Path != "srv/paisans/f2a9/infra/etcd-initial" {
 			kept = append(kept, f)
 		}
 	}
 	m.Files = kept
 	data, _ := json.Marshal(m)
-	host.files["/srv/.paisans-manifest.json"] = string(data)
+	host.files["/srv/paisans/f2a9/.paisans-manifest.json"] = string(data)
 
 	second, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second.Writes()) != 1 || second.Writes()[0].Path != "/"+render.EtcdInitialPath {
+	if len(second.Writes()) != 1 || second.Writes()[0].Path != "/"+"srv/paisans/f2a9/infra/etcd-initial" {
 		t.Fatalf("want only the record written, got %v", second.Writes())
 	}
 	if len(second.Actions) != 0 {
@@ -56,24 +56,24 @@ func TestTheEtcdRecordAloneActsOnNoStack(t *testing.T) {
 // already runs with.
 func TestReadEtcdInitial(t *testing.T) {
 	host := newHost()
-	if _, found, err := apply.ReadEtcdInitial(host); err != nil || found {
+	if _, found, err := apply.ReadEtcdInitial(host, apply.Fixture); err != nil || found {
 		t.Fatalf("an empty host reported a record: %v %v", found, err)
 	}
 
-	host.files["/srv/infra/compose.yaml"] = "services:\n  etcd:\n    command:\n      - --initial-cluster=home-a=http://10.44.0.1:2380\n      - --initial-cluster-state=new\n"
-	in, found, err := apply.ReadEtcdInitial(host)
+	host.files["/srv/paisans/f2a9/infra/compose.yaml"] = "services:\n  etcd:\n    command:\n      - --initial-cluster=home-a=http://10.44.0.1:2380\n      - --initial-cluster-state=new\n"
+	in, found, err := apply.ReadEtcdInitial(host, apply.Fixture)
 	if err != nil || !found || in.State != "new" || in.Cluster != "home-a=http://10.44.0.1:2380" {
 		t.Fatalf("compose fallback: %+v %v %v", in, found, err)
 	}
 
-	host.files["/"+render.EtcdInitialPath] = render.FormatEtcdInitial(render.EtcdInitial{State: "existing", Cluster: "a=http://x:2380,vm=http://y:2380"})
-	in, found, err = apply.ReadEtcdInitial(host)
+	host.files["/"+"srv/paisans/f2a9/infra/etcd-initial"] = render.FormatEtcdInitial(render.EtcdInitial{State: "existing", Cluster: "a=http://x:2380,vm=http://y:2380"})
+	in, found, err = apply.ReadEtcdInitial(host, apply.Fixture)
 	if err != nil || !found || in.State != "existing" || !strings.Contains(in.Cluster, "vm=") {
 		t.Fatalf("record: %+v %v %v", in, found, err)
 	}
 
-	host.files["/"+render.EtcdInitialPath] = "garbage\n"
-	if _, _, err := apply.ReadEtcdInitial(host); err == nil {
+	host.files["/"+"srv/paisans/f2a9/infra/etcd-initial"] = "garbage\n"
+	if _, _, err := apply.ReadEtcdInitial(host, apply.Fixture); err == nil {
 		t.Error("an unreadable record was accepted")
 	}
 }

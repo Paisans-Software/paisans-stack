@@ -46,7 +46,7 @@ const (
 )
 
 // dockerHost is one site: a directory standing in for its filesystem, with
-// /srv/infra/garage/garage.toml and meta/ bind mounted into its Garage
+// /srv/paisans/f2a9/infra/garage/garage.toml and meta/ bind mounted into its Garage
 // container, which is created stopped and driven by the commands storage add
 // runs.
 type dockerHost struct {
@@ -83,19 +83,19 @@ func (h *dockerHost) Run(command string) (string, error) { return h.RunInput(com
 func (h *dockerHost) RunInput(command, stdin string) (string, error) {
 	var cmd *exec.Cmd
 	switch {
-	case strings.HasPrefix(command, garage.Command+" "):
-		args := append([]string{"exec", h.container, "/garage"}, strings.Fields(strings.TrimPrefix(command, garage.Command+" "))...)
+	case strings.HasPrefix(command, garage.Command(storageadd.Fixture)+" "):
+		args := append([]string{"exec", h.container, "/garage"}, strings.Fields(strings.TrimPrefix(command, garage.Command(storageadd.Fixture)+" "))...)
 		cmd = exec.Command("docker", args...)
-	case command == "docker compose -f /srv/infra/compose.yaml stop garage":
+	case command == "docker compose -f /srv/paisans/f2a9/infra/compose.yaml stop garage":
 		cmd = exec.Command("docker", "stop", h.container)
-	case command == "docker compose -f /srv/infra/compose.yaml up -d garage":
+	case command == "docker compose -f /srv/paisans/f2a9/infra/compose.yaml up -d garage":
 		cmd = exec.Command("docker", "start", h.container)
 	case strings.HasPrefix(command, "curl "):
 		cmd = exec.Command("docker", "run", "--rm", "-i", "--network", h.network, "--entrypoint", "sh", curlImage, "-c", command)
 	default:
 		// Shell work on the host's own files: ls, mv, rm. Every absolute
 		// /srv path is this host's directory.
-		cmd = exec.Command("sh", "-c", strings.ReplaceAll(command, " /srv/", " "+h.root+"/srv/"))
+		cmd = exec.Command("sh", "-c", strings.ReplaceAll(command, " /srv/paisans/f2a9/", " "+h.root+"/srv/paisans/f2a9/"))
 	}
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
@@ -156,7 +156,7 @@ func renderFor(t *testing.T, cfg *config.Config, secrets *config.Secrets, hosts 
 	for _, site := range sites {
 		h := hosts[site]
 		for _, f := range rendered.Files {
-			if f.Path == site+"/"+apply.GarageConfig || (strings.HasPrefix(f.Path, site+"/srv/infra/caddy/snippets/") && strings.HasSuffix(f.Path, "-media.caddy")) {
+			if f.Path == site+"/"+"srv/paisans/f2a9/infra/garage/garage.toml" || (strings.HasPrefix(f.Path, site+"/srv/paisans/f2a9/infra/caddy/snippets/") && strings.HasSuffix(f.Path, "-media.caddy")) {
 				rel := strings.TrimPrefix(f.Path, site+"/")
 				if err := h.WriteFile("/"+rel, f.Content, 0o600); err != nil {
 					t.Fatal(err)
@@ -168,13 +168,13 @@ func renderFor(t *testing.T, cfg *config.Config, secrets *config.Secrets, hosts 
 	return rendered
 }
 
-// recordManifest records every file under the host's /srv/infra as apply's
+// recordManifest records every file under the host's /srv/paisans/f2a9/infra as apply's
 // own, which is what an apply leaves behind.
 func recordManifest(t *testing.T, h *dockerHost) {
 	t.Helper()
 	var m render.Manifest
 	m.Version = 1
-	_ = filepath.Walk(h.local("/srv/infra"), func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(h.local("/srv/paisans/f2a9/infra"), func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || strings.Contains(path, "/garage/meta/") || strings.Contains(path, "/garage/data/") {
 			return nil
 		}
@@ -184,7 +184,7 @@ func recordManifest(t *testing.T, h *dockerHost) {
 		return nil
 	})
 	data, _ := jsonMarshal(m)
-	if err := h.WriteFile("/srv/.paisans-manifest.json", data, 0o644); err != nil {
+	if err := h.WriteFile("/srv/paisans/f2a9/.paisans-manifest.json", data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -209,7 +209,7 @@ func TestStorageAddResetsAndJoinsRealGarage(t *testing.T) {
 	hosts := map[string]*dockerHost{}
 	for _, site := range []string{"home-a", "home-b", "vm"} {
 		h := &dockerHost{t: t, site: site, root: filepath.Join(dir, site), container: fmt.Sprintf("paisans-storageadd-%s-%d", site, stamp), network: network}
-		for _, d := range []string{"srv/infra/garage/meta", "srv/infra/garage/data"} {
+		for _, d := range []string{"srv/paisans/f2a9/infra/garage/meta", "srv/paisans/f2a9/infra/garage/data"} {
 			if err := os.MkdirAll(h.local("/"+d), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -224,9 +224,9 @@ func TestStorageAddResetsAndJoinsRealGarage(t *testing.T) {
 	create := func(h *dockerHost) {
 		t.Cleanup(func() { exec.Command("docker", "rm", "-f", h.container).Run() })
 		mustRun(t, "docker", "create", "--name", h.container, "--network", h.network, "--ip", cfg.Sites[h.site].Address,
-			"-v", h.local("/srv/infra/garage/garage.toml")+":/etc/garage.toml",
-			"-v", h.local("/srv/infra/garage/meta")+":/var/lib/garage/meta",
-			"-v", h.local("/srv/infra/garage/data")+":/var/lib/garage/data",
+			"-v", h.local("/srv/paisans/f2a9/infra/garage/garage.toml")+":/etc/garage.toml",
+			"-v", h.local("/srv/paisans/f2a9/infra/garage/meta")+":/var/lib/garage/meta",
+			"-v", h.local("/srv/paisans/f2a9/infra/garage/data")+":/var/lib/garage/data",
 			garageImage)
 		mustRun(t, "docker", "start", h.container)
 	}
@@ -291,7 +291,7 @@ func TestStorageAddResetsAndJoinsRealGarage(t *testing.T) {
 	}
 	t.Logf("storage add took %s:\n%s", time.Since(start).Round(time.Second), progress.String())
 
-	if _, found, _ := hosts["home-a"].ReadFile("/srv/infra/garage/meta/cluster_layout.rf1"); !found {
+	if _, found, _ := hosts["home-a"].ReadFile("/srv/paisans/f2a9/infra/garage/meta/cluster_layout.rf1"); !found {
 		t.Error("home-a's replication 1 layout was not set aside")
 	}
 	if _, found, _ := hosts["home-a"].ReadFile(storageadd.CountsFile); found {
@@ -323,7 +323,7 @@ func waitAnswers(t *testing.T, h *dockerHost) {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		if out, err := h.Run(garage.Command + " node id -q"); err == nil && strings.Contains(out, "@") {
+		if out, err := h.Run(garage.Command(storageadd.Fixture) + " node id -q"); err == nil && strings.Contains(out, "@") {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -373,7 +373,7 @@ func TestStorageAddGrowsToThreeWithAStorageSite(t *testing.T) {
 	hosts := map[string]*dockerHost{}
 	for _, site := range []string{"home-a", "home-b", "vm", "store"} {
 		h := &dockerHost{t: t, site: site, root: filepath.Join(dir, site), container: fmt.Sprintf("paisans-storageadd3-%s-%d", site, stamp), network: network}
-		for _, d := range []string{"srv/infra/garage/meta", "srv/infra/garage/data"} {
+		for _, d := range []string{"srv/paisans/f2a9/infra/garage/meta", "srv/paisans/f2a9/infra/garage/data"} {
 			if err := os.MkdirAll(h.local("/"+d), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -383,9 +383,9 @@ func TestStorageAddGrowsToThreeWithAStorageSite(t *testing.T) {
 	create := func(h *dockerHost) {
 		t.Cleanup(func() { exec.Command("docker", "rm", "-f", h.container).Run() })
 		mustRun(t, "docker", "create", "--name", h.container, "--network", h.network, "--ip", cfg.Sites[h.site].Address,
-			"-v", h.local("/srv/infra/garage/garage.toml")+":/etc/garage.toml",
-			"-v", h.local("/srv/infra/garage/meta")+":/var/lib/garage/meta",
-			"-v", h.local("/srv/infra/garage/data")+":/var/lib/garage/data",
+			"-v", h.local("/srv/paisans/f2a9/infra/garage/garage.toml")+":/etc/garage.toml",
+			"-v", h.local("/srv/paisans/f2a9/infra/garage/meta")+":/var/lib/garage/meta",
+			"-v", h.local("/srv/paisans/f2a9/infra/garage/data")+":/var/lib/garage/data",
 			garageImage)
 		mustRun(t, "docker", "start", h.container)
 		waitAnswers(t, h)
@@ -440,7 +440,7 @@ func TestStorageAddGrowsToThreeWithAStorageSite(t *testing.T) {
 	}
 	t.Logf("storage add:\n%s", progress.String())
 
-	out, err := hosts["home-a"].Run(garage.Command + " layout show")
+	out, err := hosts["home-a"].Run(garage.Command(storageadd.Fixture) + " layout show")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@
 # would be a site address the gateway cannot get a certificate for, and a URL
 # Outline hands every browser.
 version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 
 community:
   name: "Fixture Community"

@@ -10,6 +10,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // instanceHost answers the instance question from a script of states, one
@@ -69,10 +70,10 @@ func TestStandbyAppsAreThePocketIDsOnMoreThanOneSite(t *testing.T) {
 }
 
 func TestTheInstanceQuestionAsksTheStateFileThenTheMeshPort(t *testing.T) {
-	cmd := apply.InstanceCommand("auth", "10.44.0.1", 1411)
+	cmd := apply.InstanceCommand(deployment.Deployment{ID: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}, "auth", "10.44.0.1", 1411)
 	for _, want := range []string{
-		"if [ ! -f /srv/auth/compose.yaml ]; then echo absent;",
-		"docker compose -f /srv/auth/compose.yaml exec -T app test -f /tmp/paisans-standby",
+		"if [ ! -f /srv/paisans/f2a9/auth/compose.yaml ]; then echo absent;",
+		"docker compose -f /srv/paisans/f2a9/auth/compose.yaml exec -T app test -f /tmp/paisans-standby",
 		"curl --silent --fail --max-time 5 --output /dev/null http://10.44.0.1:1411/healthz",
 	} {
 		if !strings.Contains(cmd, want) {
@@ -147,7 +148,7 @@ func TestAnAbsentSiteIsNotCounted(t *testing.T) {
 	if err := apply.CheckOneActive(standbyFixture(t), "auth", transports, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "home-b   absent      no /srv/auth on this site yet") {
+	if !strings.Contains(out.String(), "home-b   absent      no /srv/paisans/f2a9/auth on this site yet") {
 		t.Errorf("output:\n%s", out.String())
 	}
 }

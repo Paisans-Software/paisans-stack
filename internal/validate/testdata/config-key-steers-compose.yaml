@@ -2,6 +2,7 @@
 # app whose config key starts with COMPOSE_. The stack's .env is also the file
 # compose reads for its own settings, so this would steer compose itself.
 version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 
 community:
   name: "Fixture Community"

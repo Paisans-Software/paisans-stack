@@ -37,7 +37,7 @@ import (
 const (
 	// blogDir is where the fixture's writefreely app renders, on the site it
 	// is pinned to.
-	blogDir = "home-a/srv/blog/"
+	blogDir = "home-a/srv/paisans/f2a9/blog/"
 	// passthroughKey is the fixture's ini passthrough key, as `config` spells
 	// it and as `writefreely settings get` names it.
 	passthroughKey = "app.max_blogs"

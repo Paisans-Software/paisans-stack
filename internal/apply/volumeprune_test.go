@@ -46,23 +46,31 @@ const (
 
 func listing(lines ...string) string { return strings.Join(lines, "\n") + "\nend\n" }
 
-// Each class of dangling volume gets its verdict: anonymous ones (by Docker's
-// label, or by a bare 64 hex name from an engine that sets none) and ones a
-// paisans compose project made are removed; another project's and a named
-// one are kept.
+// ours is the label the fixture deployment's volumes carry, and theirs
+// another deployment's on the same host.
+const (
+	ours   = `{"community.paisans.deployment":"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}`
+	theirs = `{"community.paisans.deployment":"0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5","com.docker.compose.project":"paisans-0c1d-talk"}`
+)
+
+// Each class of dangling volume gets its verdict, and only the label decides:
+// one labelled with this deployment's id is removed; one labelled with
+// another id, one a compose project made with no deployment label (even one
+// named like this deployment's), an anonymous one and a named one are kept.
 func TestPruneDecidesEachDanglingVolume(t *testing.T) {
 	host := &volumeHost{listing: listing(
-		"volume\t"+leaked1+"\t48234496\t{\"com.docker.volume.anonymous\":\"\"}\tcache log",
-		"volume\t"+oldName+"\t1024\tnull\t",
-		"volume\tpaisans-talk_data\t4096\t{\"com.docker.compose.project\":\"paisans-talk\",\"com.docker.compose.volume\":\"data\"}\tx",
+		"volume\t"+leaked1+"\t48234496\t"+ours+"\tcache log",
+		"volume\t"+leaked2+"\t1024\t"+theirs+"\t",
+		"volume\tpaisans-f2a9-talk_data\t4096\t{\"com.docker.compose.project\":\"paisans-f2a9-talk\",\"com.docker.compose.volume\":\"data\"}\tx",
+		"volume\t"+oldName+"\t1024\t{\"com.docker.volume.anonymous\":\"\"}\t",
 		"volume\tother_db\t9999\t{\"com.docker.compose.project\":\"other\",\"com.docker.compose.volume\":\"db\"}\tpgdata",
-		"volume\tbackups\t1\t{}\tdump.sql",
+		"volume\tbackups\t1\tnull\tdump.sql",
 	)}
-	p, err := apply.BuildVolumePrune("home-a", host)
+	p, err := apply.BuildVolumePrune(apply.Fixture, "home-a", host)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{leaked1: true, oldName: true, "paisans-talk_data": true, "other_db": false, "backups": false}
+	want := map[string]bool{leaked1: true, leaked2: false, "paisans-f2a9-talk_data": false, oldName: false, "other_db": false, "backups": false}
 	if len(p.Volumes) != len(want) {
 		t.Fatalf("read %d volumes, want %d: %+v", len(p.Volumes), len(want), p.Volumes)
 	}
@@ -75,8 +83,8 @@ func TestPruneDecidesEachDanglingVolume(t *testing.T) {
 	if first.Size != 48234496 || strings.Join(first.Entries, " ") != "cache log" {
 		t.Errorf("size and entries were not read: %+v", first)
 	}
-	if !strings.Contains(p.Volumes[3].Reason, "compose project other") {
-		t.Errorf("a kept volume does not say whose it is: %s", p.Volumes[3].Reason)
+	if !strings.Contains(p.Volumes[1].Reason, "0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5") {
+		t.Errorf("another deployment's volume does not say whose it is: %s", p.Volumes[1].Reason)
 	}
 	if len(host.commands) != 1 {
 		t.Errorf("the dry run ran more than the listing: %v", host.commands)
@@ -91,8 +99,8 @@ func TestPruneDecidesEachDanglingVolume(t *testing.T) {
 			removed = append(removed, strings.Trim(name, "'"))
 		}
 	}
-	if strings.Join(removed, " ") != leaked1+" "+oldName+" paisans-talk_data" {
-		t.Errorf("removed %v", removed)
+	if strings.Join(removed, " ") != leaked1 {
+		t.Errorf("removed %v, want only %s", removed, leaked1)
 	}
 }
 
@@ -100,10 +108,10 @@ func TestPruneDecidesEachDanglingVolume(t *testing.T) {
 // and the rest are still removed; the failure is reported at the end.
 func TestPruneReportsAVolumeDockerWouldNotRemove(t *testing.T) {
 	host := &volumeHost{
-		listing: listing("volume\t"+leaked1+"\t1\tnull\t", "volume\t"+leaked2+"\t1\tnull\t"),
+		listing: listing("volume\t"+leaked1+"\t1\t"+ours+"\t", "volume\t"+leaked2+"\t1\t"+ours+"\t"),
 		inUse:   map[string]bool{leaked1: true},
 	}
-	p, err := apply.BuildVolumePrune("home-a", host)
+	p, err := apply.BuildVolumePrune(apply.Fixture, "home-a", host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +128,7 @@ func TestPruneReportsAVolumeDockerWouldNotRemove(t *testing.T) {
 // shorter list.
 func TestPruneRefusesACutShortListing(t *testing.T) {
 	host := &volumeHost{listing: "volume\t" + leaked1 + "\t1\tnull\t\n"}
-	if _, err := apply.BuildVolumePrune("home-a", host); err == nil {
+	if _, err := apply.BuildVolumePrune(apply.Fixture, "home-a", host); err == nil {
 		t.Error("a listing with no end marker was accepted")
 	}
 }

@@ -14,14 +14,17 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -94,6 +97,7 @@ func Run(cfg *config.Config, newSite string, transports map[string]apply.Transpo
 	if r.reachable[newSite] {
 		t := transports[newSite]
 		r.hostPrepare(t)
+		r.registry(t)
 		r.osMatch(t)
 		r.wireguard(t)
 		r.watchdog(t)
@@ -433,10 +437,29 @@ func (r *runner) routes(t apply.Transport) {
 	r.pass(r.newSite, "routes", "no route overlaps the mesh subnet %s", r.cfg.Mesh.Subnet)
 }
 
+// registry checks the new site's host can be claimed for this deployment: no
+// other deployment in its registry holds this one's token or root. It reads
+// and never claims; site add claims when it runs. See internal/registry.
+func (r *runner) registry(t apply.Transport) {
+	if err := registry.Check(t, r.cfg, r.newSite); err != nil {
+		r.refuse(r.newSite, "registry", "%v", err)
+		return
+	}
+	d := r.cfg.Deployment()
+	r.pass(r.newSite, "registry", "no other deployment on the host holds token %s or %s", d.Token(), d.Root())
+}
+
 // diskProbe reads free bytes on the deepest directory that exists on the way
-// to Spilo's data directory, which apply bind mounts from /srv/infra/postgres.
-// On a blank host none of it exists yet, and / is where it will be made.
-const diskProbe = `for d in /srv/infra/postgres /srv/infra /srv /; do if [ -d "$d" ]; then df -B1 --output=avail "$d"; exit; fi; done`
+// to Spilo's data directory, which apply bind mounts from infra/postgres
+// under the deployment's root. On a blank host none of it exists yet, and /
+// is where it will be made.
+func diskProbe(dep deployment.Deployment) string {
+	var dirs []string
+	for p := dep.Path("infra", "postgres"); p != "/"; p = path.Dir(p) {
+		dirs = append(dirs, quote(p))
+	}
+	return `for d in ` + strings.Join(dirs, " ") + ` /; do if [ -d "$d" ]; then df -B1 --output=avail "$d"; exit; fi; done`
+}
 
 // disk checks the new data site has room for a copy of the leader's
 // databases. pg_basebackup copies all of them, and running out partway leaves
@@ -450,7 +473,7 @@ func (r *runner) disk(t apply.Transport) {
 		r.refuse(r.newSite, "disk", "could not read the leader's database size: %v", err)
 		return
 	}
-	out, err := t.Run(diskProbe)
+	out, err := t.Run(diskProbe(r.cfg.Deployment()))
 	if err != nil {
 		r.refuse(r.newSite, "disk", "could not read free space: %s", firstLine(errText(out, err)))
 		return
@@ -503,15 +526,15 @@ var localFilesystems = map[string]bool{
 const dockerRootProbe = `docker info --format '{{.DockerRootDir}}'`
 
 // fsProbe names the filesystem holding path, or the deepest directory on the
-// way to it that exists: on a blank host /srv may not exist yet, and its
-// parent is where it will be made.
+// way to it that exists: on a blank host the deployment's root may not exist
+// yet, and its nearest existing parent is where it will be made.
 func fsProbe(path string) string {
 	return fmt.Sprintf(`d=%s; while [ ! -d "$d" ]; do d=$(dirname "$d"); done; findmnt -no FSTYPE,SOURCE --target "$d"`, quote(path))
 }
 
 // storage checks the new site keeps its state on a local filesystem: Docker's
-// root, which holds every container's writable layer, and /srv, where every
-// stack bind mounts its data. A
+// root, which holds every container's writable layer, and the deployment's
+// root, where every stack bind mounts its data. A
 // network filesystem is refused; a type in neither list is warned about,
 // since it is not known to be wrong and refusing it would stop a join over a
 // filesystem this list has not heard of.
@@ -524,7 +547,7 @@ func (r *runner) storage(t apply.Transport) {
 	}
 	var found []string
 	var unknown []string
-	for _, path := range []string{root, "/srv"} {
+	for _, path := range []string{root, r.cfg.Deployment().Root()} {
 		out, err := t.Run(fsProbe(path))
 		fields := strings.Fields(out)
 		if err != nil || len(fields) < 1 {
@@ -561,7 +584,7 @@ func (r *runner) leaderSize() (int64, string, error) {
 			continue
 		}
 		api := fmt.Sprintf("%s:%d", r.cfg.Sites[name].Address, render.PatroniAPIPort)
-		out, err := r.transports[name].Run(patroni.ClusterCommand(api))
+		out, err := r.transports[name].Run(patroni.ClusterCommand(r.cfg.Deployment(), api))
 		if err != nil {
 			asked = append(asked, fmt.Sprintf("%s: %s", name, firstLine(errText(out, err))))
 			continue
@@ -579,7 +602,7 @@ func (r *runner) leaderSize() (int64, string, error) {
 		if !ok || !r.reachable[leader.Name] {
 			return 0, "", fmt.Errorf("the leader is %s, which could not be reached", leader.Name)
 		}
-		out, err = t.Run(patroni.DatabaseSizeCommand)
+		out, err = t.Run(patroni.DatabaseSizeCommand(r.cfg.Deployment()))
 		if err != nil {
 			return 0, "", fmt.Errorf("%s: %s", leader.Name, firstLine(errText(out, err)))
 		}

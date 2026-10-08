@@ -20,6 +20,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -70,9 +71,9 @@ var (
 // Its exit status is not the verdict. When the REST call answers with an
 // error status, patronictl prints "Switchover failed" and returns normally,
 // so the gate after it, which reads /cluster, is what decides.
-func SwitchoverCommand(leader, candidate string) string {
+func SwitchoverCommand(d deployment.Deployment, leader, candidate string) string {
 	return fmt.Sprintf("%s patronictl -c /home/postgres/postgres.yml switchover --leader %s --candidate %s --force",
-		patroni.Exec, leader, candidate)
+		patroni.Exec(d), leader, candidate)
 }
 
 // appPath is the path requested from each app: the root, and for Pocket ID
@@ -145,7 +146,7 @@ func (r *runner) cluster() (patroni.Cluster, error) {
 			continue
 		}
 		api := fmt.Sprintf("%s:%d", r.cfg.Sites[name].Address, render.PatroniAPIPort)
-		out, err := t.Run(patroni.ClusterCommand(api))
+		out, err := t.Run(patroni.ClusterCommand(r.cfg.Deployment(), api))
 		if err != nil {
 			tried = append(tried, fmt.Sprintf("%s: %s", name, firstLine(out, err)))
 			continue
@@ -265,7 +266,7 @@ func (r *runner) appProblems() []string {
 			if !ok {
 				err = fmt.Errorf("stack %s: no transport for %s", app, site)
 			} else {
-				err = apply.StackHealthy(app, t)
+				err = apply.StackHealthy(r.cfg.Deployment(), app, t)
 			}
 			if err != nil {
 				problems = append(problems, fmt.Sprintf("%s on %s: %v", app, site, err))
@@ -291,7 +292,7 @@ func (r *runner) appProblems() []string {
 	// gate restarts it, so the handover is checked here, every time.
 	for _, app := range apply.StandbyApps(r.cfg) {
 		list := apply.LookAtInstances(r.cfg, app, r.o.Transports)
-		if _, err := apply.OneActive(app, list); err != nil {
+		if _, err := apply.OneActive(r.cfg.Deployment(), app, list); err != nil {
 			problems = append(problems, err.Error())
 			r.line("REFUSED", "standby", fmt.Sprintf("%v: %s", err, summary(list)))
 		} else {
@@ -353,8 +354,8 @@ func (r *runner) databaseStacks() []databaseStack {
 	return out
 }
 
-func restartCommand(app string) string {
-	return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml restart", app)
+func restartCommand(d deployment.Deployment, app string) string {
+	return d.ComposeCmd(app) + " restart"
 }
 
 // printPlan is the dry run: what will run, where, and what it costs.
@@ -365,14 +366,14 @@ func (r *runner) printPlan(leader, candidate string) {
 	n := 0
 	for _, step := range []struct{ from, to string }{{leader, candidate}, {candidate, leader}} {
 		n++
-		fmt.Fprintf(out, "  %d. on %s: %s\n", n, step.from, SwitchoverCommand(step.from, step.to))
+		fmt.Fprintf(out, "  %d. on %s: %s\n", n, step.from, SwitchoverCommand(r.cfg.Deployment(), step.from, step.to))
 		n++
 		fmt.Fprintf(out, "  %d. gate: %s leads, %s streams from it\n", n, step.to, step.from)
 		if len(stacks) > 0 {
 			n++
 			fmt.Fprintf(out, "  %d. restart the apps that use the cluster database, on every apps site: the leader change dropped their connections\n", n)
 			for _, st := range stacks {
-				fmt.Fprintf(out, "       on %s: %s\n", st.site, restartCommand(st.app))
+				fmt.Fprintf(out, "       on %s: %s\n", st.site, restartCommand(r.cfg.Deployment(), st.app))
 			}
 		}
 		n++
@@ -402,7 +403,7 @@ func (r *runner) switchover(from, to string) error {
 	if !ok {
 		return fmt.Errorf("no transport for %s", from)
 	}
-	out, err := t.Run(SwitchoverCommand(from, to))
+	out, err := t.Run(SwitchoverCommand(r.cfg.Deployment(), from, to))
 	fmt.Fprintf(r.o.Out, "  %s\n", strings.ReplaceAll(strings.TrimSpace(out), "\n", "\n  "))
 	if err != nil {
 		return fmt.Errorf("switchover from %s to %s did not run: %v. Nothing after it was started; read `patronictl list` on %s", from, to, err, from)
@@ -432,7 +433,7 @@ func (r *runner) gate(from, to string) error {
 		if !ok {
 			return fmt.Errorf("failover test stopped after switching %s to %s: no transport for %s to restart %s, so nothing after it ran", from, to, st.site, st.app)
 		}
-		out, err := t.Run(restartCommand(st.app))
+		out, err := t.Run(restartCommand(r.cfg.Deployment(), st.app))
 		if err != nil {
 			return fmt.Errorf("failover test stopped after switching %s to %s: restarting %s on %s failed, so nothing after it ran: %s", from, to, st.app, st.site, firstLine(out, err))
 		}

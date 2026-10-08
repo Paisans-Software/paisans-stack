@@ -19,7 +19,7 @@ func TestPocketIDStandsByOnEveryAppsSite(t *testing.T) {
 		t.Fatalf("no marker for %s", image)
 	}
 	for _, site := range []string{"home-a", "home-b"} {
-		wrapper, ok := files[site+"/srv/auth/paisans-standby.sh"]
+		wrapper, ok := files[site+"/srv/paisans/f2a9/auth/paisans-standby.sh"]
 		if !ok {
 			t.Fatalf("%s renders no standby wrapper for auth", site)
 		}
@@ -37,7 +37,7 @@ func TestPocketIDStandsByOnEveryAppsSite(t *testing.T) {
 				} `yaml:"healthcheck"`
 			} `yaml:"services"`
 		}
-		if err := yaml.Unmarshal([]byte(files[site+"/srv/auth/compose.yaml"]), &doc); err != nil {
+		if err := yaml.Unmarshal([]byte(files[site+"/srv/paisans/f2a9/auth/compose.yaml"]), &doc); err != nil {
 			t.Fatalf("%s auth compose: %v", site, err)
 		}
 		app := doc.Services["app"]
@@ -49,7 +49,7 @@ func TestPocketIDStandsByOnEveryAppsSite(t *testing.T) {
 		if got := strings.Join(app.Command, " "); got != "/app/docker/entrypoint.sh /app/pocket-id" {
 			t.Errorf("%s: command is %q, not the image's entrypoint and command", site, got)
 		}
-		if !contains(app.Volumes, "/srv/auth/paisans-standby.sh:/paisans/pocket-id-standby.sh:ro") {
+		if !contains(app.Volumes, "/srv/paisans/f2a9/auth/paisans-standby.sh:/paisans/pocket-id-standby.sh:ro") {
 			t.Errorf("%s: the wrapper is not mounted read only: %q", site, app.Volumes)
 		}
 		want := []string{"CMD-SHELL", "[ -f /tmp/paisans-standby ] || /app/pocket-id healthcheck"}
@@ -67,7 +67,7 @@ func TestPocketIDStandsByOnEveryAppsSite(t *testing.T) {
 // rejects active checks for every app; this pins it for the one app where
 // every site but one refuses by design.
 func TestPocketIDRouteHasNoActiveHealthCheck(t *testing.T) {
-	snippet := planFiles(build(t))["vm/srv/infra/caddy/snippets/auth.caddy"]
+	snippet := planFiles(build(t))["vm/srv/paisans/f2a9/infra/caddy/snippets/auth.caddy"]
 	if !strings.Contains(snippet, "10.44.0.1:1411 10.44.0.2:1411") {
 		t.Fatalf("auth is not routed to both apps sites in order:\n%s", snippet)
 	}

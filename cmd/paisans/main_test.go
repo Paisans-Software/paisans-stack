@@ -82,7 +82,7 @@ func TestPrintGaragePlanPrintsNoSecret(t *testing.T) {
 		Site: "home-a",
 		Steps: []garage.Step{{
 			Describe: "import the S3 key for talk",
-			Command:  "docker compose -f /srv/infra/compose.yaml exec -T garage /garage key import GKfacadefacadefacadefacade " + secret + " --yes -n talk",
+			Command:  "docker compose -f /srv/paisans/f2a9/infra/compose.yaml exec -T garage /garage key import GKfacadefacadefacadefacade " + secret + " --yes -n talk",
 			Secret:   secret,
 		}},
 		Present: []string{"bucket: talk-uploads already exists"},

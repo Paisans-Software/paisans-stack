@@ -3,7 +3,6 @@ package apply
 import (
 	"reflect"
 	"sort"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -87,9 +86,9 @@ func (p *Plan) databasePathMoves() bool {
 	runs := map[string]bool{}
 	for _, c := range p.Changes {
 		switch c.Path {
-		case "/" + haproxyConfig:
+		case p.Deployment.Path(haproxyConfig):
 			runs["haproxy"] = true
-		case "/" + patroniEnv:
+		case p.Deployment.Path(patroniEnv):
 			runs["patroni"] = true
 		}
 	}
@@ -100,10 +99,10 @@ func (p *Plan) databasePathMoves() bool {
 		if c.Kind != Create && c.Kind != Update {
 			continue
 		}
-		switch strings.TrimPrefix(c.Path, remoteRoot) {
-		case haproxyConfig, patroniEnv:
+		switch c.Path {
+		case p.Deployment.Path(haproxyConfig), p.Deployment.Path(patroniEnv):
 			return true
-		case gatewayCompose:
+		case p.Deployment.Path(gatewayCompose):
 			if servicesDiffer(c.before, c.content, "haproxy", "patroni") {
 				return true
 			}
@@ -125,11 +124,11 @@ func (p *Plan) databasePathMoves() bool {
 	return false
 }
 
-// The two infrastructure files that are the database path, relative to a
-// site's root.
+// The two infrastructure files that are the database path, relative to the
+// deployment's root.
 const (
-	haproxyConfig = "srv/infra/haproxy/haproxy.cfg"
-	patroniEnv    = "srv/infra/patroni.env"
+	haproxyConfig = "infra/haproxy/haproxy.cfg"
+	patroniEnv    = "infra/patroni.env"
 )
 
 // servicesDiffer reports whether any of the named services is defined

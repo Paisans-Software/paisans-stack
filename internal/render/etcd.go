@@ -3,10 +3,12 @@ package render
 import (
 	"fmt"
 	"strings"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // EtcdInitialPath is where each etcd host records the flags its member was
-// first started with, relative to a site's root in the rendered tree.
+// first started with, relative to a site's / in the rendered tree.
 //
 // etcd reads --initial-cluster and --initial-cluster-state only on a member's
 // first start, when its data directory is empty, and ignores both forever
@@ -22,7 +24,7 @@ import (
 // which renders the same flags again. It is not mounted into any container,
 // so writing it is never a reason to act on the stack (see apply's
 // isRecord).
-const EtcdInitialPath = "srv/infra/etcd-initial"
+func EtcdInitialPath(d deployment.Deployment) string { return d.RelPath("infra", "etcd-initial") }
 
 // etcdCompactionRetention is how much key history etcd keeps, with
 // --auto-compaction-mode=periodic (flag names and semantics from etcd v3.5.16,

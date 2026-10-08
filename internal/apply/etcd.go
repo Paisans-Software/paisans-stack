@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -21,19 +22,19 @@ import (
 // to etcd.members there would be wrong the moment the configuration names
 // more members than the cluster was born with, and a compose file that
 // changed only in inert flags would still make apply recreate the member.
-func ReadEtcdInitial(t Transport) (render.EtcdInitial, bool, error) {
-	content, found, err := t.ReadFile(remoteRoot + render.EtcdInitialPath)
+func ReadEtcdInitial(t Transport, d deployment.Deployment) (render.EtcdInitial, bool, error) {
+	content, found, err := t.ReadFile(remoteRoot + render.EtcdInitialPath(d))
 	if err != nil {
 		return render.EtcdInitial{}, false, err
 	}
 	if found {
 		in, ok := render.ParseEtcdInitial(content)
 		if !ok {
-			return render.EtcdInitial{}, false, fmt.Errorf("%s%s holds no initial-cluster-state and initial-cluster lines. It records how this etcd member was first started; restore it from the member's compose file, or delete it to fall back to that file", remoteRoot, render.EtcdInitialPath)
+			return render.EtcdInitial{}, false, fmt.Errorf("%s%s holds no initial-cluster-state and initial-cluster lines. It records how this etcd member was first started; restore it from the member's compose file, or delete it to fall back to that file", remoteRoot, render.EtcdInitialPath(d))
 		}
 		return in, true, nil
 	}
-	compose, found, err := t.ReadFile(remoteRoot + gatewayCompose)
+	compose, found, err := t.ReadFile(d.Compose(infraStack))
 	if err != nil || !found {
 		return render.EtcdInitial{}, false, err
 	}
@@ -67,8 +68,8 @@ func (m EtcdMember) Started() bool { return m.Name != "" }
 // container on a member's own host, against its loopback listener, which is
 // rendered for exactly this (infra-compose.yaml.tmpl, --listen-client-urls).
 // The image ships etcdctl beside etcd, so the host needs nothing.
-func Etcdctl(args string) string {
-	return "docker compose -f /srv/infra/compose.yaml exec -T etcd etcdctl --endpoints=http://127.0.0.1:2379 " + args
+func Etcdctl(d deployment.Deployment, args string) string {
+	return d.ComposeCmd(infraStack) + " exec -T etcd etcdctl --endpoints=http://127.0.0.1:2379 " + args
 }
 
 // noEtcd is what the membership probe prints on a host with no etcd running,
@@ -77,10 +78,10 @@ const noEtcd = "__PAISANS_NO_ETCD__"
 
 // ReadEtcdMembers asks this host's etcd for the cluster's membership. running
 // is false when no etcd container runs here, which is an answer, not an error.
-func ReadEtcdMembers(t Transport) (members []EtcdMember, running bool, err error) {
+func ReadEtcdMembers(t Transport, d deployment.Deployment) (members []EtcdMember, running bool, err error) {
 	command := fmt.Sprintf(
-		"if docker compose -f /srv/infra/compose.yaml ps --status running --quiet etcd 2>/dev/null | grep -q .; then %s; else echo %s; fi",
-		Etcdctl("member list -w json"), noEtcd)
+		"if %s ps --status running --quiet etcd 2>/dev/null | grep -q .; then %s; else echo %s; fi",
+		d.ComposeCmd(infraStack), Etcdctl(d, "member list -w json"), noEtcd)
 	out, err := t.Run(command)
 	if err != nil {
 		return nil, false, fmt.Errorf("asking etcd for its members: %w", err)
@@ -140,7 +141,7 @@ func ProbeEtcdMembers(cfg *config.Config, site string, transports map[string]Tra
 		if !ok {
 			continue
 		}
-		members, running, err := ReadEtcdMembers(t)
+		members, running, err := ReadEtcdMembers(t, cfg.Deployment())
 		if err != nil {
 			return nil, false, fmt.Errorf("%s: %w", name, err)
 		}
@@ -161,7 +162,7 @@ func EtcdRunning(cfg *config.Config, transports map[string]Transport) (map[strin
 		if !ok {
 			continue
 		}
-		_, up, err := ReadEtcdMembers(t)
+		_, up, err := ReadEtcdMembers(t, cfg.Deployment())
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}

@@ -1,12 +1,14 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
-# Infrastructure for site {{ .Site.Name }}. Bind mounts under /srv, never named
+# Infrastructure for site {{ .Site.Name }}. Bind mounts under {{ .Dir }}, never named
 # volumes, so relocating a stack is a tar rather than a volumes-from dance.
-name: paisans-infra
+name: {{ .Project }}
 
 services:
 {{- if .Site.IsEtcd }}
   etcd:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: gcr.io/etcd-development/etcd:v3.5.16
     restart: unless-stopped
     network_mode: host
@@ -19,7 +21,7 @@ services:
       - --initial-advertise-peer-urls=http://{{ .Site.Address }}:{{ .EtcdPeerPort }}
       - --advertise-client-urls=http://{{ .Site.Address }}:{{ .EtcdClientPort }}
 {{- /* Both flags are read on this member's first start only, and are
-        repeated from /srv/infra/etcd-initial ever after, so a cluster that
+        repeated from etcd-initial beside this file ever after, so a cluster that
         grows never changes them on a member already running. A template
         comment rather than a YAML one: a new line in this file would change
         the compose file of every deployment applied before it, and apply
@@ -40,17 +42,19 @@ services:
       - --auto-compaction-retention={{ .EtcdCompactionRetention }}
       - --quota-backend-bytes={{ .EtcdQuotaBackendBytes }}
     volumes:
-      - /srv/infra/etcd:/var/lib/etcd
+      - {{ .Dir }}/etcd:/var/lib/etcd
 {{- end }}
 {{- if .Site.IsData }}
   patroni:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: ghcr.io/zalando/spilo-{{ .PostgresVersion }}:{{ .SpiloTag }}
     restart: unless-stopped
     network_mode: host
     env_file:
       - patroni.env
     volumes:
-      - /srv/infra/postgres:/home/postgres/pgdata
+      - {{ .Dir }}/postgres:/home/postgres/pgdata
 {{- if not .Site.WatchdogOff }}
     # Fencing needs the watchdog, and there is exactly one Patroni per data
     # bearing host, so there is exactly one claimant for the device.
@@ -68,24 +72,30 @@ services:
 {{- end }}
 {{- if .Site.NeedsProxy }}
   haproxy:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: haproxy:3.0-alpine
     restart: unless-stopped
     network_mode: host
     volumes:
-      - /srv/infra/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - {{ .Dir }}/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
 {{- end }}
 {{- if .Site.IsGarage }}
   garage:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: dxflrs/garage:v1.0.1
     restart: unless-stopped
     network_mode: host
     volumes:
-      - /srv/infra/garage/garage.toml:/etc/garage.toml:ro
-      - /srv/infra/garage/meta:/var/lib/garage/meta
-      - /srv/infra/garage/data:/var/lib/garage/data
+      - {{ .Dir }}/garage/garage.toml:/etc/garage.toml:ro
+      - {{ .Dir }}/garage/meta:/var/lib/garage/meta
+      - {{ .Dir }}/garage/data:/var/lib/garage/data
 {{- end }}
 {{- if .Site.IsGateway }}
   caddy:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .CaddyImage }}
     restart: unless-stopped
     network_mode: host
@@ -95,9 +105,16 @@ services:
     env_file:
       - caddy/caddy.env
     volumes:
-      - /srv/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - {{ .Dir }}/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # One file per application, imported by that application's host block.
-      - /srv/infra/caddy/snippets:/etc/caddy/snippets:ro
-      - /srv/infra/caddy/data:/data
-      - /srv/infra/caddy/config:/config
+      - {{ .Dir }}/caddy/snippets:/etc/caddy/snippets:ro
+      - {{ .Dir }}/caddy/data:/data
+      - {{ .Dir }}/caddy/config:/config
 {{- end }}
+
+# Every network carries the deployment label too, so that what owns it is
+# read from the label rather than guessed from its name.
+networks:
+  default:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"

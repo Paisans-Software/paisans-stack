@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // How long a stack has to come up healthy after its action, and how often to
@@ -118,7 +120,7 @@ func judge(list []container) (verdict, []string) {
 // `--all` because a container that exited is exactly what this gate is for,
 // and plain `ps` lists only running ones.
 func waitHealthy(plan *Plan, stack string, t Transport) error {
-	return waitStack(plan.Site, stack, t, applyStopped)
+	return waitStack(plan.Deployment, plan.Site, stack, t, applyStopped)
 }
 
 // applyStopped is what a failed gate tells the operator inside an apply.
@@ -128,12 +130,12 @@ const applyStopped = "The apply stopped here and nothing after it was started; t
 // started a stack: it waits as apply does, and on failure names the services
 // with the tail of their logs, then stopped, which says what the caller did
 // and did not do.
-func WaitHealthy(site, stack string, t Transport, stopped string) error {
-	return waitStack(site, stack, t, stopped)
+func WaitHealthy(d deployment.Deployment, site, stack string, t Transport, stopped string) error {
+	return waitStack(d, site, stack, t, stopped)
 }
 
-func waitStack(site, stack string, t Transport, stopped string) error {
-	compose := fmt.Sprintf("docker compose -f /srv/%s/compose.yaml", stack)
+func waitStack(d deployment.Deployment, site, stack string, t Transport, stopped string) error {
+	compose := d.ComposeCmd(stack)
 	attempts := int(healthWait / healthPoll)
 	if attempts < 1 {
 		attempts = 1
@@ -197,11 +199,11 @@ func unhealthy(site, stack, compose, what string, names []string, stopped string
 
 // StackHealthy is the health gate's judgement from one look, for a command
 // that checks a running stack rather than one it just started: nil when every
-// container of /srv/<stack> runs and passes its healthcheck, and otherwise an
+// container of the stack runs and passes its healthcheck, and otherwise an
 // error naming the services that do not. It does not wait; a caller that
 // expects a stack to recover polls it.
-func StackHealthy(stack string, t Transport) error {
-	compose := fmt.Sprintf("docker compose -f /srv/%s/compose.yaml", stack)
+func StackHealthy(d deployment.Deployment, stack string, t Transport) error {
+	compose := d.ComposeCmd(stack)
 	out, err := t.Run(compose + " ps --all --format json")
 	if err != nil {
 		return fmt.Errorf("stack %s: %v", stack, err)

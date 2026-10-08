@@ -7,10 +7,12 @@
 #
 # Pinned to {{ .App.Site }}: its own database, at its own site.
 {{- end }}
-name: paisans-{{ .App.Name }}
+name: {{ .Project }}
 
 services:
   app:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "app" }}
     restart: unless-stopped
     # The standby wrapper, paisans-standby.sh beside this file, runs the
@@ -54,6 +56,8 @@ services:
       - postgres
 
   postgres:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "postgres" }}
     restart: unless-stopped
     environment:
@@ -63,3 +67,10 @@ services:
     volumes:
       - {{ .DataPath }}/postgres:{{ .PostgresDataMount }}
 {{- end }}
+
+# Every network carries the deployment label too, so that what owns it is
+# read from the label rather than guessed from its name.
+networks:
+  default:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"

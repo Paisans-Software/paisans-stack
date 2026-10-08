@@ -17,6 +17,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
@@ -183,6 +184,10 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	initial := p.etcdInitialFor(site.Name)
 	infra, err := p.renderTemplate("infra-compose.yaml.tmpl", map[string]any{
 		"Site":                    site,
+		"Project":                 p.dep().Project("infra"),
+		"DeploymentLabel":         deployment.Label,
+		"DeploymentID":            p.dep().ID,
+		"Dir":                     p.dep().Dir("infra"),
 		"Scope":                   p.scope(),
 		"EtcdInitialCluster":      initial.Cluster,
 		"EtcdInitialState":        initial.State,
@@ -203,10 +208,10 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	// no infrastructure, so it gets no infra stack: a compose project with an
 	// empty services map is nothing apply could start or recreate.
 	if site.IsEtcd || site.IsData || site.NeedsProxy || site.IsGarage || site.IsGateway {
-		files = append(files, File{Path: base + "srv/infra/compose.yaml", Content: infra, Mode: 0o644})
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "compose.yaml"), Content: infra, Mode: 0o644})
 	}
 	if site.IsEtcd {
-		files = append(files, File{Path: base + EtcdInitialPath, Content: FormatEtcdInitial(initial), Mode: 0o644})
+		files = append(files, File{Path: base + EtcdInitialPath(p.dep()), Content: FormatEtcdInitial(initial), Mode: 0o644})
 	}
 
 	if site.IsData {
@@ -226,7 +231,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/infra/patroni.env", Content: env, Mode: 0o600})
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "patroni.env"), Content: env, Mode: 0o600})
 	}
 
 	if site.NeedsProxy {
@@ -241,7 +246,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/infra/haproxy/haproxy.cfg", Content: cfg, Mode: 0o644})
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "haproxy", "haproxy.cfg"), Content: cfg, Mode: 0o644})
 	}
 
 	if site.IsGarage {
@@ -270,7 +275,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/infra/garage/garage.toml", Content: toml, Mode: 0o600})
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "garage", "garage.toml"), Content: toml, Mode: 0o600})
 	}
 
 	if site.IsGateway {
@@ -284,7 +289,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/infra/caddy/Caddyfile", Content: caddyfile, Mode: 0o644})
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "caddy", "Caddyfile"), Content: caddyfile, Mode: 0o644})
 
 		snippets, err := p.renderSnippets(base)
 		if err != nil {
@@ -304,7 +309,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/infra/caddy/caddy.env", Content: env, Mode: 0o600})
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "caddy", "caddy.env"), Content: env, Mode: 0o600})
 	}
 
 	for _, app := range site.Apps {
@@ -330,13 +335,16 @@ const (
 	snippetPrefix   = "caddy.snippet."
 )
 
-// snippetDir is where snippets land on the gateway, and snippetMount is the
-// same directory as the Caddy container sees it. The Caddyfile imports by the
-// second, because Caddy reads it from inside the container.
-const (
-	snippetDir   = "srv/infra/caddy/snippets/"
-	snippetMount = "/etc/caddy/snippets/"
-)
+// snippetMount is the directory snippets land in, as the Caddy container sees
+// it. The Caddyfile imports by it, because Caddy reads it from inside the
+// container.
+const snippetMount = "/etc/caddy/snippets/"
+
+// snippetDir is the same directory on the gateway, in the rendered tree.
+func (p *planner) snippetDir() string { return p.dep().RelPath("infra", "caddy", "snippets") + "/" }
+
+// dep is the deployment every rendered path and name derives from.
+func (p *planner) dep() deployment.Deployment { return p.cfg.Deployment() }
 
 // renderSnippets renders every hostname's routing onto a gateway.
 //
@@ -371,7 +379,7 @@ func (p *planner) renderSnippets(base string) ([]File, error) {
 		if r.Role != kinds.PrimaryRole {
 			name = r.App + "-" + r.Role
 		}
-		files = append(files, File{Path: base + snippetDir + name + ".caddy", Content: content, Mode: 0o644})
+		files = append(files, File{Path: base + p.snippetDir() + name + ".caddy", Content: content, Mode: 0o644})
 	}
 	return files, nil
 }
@@ -407,7 +415,7 @@ func (p *planner) renderGateSnippets(base string) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + snippetDir + name + "-gates.caddy", Content: content, Mode: 0o644})
+		files = append(files, File{Path: base + p.snippetDir() + name + "-gates.caddy", Content: content, Mode: 0o644})
 	}
 	return files, nil
 }
@@ -431,6 +439,7 @@ func (p *planner) gateSnippetMounts() []string {
 func (p *planner) plannedFor(name string, app config.App) (plannedApp, error) {
 	return plannedApp{
 		Name:     name,
+		Dir:      p.dep().Dir(name),
 		Kind:     app.Kind,
 		Hostname: app.Hostname,
 		Pinned:   app.Placement.Mode == config.PlacementPinned,
@@ -466,7 +475,7 @@ func TemplateSet(kind config.Kind) ([]string, error) {
 // renderTemplateSet renders every file in a kind's template directory.
 //
 // A template's path is its destination: templates/<kind>/config/packages/x.yaml
-// lands at /srv/<stack>/config/packages/x.yaml, so nothing holds a separate
+// lands at /srv/paisans/<token>/<stack>/config/packages/x.yaml, so nothing holds a separate
 // mapping of template to location and a new file in a set needs no code.
 func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error) {
 	dir := "templates/" + string(app.Kind)
@@ -508,7 +517,7 @@ func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error)
 		if err != nil {
 			return err
 		}
-		dest := base + "srv/" + app.Name + "/" + rel
+		dest := base + p.dep().RelPath(app.Name, rel)
 		files = append(files, File{Path: dest, Content: content, Mode: mode})
 		sources[dest] = path
 		return nil
@@ -520,7 +529,7 @@ func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error)
 	// Only when the app declares keys: an app without them renders exactly
 	// what its templates wrote, with no merge in the way.
 	if keys := p.cfg.Apps[app.Name].Config; len(keys) > 0 {
-		if err := mergeConfig(app, keys, base+"srv/"+app.Name+"/", files, sources); err != nil {
+		if err := mergeConfig(app, keys, base+p.dep().RelPath(app.Name)+"/", files, sources); err != nil {
 			return nil, err
 		}
 	}

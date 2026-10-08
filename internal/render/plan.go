@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
@@ -25,6 +26,8 @@ type File struct {
 // runs over the same input produce the same tree in the same order.
 type Plan struct {
 	Files []File
+	// Deployment is the identity every path and name in Files derives from.
+	Deployment deployment.Deployment
 }
 
 // appPort is the port an application listens on inside its container. The
@@ -91,7 +94,9 @@ const HAProxyStatsPort = haproxyStatsPort
 const postgresPort = 5432
 
 type plannedApp struct {
-	Name      string
+	Name string
+	// Dir is the app's stack directory on a host, under the deployment's root.
+	Dir       string
 	Kind      config.Kind
 	Hostname  string
 	Pinned    bool
@@ -182,7 +187,7 @@ func Build(cfg *config.Config, secrets *config.Secrets, opts ...Option) (*Plan, 
 	}
 
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-	return &Plan{Files: files}, nil
+	return &Plan{Files: files, Deployment: cfg.Deployment()}, nil
 }
 
 // placeApps decides where each app runs.
@@ -233,6 +238,7 @@ func (p *planner) placeApps() error {
 func (p *planner) planApp(name string, app config.App, site *siteView, pinned bool) (plannedApp, error) {
 	planned := plannedApp{
 		Name:     name,
+		Dir:      p.dep().Dir(name),
 		Kind:     app.Kind,
 		Hostname: app.Hostname,
 		Pinned:   pinned,

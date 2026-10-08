@@ -176,13 +176,13 @@ func Build(opts Options) (*Plan, error) {
 		return nil, fmt.Errorf("storage rotate-key: apps.%s holds half of a previous S3 pair (%s and %s must both be set or both be absent). Nothing was changed. Restore the secrets file from its history", opts.App, previousID, previousKey)
 	}
 
-	oldPresent, err := garage.KeyPresent(p.garage, p.OldKeyID)
+	oldPresent, err := garage.KeyPresent(p.garage, p.opts.Config.Deployment(), p.OldKeyID)
 	if err != nil {
 		return nil, err
 	}
 	newPresent := false
 	if p.InProgress {
-		if newPresent, err = garage.KeyPresent(p.garage, p.NewKeyID); err != nil {
+		if newPresent, err = garage.KeyPresent(p.garage, p.opts.Config.Deployment(), p.NewKeyID); err != nil {
 			return nil, err
 		}
 	}
@@ -192,7 +192,7 @@ func Build(opts Options) (*Plan, error) {
 	if !oldPresent && !newPresent {
 		return nil, fmt.Errorf("storage rotate-key: neither %s's retiring key %s nor its new key %s is in Garage, so the app has no key at all. Nothing was changed. `paisans storage init` imports and grants the new key the secrets hold; run it, then run rotate-key again to clear the previous pair", opts.App, p.OldKeyID, p.NewKeyID)
 	}
-	bucket, err := garage.ReadBucket(p.garage, p.Bucket)
+	bucket, err := garage.ReadBucket(p.garage, p.opts.Config.Deployment(), p.Bucket)
 	if err != nil {
 		return nil, err
 	}
@@ -293,31 +293,31 @@ func (p *Plan) buildImport(newPresent bool, bucket garage.Bucket) *Stage {
 	// either step already done.
 	st.run = func() error {
 		var steps []garage.Step
-		present, err := garage.KeyPresent(p.garage, p.NewKeyID)
+		present, err := garage.KeyPresent(p.garage, p.opts.Config.Deployment(), p.NewKeyID)
 		if err != nil {
 			return err
 		}
 		if !present {
-			steps = append(steps, garage.ImportStep(p.App, p.NewKeyID, p.newSecret))
+			steps = append(steps, garage.ImportStep(p.opts.Config.Deployment(), p.App, p.NewKeyID, p.newSecret))
 		}
-		b, err := garage.ReadBucket(p.garage, p.Bucket)
+		b, err := garage.ReadBucket(p.garage, p.opts.Config.Deployment(), p.Bucket)
 		if err != nil {
 			return err
 		}
 		if !b.Grants(p.NewKeyID) {
-			steps = append(steps, garage.GrantStep(p.App, p.Bucket, p.NewKeyID))
+			steps = append(steps, garage.GrantStep(p.opts.Config.Deployment(), p.App, p.Bucket, p.NewKeyID))
 		}
 		return garage.Execute(&garage.Plan{Site: p.Anchor, Steps: steps}, p.garage)
 	}
 	st.gate = func() error {
-		present, err := garage.KeyPresent(p.garage, p.NewKeyID)
+		present, err := garage.KeyPresent(p.garage, p.opts.Config.Deployment(), p.NewKeyID)
 		if err != nil {
 			return err
 		}
 		if !present {
 			return fmt.Errorf("%s is not in Garage", p.NewKeyID)
 		}
-		b, err := garage.ReadBucket(p.garage, p.Bucket)
+		b, err := garage.ReadBucket(p.garage, p.opts.Config.Deployment(), p.Bucket)
 		if err != nil {
 			return err
 		}
@@ -428,12 +428,12 @@ func (p *Plan) buildRetire(oldPresent bool) *Stage {
 		if p.OldKeyID == p.NewKeyID || p.OldKeyID == "" {
 			return errors.New("the key to delete is not the retiring one")
 		}
-		present, err := garage.KeyPresent(p.garage, p.OldKeyID)
+		present, err := garage.KeyPresent(p.garage, p.opts.Config.Deployment(), p.OldKeyID)
 		if err != nil {
 			return err
 		}
 		if present {
-			if err := garage.Execute(&garage.Plan{Site: p.Anchor, Steps: []garage.Step{garage.DeleteKeyStep(p.OldKeyID)}}, p.garage); err != nil {
+			if err := garage.Execute(&garage.Plan{Site: p.Anchor, Steps: []garage.Step{garage.DeleteKeyStep(p.opts.Config.Deployment(), p.OldKeyID)}}, p.garage); err != nil {
 				return err
 			}
 		}
@@ -447,7 +447,7 @@ func (p *Plan) buildRetire(oldPresent bool) *Stage {
 		return nil
 	}
 	st.gate = func() error {
-		present, err := garage.KeyPresent(p.garage, p.OldKeyID)
+		present, err := garage.KeyPresent(p.garage, p.opts.Config.Deployment(), p.OldKeyID)
 		if err != nil {
 			return err
 		}

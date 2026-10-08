@@ -17,10 +17,10 @@ import (
 // synthetic fixture is written to suit the writer; a rendered one is what the
 // writer will actually meet.
 const (
-	goldenEnv  = "../render/testdata/golden/home-a/srv/talk/.env"
-	goldenINI  = "../render/testdata/golden/home-a/srv/blog/config.ini"
-	goldenYAML = "../render/testdata/golden/vm/srv/chat/homeserver.yaml"
-	goldenJSON = "../render/testdata/golden/home-b/srv/web/config.json"
+	goldenEnv  = "../render/testdata/golden/home-a/srv/paisans/f2a9/talk/.env"
+	goldenINI  = "../render/testdata/golden/home-a/srv/paisans/f2a9/blog/config.ini"
+	goldenYAML = "../render/testdata/golden/vm/srv/paisans/f2a9/chat/homeserver.yaml"
+	goldenJSON = "../render/testdata/golden/home-b/srv/paisans/f2a9/web/config.json"
 )
 
 // The line each format writes above the keys it adds, so a reader of the

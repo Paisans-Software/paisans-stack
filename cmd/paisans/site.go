@@ -73,6 +73,11 @@ func runSiteAdd(args []string) error {
 	for _, name := range cfg.SiteNames() {
 		transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
 	}
+	// Site add writes to every site: the mesh, HAProxy and etcd change on
+	// each, not only on the new one.
+	if err := claimSites(cfg, *execute, *sudo, cfg.SiteNames()...); err != nil {
+		return err
+	}
 	plan, err := siteadd.Build(cfg, secrets, site, transports)
 	if err != nil {
 		return err

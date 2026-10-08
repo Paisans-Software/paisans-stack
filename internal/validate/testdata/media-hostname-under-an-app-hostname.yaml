@@ -2,6 +2,7 @@
 # child of its own hostname, so cookies scoped to docs.example.org reach it.
 # A sibling, docs-media.example.org, is what the derivation would give.
 version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 
 community:
   name: "Fixture Community"

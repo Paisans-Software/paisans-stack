@@ -18,7 +18,8 @@ import (
 // toolkit's comment marks but that fails any of them is listed as kept, with
 // each reason:
 //
-//  1. it carries exactly recordComment, so dns init created it;
+//  1. it carries exactly RecordComment of this deployment, so this
+//     deployment's dns init created it;
 //  2. it is an A or AAAA record;
 //  3. its name is community.domain, a name under it, or a name Desired
 //     produces for this configuration;
@@ -71,6 +72,8 @@ type PrunePlan struct {
 	Provider string
 	Entries  []PruneEntry
 	zones    []zone
+	// comment is this deployment's RecordComment, the one rule 1 matches.
+	comment string
 }
 
 // Removes returns the entries an execute will delete.
@@ -144,15 +147,15 @@ func BuildPrune(ctx context.Context, provider Provider, cfg *config.Config, want
 		}
 	}
 
-	plan := &PrunePlan{Provider: provider.Name(), zones: zones}
+	plan := &PrunePlan{Provider: provider.Name(), zones: zones, comment: RecordComment(cfg.Deployment())}
 	for _, z := range zones {
 		records, err := provider.AllRecords(ctx, z.id)
 		if err != nil {
 			return nil, fmt.Errorf("dns: listing zone %s: %w", z.name, err)
 		}
 		for _, r := range records {
-			if r.Comment != recordComment {
-				continue // rule 1: not the toolkit's, so not listed
+			if r.Comment != plan.comment {
+				continue // rule 1: not this deployment's, so not listed
 			}
 			name := normalise(r.Name)
 			typ := strings.ToUpper(r.Type)
@@ -244,7 +247,7 @@ func ExecutePrune(ctx context.Context, provider Provider, plan *PrunePlan) error
 func (p *PrunePlan) Write(w io.Writer) {
 	fmt.Fprintf(w, "dns prune (%s)\n", p.Provider)
 	if len(p.Entries) == 0 {
-		fmt.Fprintf(w, "  no record in these zones carries the comment %q\n", recordComment)
+		fmt.Fprintf(w, "  no record in these zones carries the comment %q\n", p.comment)
 		return
 	}
 	for _, e := range p.Entries {

@@ -6,7 +6,15 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
+
+// fixtureID is the fixture deployment's id, and recordComment the comment its
+// dns init writes.
+const fixtureID = "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"
+
+var recordComment = RecordComment(deployment.Deployment{ID: fixtureID})
 
 // zoneAfterTheMove is the zone a deployment leaves behind when it moves from
 // one shared media hostname to one per app: the old name's record is still
@@ -27,7 +35,7 @@ func zoneAfterTheMove() *fakeCloudflare {
 
 func prunePlan(t *testing.T, c *cloudflare) *PrunePlan {
 	t.Helper()
-	cfg := deployment()
+	cfg := declared()
 	wants, err := Desired(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +132,7 @@ func TestPruneKeepsAToolkitRecordOutsideTheDomain(t *testing.T) {
 	fake.records["zone-2"] = []cfRecord{
 		{ID: "rec-net", Type: "A", Name: "old.example.net", Content: "203.0.113.10", Comment: recordComment},
 	}
-	cfg := deployment()
+	cfg := declared()
 	talk := cfg.Apps["talk"]
 	talk.Hostname = "talk.example.net"
 	cfg.Apps["talk"] = talk
@@ -166,7 +174,7 @@ func TestPruneTokenNeverAppearsInAnError(t *testing.T) {
 	fake := newFake()
 	fake.echoToken = true
 	c := fake.serve(t)
-	cfg := deployment()
+	cfg := declared()
 	wants, err := Desired(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +208,7 @@ func TestPruneRemovesAVouchedNameOutsideTheDomain(t *testing.T) {
 		{ID: "rec-net", Type: "A", Name: "old.example.net", Content: "203.0.113.10", Comment: recordComment},
 		{ID: "rec-foreign", Type: "A", Name: "other.example.net", Content: "198.51.100.7", Comment: recordComment},
 	}
-	cfg := deployment()
+	cfg := declared()
 	talk := cfg.Apps["talk"]
 	talk.Hostname = "talk.example.net"
 	cfg.Apps["talk"] = talk
@@ -220,5 +228,32 @@ func TestPruneRemovesAVouchedNameOutsideTheDomain(t *testing.T) {
 	}
 	if _, err := BuildPrune(context.Background(), fake.serve(t), cfg, wants, "typo.example.net"); err == nil || !strings.Contains(err.Error(), "matches no record") {
 		t.Fatalf("a --name matching nothing was accepted: %v", err)
+	}
+}
+
+// A record is this deployment's only under its own token's comment. One
+// carrying another deployment's token, or the comment without any token, is
+// not listed, even at a name and address this deployment would otherwise
+// prune.
+func TestPruneMatchesOnlyThisDeploymentsToken(t *testing.T) {
+	if recordComment != "paisans-f2a9: created by paisans dns init" {
+		t.Fatalf("the comment is %q, want it to carry paisans-f2a9", recordComment)
+	}
+	fake := newFake()
+	fake.zones["example.org"] = "zone-1"
+	fake.records["zone-1"] = []cfRecord{
+		{ID: "rec-ours", Type: "A", Name: "media.example.org", Content: "203.0.113.10", Comment: recordComment},
+		{ID: "rec-theirs", Type: "A", Name: "old.example.org", Content: "203.0.113.10", Comment: "paisans-0c1d: created by paisans dns init"},
+		{ID: "rec-untokened", Type: "A", Name: "older.example.org", Content: "203.0.113.10", Comment: "created by paisans dns init"},
+	}
+	c := fake.serve(t)
+	p := prunePlan(t, c)
+	if got := p.Removes(); len(got) != 1 || got[0].ID != "rec-ours" {
+		t.Fatalf("want only rec-ours removed, got %+v", got)
+	}
+	for _, id := range []string{"rec-theirs", "rec-untokened"} {
+		if _, ok := entry(p, id); ok {
+			t.Errorf("%s does not carry this deployment's token and should not be listed", id)
+		}
 	}
 }

@@ -39,6 +39,7 @@ func TestAdminSite(t *testing.T) {
 // pidFake is a Pocket ID with no users and no groups until they are created,
 // reached through curl configs.
 type pidFake struct {
+	registry    *registryFake
 	destination string
 	sudo        bool
 	stdins      []string
@@ -91,6 +92,7 @@ func (f *pidFake) RunInput(command, stdin string) (string, error) {
 func withPIDFake(t *testing.T) *pidFake {
 	t.Helper()
 	fake := &pidFake{}
+	fake.registry = withRegistryFake(t)
 	saved := adminTransport
 	adminTransport = func(tr apply.SSHTransport) appadmin.Transport {
 		fake.destination = tr.Describe()
@@ -143,6 +145,9 @@ func TestPocketIDAdminDryRunPlansWithoutSudoAndChangesNothing(t *testing.T) {
 	if fake.sudo {
 		t.Error("curl was run through sudo")
 	}
+	if fake.registry.claims != 0 || fake.registry.reads != 0 {
+		t.Error("a dry run reached the host registry")
+	}
 	if strings.Contains(printed, key) {
 		t.Error("the output carries the API key")
 	}
@@ -157,7 +162,7 @@ func TestPocketIDAdminDryRunPlansWithoutSudoAndChangesNothing(t *testing.T) {
 }
 
 func TestPocketIDAdminExecutePrintsTheLinkOnce(t *testing.T) {
-	withPIDFake(t)
+	fake := withPIDFake(t)
 	var err error
 	printed := captureStdout(t, func() {
 		err = runAppAdminCreate(pidArgs("--execute"), strings.NewReader(""))
@@ -171,6 +176,9 @@ func TestPocketIDAdminExecutePrintsTheLinkOnce(t *testing.T) {
 	}
 	if !strings.Contains(printed, "20m0s") {
 		t.Errorf("the expiry is not stated:\n%s", printed)
+	}
+	if fake.registry.claims != 1 || !fake.registry.sudo {
+		t.Errorf("--execute claimed the host %d time(s), sudo %v; want once, through sudo", fake.registry.claims, fake.registry.sudo)
 	}
 }
 
