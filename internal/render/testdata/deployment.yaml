@@ -76,7 +76,7 @@ apps:
     kind: mbin
     hostname: talk.example.org
     placement: cluster
-    gate: members
+    visibility_gate: member
     images:
       app: ghcr.io/example-org/mbin:v1.10.1-fork
     # One passthrough key per format, so each merge is visible in the golden
@@ -102,7 +102,7 @@ apps:
     hostnames:
       wellknown: example.org
     placement: { pinned: vm }
-    gate: none
+    visibility_gate: public
     images:
       postgres: postgres:17-alpine
     # A yaml key in homeserver.yaml. Not url_preview_enabled: Synapse

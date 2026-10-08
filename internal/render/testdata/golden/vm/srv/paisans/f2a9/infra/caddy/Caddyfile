@@ -87,56 +87,162 @@
 # templates/oauth2-proxy/caddy.snippet.gates.tmpl for what it declares.
 import /etc/caddy/snippets/gate-gates.caddy
 
+
 blog-media.example.org {
 	import upstream_unavailable
 	import /etc/caddy/snippets/blog-media.caddy
 }
+
 
 blog.example.org {
 	import upstream_unavailable
 	import /etc/caddy/snippets/blog.caddy
 }
 
+
 chat.example.org {
 	import upstream_unavailable
 	import /etc/caddy/snippets/chat.caddy
 }
+
 
 docs-media.example.org {
 	import upstream_unavailable
 	import /etc/caddy/snippets/docs-media.caddy
 }
 
+
 docs.example.org {
 	import upstream_unavailable
 	import /etc/caddy/snippets/docs.caddy
 }
+
 
 example.org {
 	import upstream_unavailable
 	import /etc/caddy/snippets/chat-wellknown.caddy
 }
 
+
 gate.example.org {
 	import upstream_unavailable
 	import /etc/caddy/snippets/gate.caddy
 }
+
 
 id.example.org {
 	import upstream_unavailable
 	import /etc/caddy/snippets/auth.caddy
 }
 
+
 talk-media.example.org {
 	import upstream_unavailable
 	import /etc/caddy/snippets/talk-media.caddy
 }
 
+
+# Gated: visibility_gate member. Every request goes to the gate except the
+# classes that carry their own authentication, which the app verifies. Each is
+# its own handle with a named matcher, and Caddy keeps those in the order they
+# are written, so this is the order they are matched in. See
+# docs/specs/2026-10-08-visibility-gate.md in the toolkit.
 talk.example.org {
 	import upstream_unavailable
-	import gate_members
-	import /etc/caddy/snippets/talk.caddy
+	# Nothing upstream of the gate may name a user: these headers are only
+	# ever the gate's verified answer.
+	request_header -X-Auth-Request-*
+
+	# ActivityPub reads. Anyone can ask for ActivityPub, so the app's signed
+	# fetch decides whether to answer, and the monitor's signed fetch check
+	# proves it still does. An app can still answer such a request with
+	# something else (Eg: an HTML page on a route with no ActivityPub form, or
+	# its API), so only an ActivityPub, JSON-LD or JRD success is passed back.
+	# Any other success becomes an empty 404, and any other answer keeps its
+	# status, and a redirect its Location, with no body. GET only: a HEAD is
+	# not signature checked by every app, and a read needs nothing else.
+	# Values for one header field are OR'd, so either type matches.
+	@activitypub_read {
+		method GET
+		header Accept *application/activity+json*
+		header Accept *application/ld+json*
+	}
+	handle @activitypub_read {
+		import /etc/caddy/snippets/talk.caddy {
+			@activitypub_type {
+				header Content-Type *application/activity+json*
+				header Content-Type *application/ld+json*
+				header Content-Type *application/jrd+json*
+			}
+			handle_response @activitypub_type {
+				copy_response_headers
+				copy_response
+			}
+			@redirect status 3xx
+			handle_response @redirect {
+				copy_response_headers {
+					include Location
+				}
+				respond "" {http.reverse_proxy.status_code}
+			}
+			@success status 2xx
+			handle_response @success {
+				respond 404
+			}
+			handle_response {
+				respond "" {http.reverse_proxy.status_code}
+			}
+		}
+	}
+
+	# ActivityPub deliveries, on the inboxes only: a POST changes state before
+	# any answer could be filtered, so it reaches nothing else. The app
+	# verifies the delivery's signature.
+	@activitypub_delivery {
+		method POST
+		path /i/inbox /f/inbox /u/*/inbox /m/*/inbox
+		header Content-Type *application/activity+json*
+		header Content-Type *application/ld+json*
+	}
+	handle @activitypub_delivery {
+		import /etc/caddy/snippets/talk.caddy
+	}
+
+	# Auto-login: someone the gate already let through goes straight into the
+	# app's own sign-in, which completes without a prompt. Before the open
+	# paths, because a path can be both and the session holder must take this.
+	# talk_autologin stops a user the app refuses from being
+	# redirected again for two minutes.
+	@autologin_0 {
+		method GET HEAD
+		header Accept *text/html*
+		not header Authorization *
+		path / /login
+		header Cookie *_oauth2_proxy*
+		not header Cookie *PHPSESSID*
+		not header Cookie *REMEMBERME*
+		not header Cookie *talk_autologin*
+	}
+	handle @autologin_0 {
+		header Set-Cookie "talk_autologin=1; Path=/; Max-Age=120; Secure; HttpOnly; SameSite=Lax"
+		# The * is required: a first argument starting with / is read as a
+		# path matcher, and the redirect silently becomes an empty 200.
+		redir * /oauth/oidc/connect 302
+	}
+
+	# Open paths: the sign-in itself, federation discovery and what those
+	# pages load. They hold no private content.
+	@open path /oauth/* /authorize /consent /token /login /.well-known/webfinger /.well-known/host-meta /.well-known/nodeinfo /nodeinfo/* /i/actor /contexts /contexts.jsonld /build/* /assets/* /favicon.ico /favicon.svg /mbin_logo.svg /manifest.json /sw.js /custom-style
+	handle @open {
+		import /etc/caddy/snippets/talk.caddy
+	}
+
+	handle {
+		import gate_member
+		import /etc/caddy/snippets/talk.caddy
+	}
 }
+
 
 web.example.org {
 	import upstream_unavailable

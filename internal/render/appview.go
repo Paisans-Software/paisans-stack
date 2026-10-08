@@ -55,6 +55,15 @@ type appValues struct {
 	// COOKIE_DOMAINS.
 	Domain string
 
+	// Gate is the app's visibility gate instance, member or provisional, or
+	// empty when it is public. A gated app that federates turns on its
+	// kind's signed fetch, because the gate leaves ActivityPub to the app.
+	Gate string
+
+	// CommunityName is community.name, for the few pages the toolkit itself
+	// serves to people (Eg: the gate's pending page).
+	CommunityName string
+
 	// TrustedProxies is the mesh subnet, never a host address, so the gateway
 	// role can move without rewriting every application's configuration.
 	TrustedProxies string
@@ -296,6 +305,8 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		Hostname:        planned.Hostname,
 		PublicURL:       "https://" + planned.Hostname,
 		Domain:          p.cfg.Community.Domain,
+		CommunityName:   p.cfg.Community.Name,
+		Gate:            app.Gate(),
 		TrustedProxies:  p.mesh,
 		DBHost:          dbHost,
 		DBPort:          dbPort,

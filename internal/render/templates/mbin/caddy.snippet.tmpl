@@ -21,4 +21,7 @@ reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
 	import upstream_single
 {{- end }}
 	header_up X-Forwarded-Proto https
+	# A gated host block passes a block here for ActivityPub reads, to filter
+	# what comes back; every other import passes none.
+	{block}
 }

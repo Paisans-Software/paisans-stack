@@ -33,7 +33,7 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/caddy/Caddyfile",
-      "sha256": "2a165e75bfb189568f6ae3ce308d62c1ba4b78f9a88eedd63022e4de018de4d8",
+      "sha256": "5f19a083e04de3c32de81d3826f194493193f42a4d65406e99b89f54ea72c394",
       "mode": "0644"
     },
     {
@@ -53,7 +53,7 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/caddy/snippets/blog.caddy",
-      "sha256": "bda8c9d964532c3f8828ccb20fdc0ed4523a8aba1e7b6063544d6c3514e984fa",
+      "sha256": "f8c20ca6b67c492430925b5d74ec986b6167f08be8cea95fb2169af90dfa3e49",
       "mode": "0644"
     },
     {
@@ -78,12 +78,12 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/caddy/snippets/gate-gates.caddy",
-      "sha256": "8d1171bde1346a7f946966c3f4c6b8582a6a1a72f81aedc55957c763212c3656",
+      "sha256": "c9f914518833a7fb20349969e5aa6b9c8f2238e682314f970d8ce53128b243eb",
       "mode": "0644"
     },
     {
       "path": "srv/paisans/f2a9/infra/caddy/snippets/gate.caddy",
-      "sha256": "033168495474282b17ede4d37ac7eae9dff998aab665a4d75c0d746f37fddffa",
+      "sha256": "86df659fa456a9d52c92fe587be045eced9a46c4f1e445aaf5103c889652fa62",
       "mode": "0644"
     },
     {
@@ -93,7 +93,7 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/caddy/snippets/talk.caddy",
-      "sha256": "2c7f8467f68fcdf1a0fe235dddb20b3e89c3ef0c9f7a2f290dbed75c31d78715",
+      "sha256": "db0ec1436233c51821486ac4c685ac69c9be041dfee804f7ed7c1e37c2e5bbcd",
       "mode": "0644"
     },
     {

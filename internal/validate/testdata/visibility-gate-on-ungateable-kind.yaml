@@ -1,5 +1,7 @@
-# A coherent three site deployment. Every fixture in this directory is a
-# variation on this one, so that a test names exactly the thing it breaks.
+# valid.yaml with one thing broken: the homeserver sits behind the members
+# gate. A Matrix client will not follow the gate's redirect to a passkey
+# prompt, so this ends client login and federation rather than restricting
+# either.
 version: 1
 id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 
@@ -62,7 +64,6 @@ apps:
     kind: outline
     hostname: docs.example.org
     placement: cluster
-    visibility_gate: member
     settings:
       s3_bucket: docs-uploads
   auth:
@@ -71,3 +72,17 @@ apps:
     placement: cluster
     settings:
       file_backend: database
+  chat:
+    kind: synapse
+    hostname: chat.example.org
+    # On vm: a homeserver on a data site collides with Patroni's API on
+    # 8008, which is a different refusal.
+    placement: { pinned: vm }
+    visibility_gate: member
+  # Present only so that the gate the homeserver names exists: an app naming a
+  # gate no app renders is a different refusal, and a fixture must break one
+  # thing.
+  gate:
+    kind: oauth2-proxy
+    hostname: gate.example.org
+    placement: { pinned: home-a }

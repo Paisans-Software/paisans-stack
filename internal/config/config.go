@@ -386,19 +386,36 @@ type App struct {
 	// it here only chooses another name. See kinds.MediaHostname.
 	Hostnames map[string]string `yaml:"hostnames"`
 
-	// Gate is which auth gate sits in front of this app: none, provisional or
-	// members. Empty means none.
+	// VisibilityGate is who may read the app through the gateway: public,
+	// member or provisional. Empty means public. Read it through Gate.
 	//
 	// It is declared rather than inferred because it is access policy. It is
 	// also the setting most likely to be wrong in a way nothing notices: a
 	// gated Matrix hostname authenticates a browser and breaks every client,
 	// because a client will not follow a redirect to a passkey prompt.
-	Gate string `yaml:"gate"`
+	VisibilityGate string `yaml:"visibility_gate"`
 
 	// SMTP overrides the deployment's smtp block for this app, field by
 	// field: a field left out is inherited. Only kinds that send mail read
 	// it, and validate refuses it on any other (smtp-on-a-kind-without-mail).
 	SMTP *SMTP `yaml:"smtp"`
+}
+
+// The values of visibility_gate. Public is also what an absent key means.
+const (
+	GatePublic      = "public"
+	GateMember      = "member"
+	GateProvisional = "provisional"
+)
+
+// Gate is the gate instance in front of the app: member, provisional, or
+// empty when the app is public. An absent key and an explicit public mean
+// the same thing, so callers never compare against both.
+func (a App) Gate() string {
+	if a.VisibilityGate == GatePublic {
+		return ""
+	}
+	return a.VisibilityGate
 }
 
 // SMTP is how an app sends mail. The deployment's block is the default for
@@ -775,8 +792,10 @@ func (c *Config) structural(noSubnet bool) error {
 		if app.SMTP != nil {
 			problems = append(problems, smtpProblems("apps."+name+".smtp", *app.SMTP)...)
 		}
-		if app.Gate != "" && app.Gate != "none" && app.Gate != "provisional" && app.Gate != "members" {
-			add("apps.%s.gate: unknown gate %q. Valid values are none, provisional and members.", name, app.Gate)
+		switch app.VisibilityGate {
+		case "", GatePublic, GateMember, GateProvisional:
+		default:
+			add("apps.%s.visibility_gate: unknown value %q. Valid values are public, member and provisional.", name, app.VisibilityGate)
 		}
 	}
 	problems = append(problems, smtpProblems("smtp", c.SMTP)...)

@@ -43,6 +43,16 @@ var templateFuncs = template.FuncMap{
 	// regexquote escapes a value for a regular expression, so a hostname's
 	// dots match only dots.
 	"regexquote": regexp.QuoteMeta,
+	// gateSessionCookie is the gate's session cookie name, so the auto-login
+	// matcher and the Go constant cannot disagree.
+	"gateSessionCookie": func() string { return GateSessionCookie },
+	// caddyhtml escapes a value for an HTML page Caddy serves with respond:
+	// HTML escaping, and braces as entities too, because Caddy expands a
+	// {placeholder} in a response body, and one in a community's name would
+	// otherwise pull a value from Caddy's environment into the page.
+	"caddyhtml": func(v string) string {
+		return strings.NewReplacer("{", "&#123;", "}", "&#125;").Replace(template.HTMLEscapeString(v))
+	},
 	"yesno": func(b bool) string {
 		if b {
 			return "true"
@@ -145,11 +155,49 @@ type route struct {
 	// the container sees it. The host block imports it rather than
 	// containing it.
 	Snippet string
-	// Gate is the app's declared gate, carried onto every one of its
-	// hostnames. A gate is access policy for the app, not for one hostname of
-	// it, so every route an app has gets the same value, with one exception:
-	// a media hostname is never gated (see routes).
+	// Gate is the gate instance in front of this hostname, member or
+	// provisional, or empty when it is public. It is the app's visibility
+	// gate, carried onto every one of its hostnames, with one exception: a
+	// media hostname is never gated (see routes).
 	Gate string
+	// What a gated hostname lets past the gate, from the kind's GateSpec.
+	// Empty on a public hostname, which has no gate to get past. See
+	// docs/specs/2026-10-08-visibility-gate.md.
+	Bypass gateBypass
+}
+
+// gateBypass is what reaches a gated app without a gate session, in the order
+// the host block matches it: ActivityPub, auto-login, open paths, token paths.
+type gateBypass struct {
+	// ActivityPub is true for an app that federates. Its signed fetch is what
+	// authenticates these requests, and validation refuses a gated
+	// federating app with none.
+	ActivityPub bool
+	InboxPaths  []string
+	AutoLogin   []kinds.AutoLoginRule
+	// LoopBreaker is the cookie an auto-login redirect sets, so a user the
+	// app refuses after the gate admitted them is redirected once rather
+	// than forever.
+	LoopBreaker string
+	OpenPaths   []string
+	TokenPaths  []string
+}
+
+// GateSessionCookie is the gate's session cookie: oauth2-proxy's default
+// name, which the rendered .env does not change. Auto-login fires only when
+// it is present, so an anonymous visitor always meets the gate first.
+const GateSessionCookie = "_oauth2_proxy"
+
+func bypassFor(name string, app config.App) gateBypass {
+	spec := kinds.GateFor(app.Kind)
+	return gateBypass{
+		ActivityPub: kinds.Federates(app),
+		InboxPaths:  spec.InboxPaths,
+		AutoLogin:   spec.AutoLogin,
+		LoopBreaker: name + "_autologin",
+		OpenPaths:   kinds.OpenPathsFor(app.Kind),
+		TokenPaths:  spec.TokenPaths,
+	}
 }
 
 func (p *planner) renderSite(site *siteView) ([]File, error) {
@@ -718,13 +766,10 @@ func (p *planner) routesFor(site *siteView) []route {
 		case !site.IsGateway && (!onMonitor || monitor != site.Name):
 			continue
 		}
-		gate := app.Gate
-		if gate == "none" {
-			// Carried to the template as empty rather than as the literal
-			// "none", because the template's gate import is guarded on
-			// truthiness: `none` is a value an operator writes, but it means
-			// the same as never having written the key at all.
-			gate = ""
+		gate := app.Gate()
+		var bypass gateBypass
+		if gate != "" {
+			bypass = bypassFor(name, app)
 		}
 		out = append(out, route{
 			App:       name,
@@ -733,6 +778,7 @@ func (p *planner) routesFor(site *siteView) []route {
 			Upstreams: p.upstreams(name),
 			Snippet:   snippetMount + name + ".caddy",
 			Gate:      gate,
+			Bypass:    bypass,
 		})
 		roles := sortedKeys(app.Hostnames)
 		if kinds.MediaHostnameIsDerived(app) {
@@ -742,14 +788,14 @@ func (p *planner) routesFor(site *siteView) []route {
 		}
 		for _, role := range roles {
 			hostname := app.Hostnames[role]
-			routeGate := gate
+			routeGate, routeBypass := gate, bypass
 			if role == kinds.MediaRole {
 				hostname = kinds.MediaHostname(app, p.cfg.Community.Domain)
 				// Never gated, whatever the app's gate is. A federating server
 				// fetching an image is a machine, and it will not follow a
 				// redirect to a passkey prompt; Outline's private objects are
 				// protected by the signature on every URL, not by a cookie.
-				routeGate = ""
+				routeGate, routeBypass = "", gateBypass{}
 			}
 			out = append(out, route{
 				App:       name,
@@ -758,6 +804,7 @@ func (p *planner) routesFor(site *siteView) []route {
 				Upstreams: p.upstreams(name),
 				Snippet:   snippetMount + name + "-" + role + ".caddy",
 				Gate:      routeGate,
+				Bypass:    routeBypass,
 			})
 		}
 	}

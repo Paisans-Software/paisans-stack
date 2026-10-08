@@ -1,50 +1,62 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
 # Named Caddy snippets for gate, imported by NAME
-# (`import gate_provisional`, `import gate_members`), never by path: nothing
+# (`import gate_provisional`, `import gate_member`), never by path: nothing
 # renders a host block for this file, and it carries no routing of its own
-# until some other site's snippet imports one of these names inside its own
-# final `handle` block.
+# until a gated host block imports one of these names inside its final
+# `handle`. Everything that reaches that handle is gated: what a gated app lets
+# past the gate is matched by the host block's earlier handles, not here.
 #
-# gate_provisional never refuses a request: it only checks whether someone is
-# signed in at all, which is what this kind's own onboarding surface needs.
-# gate_members is the enforcing one, and it is the only one that should ever
-# gate a member-facing application - it answers 403 for anyone signed in who
-# is not yet a member, which caddy.snippet.tmpl's compose file arranges by
-# giving only `members` the OAUTH2_PROXY_ALLOWED_GROUPS restriction. Using
-# gate_provisional to protect an application would admit every signed-in
-# visitor, provisional or not, which is the exact mistake this two-instance
-# shape exists to make impossible.
+# gate_provisional never refuses someone signed in: it only checks whether
+# they are signed in at all. gate_member is the enforcing one, and the one a
+# member facing application uses: it answers 403 for anyone signed in who is
+# not yet a member, which compose.yaml arranges by giving only `members` the
+# OAUTH2_PROXY_ALLOWED_GROUPS restriction. The login flow always runs on
+# `provisional`, so that every signed-in user holds a session cookie and
+# `members` can tell "never signed in" (401) from "signed in, not a member"
+# (403).
 #
-# Modelled on (pocketid_gate) in rsync/caddy/Caddyfile, paisans.community: the
-# deployment this kind generalises defines one snippet gating on a single
-# enforcing instance. Here that becomes two named snippets, because this
-# toolkit's onboarding surface (a code-of-conduct style page, gated on
-# "signed in" rather than "member") is exactly the case that instance split
-# exists for.
+# A person needs a page, not oauth2-proxy's raw status, so each answer becomes
+# a redirect: 401 to sign in, 403 to gate.example.org/pending. `rd` is not URL
+# encoded, because Caddy has no placeholder that encodes one, so a deep link
+# with more than one query parameter loses the extras on the first visit that
+# crosses sign-in. The page is right; only extra parameters are lost.
 #
 # STRIP BEFORE FORWARDING. Whatever consumes X-Auth-Request-User must trust
-# nothing upstream of Caddy: a client reaching this gate directly, bypassing
-# Caddy, could forge the header on its way in. `request_header` (not `header`,
-# which edits the response) removes it from the inbound request before
-# forward_auth's subrequest can see it; copy_headers below only ever adds the
-# verified header back, so it does nothing to remove one already forged.
+# nothing upstream of Caddy: a client could forge the header on its way in.
+# `request_header` (not `header`, which edits the response) removes it from the
+# inbound request before forward_auth's subrequest can see it; copy_headers
+# below only ever adds the verified header back, so it does nothing to remove
+# one already forged. The gated host block strips it too, for its other
+# handles.
 (gate_provisional) {
 	route {
 		request_header -X-Auth-Request-*
 		forward_auth 10.44.0.1:4180 {
 			uri /oauth2/auth
 			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Preferred-Username
+			@gate_signin status 401
+			handle_response @gate_signin {
+				redir https://gate.example.org/oauth2/start?rd={http.request.scheme}://{http.request.host}{http.request.orig_uri} 302
+			}
 		}
 	}
 }
 
-(gate_members) {
+(gate_member) {
 	route {
 		request_header -X-Auth-Request-*
 		forward_auth 10.44.0.1:4181 {
 			uri /oauth2/auth
 			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Preferred-Username
+			@gate_signin status 401
+			handle_response @gate_signin {
+				redir https://gate.example.org/oauth2/start?rd={http.request.scheme}://{http.request.host}{http.request.orig_uri} 302
+			}
+			@gate_pending status 403
+			handle_response @gate_pending {
+				redir https://gate.example.org/pending?rd={http.request.scheme}://{http.request.host}{http.request.orig_uri} 302
+			}
 		}
 	}
 }

@@ -16,4 +16,7 @@ reverse_proxy 10.44.0.1:8080 10.44.0.2:8080 {
 	# Failover across apps sites; see upstream_failover in the Caddyfile.
 	import upstream_failover
 	header_up X-Forwarded-Proto https
+	# A gated host block passes a block here for ActivityPub reads, to filter
+	# what comes back; every other import passes none.
+	{block}
 }
