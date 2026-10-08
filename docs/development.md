@@ -21,6 +21,9 @@ it only with `--execute`. `preflight` and `doctor`
 reach every site and never change one; `failover test` changes which site
 is primary, only with `--execute`. `dns init` and `dns prune` reach no
 machine, only the DNS provider's API, and change it only with `--execute`.
+`ingress show` reads `paisans.yaml` alone; `ingress check` reaches no host
+over ssh and changes nothing, looking at a monitor's public hostname as a
+visitor would.
 
 ```
 paisans validate --config examples/paisans.example.yaml
@@ -38,6 +41,8 @@ paisans failover test                     # checks, and prints the plan
 paisans doctor                            # what is stuck, and how to recover
 paisans dns init                          # shows which records it would create
 paisans dns prune                         # shows which records it would delete
+paisans ingress show  --app status        # hand-off sheet for a monitor's web server
+paisans ingress check --app status        # DNS, certificate, sign in, closed upstream
 security find-generic-password -s acme -w \
   | paisans secrets set external.acme_dns_token
 ```
@@ -140,6 +145,18 @@ the operator.
 A decryption failure names both `SOPS_AGE_KEY_FILE` and `SOPS_AGE_KEY_CMD`; the
 embedded sops (v3.13.3, `age/keysource.go`) reads either, and the second lets
 the age key live in a keychain rather than a file.
+
+`ingress show --app <name>` and `ingress check --app <name>` are for an app
+pinned to a monitor site (`render.ServedBy`); every other app is the
+gateway's and is refused. `internal/ingress` holds both: `For` builds the
+target from the configuration, `Show` prints what the web server in front of
+it must do and a snippet for Caddy, nginx and Apache, and `Check` runs four
+read only checks through `Probes`, a resolver, an HTTPS client that never
+follows a redirect, a dialer and a clock. Tests replace all four and run
+against `httptest` TLS servers with certificates generated in the test, so no
+test touches real DNS or the network. README.md *The monitor has a site of
+its own* has the reasoning; `docs/guides/behind-your-own-web-server.md` is
+the walk-through.
 
 `render` validates, then writes per site artifacts under `--out`. It writes
 files and stops: pushing them to a host is a later slice.
@@ -712,6 +729,7 @@ installed, on a workstation or anywhere else.
 | `internal/appadmin` | an app's first administrator: probe, plan, and the per kind API calls |
 | `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin |
 | `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
+| `internal/ingress` | a monitor's ingress: the hand-off sheet for an operator's own web server, and the read only checks run from the workstation |
 | `internal/hostcheck` | what a site claims on its host, what the host already runs, and whether that is clean, shared or a conflict |
 | `internal/preflight` | `site add`'s first stage: read only checks on the new site and every running one, as a report |
 | `internal/failover` | `failover test`: its checks, the switchover and its gates |
@@ -749,7 +767,9 @@ rather than environment at all.
 
 One file in a set is not rendered beside the app: `caddy.snippet.tmpl` lands on
 every gateway, at `/srv/infra/caddy/snippets/<app>.caddy`, because that is where
-it is read. The gateway's own `Caddyfile` keeps only what is cross cutting,
+it is read. An app pinned to a monitor site is the exception: its snippet
+lands on that monitor instead, in ingress mode paisans, and on no site at all
+in mode external (`routesFor` in `internal/render/site.go`). The gateway's own `Caddyfile` keeps only what is cross cutting,
 certificates and the trusted proxy range, and gives each app a host block that
 imports its snippet. A snippet never hardcodes where its application runs: it
 receives the upstreams from the inventory, which is what keeps a pinned app and

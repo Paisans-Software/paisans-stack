@@ -1029,4 +1029,4 @@ Usage lines:
 - [ ] `go vet ./...` is clean.
 - [ ] `go test -count=1 ./...` passes.
 - [ ] `go build -o /dev/null ./cmd/paisans`.
-- [ ] `git diff feat/host-check --stat` read through; grep the diff for `—` in new prose and for any address outside the fixture ranges.
+- [ ] `git diff feat/host-check --stat` read through; grep the diff for an em dash in new prose and for any address outside the fixture ranges.

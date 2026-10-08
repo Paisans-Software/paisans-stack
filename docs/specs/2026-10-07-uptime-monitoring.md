@@ -57,7 +57,9 @@ apps:
   applies with no new rule.
 * **Any declared site.** A single site's only machine, the gateway VM of a
   multi-site deployment, a home, or a dedicated VM. Pinned placement already
-  accepts a site whatever its roles.
+  accepts a site whatever its roles. *Superseded: the site must hold the
+  `monitor` role, which is never the gateway or the witness. See the
+  amendment of 2026-10-08 below.*
 * **No `placement: gateway`.** It was considered, so the monitor would follow
   a gateway move without an edit, and rejected. During a move two sites hold
   the gateway role, and two monitors would send every alert twice. Pinning
@@ -80,6 +82,10 @@ monitor VM has no role that fits:
   also brings HAProxy, container rules to the database proxy and Garage, and a
   place in `failover`. A monitor VM with `apps` would start Mbin and Outline.
 * `witness` fits only if the operator also wants the VM as etcd's tiebreaker.
+
+*Superseded for the monitor by the amendment of 2026-10-08 below: a dedicated
+monitor VM is `roles: [monitor]`. The rule that follows stands for every other
+kind.*
 
 So: **`roles: []` is accepted for a site that at least one app is pinned to.**
 A role-less site that nothing is pinned to is still refused, because it is
@@ -533,3 +539,34 @@ public and given the repository's Actions write access. Checked 2026-10-07:
 anonymous manifest 200, `/data` its only declared volume, and a run as root
 with an SMTP seed came up healthy with the seed applied. The kind's default is
 that reference.
+
+## Amendment, 2026-10-08: the monitor has a site role of its own
+
+`docs/specs/2026-10-08-monitor-role-and-host-check.md`, Part 1, approved in
+session, changes five things here:
+
+* **Placement.** `uptime` is no longer placeable on any site. It is still
+  `placement: { pinned: <site> }`, and that site must hold the new `monitor`
+  role (`uptime-needs-a-monitor-site`). A monitor site is never the gateway
+  (`monitor-on-gateway`) or the witness (`monitor-on-witness`), is warned
+  about beside `data` or `apps` (`monitor-shares-a-site`), and must declare
+  `public_address`. The gateway VM, which *Kind and placement* named as the
+  usual multi-site place, is therefore refused.
+* **The role-less monitor site** becomes `roles: [monitor]`. `roles: []`
+  with a pinned app stays legal for other kinds.
+* **Routing.** The monitor is no longer routed by the gateway's Caddy. It
+  serves its own hostname, through the toolkit's Caddy on the monitor
+  (`ingress` mode `paisans`) or behind the operator's own web server (mode
+  `external`), and its DNS records point at the monitor's own address. What
+  *Exposure and sign in* says the gateway refuses at the edge is refused by
+  the monitor's Caddy, or by the operator's web server through the snippets
+  `paisans ingress show` prints.
+* **The seed.** The monitor still gets no direct check of its own container,
+  but it gains one check of its own public URL, `https://<hostname>/healthz`
+  expecting 200, which proves the path in front of it: DNS, the web server
+  and the certificate.
+* **`TRUST_PROXY`** is where the proxy in front of the monitor connects from,
+  rather than the mesh subnet alone: the mesh subnet behind the monitor's own
+  Caddy, and in mode external the network the operator's web server reaches
+  the published port from.
+
