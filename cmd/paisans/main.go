@@ -23,6 +23,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
@@ -65,8 +66,9 @@ Usage:
 
 Commands:
   validate   Load the configuration and report every problem found.
-  init       Generate the secrets this configuration needs, filling in only
-             what is missing, and say what is still owed from elsewhere.
+  init       Give the configuration an id if it has none, then generate the
+             secrets it needs, filling in only what is missing, and say what
+             is still owed from elsewhere.
   render     Validate, then write per site artifacts to a local directory.
   host       Take a blank host to the state apply assumes: Docker, the
              WireGuard tools, a firewall, and a watchdog on a data site.
@@ -95,9 +97,8 @@ Commands:
              the secrets. Resumes from the secrets file. Writes nothing
              without --execute.
   prune      List one site's dangling Docker volumes, with size and top level
-             entries, and say which are a paisans container's leftovers.
-             Removes those with --execute; a volume another compose project
-             labelled, or one somebody named, is kept.
+             entries, and say which carry this deployment's label.
+             Removes those with --execute; every other volume is kept.
   preflight  The read only checks site add runs first, for the site being
              added and every site already running. Changes nothing.
   failover   test: switch the Patroni primary to another data site and
@@ -137,7 +138,9 @@ host prepare, apply, prune, site add, storage init, storage add, storage
 rotate-key, app admin create, oidc client create, preflight, failover test and
 doctor are the only commands that reach a host.
 Each reads it to plan, and changes it only with --execute; preflight and doctor
-have no --execute and never change it. dns init and dns
+have no --execute and never change it. With --execute, a command first claims
+each host it writes to in /var/lib/paisans/registry.json, and refuses if
+another deployment there holds this one's token. dns init and dns
 prune reach no host, only the DNS provider's API, and change it only with
 --execute.
 Everything else writes files locally and stops.
@@ -259,6 +262,16 @@ func runInit(args []string) error {
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// The id comes first: everything a host holds is named from it, and a
+	// declaration without one cannot even be loaded. One that exists is never
+	// replaced.
+	id, added, err := config.EnsureID(*configPath)
+	if err != nil {
+		return err
+	}
+	if added {
+		fmt.Fprintf(os.Stdout, "%s: wrote deployment id %s. It never changes; every name and path this deployment holds on a host is derived from it.\n", *configPath, id)
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -451,6 +464,9 @@ func runApply(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
+	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+		return err
+	}
 
 	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...)}
 	if *keepImages {
@@ -480,7 +496,7 @@ func runApply(args []string) error {
 	founding := false
 	var running map[string]bool
 	if contains(cfg.Etcd.Members, *site) {
-		_, recorded, err := apply.ReadEtcdInitial(transport)
+		_, recorded, err := apply.ReadEtcdInitial(transport, cfg.Deployment())
 		if err != nil {
 			return err
 		}
@@ -567,7 +583,7 @@ func planSiteApply(cfg *config.Config, secrets *config.Secrets, site string, tra
 	// file. See render.EtcdInitialPath.
 	var renderOptions []render.Option
 	if contains(cfg.Etcd.Members, site) {
-		initial, found, err := apply.ReadEtcdInitial(transport)
+		initial, found, err := apply.ReadEtcdInitial(transport, cfg.Deployment())
 		if err != nil {
 			return nil, err
 		}
@@ -646,6 +662,9 @@ func runStorageInit(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
+	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+		return err
+	}
 	plan, err := garage.Build(*site, cfg, secrets, transport)
 	if err != nil {
 		return err
@@ -698,6 +717,9 @@ func runHostPrepare(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
+	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+		return err
+	}
 	plan, err := hostprep.Build(*site, cfg, transport)
 	if err != nil {
 		return err
@@ -814,14 +836,14 @@ func report(w *os.File, path string, result validate.Result) {
 // It reaches no host. The workstation talks to the provider's API and to
 // nothing else, so it takes no --site and no --ssh.
 func runDNSInit(args []string) error {
-	_, wants, provider, execute, err := dnsSetup("dns init", "actually create the missing records", args)
+	cfg, wants, provider, execute, err := dnsSetup("dns init", "actually create the missing records", args)
 	if err != nil {
 		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	plan, err := dns.Build(ctx, provider, wants)
+	plan, err := dns.Build(ctx, provider, cfg.Deployment(), wants)
 	if err != nil {
 		return err
 	}

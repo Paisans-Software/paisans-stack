@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // What follows makes the keys in a site's ssh.public_key the login user's
@@ -15,7 +16,8 @@ import (
 // puts the provider's key there, and an operator may add a restricted key by
 // hand. So host prepare only ever adds a listed key, and only ever removes a
 // key it added itself. What it added is recorded in a sidecar file,
-// /etc/paisans/authorized_keys.<user>.owned, one fingerprint per line, root's
+// /etc/paisans/authorized_keys.<user>.paisans-<token>.owned, one per
+// deployment, one fingerprint per line, root's
 // and 0600. The line in authorized_keys is left exactly as the key was
 // written.
 //
@@ -33,9 +35,9 @@ import (
 const ownedDir = "/etc/paisans"
 
 // OwnedKeysPath is the sidecar recording which of user's authorized keys host
-// prepare added.
-func OwnedKeysPath(user string) string {
-	return ownedDir + "/authorized_keys." + user + ".owned"
+// prepare added for deployment d.
+func OwnedKeysPath(d deployment.Deployment, user string) string {
+	return ownedDir + "/authorized_keys." + user + "." + d.Prefix() + ".owned"
 }
 
 // passwdProbe prints the user's passwd entry, or a marker when there is none,
@@ -61,7 +63,7 @@ type ownedEntry struct {
 // and the sidecar. It returns the additions and adoptions, which run with the
 // rest of the plan, and the removals, which run last: a key is only taken
 // away once every listed key is in place.
-func planAuthorizedKeys(t Transport, s config.SSH) (out Section, removals []Step, err error) {
+func planAuthorizedKeys(t Transport, d deployment.Deployment, s config.SSH) (out Section, removals []Step, err error) {
 	user := s.User
 	listed, problems := s.Keys()
 	if len(problems) > 0 {
@@ -102,7 +104,7 @@ func planAuthorizedKeys(t Transport, s config.SSH) (out Section, removals []Step
 		lines = append(lines, hostKeyLine{raw: strings.TrimSuffix(raw, "\r"), key: key, options: len(options) > 0})
 	}
 
-	sidecar, _, err := t.ReadFile(OwnedKeysPath(user))
+	sidecar, _, err := t.ReadFile(OwnedKeysPath(d, user))
 	if err != nil {
 		return out, nil, err
 	}
@@ -177,7 +179,7 @@ func planAuthorizedKeys(t Transport, s config.SSH) (out Section, removals []Step
 			out.Steps = append(out.Steps, Step{
 				Label:    "adopt",
 				Describe: fmt.Sprintf("ssh: key %s is already authorized for %s; record it as host prepare's", label, user),
-				Command:  writeOwned(user, owned),
+				Command:  writeOwned(d, user, owned),
 			})
 		case len(restricted) > 0:
 			// The key is there with options someone chose. It is theirs:
@@ -190,7 +192,7 @@ func planAuthorizedKeys(t Transport, s config.SSH) (out Section, removals []Step
 			out.Steps = append(out.Steps, Step{
 				Label:    "add",
 				Describe: fmt.Sprintf("ssh: authorize key %s for %s", label, user),
-				Command:  appendKey(file, k.Line) + "; " + writeOwned(user, owned),
+				Command:  appendKey(file, k.Line) + "; " + writeOwned(d, user, owned),
 			})
 		}
 	}
@@ -212,7 +214,7 @@ func planAuthorizedKeys(t Transport, s config.SSH) (out Section, removals []Step
 			if len(restricted) > 0 {
 				describe = fmt.Sprintf("ssh: forget key %s, which is now authorized with options by `%s` and so is no longer host prepare's", label, restricted[0].raw)
 			}
-			out.Steps = append(out.Steps, Step{Describe: describe, Command: writeOwned(user, owned)})
+			out.Steps = append(out.Steps, Step{Describe: describe, Command: writeOwned(d, user, owned)})
 			continue
 		}
 		dropOwned(o.fingerprint)
@@ -223,7 +225,7 @@ func planAuthorizedKeys(t Transport, s config.SSH) (out Section, removals []Step
 		removals = append(removals, Step{
 			Label:    "remove",
 			Describe: fmt.Sprintf("ssh: remove key %s from %s, which host prepare added and ssh.public_key no longer lists", label, file),
-			Command:  removeLines(file, raws) + "; " + writeOwned(user, owned),
+			Command:  removeLines(file, raws) + "; " + writeOwned(d, user, owned),
 		})
 	}
 
@@ -271,14 +273,14 @@ func removeLines(file string, lines []string) string {
 // writeOwned replaces the sidecar with entries, sorted so that the file does
 // not change when only the order of the configuration did. Fingerprints and
 // comments are public, so a command line is no leak.
-func writeOwned(user string, entries []ownedEntry) string {
+func writeOwned(d deployment.Deployment, user string, entries []ownedEntry) string {
 	sorted := append([]ownedEntry(nil), entries...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].fingerprint < sorted[j].fingerprint })
 	body := "# Keys paisans host prepare added to " + user + "'s authorized_keys. It removes only these.\n"
 	for _, e := range sorted {
 		body += strings.TrimSpace(e.fingerprint+" "+e.comment) + "\n"
 	}
-	path := OwnedKeysPath(user)
+	path := OwnedKeysPath(d, user)
 	return fmt.Sprintf("mkdir -p %s && printf '%%s' %s > %s && chmod 600 %s && mv %s %s",
 		ownedDir, shellQuote(body), shellQuote(path+".paisans-tmp"), shellQuote(path+".paisans-tmp"), shellQuote(path+".paisans-tmp"), shellQuote(path))
 }

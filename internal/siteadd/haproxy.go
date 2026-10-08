@@ -10,8 +10,8 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
-// haproxyFile is HAProxy's configuration, relative to a site's root.
-const haproxyFile = "srv/infra/haproxy/haproxy.cfg"
+// haproxyFile is HAProxy's configuration, in rendered form.
+func (p *Plan) haproxyFile() string { return p.dep().RelPath("infra", "haproxy", "haproxy.cfg") }
 
 // restartHAProxy restarts HAProxy alone. Not a reload by SIGHUP, which the
 // image supports (docker-library/docs, haproxy, "Reloading config"): the
@@ -21,7 +21,7 @@ const haproxyFile = "srv/infra/haproxy/haproxy.cfg"
 // read the old file.
 // A restart mounts the path again. Not the whole stack either, which would
 // restart etcd and Patroni with it.
-const restartHAProxy = "docker compose -f /srv/infra/compose.yaml restart haproxy"
+func (p *Plan) restartHAProxy() string { return p.dep().ComposeCmd("infra") + " restart haproxy" }
 
 // statsProbe reads HAProxy's statistics as CSV from its loopback listener
 // (haproxy.cfg.tmpl, listen stats). curl is on the host: host prepare
@@ -46,11 +46,11 @@ func (p *Plan) buildHAProxy(rendered *render.Plan) (*Stage, error) {
 	apps := map[string][]string{}
 	var sites []string
 	for _, name := range p.cfg.SiteNames() {
-		if !renders(rendered, name, haproxyFile) {
+		if !renders(rendered, name, p.haproxyFile()) {
 			continue
 		}
 		sites = append(sites, name)
-		sp, err := apply.Build(name, rendered, "", p.transports[name], apply.Scope(haproxyFile))
+		sp, err := apply.Build(name, rendered, "", p.transports[name], apply.Scope(p.haproxyFile()))
 		if err != nil {
 			return nil, err
 		}
@@ -70,11 +70,11 @@ func (p *Plan) buildHAProxy(rendered *render.Plan) (*Stage, error) {
 			apps[name] = p.databaseApps(rendered, name)
 			list := strings.Join(apps[name], ", ")
 			if list != "" {
-				st.Steps = append(st.Steps, Step{Site: name, Verb: "stop", Text: list + ": they reach the database through this HAProxy, and an app's open connections do not survive its restart (" + composeEach(apps[name], "stop") + ")"})
+				st.Steps = append(st.Steps, Step{Site: name, Verb: "stop", Text: list + ": they reach the database through this HAProxy, and an app's open connections do not survive its restart (" + p.composeEach(apps[name], "stop") + ")"})
 			}
-			st.Steps = append(st.Steps, Step{Site: name, Verb: "restart", Text: "HAProxy alone: " + restartHAProxy})
+			st.Steps = append(st.Steps, Step{Site: name, Verb: "restart", Text: "HAProxy alone: " + p.restartHAProxy()})
 			if list != "" {
-				st.Steps = append(st.Steps, Step{Site: name, Verb: "start", Text: list + " (" + composeEach(apps[name], "up -d") + ")"})
+				st.Steps = append(st.Steps, Step{Site: name, Verb: "start", Text: list + " (" + p.composeEach(apps[name], "up -d") + ")"})
 				st.Steps = append(st.Steps, Step{Site: name, Verb: "check", Text: list + ": every container running, and healthy where it has a healthcheck, as apply's gate"})
 			}
 		}
@@ -104,7 +104,7 @@ func (p *Plan) buildHAProxy(rendered *render.Plan) (*Stage, error) {
 func (p *Plan) databaseApps(rendered *render.Plan, site string) []string {
 	var out []string
 	for _, app := range apply.ClusterDatabaseApps(p.cfg) {
-		if renders(rendered, site, "srv/"+app+"/compose.yaml") {
+		if renders(rendered, site, p.dep().RelPath(app, "compose.yaml")) {
 			out = append(out, app)
 		}
 	}
@@ -112,16 +112,16 @@ func (p *Plan) databaseApps(rendered *render.Plan, site string) []string {
 }
 
 // composeEach is one compose command per stack, as the plan shows them.
-func composeEach(stacks []string, verb string) string {
+func (p *Plan) composeEach(stacks []string, verb string) string {
 	var out []string
 	for _, stack := range stacks {
-		out = append(out, appCompose(stack, verb))
+		out = append(out, p.appCompose(stack, verb))
 	}
 	return strings.Join(out, "; ")
 }
 
-func appCompose(stack, verb string) string {
-	return fmt.Sprintf("docker compose -f /srv/%s/compose.yaml %s", stack, verb)
+func (p *Plan) appCompose(stack, verb string) string {
+	return p.dep().ComposeCmd(stack) + " " + verb
 }
 
 // restartProxy restarts one site's HAProxy with its database apps stopped
@@ -141,15 +141,15 @@ func (p *Plan) restartProxy(site string, apps []string) error {
 	t := p.transports[site]
 	for _, app := range apps {
 		p.say("  %-9s %s on %s\n", "stop", app, site)
-		if out, err := t.Run(appCompose(app, "stop")); err != nil {
+		if out, err := t.Run(p.appCompose(app, "stop")); err != nil {
 			return fmt.Errorf("%s: stopping %s before HAProxy's restart, so HAProxy was not restarted: %s", site, app, lastLines(out, 5))
 		}
 	}
 	p.say("  %-9s HAProxy on %s\n", "restart", site)
-	out, restartErr := t.Run(restartHAProxy)
+	out, restartErr := t.Run(p.restartHAProxy())
 	for _, app := range apps {
 		p.say("  %-9s %s on %s\n", "start", app, site)
-		if out, err := t.Run(appCompose(app, "up -d")); err != nil {
+		if out, err := t.Run(p.appCompose(app, "up -d")); err != nil {
 			return fmt.Errorf("%s: starting %s after HAProxy's restart: %s", site, app, lastLines(out, 5))
 		}
 	}
@@ -157,7 +157,7 @@ func (p *Plan) restartProxy(site string, apps []string) error {
 		return fmt.Errorf("%s: restarting HAProxy: %s", site, lastLines(out, 5))
 	}
 	for _, app := range apps {
-		if err := apply.WaitHealthy(site, app, t, "Site add stopped here, before HAProxy's gate. The app was started against the new HAProxy; read its logs, fix it, and run site add again"); err != nil {
+		if err := apply.WaitHealthy(p.dep(), site, app, t, "Site add stopped here, before HAProxy's gate. The app was started against the new HAProxy; read its logs, fix it, and run site add again"); err != nil {
 			return err
 		}
 		p.say("  %-9s %s on %s healthy\n", "checked", app, site)

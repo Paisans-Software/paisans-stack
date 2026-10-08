@@ -330,7 +330,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 func TestRenderedGarageTOMLStartsGarage(t *testing.T) {
 	requireDocker(t)
 
-	const goldenPath = "srv/infra/garage/garage.toml"
+	const goldenPath = "srv/paisans/f2a9/infra/garage/garage.toml"
 	toml := renderedGarageTOML(t)
 
 	dir := t.TempDir()
@@ -433,7 +433,7 @@ func renderedFile(t *testing.T, path string) string {
 // snippet proxies to.
 func renderedGarageTOML(t *testing.T) string {
 	t.Helper()
-	return renderedFile(t, "home-a/srv/infra/garage/garage.toml")
+	return renderedFile(t, "home-a/srv/paisans/f2a9/infra/garage/garage.toml")
 }
 
 // ---------------------------------------------------------------------------
@@ -560,7 +560,7 @@ func renderedCaddyImage(t *testing.T) string {
 		t.Logf("PAISANS_TEST_CADDY_IMAGE is set: running %s rather than the rendered pin", override)
 		return override
 	}
-	compose := renderedFile(t, "vm/srv/infra/compose.yaml")
+	compose := renderedFile(t, "vm/srv/paisans/f2a9/infra/compose.yaml")
 	match := regexp.MustCompile(`image:\s*(\S*/caddy:\S+)`).FindStringSubmatch(compose)
 	if match == nil {
 		t.Fatalf("the rendered infra compose file names no Caddy image, so there is nothing to start:\n%s", compose)
@@ -593,7 +593,7 @@ func startMediaCluster(t *testing.T) *mediaCluster {
 
 	cluster := &mediaCluster{Nodes: map[string]dockerTransport{}}
 	for _, node := range garageNodes {
-		toml := renderedFile(t, node.Site+"/srv/infra/garage/garage.toml")
+		toml := renderedFile(t, node.Site+"/srv/paisans/f2a9/infra/garage/garage.toml")
 		tomlPath := filepath.Join(dir, node.Site+".garage.toml")
 		if err := os.WriteFile(tomlPath, []byte(toml), 0o644); err != nil {
 			t.Fatalf("writing %s's rendered garage.toml: %v", node.Site, err)
@@ -671,7 +671,7 @@ func startMediaCluster(t *testing.T) *mediaCluster {
 	caddyfile := "{\n\tadmin off\n\tauto_https off\n}\n"
 	for _, app := range []string{"blog", "docs", "talk"} {
 		file := app + "-media.caddy"
-		snippet := renderedFile(t, "vm/srv/infra/caddy/snippets/"+file)
+		snippet := renderedFile(t, "vm/srv/paisans/f2a9/infra/caddy/snippets/"+file)
 		if err := os.WriteFile(filepath.Join(snippets, file), []byte(snippet), 0o644); err != nil {
 			t.Fatalf("writing the rendered %s: %v", file, err)
 		}

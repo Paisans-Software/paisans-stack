@@ -108,7 +108,7 @@ func TestAScopedApplyRollsBack(t *testing.T) {
 
 func TestAScopeNamingNoRenderedFileIsRefused(t *testing.T) {
 	host := appliedHost(t)
-	if _, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Scope("srv/nothing/here")); err == nil {
+	if _, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Scope("srv/paisans/f2a9/nothing/here")); err == nil {
 		t.Error("a scope naming nothing rendered was accepted")
 	}
 }

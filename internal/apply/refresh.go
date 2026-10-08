@@ -3,10 +3,14 @@ package apply
 import (
 	"fmt"
 	"strings"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // reloadGateway tells a running Caddy to read its configuration again.
-const reloadGateway = "docker compose -f /srv/infra/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"
+func reloadGateway(d deployment.Deployment) string {
+	return d.ComposeCmd(infraStack) + " exec -T caddy caddy reload --config /etc/caddy/Caddyfile"
+}
 
 // infraRecreate reports whether the plan recreates the infrastructure stack,
 // and whether that recreate is forced.
@@ -38,19 +42,19 @@ func infraRecreate(plan *Plan) (up, forced bool) {
 // new one over it: the running container keeps the inode it was started with
 // (moby/moby#15793), and only a restart mounts the new one. Caddy's routing
 // is a directory mount, which sees the new files, so a reload is enough.
-func runAction(action Action, reload bool, t Transport) error {
+func runAction(d deployment.Deployment, action Action, reload bool, t Transport) error {
 	if !action.Recreate || action.Force || (len(action.Refresh) == 0 && !reload) {
-		_, err := t.Run(action.Command())
+		_, err := t.Run(action.Command(d))
 		return err
 	}
-	before, err := containerIDs(action.Stack, t)
+	before, err := containerIDs(d, action.Stack, t)
 	if err != nil {
 		return err
 	}
-	if _, err := t.Run(action.Command()); err != nil {
+	if _, err := t.Run(action.Command(d)); err != nil {
 		return err
 	}
-	after, err := containerIDs(action.Stack, t)
+	after, err := containerIDs(d, action.Stack, t)
 	if err != nil {
 		return err
 	}
@@ -65,12 +69,12 @@ func runAction(action Action, reload bool, t Transport) error {
 		}
 	}
 	if len(stale) > 0 {
-		if _, err := t.Run(Action{Stack: action.Stack, Services: stale}.Command()); err != nil {
+		if _, err := t.Run(Action{Stack: action.Stack, Services: stale}.Command(d)); err != nil {
 			return err
 		}
 	}
 	if reload && kept("caddy") {
-		if _, err := t.Run(reloadGateway); err != nil {
+		if _, err := t.Run(reloadGateway(d)); err != nil {
 			return fmt.Errorf("reloading the gateway: %w", err)
 		}
 	}
@@ -80,8 +84,8 @@ func runAction(action Action, reload bool, t Transport) error {
 // containerIDs maps each service of a stack to its container's ID, from
 // `docker compose ps --all --format json`, the same read the health gate
 // makes. A service with no container is absent from the map.
-func containerIDs(stack string, t Transport) (map[string]string, error) {
-	out, err := t.Run(fmt.Sprintf("docker compose -f /srv/%s/compose.yaml ps --all --format json", stack))
+func containerIDs(d deployment.Deployment, stack string, t Transport) (map[string]string, error) {
+	out, err := t.Run(d.ComposeCmd(stack) + " ps --all --format json")
 	if err != nil {
 		return nil, fmt.Errorf("stack %s: could not read host state (which containers run): %w", stack, err)
 	}

@@ -39,7 +39,7 @@ type Transport interface {
 
 // Request is what the operator asked for.
 type Request struct {
-	// App is the stack's name, which is also its directory under /srv.
+	// App is the stack's name, which is also its directory under the deployment root.
 	App      string
 	Username string
 	Email    string

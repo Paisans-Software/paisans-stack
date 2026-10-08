@@ -8,6 +8,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/rotatekey"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/validate"
@@ -70,6 +71,13 @@ func runStorageRotateKey(args []string) error {
 	transports := map[string]apply.Transport{}
 	for _, name := range cfg.SiteNames() {
 		transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
+	}
+	// Garage's first site, where the key is imported and deleted, and every
+	// site the app runs on, where the switch applies it.
+	if len(cfg.Storage.Garage.Sites) > 0 {
+		if err := claimSites(cfg, *execute, *sudo, union(cfg.Storage.Garage.Sites[:1], render.AppSites(cfg)[*appName])...); err != nil {
+			return err
+		}
 	}
 	plan, err := rotatekey.Build(rotatekey.Options{
 		App:        *appName,

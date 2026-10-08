@@ -1,0 +1,42 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# The uptime monitor, pinned to vm. Its monitors are not configured
+# here or in its UI: they are seeded from monitors.json, which `apply` renders
+# from paisans.yaml, at every start.
+#
+# OWNERSHIP. It starts as root on purpose. data/ is a bind mount Docker
+# creates as root, and monitors.json is a root owned 0600 file because it
+# carries the SMTP password. The fork's entrypoint (from 1.1.0-oidc.2) hands
+# both to `node` and drops to it for good. An older image ignores the seed and
+# simply runs as root.
+name: paisans-f2a9-status
+
+services:
+  app:
+    labels:
+      community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"
+    image: ghcr.io/paisans-software/uptime:1.1.0-oidc.3
+    restart: unless-stopped
+    user: "0:0"
+    # The image declares its own healthcheck on /healthz (Dockerfile at
+    # 1.1.0-oidc.3), which apply's health gate reads.
+    env_file:
+      - .env
+    # ICMP for the per site ping checks.
+    cap_add:
+      - NET_RAW
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says.
+    ports:
+      - "10.44.0.3:3001:3001"
+    volumes:
+      - /srv/paisans/f2a9/status/data:/data
+      - /srv/paisans/f2a9/status/monitors.json:/seed/monitors.json:ro
+
+# Every network carries the deployment label too, so that what owns it is
+# read from the label rather than guessed from its name.
+networks:
+  default:
+    labels:
+      community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"

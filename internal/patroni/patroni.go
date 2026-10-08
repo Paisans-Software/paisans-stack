@@ -11,18 +11,20 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // Exec is how every Patroni command reaches the container: the
 // infrastructure stack's compose file, which is where apply put it.
-const Exec = "docker compose -f /srv/infra/compose.yaml exec -T patroni"
+func Exec(d deployment.Deployment) string { return d.ComposeCmd("infra") + " exec -T patroni" }
 
 // ClusterCommand asks the Patroni REST API at api (host:port, on the mesh)
 // for GET /cluster. curl runs inside the Spilo container, which installs it
 // (zalando/spilo, postgres-appliance/build_scripts/prepare.sh), so the host
 // needs nothing beyond Docker.
-func ClusterCommand(api string) string {
-	return fmt.Sprintf("%s curl -s --max-time 5 http://%s/cluster", Exec, api)
+func ClusterCommand(d deployment.Deployment, api string) string {
+	return fmt.Sprintf("%s curl -s --max-time 5 http://%s/cluster", Exec(d), api)
 }
 
 // Member is one entry of /cluster's members list. The keys and their values
@@ -112,7 +114,9 @@ func (c Cluster) HasSyncStandby() bool {
 // in bytes. It goes over the container's own unix socket as the superuser,
 // which Spilo's pg_hba trusts locally (configure_spilo.py, `local all all
 // trust`), so no password is involved. -A -t prints the bare number.
-const DatabaseSizeCommand = Exec + ` psql -X -A -t -U postgres -d postgres -c 'SELECT sum(pg_database_size(datname))::bigint FROM pg_database'`
+func DatabaseSizeCommand(d deployment.Deployment) string {
+	return Exec(d) + ` psql -X -A -t -U postgres -d postgres -c 'SELECT sum(pg_database_size(datname))::bigint FROM pg_database'`
+}
 
 // ParseSize reads DatabaseSizeCommand's output.
 func ParseSize(out string) (int64, error) {

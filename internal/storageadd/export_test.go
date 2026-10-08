@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // TestMain makes every wait a few polls with no sleep, so a gate that fails
@@ -23,9 +25,12 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// Fixture is the fixture deployment's identity, whose paths the tests read.
+var Fixture = deployment.Deployment{ID: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}
+
 // Paths the tests read on fake hosts.
-const (
-	GarageToml = garageToml
-	LayoutFile = layoutFile
-	CountsFile = countsFile
+var (
+	GarageToml = garageToml(Fixture)
+	LayoutFile = layoutFile(Fixture)
+	CountsFile = countsFile(Fixture)
 )

@@ -133,7 +133,7 @@ permits, because the blast radius lands on someone else's stack.
 
 Nothing below is exercised against a real deployment yet, and all of it holds:
 
-* **A pinned stack lays out under `/srv/<stack>/` with bind mounts**, not named
+* **A pinned stack lays out under `/srv/paisans/<token>/<stack>/` with bind mounts**, not named
   volumes. `README.md` explains why (`app move` becomes one `tar`).
 * **`.env` files are build artifacts.** Nothing hand-edits them; `apply` renders
   them and refuses to clobber local modifications.
