@@ -62,6 +62,8 @@ Usage:
   paisans oidc client create --app <name> [--rotate-secret]
                [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--site <name>] [--ssh <destination>] [--execute]
+  paisans ingress show  --app <name> [--config paisans.yaml]
+  paisans ingress check --app <name> [--config paisans.yaml]
 
 Commands:
   validate   Load the configuration and report every problem found.
@@ -132,6 +134,16 @@ Commands:
              Pocket ID, with the groups the app reads, and record its ID and
              secret in the secrets file. The secret is never printed.
              Writes nothing without --execute. Mbin only, so far.
+  ingress    show: for an app pinned to a monitor site, print what the web
+             server in front of it must do (terminate TLS for its hostname,
+             pass Host, set X-Forwarded-For and X-Forwarded-Proto), filled
+             in for Caddy, nginx and Apache. From paisans.yaml alone.
+             check: from this machine, check that the hostname resolves to
+             the monitor, that /healthz answers with a valid certificate,
+             that sign in redirects with an https callback, and that the
+             published port is closed from outside. Reads only; exits 1 on
+             any FAIL. With the toolkit's own Caddy in front (ingress mode
+             paisans), only the first two apply.
 
 host prepare, apply, prune, site add, storage init, storage add, storage
 rotate-key, app admin create, oidc client create, preflight, failover test and
@@ -139,7 +151,8 @@ doctor are the only commands that reach a host.
 Each reads it to plan, and changes it only with --execute; preflight and doctor
 have no --execute and never change it. dns init and dns
 prune reach no host, only the DNS provider's API, and change it only with
---execute.
+--execute. ingress check reaches no host over ssh and changes nothing: it
+looks at a monitor's public hostname as any visitor could.
 Everything else writes files locally and stops.
 `
 
@@ -176,6 +189,8 @@ func main() {
 		err = runApp(os.Args[2:])
 	case "oidc":
 		err = runOIDC(os.Args[2:])
+	case "ingress":
+		err = runIngress(os.Args[2:])
 	case "storage":
 		switch {
 		case len(os.Args) >= 3 && os.Args[2] == "init":
