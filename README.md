@@ -2824,63 +2824,40 @@ directory between replicas is a race, not state.
 ### `app admin create` makes an app's first administrator
 
 An app whose registrations are closed has no way to make its first account
-from a browser, and making it by hand means a shell on the server and a
-password typed into a command line. So the toolkit makes it:
-
-```sh
-security find-generic-password -s talk-admin -w \
-  | paisans app admin create --app talk --username founder \
-      --email founder@example.org            # shows what it would do
-security find-generic-password -s talk-admin -w \
-  | paisans app admin create --app talk --username founder \
-      --email founder@example.org --execute  # does it
-```
+from a browser, and Pocket ID's own way to make its first administrator is a
+setup page open to whoever reaches it first. So the toolkit makes it, through
+Pocket ID's API; the commands are under *Pocket ID's administrator gets a
+login link, not a password*.
 
 The result is a user that exists, is verified and is an administrator. The
-command probes first and plans only what is missing, one line each: `create
-user`, `verify`, `grant admin`, or `present` when there is nothing to do. An
-account that already exists keeps its password; only `--reset-password`
-replaces it, so re-running the command can never lock out an admin who has
-since changed theirs. After `--execute` it probes again and fails unless the
-user is now all three, because a command that exits zero without doing its job
-is the failure nobody notices.
+command probes first and plans only what is missing, one line each, or
+`present` when there is nothing to do. After `--execute` it probes again and
+fails unless the user is now all three, because a call that succeeds without
+doing its job is the failure nobody notices.
 
-It runs on one site: a pinned app's site, or for a clustered app the first apps
-site in sorted order, since every copy shares one database. `--site` picks
-another, but only one the app runs on.
+It runs on one site: the app's pinned site, or for a Pocket ID on every apps
+site the one whose instance is active, as *Pocket ID runs on every apps site,
+and one of them is active* describes. `--site` picks another, but only one the
+app runs on.
 
-**The password goes in on stdin and never on a command line.** A command line
-is in the process table, readable by every user on the host, for as long as it
-runs. Mbin's own commands take a password only as a positional argument
-(`mbin:user:create`, `src/Command/UserCommand.php:35-37`, and
-`mbin:user:password`, `src/Command/UserPasswordCommand.php:35-36`, at the
-fork's tag `v1.13.3+paisans`); neither prompts. So the toolkit pipes a short PHP
-script to `php` in the app container. It boots the same kernel `bin/console`
-boots and runs those same commands, plus `mbin:user:verify --activate` and
-`mbin:user:admin`, through the console Application with the arguments held in
-memory. Running the fork's commands rather than writing the user directly keeps
-the fork the owner of what an admin is: its pre-approval, its verification
-flag and its role array. The script runs as `MBIN_USER` through `gosu`, as the
-image's entrypoint runs the server, so nothing it writes under `var/` ends up
-owned by root.
-
-Admin creation is per kind, behind one small interface, and Mbin and Pocket ID
-implement it. Any other kind is refused by name, with the list of kinds that
+Admin creation is per kind, behind one small interface, and Pocket ID
+implements it. Any other kind is refused by name, with the list of kinds that
 are implemented, before any host is reached.
 
-Two alternatives were rejected:
+**The administrator is also put in every app's admin group.** An app that
+signs its users in through Pocket ID makes an account an administrator when
+Pocket ID lists it in the group the app reads as its admin group (for Mbin,
+`OAUTH_OIDC_ADMIN_GROUP`). Pocket ID's own administrator flag does not reach
+an app at all. So the command reads every such group from the configuration,
+the same keys `oidc client create` reads, and plans one step that creates any
+group that does not exist yet and adds the user to the rest: `PUT
+/api/users/<id>/user-groups` with the groups the user is in now, plus these,
+since that route replaces the whole set. A group the user is already in plans
+nothing, and an app added later is picked up by running the command again.
 
-* **Opening registrations briefly.** The window is public: on a federated,
-  publicly reachable instance anyone who finds it during the window can
-  register, and closing it again is a second manual step that can be
-  forgotten. It also needs the setting changed and changed back on a running
-  app, which is two mutations to make one account.
-* **An admin account declared by an environment variable in the image.** It
-  puts a password in the rendered `.env` and in the container's environment,
-  where `docker inspect` shows it, for the life of the container. It also needs
-  image code that runs at every start and decides whether to act, which is a
-  fork change for a one-time event, and it makes rotating that password a
-  redeploy.
+**An Mbin app's administrators come only through single sign on.** So the
+command refuses an `mbin` app before any host is reached, and points at
+itself run against the Pocket ID app.
 
 #### Pocket ID's administrator gets a login link, not a password
 
@@ -2896,11 +2873,13 @@ paisans app admin create --app auth --username founder \
     --email founder@example.org --first-name Fern --execute
 ```
 
-The dry run prints the exact body a create would send, and the link step:
+The dry run prints the exact body a create would send, the group step and the
+link step, here for a deployment whose Mbin app reads the admin group `admins`:
 
 ```
 auth on home-a (pocket-id)
   create user founder as an administrator: POST /api/users {"username":"founder","email":"founder@example.org","emailVerified":true,"firstName":"Fern","lastName":"","displayName":"Fern","isAdmin":true}
+  add founder to admin groups admins: POST /api/user-groups for any that does not exist yet, then PUT /api/users/<id>/user-groups with the groups founder is in now, plus these
   issue one-time login link for founder: valid 20m0s and for one sign in, printed once and only with --execute
 ```
 
@@ -2940,14 +2919,18 @@ address at the provider, and it is right; the operator creating an
 administrator is vouching for the address they typed, which is the
 verification it asks for. Turning the guard off in the fork was rejected: it
 protects every member who signs up at Pocket ID by themselves, and the
-founder's case is fixed where the vouching happens. An account with no email
-has nothing to verify and plans nothing for it.
+founder's case is fixed where the vouching happens.
+
+**Creating an account needs `--email`.** The address is set only when the
+account is created, so the command refuses to plan a create without one, dry
+run included, rather than make an administrator that no app can match to an
+account and that this command cannot give an address later. An account that
+already exists is not asked for one, and if it has none it has nothing to
+verify.
 
 **A password piped to a `pocket-id` run is refused**, not ignored. Ignoring it
-would let an operator reusing the Mbin incantation believe a password was set.
-`--reset-password` is refused for the same reason and points at
-`--login-link`. Stdin is not read at all when it is a terminal, so an
-interactive run never waits on it.
+would let an operator believe a password was set. Stdin is not read at all
+when it is a terminal, so an interactive run never waits on it.
 
 The calls go through Pocket ID's REST API with its static API key; see *The
 toolkit administers Pocket ID through its static API key*. Three alternatives
@@ -3017,9 +3000,9 @@ records both in the secrets file, where `render` already reads them
 renders the app's sign in settings with nothing else to do:
 
 ```sh
-paisans oidc client create --app talk --admin-user founder            # shows what it would do
-paisans oidc client create --app talk --admin-user founder --execute  # does it
-paisans apply --site home-a --execute                                 # renders OAUTH_OIDC_*
+paisans oidc client create --app talk             # shows what it would do
+paisans oidc client create --app talk --execute   # does it
+paisans apply --site home-a --execute              # renders OAUTH_OIDC_*
 ```
 
 For an app whose configuration sets `OAUTH_OIDC_ADMIN_GROUP: admins`, the dry
@@ -3030,7 +3013,6 @@ talk's client at auth on home-a (pocket-id)
   create group admins: POST /api/user-groups {"friendlyName":"admins","name":"admins"}
   create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false,"launchURL":"https://talk.example.org/oauth/oidc/connect"}
   create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
-  add founder to group admins: PUT /api/users/<user id>/user-groups with the groups founder is in now, plus admins
 
 Nothing was changed. Re-run with --execute to apply this.
 ```
@@ -3050,9 +3032,8 @@ are the app's own: the fork reads `OAUTH_OIDC_ADMIN_GROUP` and
 group names (`oidc/claims_service.go:157-162`), so the command reads the same
 two keys from the app's `config` and creates whichever group is missing. A
 member group also restricts the client to the member and admin groups, so a
-refused member is stopped at Pocket ID before the app sees them.
-`--admin-user` adds a Pocket ID user, made with `app admin create`, to the
-admin group.
+refused member is stopped at Pocket ID before the app sees them. Putting a
+user in the admin group is `app admin create`'s job, not this command's.
 
 **The client is created with a launch URL** (`launchURL`, `dto/oidc_dto.go:52`).
 Pocket ID's dashboard lists only clients that have one

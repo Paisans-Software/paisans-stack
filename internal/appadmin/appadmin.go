@@ -3,26 +3,24 @@
 //
 // An app with registrations closed has no way to make its first account from
 // a browser, so the toolkit makes it, through the application's own
-// administration commands run inside its container. Planning is shared by
-// every kind: probe the user, decide the missing steps, and change nothing
-// unless told to. Only how to probe and how to act is per kind, behind
-// Creator.
+// administration interface. Planning is shared by every kind: probe the user,
+// decide the missing steps, and change nothing unless told to. How to probe,
+// which steps a state implies and how to act are per kind, behind Creator.
+// The one kind implemented is Pocket ID; an app that signs its users in
+// through Pocket ID gets its administrators from there, not from here.
 //
-// The password is the one input here that must never be seen. It travels only
-// on stdin, never in a command line (which `ps` shows to every user on the
-// host), and it is scrubbed from any output or error that comes back.
-//
-// A kind whose users sign in without a password (Pocket ID, with passkeys)
-// has no password to take. Its first administrator is made usable by a
-// one-time login link instead, which is as much a credential as a password
-// and is handled the same way: it is returned to the caller, which prints it
-// once, and it never enters a plan line, an error or a log.
+// Pocket ID's users sign in with passkeys, so there is no password to take.
+// Its first administrator is made usable by a one-time login link instead,
+// which is a credential: it is returned to the caller, which prints it once,
+// and it never enters a plan line, an error or a log. The API key that reaches
+// Pocket ID is handled the same way.
 package appadmin
 
 import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -45,19 +43,18 @@ type Request struct {
 	App      string
 	Username string
 	Email    string
-	// Password is used only by a create or a reset. It never appears in a
-	// command line, a plan line, or an error.
-	Password string
-	// ResetPassword replaces an existing user's password. Without it an
-	// existing account's password is never touched, so re-running the command
-	// cannot lock out an admin who has since changed theirs.
-	ResetPassword bool
 
 	// FirstName and LastName are used only by a kind that stores them, and
 	// only when the account is created.
 	FirstName string
 	LastName  string
-	// LoginLink asks a passwordless kind for a fresh one-time login link for
+	// AdminGroups is every group an app signing in through this identity
+	// provider reads as its admin group, sorted and without duplicates. The
+	// user is put in each, so one command makes an administrator of every
+	// such app as well as of the provider.
+	AdminGroups []string
+
+	// LoginLink asks for a fresh one-time login link for
 	// an account that already exists. A created account always gets one,
 	// since it cannot be signed in to without it.
 	LoginLink bool
@@ -76,17 +73,21 @@ type State struct {
 	Exists   bool
 	Verified bool
 	Admin    bool
+	// MissingGroups is the part of Request.AdminGroups the user is not in,
+	// including any group that does not exist yet. All of them for a user
+	// that does not exist.
+	MissingGroups []string
 }
 
 // Action is one step towards an existing, verified administrator.
 type Action string
 
 const (
-	ActionCreate        Action = "create user"
-	ActionVerify        Action = "verify"
-	ActionGrantAdmin    Action = "grant admin"
-	ActionResetPassword Action = "reset password"
-	ActionLoginLink     Action = "issue one-time login link for"
+	ActionCreate     Action = "create user"
+	ActionVerify     Action = "verify"
+	ActionGrantAdmin Action = "grant admin"
+	ActionJoinGroups Action = "add to admin groups"
+	ActionLoginLink  Action = "issue one-time login link for"
 )
 
 // Outcome is what an execute produced that the operator has to be given.
@@ -98,16 +99,14 @@ type Outcome struct {
 }
 
 // Creator is what a kind implements to support admin creation. Probe must
-// change nothing. Execute performs the actions in order and stops at the
-// first failure.
+// change nothing. Steps decides what is missing and must be a pure function
+// of the probe, which is what makes re-running safe: an existing admin plans
+// nothing, and an existing account is never re-created. Execute performs the
+// actions in order and stops at the first failure.
 type Creator interface {
 	Probe(t Transport, req Request) (State, error)
+	Steps(state State, req Request) []Action
 	Execute(t Transport, req Request, actions []Action) (Outcome, error)
-}
-
-// stepper is a Creator whose steps differ from the password kinds' Steps.
-type stepper interface {
-	Steps(State, Request) []Action
 }
 
 // describer is a Creator that shows more of an action than its name, because
@@ -116,20 +115,7 @@ type describer interface {
 	Describe(Action, Request) string
 }
 
-// passwordless is a Creator whose users have no password at all.
-type passwordless interface {
-	Passwordless()
-}
-
-// Passwordless reports whether a kind's administrator is made without a
-// password, so the caller neither asks for one nor accepts one.
-func Passwordless(kind config.Kind) bool {
-	_, ok := creators[kind].(passwordless)
-	return ok
-}
-
 var creators = map[config.Kind]Creator{
-	config.KindMbin:     mbin{},
 	config.KindPocketID: pocketID{},
 }
 
@@ -149,27 +135,6 @@ func Implemented() []string {
 		out = append(out, string(k))
 	}
 	sort.Strings(out)
-	return out
-}
-
-// Steps decides what is missing. It is a pure function of the probe, which is
-// what makes re-running safe: an existing admin plans nothing, and an
-// existing account is never re-created and never has its password changed
-// unless that was asked for.
-func Steps(state State, req Request) []Action {
-	if !state.Exists {
-		return []Action{ActionCreate, ActionVerify, ActionGrantAdmin}
-	}
-	var out []Action
-	if !state.Verified {
-		out = append(out, ActionVerify)
-	}
-	if !state.Admin {
-		out = append(out, ActionGrantAdmin)
-	}
-	if req.ResetPassword {
-		out = append(out, ActionResetPassword)
-	}
 	return out
 }
 
@@ -193,17 +158,17 @@ func Build(kind config.Kind, t Transport, req Request) (*Plan, error) {
 	}
 	state, err := c.Probe(t, req)
 	if err != nil {
-		return nil, redact(err, req.Password, req.APIKey)
+		return nil, redact(err, req.APIKey)
 	}
-	actions := Steps(state, req)
-	if s, ok := c.(stepper); ok {
-		actions = s.Steps(state, req)
+	actions := c.Steps(state, req)
+	if req.Email == "" && slices.Contains(actions, ActionCreate) {
+		return nil, fmt.Errorf("%s does not exist yet, and creating it needs --email. An administrator without an address cannot be matched to an app account it signs in to, and the address is set only when the account is created", req.Username)
 	}
 	return &Plan{Kind: kind, State: state, Actions: actions, creator: c, req: req}, nil
 }
 
 // Lines is the plan as printed: one line per action, or `present` when there
-// is nothing to do. It names the user and never the password.
+// is nothing to do. It names the user and never a credential.
 func (p *Plan) Lines() []string {
 	if len(p.Actions) == 0 {
 		return []string{"present " + p.req.Username}
@@ -227,31 +192,26 @@ func Execute(p *Plan, t Transport) (Outcome, error) {
 	if len(p.Actions) == 0 {
 		return Outcome{}, nil
 	}
-	if _, ok := p.creator.(passwordless); !ok && p.req.Password == "" {
-		for _, a := range p.Actions {
-			if a == ActionCreate || a == ActionResetPassword {
-				return Outcome{}, fmt.Errorf("%s %s needs a password, and none was given", a, p.req.Username)
-			}
-		}
-	}
 	outcome, err := p.creator.Execute(t, p.req, p.Actions)
 	if err != nil {
-		return Outcome{}, redact(err, p.req.Password, p.req.APIKey, outcome.LoginLink)
+		return Outcome{}, redact(err, p.req.APIKey, outcome.LoginLink)
 	}
 	after, err := p.creator.Probe(t, p.req)
 	if err != nil {
-		return Outcome{}, redact(err, p.req.Password, p.req.APIKey, outcome.LoginLink)
+		return Outcome{}, redact(err, p.req.APIKey, outcome.LoginLink)
 	}
 	if !after.Exists || !after.Verified || !after.Admin {
 		return Outcome{}, fmt.Errorf("%s: the commands succeeded but %s is now exists=%t verified=%t admin=%t", t.Describe(), p.req.Username, after.Exists, after.Verified, after.Admin)
+	}
+	if len(after.MissingGroups) > 0 {
+		return Outcome{}, fmt.Errorf("%s: the calls succeeded but %s is still not in %s", t.Describe(), p.req.Username, strings.Join(after.MissingGroups, ", "))
 	}
 	return outcome, nil
 }
 
 // redact removes every given secret from an error's text, and each one's
-// base64 form as well. A Creator that encodes its stdin passes its encoded
-// payload too, so a remote error that echoes its input cannot carry the
-// password out in any shape this package produced.
+// base64 form as well, so a remote error that echoes its input cannot carry
+// the API key or a login link out in either shape.
 func redact(err error, secrets ...string) error {
 	if err == nil {
 		return nil

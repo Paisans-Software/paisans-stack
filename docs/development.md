@@ -75,19 +75,19 @@ exists so a credential issued elsewhere never touches a terminal or an editor:
 an argument is in shell history and `ps`, a prompt is in scrollback, and `sops`
 opens the whole decrypted file in an editor.
 
-`app admin create --app <name> --username <u> --email <e>` makes sure one user
-exists, is verified and is an administrator of one app, reading the password
-from stdin under the same rules as `secrets set`. It probes, prints `create
-user`, `verify`, `grant admin` or `present`, and changes nothing without
-`--execute`; an existing password changes only with `--reset-password`. Mbin
-and Pocket ID implement it. See *`app admin create` makes an app's first
-administrator* in `README.md` for why the password never reaches a command
-line.
+`app admin create --app <pocket-id app> --username <u> --email <e>` makes
+sure one user exists, is verified, is an administrator of Pocket ID, and is in
+every admin group the apps signing in through it read (`kinds.OIDCClient`),
+creating a group that does not exist yet. It probes, prints the plan or
+`present`, and changes nothing without `--execute`. Pocket ID is the one kind
+that implements it. An `mbin` app is refused before any host is reached: its
+administrators come only through single sign on, so they are made here. See *`app admin create` makes an app's first administrator* in
+`README.md`.
 
-For `pocket-id` there is no password: the command creates the user as an
-administrator, with its email marked verified, through Pocket ID's API and prints a one-time login link once,
-on `--execute`, valid twenty minutes; `--login-link` issues a fresh one for an
-account that exists. It refuses a piped password rather than dropping it. It
+There is no password: the command creates the user as an administrator, with
+its email marked verified, through Pocket ID's API and prints a one-time login
+link once, on `--execute`, valid twenty minutes; `--login-link` issues a fresh
+one for an account that exists. It refuses a piped password rather than dropping it. It
 reads `apps.<app>.static_api_key` from the secrets file, so it takes
 `--secrets`, and it never uses sudo, because curl needs no root.
 
@@ -97,8 +97,7 @@ Pocket ID's dashboard lists it, and records its ID and
 secret under `oidc_clients.<app>`. Every step is printed with what it sends and
 nothing changes without `--execute`. The secret is generated on the
 workstation and written to the secrets file before Pocket ID is sent it, and is
-never printed. `--admin-user` adds a Pocket ID user to the app's admin group,
-and `--rotate-secret` adds a new secret, leaving the old one valid. Only Mbin's
+never printed. `--rotate-secret` adds a new secret, leaving the old one valid. Only Mbin's
 client is known so far (`kinds.OIDCClient`). The launch URL is the app's
 hostname plus the kind's dashboard path (`kinds.DashboardPath`, Mbin's
 `/oauth/oidc/connect` so the tile signs the member in, otherwise `/`), or
@@ -649,7 +648,7 @@ installed, on a workstation or anywhere else.
 | `internal/dns` | which public records a deployment needs, creating the missing ones at the DNS provider, and pruning the ones it created that nothing wants |
 | `internal/apply` | what to push to a host, what to restart, and the gates before either |
 | `internal/siteadd` | joining a new data site: six staged, gated, resumable stages |
-| `internal/appadmin` | an app's first administrator: probe, plan, and the per kind commands or API calls |
+| `internal/appadmin` | an app's first administrator: probe, plan, and the per kind API calls |
 | `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin |
 | `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
 | `internal/preflight` | `site add`'s first stage: read only checks on the new site and every running one, as a report |

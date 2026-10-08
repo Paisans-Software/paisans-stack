@@ -54,8 +54,6 @@ type Desired struct {
 	// a refused member is stopped before the app sees them.
 	AdminGroup  string
 	MemberGroup string
-	// AdminUser is a username to add to AdminGroup, or empty.
-	AdminUser string
 	// RotateSecret adds a new secret even when the recorded one is live.
 	RotateSecret bool
 }
@@ -74,10 +72,9 @@ type Recorder interface {
 
 // State is what a probe found. It changes nothing to find it.
 type State struct {
-	Client    *pocketid.OIDCClient
-	Secrets   []pocketid.ClientSecret
-	Groups    map[string]*pocketid.Group
-	AdminUser *pocketid.User
+	Client  *pocketid.OIDCClient
+	Secrets []pocketid.ClientSecret
+	Groups  map[string]*pocketid.Group
 }
 
 // Probe reads everything the plan depends on.
@@ -96,11 +93,6 @@ func Probe(c *pocketid.Client, d Desired) (State, error) {
 	for _, name := range d.groups() {
 		if s.Groups[name], err = c.FindGroup(name); err != nil {
 			return s, fmt.Errorf("looking up group %s: %w", name, err)
-		}
-	}
-	if d.AdminUser != "" {
-		if s.AdminUser, err = c.FindUser(d.AdminUser); err != nil {
-			return s, fmt.Errorf("looking up user %s: %w", d.AdminUser, err)
 		}
 	}
 	return s, nil
@@ -135,7 +127,6 @@ const (
 	// RecordClientID writes only the client ID, when the recorded secret is
 	// live but the ID beside it is missing.
 	RecordClientID
-	AddUserToGroup
 	// SetLaunchURL gives an existing client the launch URL it lacks, or moves
 	// it off a value the toolkit set by default.
 	SetLaunchURL
@@ -177,12 +168,6 @@ type Plan struct {
 // different one in the configuration.
 func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 	p := &Plan{Desired: d, Recorded: rec, State: s}
-	if d.AdminUser != "" && d.AdminGroup == "" {
-		return nil, fmt.Errorf("--admin-user %s names nobody to add them to: apps.%s.config sets no admin group for the app to read", d.AdminUser, d.App)
-	}
-	if d.AdminUser != "" && s.AdminUser == nil {
-		return nil, fmt.Errorf("user %s does not exist at Pocket ID. Create it first with `paisans app admin create` against the Pocket ID app, then re-run", d.AdminUser)
-	}
 
 	client := s.Client
 	if client != nil {
@@ -258,14 +243,6 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 		p.Present = append(p.Present, fmt.Sprintf("present %s.client_secret, which matches an active secret of client %s by its first %d characters", key, d.App, pocketid.SecretPrefixLength))
 	}
 
-	if d.AdminUser != "" {
-		group := s.Groups[d.AdminGroup]
-		if group == nil || !s.AdminUser.InGroup(group.ID) {
-			p.Steps = append(p.Steps, Step{Kind: AddUserToGroup, Group: d.AdminGroup, Line: fmt.Sprintf("add %s to group %s: PUT /api/users/%s/user-groups with the groups %s is in now, plus %s", d.AdminUser, d.AdminGroup, s.AdminUser.ID, d.AdminUser, d.AdminGroup)})
-		} else {
-			p.Present = append(p.Present, fmt.Sprintf("present %s in group %s", d.AdminUser, d.AdminGroup))
-		}
-	}
 	return p, nil
 }
 
@@ -398,17 +375,6 @@ func Execute(p *Plan, c *pocketid.Client, rec Recorder, newSecret func() (string
 			secretsToHide = append(secretsToHide, recorded.ClientSecret)
 			err = rec.Record(client.ID, recorded.ClientSecret)
 			recorded.ClientID = client.ID
-		case AddUserToGroup:
-			group := groups[step.Group]
-			if group == nil {
-				err = fmt.Errorf("group %s was not created", step.Group)
-				break
-			}
-			ids := map[string]bool{group.ID: true}
-			for _, g := range p.State.AdminUser.UserGroups {
-				ids[g.ID] = true
-			}
-			err = c.SetUserGroups(p.State.AdminUser.ID, sortedKeys(ids))
 		default:
 			err = fmt.Errorf("no step %d", step.Kind)
 		}

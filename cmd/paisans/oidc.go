@@ -23,7 +23,7 @@ var oidcTransport = func(t apply.SSHTransport) pocketid.Transport { return t }
 // runOIDC dispatches `paisans oidc <subcommand>`.
 func runOIDC(args []string) error {
 	if len(args) < 2 || args[0] != "client" || args[1] != "create" {
-		return fmt.Errorf("oidc takes one subcommand, client create: paisans oidc client create --app <name> [--admin-user <u>] [--execute]")
+		return fmt.Errorf("oidc takes one subcommand, client create: paisans oidc client create --app <name> [--execute]")
 	}
 	return runOIDCClientCreate(args[2:])
 }
@@ -41,7 +41,6 @@ func runOIDCClientCreate(args []string) error {
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	appName := fs.String("app", "", "the app the client is for, by the name it has in the configuration")
-	adminUser := fs.String("admin-user", "", "a Pocket ID username to add to the app's admin group")
 	rotate := fs.Bool("rotate-secret", false, "add a new secret even when the recorded one is live; the old one stays valid until deleted")
 	site := fs.String("site", "", "the site whose Pocket ID to call (default: its pinned site, or the apps site whose instance is active)")
 	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
@@ -117,17 +116,12 @@ func runOIDCClientCreate(args []string) error {
 		PKCE:              spec.PKCE,
 		AdminGroup:        adminGroup,
 		MemberGroup:       memberGroup,
-		AdminUser:         *adminUser,
 		RotateSecret:      *rotate,
 	}
 	// validate.Check above has refused a malformed one already.
 	if link, ok := app.Settings[kinds.DashboardLinkSetting].(string); ok {
 		desired.LaunchURL = kinds.LaunchURL(app.Kind, app.Hostname, link)
 		desired.LaunchURLChosen = true
-	}
-	// Refused before the host is reached, since no probe could change it.
-	if desired.AdminUser != "" && desired.AdminGroup == "" {
-		return fmt.Errorf("oidc client create: --admin-user %s names nobody to add them to: %s is unset, so the app reads no admin group", desired.AdminUser, spec.AdminGroupSource(*appName))
 	}
 	recorded := oidcclient.Recorded{
 		ClientID:     secrets.OIDCClients[*appName].ClientID,

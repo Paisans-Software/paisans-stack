@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -18,6 +19,7 @@ const pidKey = "not-a-real-api-key-0002"
 // fakePocketID is a Pocket ID held in memory, reached through curl configs.
 type fakePocketID struct {
 	users     []pocketid.User
+	groups    []pocketid.Group
 	commands  []string
 	mutations []string
 	// bodies is every mutation's body, in order.
@@ -64,6 +66,36 @@ func (f *fakePocketID) serve(method string, u *url.URL, body, stdin string) (int
 		f.users = append(f.users, created)
 		raw, _ := json.Marshal(created)
 		return 201, string(raw)
+	case method == "GET" && u.Path == "/api/user-groups":
+		raw, _ := json.Marshal(map[string]any{"data": f.groups, "pagination": map[string]int{"totalPages": 1}})
+		return 200, string(raw)
+	case method == "POST" && u.Path == "/api/user-groups":
+		var g pocketid.Group
+		_ = json.Unmarshal([]byte(body), &g)
+		g.ID = fmt.Sprintf("g-%d", len(f.groups)+1)
+		f.groups = append(f.groups, g)
+		raw, _ := json.Marshal(g)
+		return 201, string(raw)
+	case method == "PUT" && strings.HasSuffix(u.Path, "/user-groups"):
+		id := strings.TrimSuffix(strings.TrimPrefix(u.Path, "/api/users/"), "/user-groups")
+		var sent struct {
+			UserGroupIDs []string `json:"userGroupIds"`
+		}
+		_ = json.Unmarshal([]byte(body), &sent)
+		for i := range f.users {
+			if f.users[i].ID == id {
+				f.users[i].UserGroups = nil
+				for _, gid := range sent.UserGroupIDs {
+					for _, g := range f.groups {
+						if g.ID == gid {
+							f.users[i].UserGroups = append(f.users[i].UserGroups, g)
+						}
+					}
+				}
+				return 200, `{}`
+			}
+		}
+		return 404, `{"error":"user not found"}`
 	case method == "PUT" && strings.HasPrefix(u.Path, "/api/users/"):
 		id := strings.TrimPrefix(u.Path, "/api/users/")
 		for i := range f.users {
@@ -107,12 +139,6 @@ func readCurlConfig(cfg string) (method, target, body string) {
 func pidRequest() Request {
 	return Request{App: "auth", Username: "founder", Email: "founder@example.org", FirstName: "Fern", LastName: "Founder",
 		APIBase: "http://10.44.0.1:1411", APIKey: pidKey, PublicURL: "https://id.example.org"}
-}
-
-func TestPocketIDIsPasswordless(t *testing.T) {
-	if !Passwordless(config.KindPocketID) || Passwordless(config.KindMbin) {
-		t.Error("only pocket-id is passwordless")
-	}
 }
 
 // A dry run reads and plans. It creates nothing and issues no link, and the
@@ -311,5 +337,92 @@ func TestPocketIDAnAccountWithoutEmailNeedsNoVerify(t *testing.T) {
 	}
 	if len(plan.Actions) != 0 {
 		t.Errorf("planned %v", plan.Actions)
+	}
+}
+
+// Creating an account needs an email: the address is set only at creation,
+// and an administrator without one cannot be matched to an app account. The
+// refusal comes at planning, so a dry run catches it and nothing is sent. An
+// existing account is not asked for one.
+func TestPocketIDCreateNeedsAnEmail(t *testing.T) {
+	f := &fakePocketID{}
+	req := pidRequest()
+	req.Email = ""
+	if _, err := Build(config.KindPocketID, f, req); err == nil || !strings.Contains(err.Error(), "--email") {
+		t.Fatalf("a create without an email was planned: %v", err)
+	}
+	if len(f.users) != 0 {
+		t.Error("a user was created")
+	}
+
+	f = &fakePocketID{users: []pocketid.User{{ID: "u-1", Username: "founder", FirstName: "Fern"}}}
+	if _, err := Build(config.KindPocketID, f, req); err != nil {
+		t.Errorf("an existing account was asked for an email: %v", err)
+	}
+}
+
+// The administrator is put in every app's admin group: a group that does not
+// exist yet is created, the user's other groups are kept, and a second run
+// plans nothing.
+func TestPocketIDPutsTheAdminInEveryAdminGroup(t *testing.T) {
+	email := "founder@example.org"
+	f := &fakePocketID{
+		groups: []pocketid.Group{{ID: "g-1", Name: "admins"}, {ID: "g-2", Name: "friends"}},
+		users:  []pocketid.User{{ID: "u-1", Username: "founder", Email: &email, EmailVerified: true, FirstName: "Fern", IsAdmin: true, UserGroups: []pocketid.Group{{ID: "g-2", Name: "friends"}}}},
+	}
+	req := pidRequest()
+	req.AdminGroups = []string{"admins", "editors"}
+	plan, err := Build(config.KindPocketID, f, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Actions) != 1 || plan.Actions[0] != ActionJoinGroups {
+		t.Fatalf("planned %v, want only the group step", plan.Actions)
+	}
+	if !strings.Contains(plan.Lines()[0], "admins, editors") {
+		t.Errorf("the line does not name the groups: %s", plan.Lines()[0])
+	}
+	if len(f.mutations) != 0 {
+		t.Errorf("planning mutated: %v", f.mutations)
+	}
+	if _, err := Execute(plan, f); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, g := range f.users[0].UserGroups {
+		names = append(names, g.Name)
+	}
+	sort.Strings(names)
+	if fmt.Sprint(names) != "[admins editors friends]" {
+		t.Errorf("founder is in %v", names)
+	}
+	again, err := Build(config.KindPocketID, f, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Actions) != 0 {
+		t.Errorf("a second run plans %v", again.Actions)
+	}
+}
+
+// A new administrator is created, put in the admin groups, then given the
+// link, in that order.
+func TestPocketIDNewAdminJoinsTheGroupsBeforeTheLink(t *testing.T) {
+	f := &fakePocketID{}
+	req := pidRequest()
+	req.AdminGroups = []string{"admins"}
+	plan, err := Build(config.KindPocketID, f, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Action{ActionCreate, ActionJoinGroups, ActionLoginLink}
+	if fmt.Sprint(plan.Actions) != fmt.Sprint(want) {
+		t.Fatalf("planned %v, want %v", plan.Actions, want)
+	}
+	if _, err := Execute(plan, f); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.groups) != 1 || len(f.users[0].UserGroups) != 1 || f.users[0].UserGroups[0].Name != "admins" {
+		t.Errorf("groups %v, user in %v", f.groups, f.users[0].UserGroups)
 	}
 }
