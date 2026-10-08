@@ -1,10 +1,14 @@
 package apply_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // A held stack's files are neither compared nor written and its action does
@@ -300,4 +304,114 @@ func TestAnOwedStackNoLongerRenderedIsDropped(t *testing.T) {
 	if !strings.Contains(strings.Join(p.Notes, "\n"), "gone") {
 		t.Errorf("notes %v do not mention the dropped stack", p.Notes)
 	}
+}
+
+// pocketIDOnWatch renders the fixture with Pocket ID pinned to watch, the
+// monitor that runs Caddy for its own apps. watch then runs Caddy, Pocket ID
+// and status, an app that signs in through Pocket ID: the site apply's
+// identity step runs in two passes, holding status back in the first.
+func pocketIDOnWatch(t *testing.T, change func(*config.Config)) *render.Plan {
+	t.Helper()
+	return planWith(t, func(cfg *config.Config) {
+		auth := cfg.Apps["auth"]
+		auth.Placement = config.Placement{Mode: config.PlacementPinned, Site: "watch"}
+		cfg.Apps["auth"] = auth
+		if change != nil {
+			change(cfg)
+		}
+	})
+}
+
+const statusSnippet = "/srv/paisans/f2a9/infra/caddy/snippets/status.caddy"
+
+// A held app's route on the site's Caddy is held with it. Written in the
+// first pass, Caddy would be reloaded with a route to an app still running
+// its old configuration, or not yet given its client. The snippet keeps its
+// recorded entry in the manifest, and the pass that releases the app writes
+// it and reloads Caddy.
+func TestExceptHoldsBackAHeldAppsRouteOnTheSitesCaddy(t *testing.T) {
+	host := newHost()
+	first, err := apply.Build("watch", pocketIDOnWatch(t, nil), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+	before := host.files[statusSnippet]
+	manifest := host.files["/srv/paisans/f2a9/.paisans-manifest.json"]
+	host.commands = nil
+
+	changed := pocketIDOnWatch(t, func(cfg *config.Config) {
+		status := cfg.Apps["status"]
+		status.Hostname = "uptime.example.org"
+		cfg.Apps["status"] = status
+	})
+	held, err := apply.Build("watch", changed, acmeModule(t), host, apply.Except("status"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range held.Changes {
+		if c.Path == statusSnippet {
+			t.Errorf("status is held back, yet its route is planned as %v", c.Kind)
+		}
+	}
+	if err := apply.Execute(held, host); err != nil {
+		t.Fatal(err)
+	}
+	if host.files[statusSnippet] != before {
+		t.Error("the held app's route was written")
+	}
+	if !strings.Contains(host.files["/srv/paisans/f2a9/.paisans-manifest.json"], sum(before)) || !strings.Contains(manifest, sum(before)) {
+		t.Error("the manifest no longer records the held route as the last apply wrote it")
+	}
+
+	host.commands = nil
+	host.running = true
+	released, err := apply.Build("watch", changed, acmeModule(t), host, apply.After(held))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(released.Conflicts()) != 0 {
+		t.Fatalf("releasing status sees conflicts: %v", released.Conflicts())
+	}
+	if !released.GatewayReload {
+		t.Error("releasing status plans no reload for its route")
+	}
+	if err := apply.Execute(released, host); err != nil {
+		t.Fatal(err)
+	}
+	if host.files[statusSnippet] == before {
+		t.Error("releasing status did not write its route")
+	}
+	if !host.ran("caddy reload") {
+		t.Error("Caddy was not reloaded with the released route")
+	}
+}
+
+// A held app's route that is not on the host yet is written all the same.
+// The Caddyfile written in the same pass imports it by path, and Caddy
+// refuses to load an import of a file that does not exist, so holding it
+// would fail the gateway's validation gate and stop the whole first apply.
+// Until the app starts, its hostname answers with upstream_unavailable's 503.
+func TestExceptWritesAHeldAppsRouteTheCaddyfileNeeds(t *testing.T) {
+	host := newHost()
+	p, err := apply.Build("watch", pocketIDOnWatch(t, nil), acmeModule(t), host, apply.Except("status"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := host.files[statusSnippet]; !ok {
+		t.Error("a route the Caddyfile imports was held back")
+	}
+	if _, ok := host.files["/srv/paisans/f2a9/status/.env"]; ok {
+		t.Error("status's own files were written")
+	}
+}
+
+func sum(content string) string {
+	digest := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(digest[:])
 }

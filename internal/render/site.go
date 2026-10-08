@@ -392,7 +392,7 @@ func (p *planner) renderSnippets(base string, routes []route) ([]File, error) {
 		if r.Role != kinds.PrimaryRole {
 			name = r.App + "-" + r.Role
 		}
-		files = append(files, File{Path: base + p.snippetDir() + name + ".caddy", Content: content, Mode: 0o644})
+		files = append(files, File{Path: base + p.snippetDir() + name + ".caddy", Content: content, Mode: 0o644, App: r.App})
 	}
 	return files, nil
 }
@@ -428,7 +428,7 @@ func (p *planner) renderGateSnippets(base string) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + p.snippetDir() + name + "-gates.caddy", Content: content, Mode: 0o644})
+		files = append(files, File{Path: base + p.snippetDir() + name + "-gates.caddy", Content: content, Mode: 0o644, App: name})
 	}
 	return files, nil
 }

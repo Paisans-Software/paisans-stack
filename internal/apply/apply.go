@@ -382,8 +382,12 @@ func Only(stacks ...string) Option {
 
 // Except holds the named app stacks back from this apply: their files are
 // not compared or written, their actions and gates do not run, and the
-// manifest keeps their entries as the last apply recorded them. Everything
-// else on the site, the mesh included, applies as usual. apply's identity
+// manifest keeps their entries as the last apply recorded them. A held app's
+// route on this site's Caddy is held with it, since a route reloaded before
+// its app moves points at the app as it was; one the host does not have yet
+// is the exception, written because the Caddyfile imports it (see
+// heldRoute). Everything else on the site, the mesh included, applies as
+// usual. apply's identity
 // step uses it for an app whose client at Pocket ID is not in place, and to
 // start Pocket ID before the apps that sign in through it. A held stack that
 // a stopped apply still owes stays owed.
@@ -598,7 +602,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		if onlySet != nil && !onlySet[change.Stack] {
 			continue
 		}
-		if exceptSet[change.Stack] {
+		if exceptSet[change.Stack] || heldRoute(exceptSet, file, change) {
 			if change.Overwritten {
 				out.HeldOverwrites = append(out.HeldOverwrites, change.Path)
 			}
@@ -1246,6 +1250,22 @@ func writeManifest(plan *Plan, t Transport) error {
 		return err
 	}
 	return t.WriteFile(manifestPath(plan.Deployment), string(data)+"\n", 0o600)
+}
+
+// heldRoute reports whether file is a held app's route on this site's Caddy,
+// which Except holds back with the app although it lies in the
+// infrastructure stack's directory. Written while the app is held, it would
+// reach Caddy in the same pass's reload, routing to an app still running its
+// old configuration, or not yet started with the client it signs in through.
+//
+// A route not on the host yet is written all the same. The Caddyfile this
+// pass writes imports every route by path, and Caddy refuses to load an
+// import of a file that does not exist ("File to import not found",
+// caddyconfig/caddyfile/parse.go), so holding it would fail the gateway's
+// validation gate and stop the pass. Until the app starts, its hostname
+// answers with the Caddyfile's upstream_unavailable 503.
+func heldRoute(exceptSet map[string]bool, file render.File, change Change) bool {
+	return file.App != "" && exceptSet[file.App] && change.Kind != Create
 }
 
 // stackOf returns the stack directory a rendered path belongs to, empty when it

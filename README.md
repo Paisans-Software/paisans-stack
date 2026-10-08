@@ -3221,7 +3221,14 @@ reason and the rest of the site is applied; a re-run once Pocket ID answers
 finishes it, and the apply does not fail for it. The end of the apply lists
 what was held back and why, including any `--overwrite` in a held stack, which
 is not written and has to be named again; a `--recreate` of a held stack is
-remembered and carried out when the stack starts. A deployment that declares
+remembered and carried out when the stack starts. A held app's route on the
+site's own Caddy (a gateway, or a monitor serving its own apps) is held with
+it and written by the pass that starts the app, because a route reloaded
+first would point at the app as it was, or at one still without its client.
+The one exception is a route the host does not have yet: the Caddyfile
+imports every route by path and Caddy will not load an import of a missing
+file, so a new app's route is written in the first pass and its hostname
+answers 503 until the app starts. A deployment that declares
 no `pocket-id` app has no identity step, and its apps are applied as before,
 without sign in. An app whose client is already
 recorded is not held back by an unreachable Pocket ID: its client was right

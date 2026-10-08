@@ -20,6 +20,12 @@ type File struct {
 	Path    string
 	Content string
 	Mode    uint32
+	// App is the app a file belongs to when it lies outside that app's own
+	// stack directory, as a route snippet on a site running Caddy does, and
+	// empty otherwise. apply holds such a file back with its app (see
+	// apply.Except), which its path alone does not say: it sits in the
+	// infrastructure stack's directory.
+	App string
 }
 
 // Plan is every file a configuration renders to, sorted by path so that two
