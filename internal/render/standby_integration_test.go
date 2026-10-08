@@ -191,9 +191,9 @@ func TestStandbyWrapperRetriesUntilItServes(t *testing.T) {
 	if !strings.Contains(logs, "fake: serving as 1000") {
 		t.Errorf("the child is not running as the image's user, so the image's entrypoint was bypassed:\n%s", logs)
 	}
-	if b.inStandby() {
-		t.Error("the state file is still there while the instance serves")
-	}
+	// The wrapper asks the healthcheck every second, so the state file goes
+	// within about a second of serving.
+	b.waitFor("the state file gone while serving", 10*time.Second, func() bool { return !b.inStandby() })
 	b.waitFor("healthy while serving", 30*time.Second, func() bool { return b.inspect("{{.State.Health.Status}}") == "healthy" })
 
 	took := b.stop()

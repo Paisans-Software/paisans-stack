@@ -2973,7 +2973,14 @@ entrypoint, with the image's own entrypoint and command as its arguments:
 * on a non zero exit whose last lines carry the refusal, it touches
   `/tmp/paisans-standby`, waits `PAISANS_STANDBY_RETRY` seconds (15 by
   default) and tries again;
-* on any other exit, it exits with the child's status.
+* on any other exit, it exits with the child's status;
+* it keeps the state file, and its copy at `/paisans/run/standby` that the
+  admin reconciler reads, through each retry, so a waiting standby never
+  reads as down while its retry is being refused, and removes it once the
+  retried instance is admitted: when the image's healthcheck first passes,
+  asked every second, or after `PAISANS_STANDBY_HOLD` seconds (10 by default)
+  of running without passing it, so an admitted instance that never serves
+  reads as down rather than as a standby.
 
 The healthcheck becomes `[ -f /tmp/paisans-standby ] || /app/pocket-id
 healthcheck`, so a standby is healthy, and `apply`'s gate passes it like any

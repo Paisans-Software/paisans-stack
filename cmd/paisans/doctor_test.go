@@ -73,7 +73,7 @@ func readOnly(cfg *config.Config) (exact []string, prefixes []string) {
 	prefixes = []string{
 		"docker inspect --format '{\"State\":{{json .State}},\"RestartCount\":{{.RestartCount}}}' ",
 		"docker logs --tail 20 ",
-		"if [ ! -f /srv/paisans/f2a9/auth/compose.yaml ]; then echo absent; ",
+		"if [ ! -f '/srv/paisans/f2a9/auth/compose.yaml' ]; then echo absent; ",
 	}
 	return exact, prefixes
 }
@@ -114,11 +114,11 @@ func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
 		doctor.ContainersCommand(cfg.Deployment()):                 `{"Names":"paisans-f2a9-infra-patroni-1","State":"running","Status":"Up 5 minutes","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}` + "\n" + `{"Names":"paisans-f2a9-talk-app-1","State":"restarting","Status":"Restarting (1) 3 seconds ago","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01,com.docker.compose.project=paisans-f2a9-talk"}`,
 		inspect:        `{"State":{"Status":"restarting","Restarting":true,"ExitCode":1,"Error":""},"RestartCount":9}`,
 		"docker logs ": "booting\nSQLSTATE[08006] [7] connection to server at \"127.0.0.1\", port 5000 failed: Connection refused\n",
-		"if [ ! -f /srv/paisans/f2a9/auth/compose.yaml ]": "standby\n",
-		mesh.LinkCommand("psns-f2a9"):                     `[{"ifname":"psns-f2a9","flags":["POINTOPOINT","NOARP","UP","LOWER_UP"]}]`,
-		mesh.RouteCommand:                                 `[{"dst":"10.44.0.0/24","dev":"psns-f2a9"}]`,
-		mesh.AddrCommand:                                  `[{"ifname":"psns-f2a9","addr_info":[{"family":"inet","local":"10.44.0.1","prefixlen":24}]}]`,
-		mesh.NetworksCommand:                              "[]",
+		"if [ ! -f '/srv/paisans/f2a9/auth/compose.yaml' ]": "standby\n",
+		mesh.LinkCommand("psns-f2a9"):                       `[{"ifname":"psns-f2a9","flags":["POINTOPOINT","NOARP","UP","LOWER_UP"]}]`,
+		mesh.RouteCommand:                                   `[{"dst":"10.44.0.0/24","dev":"psns-f2a9"}]`,
+		mesh.AddrCommand:                                    `[{"ifname":"psns-f2a9","addr_info":[{"family":"inet","local":"10.44.0.1","prefixlen":24}]}]`,
+		mesh.NetworksCommand:                                "[]",
 	}
 	vm := map[string]string{
 		mesh.LinkCommand("psns-f2a9"):              `[{"ifname":"psns-f2a9","flags":["POINTOPOINT","NOARP","UP","LOWER_UP"]}]`,

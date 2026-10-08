@@ -17,8 +17,18 @@
 #
 # The same marker is written to /paisans/run/standby, a directory the admin
 # reconciler beside this container mounts read only, so the reconciler can tell a
-# standby from a Pocket ID that is down. It is removed whenever an attempt
-# starts and whenever this script exits.
+# standby from a Pocket ID that is down. Both copies are removed whenever this
+# script exits.
+#
+# The markers stay through each retry, so the toolkit's instance probe and the
+# reconciler read a waiting standby as standby for the whole wait, not as down
+# while the retry is being refused. They go as soon as a retried instance is
+# admitted: when the image's healthcheck first passes (asked every second), or
+# after $PAISANS_STANDBY_HOLD seconds (10 by default) if the instance is still
+# running without passing it, which is longer than a refusal takes. So an
+# active instance loses them within a second of serving, and an admitted one
+# that never serves reads as down instead of hiding behind the standby's
+# healthy healthcheck.
 #
 # A stop is forwarded to the child as SIGTERM, so an active instance shuts
 # down cleanly and deregisters, and a standby elsewhere takes over within one
@@ -36,14 +46,17 @@ fifo=/tmp/paisans-standby.fifo
 kept=/tmp/paisans-standby.tail
 marker='already one instance of Pocket ID running'
 retry="${PAISANS_STANDBY_RETRY:-15}"
+hold="${PAISANS_STANDBY_HOLD:-10}"
+# The image's own healthcheck, as compose.yaml's healthcheck runs it.
+ready='/app/pocket-id healthcheck'
 
 child=
 stopping=
 
-# finish removes the shared marker, which outlives the container on the host,
-# and exits.
+# finish removes both markers, the shared one outliving the container on the
+# host, and exits.
 finish() {
-	rm -f "$shared"
+	rm -f "$state" "$shared"
 	exit "$1"
 }
 
@@ -69,8 +82,27 @@ reap() {
 	return "$code"
 }
 
+# watch removes the markers once the retried child ($1) is admitted: when it
+# is ready, or once it has outlived a refusal by $hold seconds. It returns
+# when the child is gone, leaving the markers for the loop to keep or remove.
+watch() {
+	waited=0
+	while kill -0 "$1" 2>/dev/null; do
+		if $ready >/dev/null 2>&1 || [ "$waited" -ge "$hold" ]; then
+			rm -f "$state" "$shared"
+			return
+		fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+}
+
+# A restarted container keeps its /tmp, and the shared marker outlives the
+# container, so markers from before the restart would make this first attempt
+# read as standby.
+rm -f "$state" "$shared"
 while :; do
-	rm -f "$state" "$shared" "$fifo" "$kept"
+	rm -f "$fifo" "$kept"
 	mkfifo "$fifo" || finish 1
 	# Every line goes straight to the container's log; only the last 50 are
 	# held, in a ring, and written to $kept when the child closes its output.
@@ -84,6 +116,11 @@ while :; do
 	reader=$!
 	"$@" > "$fifo" 2>&1 &
 	child=$!
+	watcher=
+	if [ -f "$state" ]; then
+		watch "$child" &
+		watcher=$!
+	fi
 	# A stop that arrived before there was a child to forward it to.
 	if [ -n "$stopping" ]; then
 		kill -TERM "$child" 2>/dev/null
@@ -92,6 +129,11 @@ while :; do
 	status=$?
 	child=
 	reap "$reader"
+	# The watcher sees the child gone within a second; wait for it, so it
+	# cannot remove markers the loop is about to keep.
+	if [ -n "$watcher" ]; then
+		reap "$watcher"
+	fi
 	rm -f "$fifo"
 
 	if [ "$status" -eq 0 ] || [ -n "$stopping" ]; then
