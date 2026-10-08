@@ -266,18 +266,29 @@ func pocketIDSite(cfg *config.Config, appName, override, command string) (string
 	if override != "" || !slices.Contains(apply.StandbyApps(cfg), appName) {
 		return adminSite(cfg, appName, override)
 	}
+	site, list, err := activeInstance(cfg, appName)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w, so there is no one site to call:\n%sName one with --site once exactly one is active", command, err, apply.DescribeInstances(list))
+	}
+	return site, nil
+}
+
+// activeInstance is the site whose instance of a Pocket ID app running on
+// several sites is active, with what every site answered, or why there is no
+// one such site.
+func activeInstance(cfg *config.Config, appName string) (string, []apply.Instance, error) {
 	transports := map[string]apply.Transport{}
 	for _, name := range cfg.AppsSites() {
 		transports[name] = standbyLook(siteTransport(cfg.Sites[name], "", false))
 	}
 	list := apply.LookAtInstances(cfg, appName, transports)
 	if _, err := apply.OneActive(appName, list); err != nil {
-		return "", fmt.Errorf("%s: %w, so there is no one site to call:\n%sName one with --site once exactly one is active", command, err, apply.DescribeInstances(list))
+		return "", list, err
 	}
 	for _, in := range list {
 		if in.State == apply.Active {
-			return in.Site, nil
+			return in.Site, list, nil
 		}
 	}
-	return "", fmt.Errorf("%s: no active instance of %s", command, appName)
+	return "", list, fmt.Errorf("no active instance of %s", appName)
 }

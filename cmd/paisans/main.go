@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -389,6 +390,10 @@ func runRender(args []string) error {
 // reaches a machine, the machine it reaches is running a community, and the
 // difference between "show me" and "do it" should be a flag an operator typed
 // rather than a habit they formed.
+//
+// An app that signs in through Pocket ID has its client ensured first, by
+// the identity step in clients.go: declaring the app is the approval for
+// its client, so `--execute` creates and records it like any other secret.
 func runApply(args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ExitOnError)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
@@ -452,11 +457,26 @@ func runApply(args []string) error {
 
 	transport := siteTransport(declared, *destination, *sudo)
 
+	// The identity step: every app this site starts that signs in through
+	// Pocket ID gets its client ensured before it renders. Planned here,
+	// read only, so the dry run shows it and an app it must hold back is
+	// left out of the plan below.
+	clients, err := newClientStep(cfg, *site, *destination, *secretsPath, secrets, only)
+	if err != nil {
+		return err
+	}
+	var held []string
+	if clients != nil {
+		clients.ensure(false, clients.pocketIDHere())
+		held = clients.heldApps()
+		fmt.Fprintln(os.Stdout)
+	}
+
 	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...)}
 	if *keepImages {
 		options = append(options, apply.KeepImages())
 	}
-	plan, err := planSiteApply(cfg, secrets, *site, transport, options...)
+	plan, err := planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(held...)})...)
 	if err != nil {
 		return err
 	}
@@ -510,19 +530,51 @@ func runApply(args []string) error {
 	}
 
 	if !*execute {
-		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone {
-			return nil
+		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone && (clients == nil || clients.steps == 0) {
+			return clients.result()
 		}
 		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
-		return nil
+		return clients.result()
 	}
-	if err := apply.Execute(plan, transport); err != nil {
+
+	plans := []*apply.Plan{plan}
+	if clients == nil {
+		if err := apply.Execute(plan, transport); err != nil {
+			return err
+		}
+	} else {
+		pass := sitePass{
+			plan: func(hold []string) (*apply.Plan, error) {
+				p, err := planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...)})...)
+				if err != nil {
+					return nil, err
+				}
+				p.Progress = os.Stdout
+				if plan.Bootstrap != nil && p.Bootstrap != nil {
+					p.Bootstrap.EtcdUnstarted = plan.Bootstrap.EtcdUnstarted
+				}
+				return p, nil
+			},
+			execute: func(p *apply.Plan) error { return apply.Execute(p, transport) },
+		}
+		if plans, err = executeWithClients(clients, pass); err != nil {
+			return err
+		}
+	}
+	// The check after the apply looks at what every pass acted on.
+	acted := &apply.Plan{}
+	written := 0
+	for _, p := range plans {
+		acted.Actions = append(acted.Actions, p.Actions...)
+		written += len(p.Writes())
+	}
+	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", written, plan.Transport)
+	if err := checkStandby(cfg, acted, *site, transport, func(name string) apply.Transport {
+		return siteTransport(cfg.Sites[name], "", *sudo)
+	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", len(plan.Writes()), plan.Transport)
-	return checkStandby(cfg, plan, *site, transport, func(name string) apply.Transport {
-		return siteTransport(cfg.Sites[name], "", *sudo)
-	})
+	return clients.result()
 }
 
 // checkStandby is the deployment level gate after an apply that acted on a
