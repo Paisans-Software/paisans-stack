@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -67,8 +68,8 @@ type Result struct {
 //     the hostname, and how many days it has left;
 //  3. the sign in redirect sends the browser to the identity provider with a
 //     callback under https://<hostname>/;
-//  4. the published port does not answer on the public address, around the
-//     web server.
+//  4. the published port refuses a connection, or does not answer, on the
+//     public address (and public_address6), around the web server.
 //
 // In ingress mode paisans the toolkit's own Caddy is in front of the app and
 // only the first two are the operator's to check.
@@ -111,15 +112,32 @@ func checkDNS(ctx context.Context, t Target, p Probes) Result {
 		r.Fix = fix
 		return r
 	}
-	var missing []string
+	var missing, stray []string
 	for _, address := range want {
 		if !slices.ContainsFunc(got, func(g string) bool { return sameIP(g, address) }) {
 			missing = append(missing, address)
 		}
 	}
-	if len(missing) > 0 {
-		r.Detail = fmt.Sprintf("%s resolves to %s, not %s", t.Hostname, strings.Join(got, ", "), strings.Join(missing, ", "))
+	// A record the site does not declare, such as a stale one still
+	// pointing at the gateway, sends some visitors to the wrong machine.
+	for _, g := range got {
+		if !slices.ContainsFunc(want, func(w string) bool { return sameIP(g, w) }) {
+			stray = append(stray, g)
+		}
+	}
+	if len(missing) > 0 || len(stray) > 0 {
+		var why []string
+		if len(missing) > 0 {
+			why = append(why, "not "+strings.Join(missing, ", "))
+		}
+		if len(stray) > 0 {
+			why = append(why, "and also "+strings.Join(stray, ", ")+", which "+t.Site+" does not declare")
+		}
+		r.Detail = fmt.Sprintf("%s resolves to %s: %s", t.Hostname, strings.Join(got, ", "), strings.Join(why, ", "))
 		r.Fix = fix
+		if len(stray) > 0 {
+			r.Fix += fmt.Sprintf(".\nDelete the records for %s pointing at %s; a record dns init created is removed by `paisans dns prune`, any other by hand", t.Hostname, strings.Join(stray, ", "))
+		}
 		return r
 	}
 	r.OK = true
@@ -211,17 +229,47 @@ func checkSignIn(ctx context.Context, t Target, p Probes) Result {
 
 func checkUpstream(ctx context.Context, t Target, p Probes) Result {
 	r := Result{Name: CheckUpstream}
-	address := net.JoinHostPort(t.PublicAddress, strconv.Itoa(t.ListenPort))
-	conn, err := p.Dial(ctx, "tcp", address)
-	if err != nil {
-		r.OK = true
-		r.Detail = fmt.Sprintf("%s does not answer, so the app is reachable only through the web server", address)
-		return r
+	addresses := []string{t.PublicAddress}
+	if t.PublicAddress6 != "" {
+		addresses = append(addresses, t.PublicAddress6)
 	}
-	conn.Close()
-	r.Detail = fmt.Sprintf("%s answers: the app is reachable around your web server", address)
-	r.Fix = fmt.Sprintf("Docker publishes %s in front of ufw. Set sites.%s.ingress.listen to 127.0.0.1:%d when the web server runs on this machine, or drop port %d from outside in Docker's DOCKER-USER chain", t.Listen, t.Site, t.ListenPort, t.ListenPort)
+	var closed, open, inconclusive []string
+	for _, a := range addresses {
+		address := net.JoinHostPort(a, strconv.Itoa(t.ListenPort))
+		conn, err := p.Dial(ctx, "tcp", address)
+		switch {
+		case err == nil:
+			conn.Close()
+			open = append(open, address)
+		case refusedOrTimedOut(err):
+			closed = append(closed, address)
+		default:
+			inconclusive = append(inconclusive, fmt.Sprintf("%s (%v)", address, err))
+		}
+	}
+	switch {
+	case len(open) > 0:
+		r.Detail = fmt.Sprintf("%s answers: the app is reachable around your web server", strings.Join(open, " and "))
+		r.Fix = fmt.Sprintf("Docker publishes %s in front of ufw. Set sites.%s.ingress.listen to 127.0.0.1:%d when the web server runs on this machine, or drop port %d from outside in Docker's DOCKER-USER chain", t.Listen, t.Site, t.ListenPort, t.ListenPort)
+	case len(inconclusive) > 0:
+		r.Detail = fmt.Sprintf("inconclusive: %s; the address was unreachable from here, which says nothing about the port", strings.Join(inconclusive, ", "))
+		r.Fix = "run the check from a machine that can reach the site's public address, where only a refused or timed out connection shows the port closed"
+	default:
+		r.OK = true
+		r.Detail = fmt.Sprintf("%s refused or timed out, so the app is reachable only through the web server", strings.Join(closed, " and "))
+	}
 	return r
+}
+
+// refusedOrTimedOut reports whether a dial failed because the port is
+// closed or filtered: refused, or no answer at all. Anything else, such as
+// no route to the address, did not reach the port and shows nothing.
+func refusedOrTimedOut(err error) bool {
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ETIMEDOUT) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // get requests a URL without following a redirect.

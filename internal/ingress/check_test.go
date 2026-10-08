@@ -9,17 +9,19 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"errors"
 	"io"
 	"log"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/ingress"
 )
 
@@ -77,6 +79,10 @@ type world struct {
 	location   string // where /login/oidc redirects
 	health     int
 	upstreamUp bool
+	// dialErr is what a refused dial returns; nil means connection refused.
+	dialErr error
+	// dialled records every address the upstream check dialled.
+	dialled *[]string
 }
 
 func good() world {
@@ -120,7 +126,9 @@ func (w world) probes(t *testing.T) ingress.Probes {
 		Resolver: resolver{"status.example.org": w.resolves},
 		Client:   &http.Client{Transport: transport, Timeout: 5 * time.Second},
 		Dial: func(_ context.Context, _, address string) (net.Conn, error) {
-			if address != "203.0.113.20:8480" {
+			if w.dialled != nil {
+				*w.dialled = append(*w.dialled, address)
+			} else if address != "203.0.113.20:8480" {
 				t.Errorf("dialled %s, want the public address and the listen port", address)
 			}
 			if w.upstreamUp {
@@ -128,7 +136,10 @@ func (w world) probes(t *testing.T) ingress.Probes {
 				b.Close()
 				return a, nil
 			}
-			return nil, errors.New("connection refused")
+			if w.dialErr != nil {
+				return nil, w.dialErr
+			}
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
 		},
 		Now: func() time.Time { return now },
 	}
@@ -253,5 +264,60 @@ func TestCheckRunsOnlyTheFirstTwoInPaisansMode(t *testing.T) {
 		if !r.OK {
 			t.Errorf("%+v", r)
 		}
+	}
+}
+
+// A stale record still pointing at the gateway beside the monitor's own sends
+// some visitors to the wrong machine, so every resolved address must be one
+// the site declares.
+func TestCheckFailsAnAddressTheSiteDoesNotDeclare(t *testing.T) {
+	w := good()
+	w.resolves = []string{"203.0.113.20", "203.0.113.10"}
+	r := result(t, run(t, w, external(t, "127.0.0.1:8480")), ingress.CheckDNS)
+	if r.OK || !strings.Contains(r.Detail, "203.0.113.10") || !strings.Contains(r.Fix, "203.0.113.10") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// Only a refusal or a timeout shows the port closed. Any other dial error
+// (no route, network unreachable) says nothing about the port, so it is not
+// a pass.
+func TestCheckTreatsOnlyRefusedOrTimedOutAsClosed(t *testing.T) {
+	timeout := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ETIMEDOUT)}
+	unreachable := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ENETUNREACH)}
+	for _, tc := range []struct {
+		err error
+		ok  bool
+	}{{timeout, true}, {context.DeadlineExceeded, true}, {unreachable, false}} {
+		w := good()
+		w.dialErr = tc.err
+		r := result(t, run(t, w, external(t, "127.0.0.1:8480")), ingress.CheckUpstream)
+		if r.OK != tc.ok {
+			t.Errorf("%v: %+v", tc.err, r)
+		}
+		if !tc.ok && (!strings.Contains(r.Detail, "inconclusive") || !strings.Contains(r.Detail, "unreachable")) {
+			t.Errorf("%v: %+v", tc.err, r)
+		}
+	}
+}
+
+// With public_address6 declared the port must be closed there too.
+func TestCheckDialsTheIPv6AddressToo(t *testing.T) {
+	cfg := fixture(t)
+	watch := cfg.Sites["watch"]
+	watch.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}
+	watch.PublicAddress6 = "2001:db8::20"
+	cfg.Sites["watch"] = watch
+	target, err := ingress.For(cfg, "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dialled []string
+	w := good()
+	w.resolves = []string{"203.0.113.20", "2001:db8::20"}
+	w.dialled = &dialled
+	r := result(t, run(t, w, target), ingress.CheckUpstream)
+	if !r.OK || strings.Join(dialled, ",") != "203.0.113.20:8480,[2001:db8::20]:8480" {
+		t.Fatalf("%+v dialled %v", r, dialled)
 	}
 }
