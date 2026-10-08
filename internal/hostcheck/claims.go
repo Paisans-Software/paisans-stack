@@ -23,6 +23,9 @@ type Claims struct {
 	// it.
 	Interface string
 	Mesh      *net.IPNet
+	// SSHPort is the site's ssh.port, which any advice about enabling a
+	// firewall has to allow first.
+	SSHPort int
 }
 
 // ClaimsFor is what the toolkit will take on one site's host, from the
@@ -35,5 +38,11 @@ func ClaimsFor(cfg *config.Config, site string) (Claims, error) {
 	if err != nil {
 		return Claims{}, fmt.Errorf("host check: mesh.subnet %q is not a network", cfg.Mesh.Subnet)
 	}
-	return Claims{Site: site, Listeners: render.SiteListeners(cfg, site), Interface: meshInterface, Mesh: mesh}, nil
+	return Claims{
+		Site:      site,
+		Listeners: render.SiteListeners(cfg, site),
+		Interface: meshInterface,
+		Mesh:      mesh,
+		SSHPort:   cfg.Sites[site].SSH.PortOrDefault(),
+	}, nil
 }

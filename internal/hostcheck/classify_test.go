@@ -245,3 +245,37 @@ func TestABroaderRouteIsANoteNotAConflict(t *testing.T) {
 	h.answers["ip -j route"] = `[{"dst":"10.44.0.0/24","dev":"tun0"}]`
 	wantClass(t, check(t, "home-a", h), hostcheck.Conflicted)
 }
+
+// reject refuses incoming traffic as deny does, only answering instead of
+// dropping, so a shared host denying by either is protected.
+func TestRejectByDefaultIsAFirewallUp(t *testing.T) {
+	h := caddyHost()
+	h.answers["ufw status verbose"] = "Status: active\nDefault: reject (incoming), allow (outgoing), disabled (routed)\n"
+	if err := check(t, "home-a", h).Refusal(); err != nil {
+		t.Errorf("reject by default is refused: %v", err)
+	}
+}
+
+// The advice for enabling ufw allows the site's SSH port first, so that an
+// operator who follows it in order keeps the session they are typing in.
+func TestTheFirewallAdviceAllowsSSHFirst(t *testing.T) {
+	cfg := fixture(t)
+	site := cfg.Sites["home-a"]
+	site.SSH.Port = 2222
+	cfg.Sites["home-a"] = site
+	h := caddyHost()
+	h.answers["ufw status verbose"] = ufwInactive
+	r, err := hostcheck.Run(cfg, "home-a", h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusal := r.Refusal()
+	if refusal == nil {
+		t.Fatal("not refused")
+	}
+	msg := refusal.Error()
+	allow, enable := strings.Index(msg, "ufw allow 2222/tcp"), strings.Index(msg, "ufw enable")
+	if allow < 0 || enable < 0 || allow > enable {
+		t.Errorf("the advice does not allow SSH on 2222 before enabling ufw: %s", msg)
+	}
+}

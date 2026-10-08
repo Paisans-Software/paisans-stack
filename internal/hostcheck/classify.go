@@ -60,6 +60,8 @@ type Report struct {
 	// worth an operator's eye, one line each.
 	Notes     []string
 	Inventory *Inventory
+	// SSHPort is the site's ssh.port, for the firewall advice.
+	SSHPort int
 }
 
 // Shared reports whether the host is shared, so that a command touches only
@@ -151,7 +153,7 @@ func (o owners) socket(s Socket) holder {
 // loopback Postgres does not make a host shared, but the toolkit's own
 // loopback bind on its port would fail.
 func Classify(claims Claims, inv *Inventory) *Report {
-	r := &Report{Site: claims.Site, Host: inv.Host, Inventory: inv}
+	r := &Report{Site: claims.Site, Host: inv.Host, Inventory: inv, SSHPort: claims.SSHPort}
 	o := owners{inv: inv, byID: map[string]Container{}}
 	for _, c := range inv.Containers {
 		o.byID[c.ID] = c
@@ -321,7 +323,7 @@ func contains(list []string, s string) bool {
 // Refusal is the reason a command must not go on, or nil. A conflict is
 // always refused, with no override: the operator moves what holds the claim
 // or changes the configuration. A shared host is refused when its firewall
-// is not already up and denying by default, because on a shared host the
+// is not already up and denying (or rejecting) by default, because on a shared host the
 // toolkit never sets the default policy or enables ufw itself.
 func (r *Report) Refusal() error {
 	switch r.Class {
@@ -329,7 +331,11 @@ func (r *Report) Refusal() error {
 		return fmt.Errorf("host check: %s holds %d thing(s) %s claims, each listed above as CONFLICT, so nothing was changed. Move what holds each one, or change the paisans.yaml key it names, and run again", r.Host, len(r.Conflicts), r.Site)
 	case Shared:
 		if why := firewallGap(r.Inventory.Firewall); why != "" {
-			return fmt.Errorf("host check: %s runs services this deployment does not own, and on a shared host the toolkit never sets ufw's default policy or enables it, so both must already be in place, and %s. Allow what those services need, then enable ufw with incoming denied by default (Eg: ufw default deny incoming, then ufw enable), and run again", r.Host, why)
+			port := r.SSHPort
+			if port == 0 {
+				port = 22
+			}
+			return fmt.Errorf("host check: %s runs services this deployment does not own, and on a shared host the toolkit never sets ufw's default policy or enables it, so both must already be in place, and %s. In this order: allow SSH so the session you are in survives (ufw allow %d/tcp), allow what those services need, deny incoming by default (ufw default deny incoming), enable ufw (ufw enable), and run again", r.Host, why, port)
 		}
 	}
 	return nil
@@ -345,8 +351,8 @@ func firewallGap(f Firewall) string {
 		return "ufw is not installed"
 	case !f.Active:
 		return "ufw is inactive"
-	case f.Incoming != "deny":
-		return fmt.Sprintf("ufw's default for incoming traffic is %s, not deny", f.Incoming)
+	case f.Incoming != "deny" && f.Incoming != "reject":
+		return fmt.Sprintf("ufw's default for incoming traffic is %s, not deny or reject", f.Incoming)
 	}
 	return ""
 }
