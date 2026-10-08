@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
@@ -67,8 +69,9 @@ Usage:
 
 Commands:
   validate   Load the configuration and report every problem found.
-  init       Generate the secrets this configuration needs, filling in only
-             what is missing, and say what is still owed from elsewhere.
+  init       Give the configuration an id if it has none, then generate the
+             secrets it needs, filling in only what is missing, and say what
+             is still owed from elsewhere.
   render     Validate, then write per site artifacts to a local directory.
   host       Take a blank host to the state apply assumes: Docker, the
              WireGuard tools, a firewall, and a watchdog on a data site.
@@ -97,9 +100,8 @@ Commands:
              the secrets. Resumes from the secrets file. Writes nothing
              without --execute.
   prune      List one site's dangling Docker volumes, with size and top level
-             entries, and say which are a paisans container's leftovers.
-             Removes those with --execute; a volume another compose project
-             labelled, or one somebody named, is kept.
+             entries, and say which carry this deployment's label.
+             Removes those with --execute; every other volume is kept.
   preflight  The read only checks site add runs first, for the site being
              added and every site already running. Changes nothing.
   failover   test: switch the Patroni primary to another data site and
@@ -149,7 +151,9 @@ host prepare, apply, prune, site add, storage init, storage add, storage
 rotate-key, app admin create, oidc client create, preflight, failover test and
 doctor are the only commands that reach a host.
 Each reads it to plan, and changes it only with --execute; preflight and doctor
-have no --execute and never change it. dns init and dns
+have no --execute and never change it. With --execute, a command first claims
+each host it writes to in /var/lib/paisans/registry.json, and refuses if
+another deployment there holds this one's token. dns init and dns
 prune reach no host, only the DNS provider's API, and change it only with
 --execute. ingress check reaches no host over ssh and changes nothing: it
 looks at a monitor's public hostname as any visitor could.
@@ -274,6 +278,16 @@ func runInit(args []string) error {
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// The id comes first: everything a host holds is named from it, and a
+	// declaration without one cannot even be loaded. One that exists is never
+	// replaced.
+	id, added, err := config.EnsureID(*configPath)
+	if err != nil {
+		return err
+	}
+	if added {
+		fmt.Fprintf(os.Stdout, "%s: wrote deployment id %s. It never changes; every name and path this deployment holds on a host is derived from it.\n", *configPath, id)
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -404,6 +418,10 @@ func runRender(args []string) error {
 // reaches a machine, the machine it reaches is running a community, and the
 // difference between "show me" and "do it" should be a flag an operator typed
 // rather than a habit they formed.
+//
+// An app that signs in through Pocket ID has its client ensured first, by
+// the identity step in clients.go: declaring the app is the approval for
+// its client, so `--execute` creates and records it like any other secret.
 func runApply(args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ExitOnError)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
@@ -470,18 +488,38 @@ func runApply(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+		return err
+	}
 
+	// The identity step: every app this site starts that signs in through
+	// Pocket ID gets its client ensured before it renders. Planned here,
+	// read only, so the dry run shows it and an app it must hold back is
+	// left out of the plan below.
+	clients, err := newClientStep(cfg, *site, *destination, *secretsPath, secrets, only)
+	if err != nil {
+		return err
+	}
 	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...)}
 	// On a shared host an image the toolkit renders (caddy, postgres) may
 	// be what a foreign project runs from, so none is removed.
 	if *keepImages || host.Shared() {
 		options = append(options, apply.KeepImages())
 	}
-	plan, err := planSiteApply(cfg, secrets, *site, transport, options...)
+	// planFor plans the site holding back the named app stacks, as a later
+	// pass after the done ones. See executeWithClients.
+	planFor := func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
+		p, err := planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...)})...)
+		if err != nil {
+			return nil, err
+		}
+		p.Progress = os.Stdout
+		return p, nil
+	}
+	plan, err := planWithClients(clients, func(hold []string) (*apply.Plan, error) { return planFor(hold, nil) }, *execute)
 	if err != nil {
 		return err
 	}
-	plan.Progress = os.Stdout
 
 	// A site running etcd, or configured to, is checked against the live
 	// membership. Only this site is asked unless it is a configured member,
@@ -501,7 +539,7 @@ func runApply(args []string) error {
 	founding := false
 	var running map[string]bool
 	if contains(cfg.Etcd.Members, *site) {
-		_, recorded, err := apply.ReadEtcdInitial(transport)
+		_, recorded, err := apply.ReadEtcdInitial(transport, cfg.Deployment())
 		if err != nil {
 			return err
 		}
@@ -531,19 +569,50 @@ func runApply(args []string) error {
 	}
 
 	if !*execute {
-		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone {
-			return nil
+		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone && (clients == nil || clients.steps == 0) {
+			return clients.result()
 		}
 		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
-		return nil
+		return clients.result()
 	}
-	if err := apply.Execute(plan, transport); err != nil {
+
+	plans := []*apply.Plan{plan}
+	if clients == nil {
+		if err := apply.Execute(plan, transport); err != nil {
+			return err
+		}
+	} else {
+		pass := sitePass{
+			plan: func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
+				p, err := planFor(hold, done)
+				if err != nil {
+					return nil, err
+				}
+				if plan.Bootstrap != nil && p.Bootstrap != nil {
+					p.Bootstrap.EtcdUnstarted = plan.Bootstrap.EtcdUnstarted
+				}
+				return p, nil
+			},
+			execute: func(p *apply.Plan) error { return apply.Execute(p, transport) },
+		}
+		if plans, err = executeWithClients(clients, pass); err != nil {
+			return err
+		}
+	}
+	// The check after the apply looks at what every pass acted on.
+	acted := &apply.Plan{}
+	written := 0
+	for _, p := range plans {
+		acted.Actions = append(acted.Actions, p.Actions...)
+		written += len(p.Writes())
+	}
+	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", written, plan.Transport)
+	if err := checkStandby(cfg, acted, *site, transport, func(name string) apply.Transport {
+		return siteTransport(cfg.Sites[name], "", *sudo)
+	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", len(plan.Writes()), plan.Transport)
-	return checkStandby(cfg, plan, *site, transport, func(name string) apply.Transport {
-		return siteTransport(cfg.Sites[name], "", *sudo)
-	})
+	return clients.result()
 }
 
 // checkStandby is the deployment level gate after an apply that acted on a
@@ -588,7 +657,7 @@ func planSiteApply(cfg *config.Config, secrets *config.Secrets, site string, tra
 	// file. See render.EtcdInitialPath.
 	var renderOptions []render.Option
 	if contains(cfg.Etcd.Members, site) {
-		initial, found, err := apply.ReadEtcdInitial(transport)
+		initial, found, err := apply.ReadEtcdInitial(transport, cfg.Deployment())
 		if err != nil {
 			return nil, err
 		}
@@ -667,6 +736,9 @@ func runStorageInit(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
+	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+		return err
+	}
 	plan, err := garage.Build(*site, cfg, secrets, transport)
 	if err != nil {
 		return err
@@ -723,6 +795,9 @@ func runHostPrepare(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+		return err
+	}
 	var options []hostprep.Option
 	if host.Shared() {
 		options = append(options, hostprep.Shared())
@@ -759,6 +834,9 @@ func printGaragePlan(plan *garage.Plan) {
 
 func printPlan(plan *apply.Plan) {
 	fmt.Fprintf(os.Stdout, "%s (%s)\n", plan.Site, plan.Transport)
+	for _, note := range plan.Notes {
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "note", note)
+	}
 	if plan.Disk != nil {
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "check", plan.Disk.Describe())
 	}
@@ -843,14 +921,14 @@ func report(w *os.File, path string, result validate.Result) {
 // It reaches no host. The workstation talks to the provider's API and to
 // nothing else, so it takes no --site and no --ssh.
 func runDNSInit(args []string) error {
-	_, wants, provider, execute, err := dnsSetup("dns init", "actually create the missing records", args)
+	cfg, wants, provider, execute, err := dnsSetup("dns init", "actually create the missing records", args)
 	if err != nil {
 		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	plan, err := dns.Build(ctx, provider, wants)
+	plan, err := dns.Build(ctx, provider, cfg.Deployment(), wants)
 	if err != nil {
 		return err
 	}

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
@@ -104,6 +105,13 @@ type appValues struct {
 	// DataPath is the app's bind mounted directory on the host. Templates that
 	// mount a rendered file need it to say where the file lives.
 	DataPath string
+
+	// Project is the app's compose project name, paisans-<token>-<app>, and
+	// DeploymentLabel and DeploymentID are the label every service and network
+	// in it carries. See internal/deployment.
+	Project         string
+	DeploymentLabel string
+	DeploymentID    string
 
 	// Upstreams is where the gateway sends this app's traffic: one address for
 	// a pinned app, every apps site for a clustered one. A snippet never
@@ -296,7 +304,10 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		DBPassword:      password,
 		DSN:             dsn(planned, password, dbHost, dbPort),
 		PostgresVersion: p.postgresVersion(),
-		DataPath:        "/srv/" + planned.Name,
+		DataPath:        planned.Dir,
+		Project:         p.dep().Project(planned.Name),
+		DeploymentLabel: deployment.Label,
+		DeploymentID:    p.dep().ID,
 		MeshAddress:     p.meshAddress(planned.Site),
 		secrets:         p.secrets.Apps[planned.Name],
 		set:             app.Settings,

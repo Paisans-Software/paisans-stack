@@ -9,6 +9,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -50,11 +51,13 @@ func runPrune(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
-	host, err := hostGate(os.Stdout, cfg, *site, transport)
-	if err != nil {
+	if _, err := hostGate(os.Stdout, cfg, *site, transport); err != nil {
 		return err
 	}
-	plan, err := apply.BuildVolumePrune(*site, transport, host.Shared())
+	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+		return err
+	}
+	plan, err := apply.BuildVolumePrune(cfg.Deployment(), *site, transport)
 	if err != nil {
 		return err
 	}
@@ -75,11 +78,7 @@ func runPrune(args []string) error {
 
 func printVolumePrune(w io.Writer, plan *apply.VolumePrune) {
 	fmt.Fprintf(w, "%s (%s)\n", plan.Site, plan.Transport)
-	header := apply.PruneHeader
-	if plan.Shared {
-		header = apply.SharedPruneHeader
-	}
-	fmt.Fprintf(w, "  %s\n", header)
+	fmt.Fprintf(w, "  %s\n", apply.PruneHeader)
 	if len(plan.Volumes) == 0 {
 		fmt.Fprintf(w, "  no dangling volumes\n")
 		return

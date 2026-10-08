@@ -68,13 +68,13 @@ func TestOurOwnDeploymentIsClean(t *testing.T) {
 		}
 	}
 	h := cleanHost()
-	h.files["/srv/.paisans-manifest.json"] = `{"version":1,"files":[{"path":"etc/wireguard/wg0.conf","sha256":"x","mode":"0600"}]}`
+	h.files["/srv/paisans/f2a9/.paisans-manifest.json"] = `{"version":1,"files":[{"path":"etc/wireguard/wg0.conf","sha256":"x","mode":"0600"}]}`
 	h.answers["ip -o link"] += "4: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/none\n"
 	h.answers["ip -j route"] = `[{"dst":"default","dev":"eth0"},{"dst":"10.44.0.0/24","dev":"wg0"},{"dst":"172.18.0.0/16","dev":"br-` + id("5")[:12] + `"}]`
-	h.answers["docker inspect"] = fmt.Sprintf(`{"id":%q,"name":"/paisans-infra-patroni-1","pid":1500,"labels":{"com.docker.compose.project":"paisans-infra"},"ports":{}}
-{"id":%q,"name":"/paisans-blog-app-1","pid":1700,"labels":{"com.docker.compose.project":"paisans-blog"},"ports":{"8080/tcp":[{"HostIp":"10.44.0.1","HostPort":"%d"}]}}
+	h.answers["docker inspect"] = fmt.Sprintf(`{"id":%q,"name":"/paisans-f2a9-infra-patroni-1","pid":1500,"labels":{"com.docker.compose.project":"paisans-f2a9-infra","community.paisans.deployment":"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},"ports":{}}
+{"id":%q,"name":"/paisans-f2a9-blog-app-1","pid":1700,"labels":{"com.docker.compose.project":"paisans-f2a9-blog","community.paisans.deployment":"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},"ports":{"8080/tcp":[{"HostIp":"10.44.0.1","HostPort":"%d"}]}}
 `, infraID, talkID, appPort)
-	h.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-blog_default","labels":{"com.docker.compose.project":"paisans-blog"},"ipam":[{"Subnet":"172.18.0.0/16"}]}
+	h.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-f2a9-blog_default","labels":{"com.docker.compose.project":"paisans-f2a9-blog","community.paisans.deployment":"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},"ipam":[{"Subnet":"172.18.0.0/16"}]}
 `, id("5"))
 	h.answers["docker volume inspect"] = `{"name":"` + id("9") + `","labels":{"com.docker.volume.anonymous":""}}
 `
@@ -86,6 +86,28 @@ tcp LISTEN 0 4096 10.44.0.1:%d 0.0.0.0:* users:(("docker-proxy",pid=1600,fd=4))
 	h.answers["/proc/"] = "1510 0::/system.slice/docker-" + infraID + ".scope \n1600 0::/system.slice/docker.service \n"
 	r := check(t, "home-a", h)
 	wantClass(t, r, hostcheck.Clean)
+}
+
+// Another paisans deployment on the same host is not this one's, though its
+// names start paisans- too: the deployment label decides, so its container
+// and network make the host shared, and a container with a paisans- name and
+// no label at all is anybody's.
+func TestAnotherDeploymentOnTheHostIsForeign(t *testing.T) {
+	h := cleanHost()
+	h.answers["docker inspect"] = fmt.Sprintf(`{"id":%q,"name":"/paisans-0c1d-talk-app-1","pid":0,"labels":{"com.docker.compose.project":"paisans-0c1d-talk","community.paisans.deployment":"0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5"},"ports":{}}
+{"id":%q,"name":"/paisans-talk-app-1","pid":0,"labels":{"com.docker.compose.project":"paisans-talk"},"ports":{}}
+`, infraID, talkID)
+	h.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-0c1d-talk_default","labels":{"com.docker.compose.project":"paisans-0c1d-talk","community.paisans.deployment":"0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5"},"ipam":[{"Subnet":"172.19.0.0/16"}]}
+`, id("6"))
+	r := check(t, "home-a", h)
+	wantClass(t, r, hostcheck.Shared)
+	for _, line := range []string{
+		"foreign   container paisans-0c1d-talk-app-1 (compose project paisans-0c1d-talk, paisans deployment 0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5)",
+		"foreign   container paisans-talk-app-1 (compose project paisans-talk)",
+		"foreign   docker network paisans-0c1d-talk_default (compose project paisans-0c1d-talk, paisans deployment 0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5)",
+	} {
+		wantLine(t, r, line)
+	}
 }
 
 // Somebody's Caddy on 80 and 443 beside a site that claims neither makes the
@@ -176,7 +198,7 @@ func TestAWireGuardTheToolkitDidNotWriteConflicts(t *testing.T) {
 	h.answers["ss -Hltnup"] = baseSockets + "udp UNCONN 0 0 0.0.0.0:51820 0.0.0.0:*\n"
 	r := check(t, "home-a", h)
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  interface wg0: claimed by mesh, held by an interface the toolkit did not write")
+	wantLine(t, r, "CONFLICT  interface wg0: claimed by mesh, held by an interface this deployment did not write")
 	wantLine(t, r, "CONFLICT  *:51820/udp (WireGuard): claimed by mesh, held by a kernel socket (no process)")
 }
 
@@ -322,22 +344,22 @@ func TestSomethingOverlappingTheIngressNetworkConflicts(t *testing.T) {
 	wantClass(t, check(t, "watch", h), hostcheck.Shared)
 }
 
-// The pinned network belongs to one compose project, paisans-<app>. Another
+// The pinned network belongs to one compose project, paisans-<token>-<app>. Another
 // of the toolkit's own projects holding it, such as the stack an app left
 // behind when it was renamed, makes compose refuse the new one mid apply
 // ("Pool overlaps"), so it is a conflict naming the stale stack. The app's
 // own network holding it is what an apply leaves, and is clean.
 func TestAStaleToolkitStackOnTheIngressNetworkConflicts(t *testing.T) {
 	stale := cleanHost()
-	stale.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-status_default","labels":{"com.docker.compose.project":"paisans-status"},"ipam":[{"Subnet":"10.255.255.0/29"}]}
+	stale.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-f2a9-status_default","labels":{"com.docker.compose.project":"paisans-f2a9-status","community.paisans.deployment":"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},"ipam":[{"Subnet":"10.255.255.0/29"}]}
 `, id("7"))
 	r := check(t, "porch", stale)
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  subnet 10.255.255.0/29: claimed by sites.porch.ingress, held by docker network paisans-status_default (compose project paisans-status)")
-	wantLine(t, r, "docker compose -p paisans-status down")
+	wantLine(t, r, "CONFLICT  subnet 10.255.255.0/29: claimed by sites.porch.ingress, held by docker network paisans-f2a9-status_default (compose project paisans-f2a9-status)")
+	wantLine(t, r, "docker compose -p paisans-f2a9-status down")
 
 	own := cleanHost()
-	own.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-porch-status_default","labels":{"com.docker.compose.project":"paisans-porch-status"},"ipam":[{"Subnet":"10.255.255.0/29"}]}
+	own.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-f2a9-porch-status_default","labels":{"com.docker.compose.project":"paisans-f2a9-porch-status","community.paisans.deployment":"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},"ipam":[{"Subnet":"10.255.255.0/29"}]}
 `, id("8"))
 	wantClass(t, check(t, "porch", own), hostcheck.Clean)
 }

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -102,6 +103,8 @@ type Container struct {
 	ID, Name string
 	// Project is its compose project label, "" for none.
 	Project string
+	// Deployment is the id in its deployment label, "" for none.
+	Deployment string
 	// PID is its main process, 0 when it is not running.
 	PID int
 	// Bindings are the host ports it publishes. They come from its
@@ -130,7 +133,7 @@ func parseContainers(out string) ([]Container, error) {
 		if err := json.Unmarshal(line, &in); err != nil {
 			return err
 		}
-		c := Container{ID: in.ID, Name: strings.TrimPrefix(in.Name, "/"), Project: in.Labels[composeProject], PID: in.PID}
+		c := Container{ID: in.ID, Name: strings.TrimPrefix(in.Name, "/"), Project: in.Labels[composeProject], Deployment: in.Labels[deployment.Label], PID: in.PID}
 		ports := make([]string, 0, len(in.Ports))
 		for p := range in.Ports {
 			ports = append(ports, p)
@@ -157,7 +160,7 @@ func parseContainers(out string) ([]Container, error) {
 
 // Volume is one Docker volume.
 type Volume struct {
-	Name, Project string
+	Name, Project, Deployment string
 	// Anonymous is a volume Docker made for a container, not one somebody
 	// named.
 	Anonymous bool
@@ -174,7 +177,7 @@ func parseVolumes(out string) ([]Volume, error) {
 			return err
 		}
 		_, labelled := in.Labels[anonymousLabel]
-		list = append(list, Volume{Name: in.Name, Project: in.Labels[composeProject], Anonymous: labelled || anonymousName.MatchString(in.Name)})
+		list = append(list, Volume{Name: in.Name, Project: in.Labels[composeProject], Deployment: in.Labels[deployment.Label], Anonymous: labelled || anonymousName.MatchString(in.Name)})
 		return nil
 	})
 	return list, err
@@ -182,8 +185,8 @@ func parseVolumes(out string) ([]Volume, error) {
 
 // Network is one Docker network and the subnets it hands out.
 type Network struct {
-	ID, Name, Project string
-	Subnets           []string
+	ID, Name, Project, Deployment string
+	Subnets                       []string
 }
 
 func parseNetworks(out string) ([]Network, error) {
@@ -200,7 +203,7 @@ func parseNetworks(out string) ([]Network, error) {
 		if err := json.Unmarshal(line, &in); err != nil {
 			return err
 		}
-		n := Network{ID: in.ID, Name: in.Name, Project: in.Labels[composeProject]}
+		n := Network{ID: in.ID, Name: in.Name, Project: in.Labels[composeProject], Deployment: in.Labels[deployment.Label]}
 		for _, c := range in.IPAM {
 			if c.Subnet != "" {
 				n.Subnets = append(n.Subnets, c.Subnet)

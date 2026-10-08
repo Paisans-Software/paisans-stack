@@ -310,7 +310,7 @@ Because a pinned stack is self-contained, relocating it is ordinary work:
 
 ```
 docker compose down                     # stop first — see below
-tar czf stack.tgz /srv/<stack>
+tar czf stack.tgz /srv/paisans/<token>/<stack>
 scp stack.tgz newhost:
 # on the new host: untar, open firewall, docker compose up -d
 # then update the DNS A record
@@ -320,7 +320,7 @@ Four things make that sequence true rather than nearly true:
 
 * **Stop the stack before archiving.** Tarring a live Postgres volume produces a
   torn copy that may restore and then fail later. Stop it, or `pg_dump` instead.
-* **Use bind mounts under `/srv/<stack>/`, not named volumes.** This is why the
+* **Use bind mounts under `/srv/paisans/<token>/<stack>/`, not named volumes.** This is why the
   tar is one line instead of a `--volumes-from` dance, so the toolkit should lay
   pinned stacks out that way from the start.
 * **Lower the DNS TTL before the move**, not during it.
@@ -704,6 +704,82 @@ not replication lag. `paisans failover status` reads etcd. A config file that
 starts recording status drifts, and someone trusts a stale value during an
 incident.
 
+### A deployment has an id, and a host knows every deployment on it
+
+`paisans.yaml` carries a top level `id`: a random version 4 UUID, lowercase,
+in canonical form.
+
+```yaml
+version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
+```
+
+`paisans init` writes it when it is missing, as one line after `version:`,
+leaving every other byte of the file as it was, and never changes one that is
+there. `validate` refuses a file without one, or with one that is not a
+lowercase version 4 UUID, and says that `init` adds it. **The id never
+changes**, because everything a deployment owns on a host is named from it:
+a new id is a new deployment, and the old one's containers, directories and
+records would belong to nobody.
+
+The id is the identity; its first four hex digits are the **token**, and the
+token is what names carry, because a name is read by people and a full UUID in
+every container name is noise. With the id above the token is `f2a9`, and:
+
+| What | Name or path |
+|------|--------------|
+| a compose project | `paisans-<token>-<stack>`, Eg: `paisans-f2a9-talk`, so a container is `paisans-f2a9-talk-app-1` |
+| everything apply renders on a host | under `/srv/paisans/<token>/`: `/srv/paisans/f2a9/<stack>/`, `/srv/paisans/f2a9/.paisans-manifest.json` |
+| every service and every compose network | the Docker label `community.paisans.deployment=<id>`, the full id |
+| a firewall rule `host prepare` adds | the ufw comment `paisans-<token>: <why>` |
+| `host prepare`'s own files | `paisans-<token>-watchdog.service`, `docker.service.d/paisans-<token>-after-wg0.conf`, `/etc/paisans/authorized_keys.<user>.paisans-<token>.owned` |
+| a DNS record `dns init` creates | the comment `paisans-<token>: created by paisans dns init` |
+
+Code that decides whether a Docker object is this deployment's matches the
+label, and the full id in it, never a name: `doctor` lists containers with
+`docker ps --filter label=community.paisans.deployment=<id>`, and `prune`
+removes a volume only when it carries that label with this id. A name is
+chosen by whoever creates the object, and two deployments on one host share
+every naming convention, so a name can only ever say what something is
+called. The firewall, unit and DNS markers carry the token: ufw comments
+and record comments are read by people too, and the host registry is what
+makes the token unique on a host.
+
+**Several deployments may share a host.** Each has its own root, its own
+compose projects and its own markers, so none of them reads another's files
+as its own or replaces another's containers. What the token cannot do alone
+is guarantee that: four hex digits of a random id collide rarely, not never.
+So **every host keeps a registry** at `/var/lib/paisans/registry.json`,
+root's and 0600, listing every deployment that has claimed it:
+
+```json
+{"version":1,"deployments":{
+"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01":{"token":"f2a9","root":"/srv/paisans/f2a9","domain":"example.org","site":"home-a","claimed_at":"2026-10-01T00:00:00Z"}
+}}
+```
+
+Every command that writes to a host **claims it first**: `apply`,
+`host prepare`, `storage init`, `storage add`, `storage rotate-key`,
+`site add`, `prune`, `app admin create`, `oidc client create` and
+`failover test`, each with `--execute`, on every site it will write to. The
+claim is one remote shell command run under `flock` on
+`/var/lib/paisans/registry.lock`: it reads the registry, refuses if another
+id already holds this deployment's token or root, and otherwise adds this
+deployment's entry, or refreshes it, in a temporary file it then moves over
+the registry. A refusal names the other deployment's id and domain and
+changes nothing, on that host or any other. The lock is what serialises two
+operators claiming one host at once, and the move is what keeps a registry
+from ever being half written. The merge is done with awk, which a host has
+before `host prepare` has installed anything, so the file keeps one
+deployment per line, and a registry in any other layout is refused rather
+than guessed at.
+
+Without `--execute` the same commands only read the registry and refuse the
+same way, so a dry run shows the conflict the real run would meet. `preflight`
+reads it on the site being added. `app admin create` and `oidc client create`
+reach a host without sudo, and their dry runs leave the registry alone; with
+`--execute` they claim through sudo, since the registry is root's.
+
 ### The image an app runs is declared, not implied
 
 `kind` selects which template set renders. It does not decide which image runs.
@@ -764,8 +840,8 @@ An app takes two maps that look alike and are not.
 **`settings` is input the toolkit reasons about.** A template asks for each key
 by name, and some are validated or acted on: `s3_bucket` is a setting because
 `validate` refuses one named `outline` and `storage init` creates it, and
-`sso_dashboard_link` is one because `oidc client create` sends it to the
-identity provider (see *`oidc client create` makes an app's client at Pocket
+`sso_dashboard_link` is one because `apply` and `oidc client create` send it
+to the identity provider (see *`oidc client create` makes an app's client at Pocket
 ID*). An Mbin app's `queue` is one because it decides which services the stack
 runs (see *Mbin's queues are in Postgres by default*). A key no template asks
 for is silently ignored. That is the direction in which choosing
@@ -850,7 +926,7 @@ needs a `settings` key or a template change.
 
 **An env key starting `COMPOSE_` or `DOCKER_` is refused as
 `config-key-steers-compose`.** `apply` runs `docker compose -f
-/srv/<app>/compose.yaml up -d`, and compose reads the `.env` beside that file
+/srv/paisans/<token>/<app>/compose.yaml up -d`, and compose reads the `.env` beside that file
 for its own settings as well as handing it to the application. With
 `docker compose config` on Docker Compose v5.4.0, run on the operator's Mac
 rather than a host, `COMPOSE_PROJECT_NAME=other` in that `.env` renamed the
@@ -950,7 +1026,7 @@ Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.
 |------|----------|--------|
 | **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys, Mercure JWT, RabbitMQ and Valkey passwords, Mbin's OAuth2 server keypair | created at `init`, never typed or seen |
 | **Pasted** | Cloudflare API token, SMTP password (`external.smtp_password`, or per app) | issued elsewhere, supplied by a human |
-| **Captured** | OIDC client secrets | belong to a running service; recorded here, by `oidc client create` for Pocket ID |
+| **Captured** | OIDC client secrets | belong to a running service; recorded here, by `apply` or `oidc client create` for Pocket ID |
 
 **Mbin's OAuth2 keypair is generated, not placed.** Mbin signs the tokens it
 issues to API clients and apps with an RSA key that its image does not create;
@@ -958,7 +1034,7 @@ upstream's Docker install has the operator run `openssl genrsa -des3 ... 4096`
 on the host (`docs/02-admin/01-installation/02-docker.md` in the Mbin
 repository). `init` generates the same thing instead: 4096 bits, the private
 half encrypted with the app's `oauth_passphrase`, both halves kept in the
-secrets file and rendered to `/srv/<app>/oauth/`. A host step is what the
+secrets file and rendered to `/srv/paisans/<token>/<app>/oauth/`. A host step is what the
 toolkit exists to remove, and keeping the pair in the secrets file is what
 gives every apps site under cluster placement the same one, so a token one
 site issues verifies on another. Like every generated secret it is never
@@ -975,13 +1051,14 @@ privilege drop in place.
 
 The captured case matters. An identity provider holds a client secret and the
 app needs the identical value; recording it here makes it reproducible instead
-of existing on exactly one host. Creating one is a privileged mutation that
-belongs to a human, and the toolkit does not automate that approval away: `oidc
-client create` prints every mutation and changes nothing until the operator
-re-runs it with `--execute`. For Pocket ID the value is not even captured. The
-toolkit generates it, records it here, and then hands it to Pocket ID, which
-accepts a caller supplied secret; see *`oidc client create` makes an app's
-client at Pocket ID*.
+of existing on exactly one host. Creating one is a privileged mutation, and
+for the deployment's own Pocket ID the approval is the declaration: an app in
+`paisans.yaml` whose kind has a known client shape approves that client, so
+`apply --execute` creates it as part of setting the app up, and a dry run
+prints every mutation first. For Pocket ID the value is not even captured.
+The toolkit generates it, records it here, and then hands it to Pocket ID,
+which accepts a caller supplied secret; see *`oidc client create` makes an
+app's client at Pocket ID*.
 
 **Pasted and captured secrets go in through a pipe.** `paisans secrets set
 <dotted.key>` reads the value from stdin, writes it into `secrets.enc.yaml`
@@ -1059,9 +1136,9 @@ secrets.enc.yaml  ─┤ render
 age key           ─┘   │
                        │ ssh push
                        ▼
-                  /srv/<stack>/.env       (plaintext, 0600) ──► env vars
-                  /srv/<stack>/config.ini (plaintext, 0600) ──► bind mount
-                  /srv/<stack>/compose.yaml
+                  /srv/paisans/<token>/<stack>/.env       (plaintext, 0600) ──► env vars
+                  /srv/paisans/<token>/<stack>/config.ini (plaintext, 0600) ──► bind mount
+                  /srv/paisans/<token>/<stack>/compose.yaml
                   caddy/, haproxy.cfg, patroni env
                                                        docker compose up -d
 ```
@@ -1099,7 +1176,7 @@ templates/mbin/                             templates/writefreely/
 ```
 
 **A template's path is its destination.** The layout under `templates/<kind>/`
-mirrors the layout under `/srv/<stack>/` on the host, so where a rendered file
+mirrors the layout under `/srv/paisans/<token>/<stack>/` on the host, so where a rendered file
 lands is read off the tree rather than held in a mapping somewhere else. A file
 the application expects at a path inside its own image is bind-mounted there by
 that kind's `compose.yaml`.
@@ -1632,7 +1709,7 @@ A record is deleted only when every one of these holds:
 
 | Rule | Why |
 |------|-----|
-| it carries exactly the comment `dns init` writes, `created by paisans dns init` | a record without it was never the toolkit's |
+| it carries exactly the comment this deployment's `dns init` writes, `paisans-<token>: created by paisans dns init` | a record without it was never this deployment's: one with another token is another deployment's, and one with no token was never the toolkit's |
 | it is an A or AAAA record | those are the only types `dns init` creates |
 | its name is `community.domain`, a name under it, or a name the configuration produces now | every media hostname, derived or declared, is under the domain, and so was the shared one per app hostnames replaced |
 | its address is a site's `public_address` or `public_address6` | it pointed at this deployment's own host |
@@ -1954,9 +2031,12 @@ The check has three parts, in `internal/hostcheck`:
   every container with its compose project, PID and published ports,
   volumes, networks and their subnets, `ss -Hltnup`, `ip -o link`,
   `ip -j route`, `ufw status verbose`, whether firewalld is active, and
-  whether `/srv/.paisans-manifest.json` exists and records `wg0.conf`.
-* **Classification.** A container is the toolkit's when its compose project
-  starts `paisans-`. A listener is the toolkit's when its process is in one of
+  whether this deployment's manifest, `/srv/paisans/<token>/.paisans-manifest.json`,
+  exists and records `wg0.conf`.
+* **Classification.** A container or network is the toolkit's when it
+  carries the label `community.paisans.deployment` with this deployment's id,
+  the same rule `prune` follows. Another deployment's containers on the same
+  host are foreign like anyone else's, whatever their names. A listener is the toolkit's when its process is in one of
   those containers' cgroups (a host network container), or it is the
   `docker-proxy` publishing one of their ports, or it is the kernel's
   WireGuard socket for a `wg0` the manifest records. A loopback listener, and
@@ -1998,12 +2078,9 @@ On a **shared** host:
   following it over SSH keeps the session. The toolkit never runs `ufw default` or `ufw --force enable` there:
   both decide the other services' traffic as well, and enabling a deny
   default under a web server the toolkit knows nothing about takes it off
-  the network. It still adds and removes its own `paisans:` rules.
+  the network. It still adds and removes its own `paisans-<token>:` rules.
 * **No image is removed**, as with `apply --keep-images`, because an image the
   toolkit renders (`caddy`, `postgres`) may be what a foreign project runs.
-* **`prune` removes only volumes a `paisans-*` compose project labelled.** An
-  anonymous one may be a foreign project's as easily as a replaced paisans
-  container's, so it is listed and kept.
 * **Docker is left alone**, as it already is whenever `docker compose` works,
   and Ubuntu's `docker.io` and a Docker snap are still refused rather than
   removed.
@@ -2076,7 +2153,7 @@ Every app publishes its port on its site's mesh address, which exists only once
 those containers fail with `cannot assign requested address`, and Docker does
 not retry a container that failed while setting up its network, so the site
 comes back with its app stacks down. `host prepare` therefore writes a systemd
-drop-in, `/etc/systemd/system/docker.service.d/paisans-after-wg0.conf`, with
+drop-in, `/etc/systemd/system/docker.service.d/paisans-<token>-after-wg0.conf`, with
 `Wants=` and `After=wg-quick@wg0.service`. Installing it is a
 `systemctl daemon-reload` and nothing else: the order matters only at boot, so
 Docker and its containers keep running. A drop-in leaves Docker's own unit,
@@ -2100,8 +2177,10 @@ both, and its rules are the operator's.
 
 #### host prepare owns its rules, and only its rules
 
-Every rule `host prepare` adds carries a ufw comment, `paisans: <why>`, and
-that comment is the whole of ownership. A later prepare compares what the site
+Every rule `host prepare` adds carries a ufw comment, `paisans-<token>: <why>`,
+and that comment is the whole of ownership. A rule another deployment on the
+host added carries that deployment's token, and is as foreign as an
+operator's. A later prepare compares what the site
 derives with what `ufw show added` prints, and decides per rule:
 
 | ufw holds | The plan says | What happens |
@@ -2146,12 +2225,12 @@ or `reject` on the SSH port is refused, whatever the port is.
 **Moving `ssh.port` adds the new allow and keeps the old one.** `host prepare`
 does not change the port sshd listens on, and it cannot tell whether sshd
 already listens on the new one; if it does not, the old allow is the only way
-back in. The old allow is recognised by its comment (`paisans: ssh, the
+back in. The old allow is recognised by its comment (`paisans-<token>: ssh, the
 bootstrap route`) and the plan says so:
 
 ```
   change    firewall: allow 2222/tcp (ssh, the bootstrap route)
-  present   firewall: `ufw allow 22/tcp comment 'paisans: ssh, the bootstrap route'` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow. Delete it yourself once SSH on 2222 works
+  present   firewall: `ufw allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow. Delete it yourself once SSH on 2222 works
 ```
 
 Removals run after every addition, the default policy and enabling, so a rule
@@ -2184,7 +2263,7 @@ not exist is refused: creating users is out of scope.
 the provider's key there, and an operator may add a restricted key by hand. So
 `host prepare` adds only listed keys, and removes only keys **it added
 itself**. What it added is recorded in a sidecar,
-`/etc/paisans/authorized_keys.<user>.owned`, root's and 0600, one fingerprint
+`/etc/paisans/authorized_keys.<user>.paisans-<token>.owned`, root's and 0600, one fingerprint
 and comment per line. Keys are compared by fingerprint, so a key whose comment
 was changed is still the same key.
 
@@ -2340,7 +2419,7 @@ cluster formed seconds after the witness was applied.
 The witness goes first because nothing waits on it: it runs no Patroni, so its
 apply finishes on its own and its etcd is running for the sites after it. Two
 gates enforce the rest, and both apply only while **this site's etcd member is
-being founded**, which `apply` reads as the absence of `/srv/infra/etcd-initial`:
+being founded**, which `apply` reads as the absence of `/srv/paisans/<token>/infra/etcd-initial`:
 
 | Gate | When | What `apply` does |
 |------|------|-------------------|
@@ -2424,7 +2503,7 @@ restart the whole project, so a new `garage.toml` restarted Patroni, which on
 the primary is a failover, and HAProxy, which drops every app's database
 connection. Each service's bind mounted files live in a directory named for
 it (`haproxy/`, `garage/`, `caddy/`), so a restart now names the services
-whose directories changed: `docker compose -f /srv/infra/compose.yaml restart
+whose directories changed: `docker compose -f /srv/paisans/<token>/infra/compose.yaml restart
 garage`. A file at the top of the stack still restarts the whole project, and
 an environment or compose change is still a recreate, which Compose limits to
 the services whose configuration changed.
@@ -2467,7 +2546,7 @@ nothing schedules, so a tight quota is an alarm waiting on a burst.
 
 These are runtime flags, read on every start, unlike `--initial-cluster` and
 `--initial-cluster-state`, which etcd reads only on a member's first start and
-which `/srv/infra/etcd-initial` keeps fixed. Changing them is an ordinary
+which `/srv/paisans/<token>/infra/etcd-initial` keeps fixed. Changing them is an ordinary
 change to the infrastructure compose file: `apply` recreates the `etcd`
 service on the site it is applying and leaves the record alone. On a live
 deployment that is one member at a time, one site per apply, and with three
@@ -2750,7 +2829,7 @@ closed.
 
 So Pocket ID with `cluster` placement renders on every apps site like any
 other clustered app, and every site runs it through a standby wrapper,
-`/srv/<app>/paisans-standby.sh`, mounted read only and set as the service's
+`/srv/paisans/<token>/<app>/paisans-standby.sh`, mounted read only and set as the service's
 entrypoint, with the image's own entrypoint and command as its arguments:
 
 * it streams the child's output to the container's log, keeping the last 50
@@ -2797,7 +2876,7 @@ otherwise, and `absent` before it has the stack. None active is waited for, up
 to three minutes, then fails: sign in is down. Two active fails at once,
 since waiting would leave both serving. A site that cannot be reached is shown
 and not counted. `app admin create` and `oidc client create` call the active
-site the same way unless `--site` names one.
+site the same way unless `--site` names one, and so does `apply`'s client step.
 
 **The gateway needs nothing new.** The route lists every apps site in order
 under `upstream_failover`, as every multi site app does, with no active
@@ -2888,7 +2967,7 @@ the old one stays on disk, unused, with no label saying whose it was. A real
 apps site collected 18 that way, about 830 MB: the Mbin image declares
 `VOLUME /app/var/`, the template mounted only `/app/var/log` beneath it, and
 every recreate of `app` and of each messenger replica left one behind holding
-`cache/` and `log/`. An anonymous volume is also outside `/srv/<stack>/`, so
+`cache/` and `log/`. An anonymous volume is also outside `/srv/paisans/<token>/<stack>/`, so
 it breaks the bind mount rule above in a second way: `app move`'s tar would
 not carry it.
 
@@ -2900,16 +2979,16 @@ beneath it. So **only a mount at exactly the declared path counts**, and a
 trailing slash is not a difference.
 
 **Every kind's template mounts every path its images declare.** State gets a
-bind under `/srv/<stack>/`; throwaway gets a tmpfs. Each pinned image was
+bind under `/srv/paisans/<token>/<stack>/`; throwaway gets a tmpfs. Each pinned image was
 pulled for linux/amd64 and inspected on 2026-10-07:
 
 | Image | Declares | Mounted as |
 |-------|----------|------------|
 | mbin 1.14.0-paisans (app, messenger) | `/app/var/` | tmpfs, 256m. Symfony's compiled cache, rebuilt by the entrypoint's `cache:clear` on every start; the app cache is in Valkey. The log bind mounts stay inside it |
 | rabbitmq 3.13.7-management-alpine | `/var/lib/rabbitmq` | bind, `rabbitmq_data` (already) |
-| outline 1.10.0 | `/var/lib/outline/data` | bind, `/srv/<app>/data`, which was mounted at `/data`, a path nothing reads |
-| postgres 16-alpine, 17-alpine | `/var/lib/postgresql/data` | bind, `/srv/<app>/postgres` (already) |
-| postgres 18-alpine | `/var/lib/postgresql` | bind, `/srv/<app>/postgres`, moved from `/var/lib/postgresql/data` |
+| outline 1.10.0 | `/var/lib/outline/data` | bind, `/srv/paisans/<token>/<app>/data`, which was mounted at `/data`, a path nothing reads |
+| postgres 16-alpine, 17-alpine | `/var/lib/postgresql/data` | bind, `/srv/paisans/<token>/<app>/postgres` (already) |
+| postgres 18-alpine | `/var/lib/postgresql` | bind, `/srv/paisans/<token>/<app>/postgres`, moved from `/var/lib/postgresql/data` |
 | amqproxy, valkey, pocket-id, synapse, MAS, element-web, writefreely-wisp, oauth2-proxy, spilo 16 to 18, etcd, haproxy, garage, caddy | nothing | |
 
 Postgres 18 was worse than a leak. Its image sets `PGDATA` to
@@ -2919,7 +2998,7 @@ the default `postgres_version` could not start its database at all. The mount
 now follows the official image's own tag (an app may pin an older Postgres than
 the cluster runs) and the cluster's version otherwise.
 
-**Mbin's cache is a tmpfs rather than a bind under `/srv`.** The two messenger
+**Mbin's cache is a tmpfs rather than a bind under the deployment's root.** The two messenger
 replicas would share one bind and race over one cache directory, and the cache
 has no value across a restart: the entrypoint clears it each time.
 
@@ -2949,17 +3028,19 @@ checked, because a stack left alone creates no container and so no volume.
 
 For what accumulated before any of this, `paisans prune --site <site>` lists
 every dangling volume with its size and top level entries, and `--execute`
-removes the ones that are this deployment's: anonymous volumes, and any a
-`paisans-*` compose project labelled. One labelled by another compose project,
-or one somebody named, is kept. Removing anonymous volumes rests on the host
-being the deployment's alone, so it happens only where the host check found
-it clean; on a shared host an anonymous volume is listed and kept, and the
-plan says which reading it used at the top.
+removes the ones that are this deployment's: those carrying the label
+`community.paisans.deployment` with this deployment's id. Every other volume is
+kept: one labelled with another id is another deployment's, and one with no
+such label, anonymous ones included, cannot be attributed to any deployment on
+a host that several may share. `apply` itself removes the anonymous volumes its
+own recreates abandon, read from its own containers before they are replaced,
+so those do not wait for `prune`. The plan says what its verdicts rest on at
+the top.
 
 **`prune` lists first and removes only this deployment's volumes**, the same
 rule `apply` follows for images. **Every declared
 volume is mounted** because each recreate otherwise costs a volume, and a
-throwaway path is not bound under `/srv` because a shared cache directory
+throwaway path is not bound under the deployment's root because a shared cache directory
 between replicas is a race, not state.
 
 ### `app admin create` makes an app's first administrator
@@ -3112,13 +3193,63 @@ mesh, because the port is bound to the mesh address and nowhere else.
 An app that signs members in through Pocket ID needs a client there, and the
 app needs that client's ID and secret. The toolkit creates the client and
 records both in the secrets file, where `render` already reads them
-(`oidc_clients.<app>.client_id` and `.client_secret`), so the next `apply`
-renders the app's sign in settings with nothing else to do:
+(`oidc_clients.<app>.client_id` and `.client_secret`).
+
+**`apply` does this itself, for every app it starts whose kind has a client
+shape** (`kinds.OIDCClient`, today `mbin` and `uptime`). Creating an app's
+client at the deployment's own Pocket ID is part of setting the app up, and
+declaring the app in `paisans.yaml` is the approval for that client. Founder
+decision, 2026-10-08. So a first apply of a site needs nothing run before it:
+
+```sh
+paisans apply --site home-a             # shows the clients with the rest of the plan
+paisans apply --site home-a --execute   # creates, records and renders them
+```
+
+The step is the command's own code, so everything below holds for both. On a
+site that runs Pocket ID, `--execute` starts the infrastructure and Pocket ID
+first, with every other app stack held back, waits until exactly one Pocket ID
+instance answers `/healthz`, ensures the clients, and only then plans the site
+again and starts the rest, so each app renders the credentials just recorded.
+On any other site the clients come first. A dry run probes and prints the
+client lines with the rest of the plan and sends nothing; on a site whose
+Pocket ID is not running yet it says the clients are made once it answers.
+
+**An app is held back rather than started without its client.** When Pocket
+ID cannot be reached, an app with no recorded client is skipped with the
+reason and the rest of the site is applied; a re-run once Pocket ID answers
+finishes it, and the apply does not fail for it. The end of the apply lists
+what was held back and why, including any `--overwrite` in a held stack, which
+is not written and has to be named again; a `--recreate` of a held stack is
+remembered and carried out when the stack starts. A deployment that declares
+no `pocket-id` app has no identity step, and its apps are applied as before,
+without sign in. An app whose client is already
+recorded is not held back by an unreachable Pocket ID: its client was right
+when it was made, and an outage elsewhere is no reason to stop an app that can
+already sign people in. An existing client that differs from what the app
+needs refuses that app alone, as the command does; the rest of the site is
+applied and `apply` exits non zero, because a person has to fix the client.
+Everything `--execute` would refuse before writing (a file edited on the host,
+too little disk for the pulls, an unmounted image volume) is checked on the
+whole site before the first pass, so a refusal still leaves the host and
+Pocket ID untouched. The secrets file is written through the same recorder, re-encrypted to the
+recipients in `.sops.yaml`, and a plan that would write an encrypted file with
+no recipient is refused before Pocket ID is sent anything.
+
+**`apply` creates a client only when nothing is recorded for the app.** If
+the secrets file holds a client ID and secret and Pocket ID has no such client,
+or holds the app's client under another ID, `apply` refuses that app rather
+than replacing what is recorded, and names `oidc client create --app <name>`,
+which creates or re-records it. Recorded credentials may be what a running app
+signs people in with, so replacing them is a decision, not a repair.
+
+`apply` never rotates a secret. The command stays for that and for running the
+step alone:
 
 ```sh
 paisans oidc client create --app talk             # shows what it would do
 paisans oidc client create --app talk --execute   # does it
-paisans apply --site home-a --execute              # renders OAUTH_OIDC_*
+paisans oidc client create --app talk --rotate-secret --execute
 ```
 
 For an app whose configuration sets `OAUTH_OIDC_ADMIN_GROUP: admins`, the dry
@@ -3133,12 +3264,11 @@ talk's client at auth on home-a (pocket-id)
 Nothing was changed. Re-run with --execute to apply this.
 ```
 
-**Each line is a Pocket ID mutation, and printing it is what makes approving
-it possible.** Client, group and user changes at the identity provider need a
-human's approval every time. The command cannot know whether it has one, so it
-never assumes it: the dry run is the request, and the operator's `--execute`
-is the approval of exactly what was printed. The same probe runs again on
-`--execute`, so what executes is what a fresh probe plans.
+**Each line is a Pocket ID mutation, and every one is printed.** For an app
+declared in `paisans.yaml` the declaration approves its client; the printed
+plan is what lets an operator see exactly what that approval sends, in a dry
+run of either `apply` or the command, before `--execute`. The same probe runs
+again on `--execute`, so what executes is what a fresh probe plans.
 
 The client is the app kind's, not a choice made at the command line. For Mbin
 that is the paisans fork's verify route as the only callback, PKCE on because
@@ -3348,7 +3478,7 @@ lasts one stage.
 start and ignores them once its data directory exists. They are inert on a
 running member, so the only thing changing them can do is make `apply` see a
 new compose file and recreate a healthy member. Each etcd host therefore has
-`/srv/infra/etcd-initial`, a rendered file holding the two flags its member
+`/srv/paisans/<token>/infra/etcd-initial`, a rendered file holding the two flags its member
 started with, which every later render repeats. A founder records `new` and the
 founding set. A joiner records `existing` and the membership **right after its
 own `member add`**, which etcd requires exactly: a joiner whose
@@ -3399,7 +3529,7 @@ reconnect when one is closed, and its healthcheck does not touch the database,
 so the container stayed `healthy` throughout. Pocket ID recovered on its own.
 So on each site whose HAProxy restarts, stage 6 first stops every app stack
 there with `cluster` placement and a kind that uses Postgres (`docker compose
--f /srv/<app>/compose.yaml stop`), restarts HAProxy, starts them again (`up
+-f /srv/paisans/<token>/<app>/compose.yaml stop`), restarts HAProxy, starts them again (`up
 -d`), and holds each to `apply`'s health gate; a failure stops the join there
 with the app's logs. The plan lists the outage: stop, restart, start, check. A
 pinned app has its own Postgres and is left alone. This is one instance of a
@@ -3442,13 +3572,14 @@ at, and "could not look" is not "looked and it was fine".
 | Clock | every site | `timedatectl show -p NTPSynchronized --value` | not `yes` |
 | Host | new site | the host check (see *The host check*) | something foreign holds a claim, or the host is shared and its firewall is not already up and denying by default |
 | Prepared | new site | `host prepare`'s own plan, without the firewall's defaults on a shared host | it has any step left |
+| Registry | new site | `/var/lib/paisans/registry.json`, read and never claimed | another deployment there holds this one's token or root |
 | Platform | new data site, against each existing data site | `/etc/os-release` `ID` and `VERSION_ID`, and the release at the end of `ldd --version`'s first line | any of the three differs |
 | WireGuard | new site | `/sys/module/wireguard`, else `modprobe -n wireguard` | neither |
 | Watchdog | new data site, unless its mode is `off` | `/dev/watchdog` exists | it does not |
 | Ports | new site | the host check's `ss -Hltnup` against its claims | anything listens where the site will bind: 51820/udp; 2379 or 2380 for an etcd member; 5432, 8008 or 8009 for a data site; the cluster port where the site runs HAProxy; 80 and 443 for a gateway or a monitor in ingress mode paisans; `listen` for a monitor in ingress mode external; each app's published port |
 | Routes | new site | `ip -j route` | a route overlaps `mesh.subnet`, other than one through `wg0` |
-| Disk | new data site | the leader's `sum(pg_database_size(...))`, through its Patroni container's `psql`; `df` on the deepest existing directory towards `/srv/infra/postgres` | free space is under that plus 2 GiB |
-| Storage | new site | `docker info --format '{{.DockerRootDir}}'`, then `findmnt -no FSTYPE,SOURCE --target` on Docker's root and on `/srv` (or the deepest directory towards it that exists) | either is a network filesystem (`nfs`, `nfs4`, `cifs`, `smb3`, `glusterfs`, `ceph`, `fuse.sshfs` and the others preflight lists); a type that is neither that nor a local block filesystem (`ext4`, `xfs`, `btrfs`, `zfs`, `f2fs`) warns |
+| Disk | new data site | the leader's `sum(pg_database_size(...))`, through its Patroni container's `psql`; `df` on the deepest existing directory towards `/srv/paisans/<token>/infra/postgres` | free space is under that plus 2 GiB |
+| Storage | new site | `docker info --format '{{.DockerRootDir}}'`, then `findmnt -no FSTYPE,SOURCE --target` on Docker's root and on the deployment's root, `/srv/paisans/<token>` (or the deepest directory towards it that exists) | either is a network filesystem (`nfs`, `nfs4`, `cifs`, `smb3`, `glusterfs`, `ceph`, `fuse.sshfs` and the others preflight lists); a type that is neither that nor a local block filesystem (`ext4`, `xfs`, `btrfs`, `zfs`, `f2fs`) warns |
 | Round trip | new site to every other site | three TCP connects to the site's `public_address` on its ssh port, timed with bash's `/dev/tcp` and `$EPOCHREALTIME`; the median is used | `etcd.election_timeout_ms` is under five round trips |
 
 Three of these need a word.
@@ -3477,7 +3608,7 @@ On NFS, SMB, GlusterFS, CephFS or a FUSE mount of a remote, what fsync
 promises depends on the server, its export options and the client's cache,
 and a network blip stalls it for as long as the blip lasts, which for etcd is
 a missed heartbeat and an election for nothing. Docker's root is checked as
-well as `/srv`, because it holds every container's writable layer and an
+well as the deployment's root, because it holds every container's writable layer and an
 operator may have moved it. A type in neither list warns rather than refuses:
 it is not known to be wrong, and a list of every filesystem is not one this
 toolkit can keep. The check cannot see through a block device: an iSCSI LUN
@@ -3523,7 +3654,7 @@ does not pass stops it where it is rather than switching back blind.
    patronictl prints `Switchover failed` and exits normally.
 4. **Restart the database apps.** Every app with `cluster` placement and a
    kind that uses Postgres is restarted on **every** apps site (`docker
-   compose -f /srv/<app>/compose.yaml restart`), not only the old primary's:
+   compose -f /srv/paisans/<token>/<app>/compose.yaml restart`), not only the old primary's:
    a leader change closes every client's connection to the old primary
    wherever the client runs, and an app whose workers never reconnect, as
    Mbin's do not (see "`apply` restarts the apps whose database path
@@ -3576,7 +3707,7 @@ that the first `FAIL` is usually the cause of those after it:
 | etcd quorum | `etcdctl endpoint health -w json` in the etcd container of the first member that answers, naming every member of `etcd.members` by its mesh address | fewer than half the members plus one are healthy. One member down with quorum intact is a `WARN` |
 | etcd version | `curl` on the host to `http://127.0.0.1:2379/version`; skipped, and said so, where the host has no `curl` | the cluster version is `3.0.0` under a 3.5 server |
 | Patroni | `/cluster` from every database site's Patroni, through `curl` in its container as `apply` asks it, and Patroni's `/sync` key from etcd | there is no running leader. A replica that is not `streaming`, or more than 16 MiB behind, is a `WARN`, and so is a leader with no Sync Standby while `cluster.synchronous` is true |
-| Containers | `docker ps -a --filter name=paisans-` on every site, then `docker inspect` and the end of `docker logs` for each container not running | any container is not running |
+| Containers | `docker ps -a --filter label=community.paisans.deployment=<id>` on every site, then `docker inspect` and the end of `docker logs` for each container not running | any container is not running |
 | Pocket ID | the same question `apply` asks after acting on a Pocket ID stack on more than one site, asked once | no site, or more than one, has an active instance |
 | Clocks | `date +%s.%N` on each site, against the workstation's clock taken on either side of the call, less half the round trip | never; more than 1 s off is a `WARN` |
 
@@ -3650,7 +3781,7 @@ this order:
    `home-a`:
 
    ```
-   docker compose -f /srv/infra/compose.yaml exec patroni patronictl -c /home/postgres/postgres.yml failover --candidate home-a --force
+   docker compose -f /srv/paisans/<token>/infra/compose.yaml exec patroni patronictl -c /home/postgres/postgres.yml failover --candidate home-a --force
    ```
 
    Patroni promotes the candidate a failover names even when `/sync` does not

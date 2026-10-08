@@ -113,7 +113,7 @@ func composeImages(content string) ([]string, error) {
 func siteImages(changes []Change) (map[string][]string, error) {
 	out := map[string][]string{}
 	for _, c := range changes {
-		if c.Stack == "" || c.Path != "/srv/"+c.Stack+"/compose.yaml" {
+		if c.Stack == "" || !isStackCompose(c) {
 			continue
 		}
 		images, err := composeImages(c.content)
@@ -247,7 +247,7 @@ func allRefs(images map[string][]string) []string {
 // and `restart` reuses the container it has. Nothing is probed when no stack
 // moves, so a plan with nothing to do asks the host nothing more.
 func (p *Plan) probeImages(need int64, t Transport) error {
-	images, err := siteImages(p.Changes)
+	images, err := siteImages(p.renderedChanges)
 	if err != nil {
 		return err
 	}

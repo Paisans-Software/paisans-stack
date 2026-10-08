@@ -6,12 +6,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 )
 
 func inspect(t *testing.T, h *fakeHost) *hostcheck.Inventory {
 	t.Helper()
-	inv, err := hostcheck.Inspect(h)
+	inv, err := hostcheck.Inspect(h, fixtureDeployment)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,12 +103,12 @@ tcp LISTEN 0 4096 [::ffff:0.0.0.0]:8081 *:* users:(("app",pid=601,fd=8))
 // The manifest is how a wg0 the toolkit wrote is told from one it did not.
 func TestTheManifestSaysWhetherWireGuardIsOurs(t *testing.T) {
 	h := cleanHost()
-	h.files["/srv/.paisans-manifest.json"] = `{"version":1,"files":[{"path":"etc/wireguard/wg0.conf","sha256":"x","mode":"0600"}]}`
+	h.files["/srv/paisans/f2a9/.paisans-manifest.json"] = `{"version":1,"files":[{"path":"etc/wireguard/wg0.conf","sha256":"x","mode":"0600"}]}`
 	inv := inspect(t, h)
 	if !inv.Manifest || !inv.ManifestWireGuard {
 		t.Errorf("manifest %v, wireguard %v", inv.Manifest, inv.ManifestWireGuard)
 	}
-	h.files["/srv/.paisans-manifest.json"] = `{"version":1,"files":[{"path":"srv/infra/compose.yaml","sha256":"x","mode":"0644"}]}`
+	h.files["/srv/paisans/f2a9/.paisans-manifest.json"] = `{"version":1,"files":[{"path":"srv/paisans/f2a9/infra/compose.yaml","sha256":"x","mode":"0644"}]}`
 	if inv := inspect(t, h); !inv.Manifest || inv.ManifestWireGuard {
 		t.Errorf("manifest %v, wireguard %v", inv.Manifest, inv.ManifestWireGuard)
 	}
@@ -142,7 +143,7 @@ func TestNoDockerSkipsTheContainerProbes(t *testing.T) {
 func TestADockerThatDoesNotAnswerIsAnError(t *testing.T) {
 	h := cleanHost()
 	h.fail = map[string]error{"docker version": errors.New("exit status 1")}
-	if _, err := hostcheck.Inspect(h); err == nil || !strings.Contains(err.Error(), "did not answer") {
+	if _, err := hostcheck.Inspect(h, fixtureDeployment); err == nil || !strings.Contains(err.Error(), "did not answer") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -152,7 +153,7 @@ func TestAFailedProbeIsAnError(t *testing.T) {
 	for _, probe := range []string{"ss -Hltnup", "ip -j route", "ufw status verbose", "docker inspect"} {
 		h := cleanHost()
 		h.fail = map[string]error{probe: errors.New("exit status 1")}
-		if _, err := hostcheck.Inspect(h); err == nil {
+		if _, err := hostcheck.Inspect(h, fixtureDeployment); err == nil {
 			t.Errorf("%s failed and the inventory went on", probe)
 		}
 	}
@@ -186,7 +187,7 @@ func TestEveryProbeRunsInTheCLocale(t *testing.T) {
 func TestAProbeThatIsNotRootIsRefused(t *testing.T) {
 	h := cleanHost()
 	h.answers["id -u"] = "1000\n"
-	_, err := hostcheck.Inspect(h)
+	_, err := hostcheck.Inspect(h, fixtureDeployment)
 	if err == nil || !strings.Contains(err.Error(), "uid 1000") || !strings.Contains(err.Error(), "--sudo") {
 		t.Fatalf("got %v", err)
 	}
@@ -211,3 +212,6 @@ func TestTheProbesTolerateWhatVanishesMidway(t *testing.T) {
 		}
 	}
 }
+
+// fixtureDeployment is the example configuration's deployment.
+var fixtureDeployment = deployment.Deployment{ID: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}

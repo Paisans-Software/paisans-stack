@@ -3,6 +3,7 @@
 # before it is rendered (see fixture() in render_test.go), so it is a
 # configuration an operator could actually have written.
 version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 
 community:
   name: "Fixture Community"

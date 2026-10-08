@@ -140,17 +140,17 @@ func (h *host) run(command, stdin string) (string, error) {
 	if w.unreachable != "" && strings.Contains(command, w.unreachable) {
 		return "ssh: connect to host 203.0.113.10 port 22: Operation timed out\n", sshDown(h.name)
 	}
-	if g, ok := strings.CutPrefix(command, garage.Command+" "); ok {
+	if g, ok := strings.CutPrefix(command, garage.Command(storageadd.Fixture)+" "); ok {
 		return h.garage(g)
 	}
 	switch {
-	case command == "docker compose -f /srv/infra/compose.yaml stop garage":
+	case command == "docker compose -f /srv/paisans/f2a9/infra/compose.yaml stop garage":
 		h.running = false
 		return "", nil
-	case command == "docker compose -f /srv/infra/compose.yaml up -d garage":
+	case command == "docker compose -f /srv/paisans/f2a9/infra/compose.yaml up -d garage":
 		h.start()
 		return "", nil
-	case strings.Contains(command, "ls -1 /srv/infra/garage/meta"):
+	case strings.Contains(command, "ls -1 /srv/paisans/f2a9/infra/garage/meta"):
 		var names []string
 		if h.hasLayout {
 			names = append(names, "cluster_layout")
@@ -459,14 +459,14 @@ func (h *host) recordManifest() {
 	var m render.Manifest
 	m.Version = 1
 	for path, content := range h.files {
-		if path == "/srv/.paisans-manifest.json" {
+		if path == "/srv/paisans/f2a9/.paisans-manifest.json" {
 			continue
 		}
 		sum := sha256.Sum256([]byte(content))
 		m.Files = append(m.Files, render.ManifestFile{Path: strings.TrimPrefix(path, "/"), SHA256: hex.EncodeToString(sum[:]), Mode: "0644"})
 	}
 	data, _ := json.Marshal(m)
-	h.files["/srv/.paisans-manifest.json"] = string(data)
+	h.files["/srv/paisans/f2a9/.paisans-manifest.json"] = string(data)
 }
 
 // deployGarage puts a garage.toml at factor on site, as an apply at that

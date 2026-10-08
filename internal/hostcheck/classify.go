@@ -68,12 +68,6 @@ type Report struct {
 // what is the toolkit's.
 func (r *Report) Shared() bool { return r.Class == Shared }
 
-// projectPrefix starts every compose project the toolkit renders: each
-// compose template is named paisans-<stack>.
-const projectPrefix = "paisans-"
-
-func ours(project string) bool { return strings.HasPrefix(project, projectPrefix) }
-
 // baseProcesses are the base system's own listeners: what a stock server
 // runs and the toolkit expects beside it. ss prints a process's name as the
 // kernel keeps it, cut to 15 characters, so systemd-resolved and
@@ -98,19 +92,36 @@ type holder struct {
 	desc       string
 }
 
-func containerHolder(c Container) holder {
-	desc := "container " + c.Name
-	if c.Project != "" {
-		desc += " (compose project " + c.Project + ")"
-	} else {
-		desc += " (no compose project)"
-	}
-	return holder{ours: ours(c.Project), desc: desc}
-}
-
+// owners decides what is the deployment's. Ownership is the deployment
+// label and nothing else, as it is for prune: a compose project's name is
+// whoever created it's choice, and two deployments on one host share every
+// naming convention.
 type owners struct {
 	inv  *Inventory
+	id   string
 	byID map[string]Container
+}
+
+func (o owners) ours(label string) bool { return o.id != "" && label == o.id }
+
+// labelled describes an object's compose project and, when it is another
+// deployment's, which one.
+func (o owners) labelled(project, owner string) string {
+	if o.ours(owner) {
+		owner = ""
+	}
+	desc := "no compose project"
+	if project != "" {
+		desc = "compose project " + project
+	}
+	if owner != "" {
+		desc += ", paisans deployment " + owner
+	}
+	return desc
+}
+
+func (o owners) container(c Container) holder {
+	return holder{ours: o.ours(c.Deployment), desc: "container " + c.Name + " (" + o.labelled(c.Project, c.Deployment) + ")"}
 }
 
 // socket decides who holds a listener. A process in a container's cgroup is
@@ -122,14 +133,14 @@ type owners struct {
 func (o owners) socket(s Socket) holder {
 	if s.PID > 0 {
 		if c, ok := o.byID[o.inv.Cgroups[s.PID]]; ok {
-			return containerHolder(c)
+			return o.container(c)
 		}
 	}
 	if s.Process == "docker-proxy" {
 		for _, c := range o.inv.Containers {
 			for _, b := range c.Bindings {
 				if b.Proto == s.Proto && b.Port == s.Port && b.Address == s.Address {
-					return containerHolder(c)
+					return o.container(c)
 				}
 			}
 		}
@@ -154,7 +165,7 @@ func (o owners) socket(s Socket) holder {
 // loopback bind on its port would fail.
 func Classify(claims Claims, inv *Inventory) *Report {
 	r := &Report{Site: claims.Site, Host: inv.Host, Inventory: inv, SSHPort: claims.SSHPort}
-	o := owners{inv: inv, byID: map[string]Container{}}
+	o := owners{inv: inv, id: claims.Deployment.ID, byID: map[string]Container{}}
 	for _, c := range inv.Containers {
 		o.byID[c.ID] = c
 	}
@@ -174,12 +185,12 @@ func Classify(claims Claims, inv *Inventory) *Report {
 			}
 		}
 		for _, c := range inv.Containers {
-			if ours(c.Project) {
+			if o.ours(c.Deployment) {
 				continue
 			}
 			for _, b := range c.Bindings {
 				if claim.Overlaps(b) {
-					conflict(Conflict{Resource: resource, Key: claim.Key, Holder: containerHolder(c).desc})
+					conflict(Conflict{Resource: resource, Key: claim.Key, Holder: o.container(c).desc})
 				}
 			}
 		}
@@ -189,7 +200,7 @@ func Classify(claims Claims, inv *Inventory) *Report {
 		conflict(Conflict{
 			Resource: "interface " + claims.Interface,
 			Key:      "mesh",
-			Holder:   "an interface the toolkit did not write (" + manifestPath + " records no " + wireguardFile + ")",
+			Holder:   "an interface this deployment did not write (" + inv.ManifestPath + " records no " + wireguardFile + ")",
 		})
 	}
 
@@ -201,8 +212,8 @@ func Classify(claims Claims, inv *Inventory) *Report {
 			bridges["br-"+n.ID[:12]] = true
 		}
 		for _, subnet := range n.Subnets {
-			if !ours(n.Project) && overlapsMesh(claims.Mesh, subnet) {
-				conflict(Conflict{Resource: "subnet " + subnet, Key: "mesh.subnet", Holder: networkDesc(n)})
+			if !o.ours(n.Deployment) && overlapsMesh(claims.Mesh, subnet) {
+				conflict(Conflict{Resource: "subnet " + subnet, Key: "mesh.subnet", Holder: o.networkDesc(n)})
 			}
 			// A pinned network may be held by its own project and nothing
 			// else. One of the toolkit's other stacks holding it, such as
@@ -213,9 +224,9 @@ func Classify(claims Claims, inv *Inventory) *Report {
 				if n.Project == pinned.Project || !overlapsMesh(pinned.Net, subnet) {
 					continue
 				}
-				holder := networkDesc(n)
-				if ours(n.Project) {
-					holder += fmt.Sprintf(", a stack of this toolkit's that %s does not run; if nothing uses it any more, remove it with `docker compose -p %s down`", claims.Site, n.Project)
+				holder := o.networkDesc(n)
+				if o.ours(n.Deployment) {
+					holder += fmt.Sprintf(", a stack of this deployment's that %s does not run; if nothing uses it any more, remove it with `docker compose -p %s down`", claims.Site, n.Project)
 				}
 				conflict(Conflict{Resource: "subnet " + subnet, Key: pinned.Key, Holder: holder})
 			}
@@ -262,15 +273,15 @@ func Classify(claims Claims, inv *Inventory) *Report {
 	return r
 }
 
-// foreign lists what is neither the toolkit's nor the base system's. An
-// anonymous volume with no compose label is neither: it may be a replaced
-// paisans container's leftover or somebody else's, and on its own it says
-// nothing about who else lives here.
+// foreign lists what is neither the deployment's nor the base system's. An
+// anonymous volume with no labels is neither: it may be a replaced paisans
+// container's leftover or somebody else's, and on its own it says nothing
+// about who else lives here.
 func foreign(o owners) []string {
 	var out []string
 	for _, c := range o.inv.Containers {
-		if !ours(c.Project) {
-			out = append(out, containerHolder(c).desc)
+		if h := o.container(c); !h.ours {
+			out = append(out, h.desc)
 		}
 	}
 	for _, s := range o.inv.Sockets {
@@ -279,15 +290,15 @@ func foreign(o owners) []string {
 		}
 	}
 	for _, n := range o.inv.Networks {
-		if !ours(n.Project) && !(defaultNetworks[n.Name] && n.Project == "") {
-			out = append(out, networkDesc(n))
+		if !o.ours(n.Deployment) && !(defaultNetworks[n.Name] && n.Project == "") {
+			out = append(out, o.networkDesc(n))
 		}
 	}
 	for _, v := range o.inv.Volumes {
 		switch {
-		case ours(v.Project), v.Project == "" && v.Anonymous:
-		case v.Project != "":
-			out = append(out, fmt.Sprintf("volume %s (compose project %s)", v.Name, v.Project))
+		case o.ours(v.Deployment), v.Project == "" && v.Deployment == "" && v.Anonymous:
+		case v.Project != "" || v.Deployment != "":
+			out = append(out, fmt.Sprintf("volume %s (%s)", v.Name, o.labelled(v.Project, v.Deployment)))
 		default:
 			out = append(out, fmt.Sprintf("volume %s (named, no compose project)", v.Name))
 		}
@@ -295,11 +306,11 @@ func foreign(o owners) []string {
 	return out
 }
 
-func networkDesc(n Network) string {
-	if n.Project == "" {
+func (o owners) networkDesc(n Network) string {
+	if n.Project == "" && n.Deployment == "" {
 		return "docker network " + n.Name
 	}
-	return fmt.Sprintf("docker network %s (compose project %s)", n.Name, n.Project)
+	return fmt.Sprintf("docker network %s (%s)", n.Name, o.labelled(n.Project, n.Deployment))
 }
 
 // overlapsMesh reports whether a network, as CIDR or as a bare address,
@@ -407,7 +418,7 @@ func (r *Report) Print(w io.Writer) {
 		line("CONFLICT", c.String())
 	}
 	if r.Class == Shared {
-		line("shared", "ufw's default policy and enabled state are left alone, superseded images are kept, and prune removes only volumes a paisans-* compose project labelled")
+		line("shared", "ufw's default policy and enabled state are left alone, superseded images are kept, and prune removes only volumes labelled with this deployment's id, as everywhere")
 	}
 }
 

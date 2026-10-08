@@ -10,6 +10,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
@@ -17,17 +18,22 @@ import (
 // mediaSnippetDir is where render places each app's media routing on the
 // gateway, relative to a site's root, one <app>-media.caddy per app that
 // stores objects.
-const mediaSnippetDir = "srv/infra/caddy/snippets/"
+func mediaSnippetDir(d deployment.Deployment) string {
+	return d.RelPath("infra", "caddy", "snippets") + "/"
+}
 
 // webSuffix is the internal suffix Garage's web endpoint resolves a bucket
 // from. It must match root_domain in garage.toml.tmpl and render's
 // webEndpointSuffix.
 const webSuffix = ".web.garage.internal"
 
-const (
-	validateCaddy = "docker compose -f /srv/infra/compose.yaml exec -T caddy caddy validate --config /etc/caddy/Caddyfile"
-	reloadCaddy   = "docker compose -f /srv/infra/compose.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"
-)
+func validateCaddy(d deployment.Deployment) string {
+	return d.ComposeCmd("infra") + " exec -T caddy caddy validate --config /etc/caddy/Caddyfile"
+}
+
+func reloadCaddy(d deployment.Deployment) string {
+	return d.ComposeCmd("infra") + " exec -T caddy caddy reload --config /etc/caddy/Caddyfile"
+}
 
 // buildMedia is stage 8: the gateway's media routes, one snippet per app that
 // stores objects, each naming the Garage nodes in storage.garage.sites order.
@@ -42,7 +48,7 @@ func (p *Plan) buildMedia() (*Stage, error) {
 	var paths []string
 	for _, f := range p.rendered.Files {
 		rel, ok := strings.CutPrefix(f.Path, p.gateway+"/")
-		if !ok || !strings.HasPrefix(rel, mediaSnippetDir) || !strings.HasSuffix(rel, "-"+kinds.MediaRole+".caddy") {
+		if !ok || !strings.HasPrefix(rel, mediaSnippetDir(p.dep())) || !strings.HasSuffix(rel, "-"+kinds.MediaRole+".caddy") {
 			continue
 		}
 		want[rel] = f.Content
@@ -69,17 +75,17 @@ func (p *Plan) buildMedia() (*Stage, error) {
 	}
 	if len(sp.Writes()) > 0 {
 		st.Steps = append(st.Steps,
-			Step{Site: p.gateway, Verb: "validate", Text: "the gateway's configuration: " + validateCaddy},
-			Step{Site: p.gateway, Verb: "reload", Text: "Caddy: " + reloadCaddy})
+			Step{Site: p.gateway, Verb: "validate", Text: "the gateway's configuration: " + validateCaddy(p.dep())},
+			Step{Site: p.gateway, Verb: "reload", Text: "Caddy: " + reloadCaddy(p.dep())})
 	}
 	st.run = func() error {
 		if err := apply.Execute(sp, t); err != nil {
 			return err
 		}
-		if out, err := t.Run(validateCaddy); err != nil {
+		if out, err := t.Run(validateCaddy(p.dep())); err != nil {
 			return fmt.Errorf("%s: the gateway's configuration does not validate with the new media routes, so Caddy was not reloaded and still serves the old ones:\n%s", p.gateway, out)
 		}
-		if out, err := t.Run(reloadCaddy); err != nil {
+		if out, err := t.Run(reloadCaddy(p.dep())); err != nil {
 			return fmt.Errorf("%s: reloading Caddy: %s", p.gateway, lastLines(out, 5))
 		}
 		return nil
@@ -179,10 +185,10 @@ func (p *Plan) buildSmoke() *Stage {
 	if p.opts.StopTest {
 		victim := p.nodes[len(p.nodes)-1]
 		st.Steps = append(st.Steps,
-			Step{Site: victim.site, Verb: "stop", Text: "Garage, the last listed site, to prove the rest serve without it: " + stopGarage},
+			Step{Site: victim.site, Verb: "stop", Text: "Garage, the last listed site, to prove the rest serve without it: " + stopGarage(p.dep())},
 			Step{Site: first.site, Verb: "read", Text: "the probe through every other node and the media hostname, with " + victim.site + " stopped"},
 			Step{Site: first.site, Verb: "write", Text: "a second probe through " + first.site + ", and read it back, with " + victim.site + " stopped: uploads must survive"},
-			Step{Site: victim.site, Verb: "start", Text: "Garage again, whatever the reads said: " + startGarage},
+			Step{Site: victim.site, Verb: "start", Text: "Garage again, whatever the reads said: " + startGarage(p.dep())},
 		)
 	}
 	st.Steps = append(st.Steps, Step{Site: first.site, Verb: "delete", Text: "the probe"})
@@ -283,12 +289,12 @@ func (p *Plan) stopTest(pr *probe) (err error) {
 	first, victim := p.nodes[0], p.nodes[len(p.nodes)-1]
 	vt := p.transports[victim.site]
 	p.say("  %-9s Garage on %s\n", "stop", victim.site)
-	if out, err := vt.Run(stopGarage); err != nil {
+	if out, err := vt.Run(stopGarage(p.dep())); err != nil {
 		return fmt.Errorf("%s: stopping Garage for the stop test: %s", victim.site, lastLines(out, 5))
 	}
 	defer func() {
 		p.say("  %-9s Garage on %s\n", "start", victim.site)
-		if out, startErr := vt.Run(startGarage); startErr != nil {
+		if out, startErr := vt.Run(startGarage(p.dep())); startErr != nil {
 			err = fmt.Errorf("%v\n%s: starting Garage again after the stop test failed too: %s", err, victim.site, lastLines(out, 5))
 			return
 		}

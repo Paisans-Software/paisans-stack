@@ -7,107 +7,107 @@
       "mode": "0600"
     },
     {
-      "path": "srv/chat/.env",
+      "path": "srv/paisans/f2a9/chat/.env",
       "sha256": "8f364f18a7295851c66f2a99abe7dc9d22aa437f075aef581e7797c9b2d7eaff",
       "mode": "0600"
     },
     {
-      "path": "srv/chat/compose.yaml",
-      "sha256": "c19ca63dec48f81928dabfecd62f0894e3b96e7e5ec77565f4beecb3b20da823",
+      "path": "srv/paisans/f2a9/chat/compose.yaml",
+      "sha256": "6402f4c67d15d2031a89da015bff87ddd7a1092bb6a2fc2906a704b45f50c934",
       "mode": "0644"
     },
     {
-      "path": "srv/chat/homeserver.yaml",
+      "path": "srv/paisans/f2a9/chat/homeserver.yaml",
       "sha256": "b1d0ef375392690cd5f7fe7a5e072a23d7517253d46ae69a026511016ff13cba",
       "mode": "0600"
     },
     {
-      "path": "srv/chat/initdb.d/01-mas-database.sql",
+      "path": "srv/paisans/f2a9/chat/initdb.d/01-mas-database.sql",
       "sha256": "ab221a57a36d9a875fa084d72a79ff240a98b0345ab5537c2e46ab8789bd8fa4",
       "mode": "0644"
     },
     {
-      "path": "srv/chat/mas.yaml",
+      "path": "srv/paisans/f2a9/chat/mas.yaml",
       "sha256": "2336ffd4bf72ac9c7d5c9c0e2e6b320b02e7600362a1f33b67969b67bd0014c9",
       "mode": "0600"
     },
     {
-      "path": "srv/infra/caddy/Caddyfile",
+      "path": "srv/paisans/f2a9/infra/caddy/Caddyfile",
       "sha256": "e1e224a347a2110f0909998f56472790e4b181920361de527b4f7109752d139c",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/caddy.env",
+      "path": "srv/paisans/f2a9/infra/caddy/caddy.env",
       "sha256": "63c1ee176d77ecd7518a773aff4acfc7b4075ecc3ebe659f00909a0167bcdd44",
       "mode": "0600"
     },
     {
-      "path": "srv/infra/caddy/snippets/auth.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/auth.caddy",
       "sha256": "91079871caa725979ee5165a4f3cf3a102ac124e8b306fcb10cc34806adef861",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/blog-media.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/blog-media.caddy",
       "sha256": "a86a4ca2490ae64dbf50d8d4019347156fb5822f6feec2622dd0634fb125d0f7",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/blog.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/blog.caddy",
       "sha256": "bda8c9d964532c3f8828ccb20fdc0ed4523a8aba1e7b6063544d6c3514e984fa",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/chat-wellknown.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/chat-wellknown.caddy",
       "sha256": "3c99f5f2d8ca959da822af723e1c7d2957e2463acbb0e6604fc7946de342aa47",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/chat.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/chat.caddy",
       "sha256": "0dcee26a6564aae6b8175ceaa005b173f427fcc52caef38261ba7524b24387d3",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/docs-media.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/docs-media.caddy",
       "sha256": "8e7c36bc41157d707340acd0c984a277b36925168eca49a83ee0025a5a3fee90",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/docs.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/docs.caddy",
       "sha256": "4c49411067ecfb863e2b45b1182fb75576a26ff305e4437431c7260ebae0dc1c",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/gate-gates.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/gate-gates.caddy",
       "sha256": "8d1171bde1346a7f946966c3f4c6b8582a6a1a72f81aedc55957c763212c3656",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/gate.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/gate.caddy",
       "sha256": "033168495474282b17ede4d37ac7eae9dff998aab665a4d75c0d746f37fddffa",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/talk-media.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/talk-media.caddy",
       "sha256": "e9294a3439525cc3cc9cd86edb3ececb9c79e28ae0c5086809dca5e9dbebfa36",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/talk.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/talk.caddy",
       "sha256": "2c7f8467f68fcdf1a0fe235dddb20b3e89c3ef0c9f7a2f290dbed75c31d78715",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/caddy/snippets/web.caddy",
+      "path": "srv/paisans/f2a9/infra/caddy/snippets/web.caddy",
       "sha256": "4be04cb8ce4acf3e0945ac16eeed26dc2791d19eb9f220bb10c29667a75a56f6",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/compose.yaml",
-      "sha256": "dbe08f8dd81f37addaec33effe84acf48724df4fe0642958e343ab987ab8b4cc",
+      "path": "srv/paisans/f2a9/infra/compose.yaml",
+      "sha256": "0f49261b1f6ab609d2dde14c5ec075e7e48635a01fee5c785672bc49a819427d",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/etcd-initial",
+      "path": "srv/paisans/f2a9/infra/etcd-initial",
       "sha256": "ba76b866cca9d84f06ab7bf484b87c06e2ccc96cbbbe83e063dd4ce73971b009",
       "mode": "0644"
     }

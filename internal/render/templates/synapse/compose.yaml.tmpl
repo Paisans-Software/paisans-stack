@@ -11,10 +11,12 @@
 # than replacing it, so a promoted site would not have the media. Cluster
 # placement is refused by internal/validate rather than rendered, which is why
 # nothing below is conditional on it.
-name: paisans-{{ .App.Name }}
+name: {{ .Project }}
 
 services:
   app:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "app" }}
     restart: unless-stopped
     env_file:
@@ -36,6 +38,8 @@ services:
       - postgres
 
   mas:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "mas" }}
     restart: unless-stopped
     # The image's entrypoint is mas-cli, so the subcommand is the command.
@@ -58,6 +62,8 @@ services:
       - postgres
 
   postgres:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "postgres" }}
     restart: unless-stopped
     environment:
@@ -73,3 +79,10 @@ services:
       # Creates MAS's database beside the homeserver's. Read only when the data
       # directory is empty, so it applies exactly once, at the first `up`.
       - {{ .DataPath }}/initdb.d:/docker-entrypoint-initdb.d:ro
+
+# Every network carries the deployment label too, so that what owns it is
+# read from the label rather than guessed from its name.
+networks:
+  default:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"

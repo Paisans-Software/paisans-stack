@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -38,9 +39,11 @@ type Inventory struct {
 	Links    []string
 	Routes   []Route
 	Firewall Firewall
-	// Manifest is whether the toolkit's record of what it wrote exists, and
-	// ManifestWireGuard whether that record lists wg0.conf, which is how a
-	// wg0 the toolkit wrote is told from one it did not.
+	// Manifest is whether this deployment's record of what it wrote exists
+	// at ManifestPath, and ManifestWireGuard whether that record lists
+	// wg0.conf, which is how a wg0 the deployment wrote is told from one it
+	// did not.
+	ManifestPath      string
 	Manifest          bool
 	ManifestWireGuard bool
 }
@@ -76,7 +79,6 @@ const (
 	firewalldProbe = "systemctl is-active firewalld || true"
 
 	cLocale       = "export LC_ALL=C; "
-	manifestPath  = "/srv/.paisans-manifest.json"
 	wireguardFile = "etc/wireguard/wg0.conf"
 )
 
@@ -94,9 +96,10 @@ func cgroupProbe(pids []int) string {
 
 // Inspect reads what a host already runs. It changes nothing. A probe that
 // fails is an error rather than an empty answer: a host check that could not
-// look has not found the host clean.
-func Inspect(t Transport) (*Inventory, error) {
-	inv := &Inventory{Host: t.Describe(), Cgroups: map[int]string{}}
+// look has not found the host clean. d is the deployment whose manifest is
+// read.
+func Inspect(t Transport, d deployment.Deployment) (*Inventory, error) {
+	inv := &Inventory{Host: t.Describe(), Cgroups: map[int]string{}, ManifestPath: d.Manifest()}
 	fail := func(what string, err error) error {
 		return fmt.Errorf("host check on %s: %s: %w", inv.Host, what, err)
 	}
@@ -184,9 +187,9 @@ func Inspect(t Transport) (*Inventory, error) {
 	}
 	inv.Firewall.Firewalld = strings.TrimSpace(out) == "active"
 
-	content, found, err := t.ReadFile(manifestPath)
+	content, found, err := t.ReadFile(inv.ManifestPath)
 	if err != nil {
-		return nil, fail("reading "+manifestPath, err)
+		return nil, fail("reading "+inv.ManifestPath, err)
 	}
 	inv.Manifest = found
 	if found {

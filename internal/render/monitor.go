@@ -64,7 +64,7 @@ type Network struct {
 	Key    string
 	Subnet string
 	// Project is the compose project whose default network it is,
-	// paisans-<app>, the one project that may hold it.
+	// paisans-<token>-<app>, the one project that may hold it.
 	Project string
 }
 
@@ -79,7 +79,7 @@ func SiteNetworks(cfg *config.Config, site string) []Network {
 				Owner:   fmt.Sprintf("app %s (%s)", name, cfg.Apps[name].Kind),
 				Key:     fmt.Sprintf("sites.%s.ingress", site),
 				Subnet:  IngressNetwork,
-				Project: "paisans-" + name,
+				Project: cfg.Deployment().Project(name),
 			})
 		}
 	}

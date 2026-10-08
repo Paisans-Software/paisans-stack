@@ -12,7 +12,7 @@ import (
 // only thing different from the render is the factor.
 func deployedAt(t *testing.T, host *fakeHost, factor string) {
 	t.Helper()
-	const path = "/srv/infra/garage/garage.toml"
+	const path = "/srv/paisans/f2a9/infra/garage/garage.toml"
 	current, ok := host.files[path]
 	if !ok {
 		t.Fatal("the first apply wrote no garage.toml")
@@ -48,7 +48,7 @@ func TestApplyRefusesToChangeGarageReplication(t *testing.T) {
 	// storage add's reset is the one caller allowed past it, scoped to the
 	// one file.
 	scoped, err := apply.Build("home-a", rendered, acmeModule(t), host,
-		apply.Scope(apply.GarageConfig), apply.ReplicationChange(), apply.Overwrite("/srv/infra/garage/garage.toml"))
+		apply.Scope("srv/paisans/f2a9/infra/garage/garage.toml"), apply.ReplicationChange(), apply.Overwrite("/srv/paisans/f2a9/infra/garage/garage.toml"))
 	if err != nil {
 		t.Fatalf("the reset could not plan the new garage.toml: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestApplyRefusesToChangeGarageReplication(t *testing.T) {
 func TestGarageReplicationIsReadFromTheRenderedFile(t *testing.T) {
 	rendered := plan(t)
 	for _, f := range rendered.Files {
-		if f.Path != "home-a/"+apply.GarageConfig {
+		if f.Path != "home-a/"+"srv/paisans/f2a9/infra/garage/garage.toml" {
 			continue
 		}
 		n, ok := apply.GarageReplication(f.Content)

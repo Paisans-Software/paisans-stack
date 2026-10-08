@@ -14,7 +14,7 @@ import (
 // `up -d` with a service name acts on that service and nothing else, so a
 // gateway's Caddy and a data site's Patroni are not touched: Patroni waits
 // for stage 4, and the gateway has its own gates in apply.
-const startEtcd = "docker compose -f /srv/infra/compose.yaml up -d etcd"
+func (p *Plan) startEtcd() string { return p.dep().ComposeCmd("infra") + " up -d etcd" }
 
 // probeEtcd finds a site whose etcd is a running voter, and the membership as
 // it reports it. Live members the configuration does not name are refused:
@@ -28,7 +28,7 @@ func (p *Plan) probeEtcd() ([]apply.EtcdMember, error) {
 	}
 	order = append(order, p.Site)
 	for _, name := range order {
-		members, running, err := apply.ReadEtcdMembers(p.transports[name])
+		members, running, err := apply.ReadEtcdMembers(p.transports[name], p.dep())
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
@@ -106,8 +106,8 @@ func (p *Plan) buildEtcd(live []apply.EtcdMember) *Stage {
 			initial = render.EtcdInitial{State: render.EtcdStateExisting, Cluster: clusterString(predicted)}
 		}
 		st.Steps = append(st.Steps,
-			Step{Site: j, Verb: "write", Text: fmt.Sprintf("/srv/infra/compose.yaml and /%s: --initial-cluster-state=%s --initial-cluster=%s", render.EtcdInitialPath, initial.State, initial.Cluster)},
-			Step{Site: j, Verb: "start", Text: "etcd alone: " + startEtcd},
+			Step{Site: j, Verb: "write", Text: fmt.Sprintf("%s and /%s: --initial-cluster-state=%s --initial-cluster=%s", p.dep().Compose("infra"), render.EtcdInitialPath(p.dep()), initial.State, initial.Cluster)},
+			Step{Site: j, Verb: "start", Text: "etcd alone: " + p.startEtcd()},
 			Step{Site: j, Verb: "promote", Text: fmt.Sprintf("the learner once it has caught up; etcd refuses until then, so it is retried up to %d times", promoteAttempts)},
 		)
 	}
@@ -146,7 +146,7 @@ func clusterString(members map[string]string) string {
 }
 
 func (p *Plan) members() ([]apply.EtcdMember, error) {
-	out, err := p.transports[p.control].Run(apply.Etcdctl("member list -w json"))
+	out, err := p.transports[p.control].Run(apply.Etcdctl(p.dep(), "member list -w json"))
 	if err != nil {
 		return nil, fmt.Errorf("%s: etcd's member list: %w", p.control, err)
 	}
@@ -186,7 +186,7 @@ func (p *Plan) joinEtcd(j string) error {
 		// learner was added moments after the first was promoted and was
 		// refused for exactly that, so the add is retried on that answer
 		// alone, the way promotion is retried while a learner catches up.
-		command := apply.Etcdctl(fmt.Sprintf("member add %s --peer-urls=%s --learner", j, url))
+		command := apply.Etcdctl(p.dep(), fmt.Sprintf("member add %s --peer-urls=%s --learner", j, url))
 		delay := promoteFirstDelay
 		for i := 0; ; i++ {
 			out, err := control.Run(command)
@@ -213,7 +213,7 @@ func (p *Plan) joinEtcd(j string) error {
 	// What the member is born with: what its host already records, when that
 	// is a join, or the membership as it now stands, which etcd requires to
 	// match exactly.
-	initial, found, err := apply.ReadEtcdInitial(t)
+	initial, found, err := apply.ReadEtcdInitial(t, p.dep())
 	if err != nil {
 		return fmt.Errorf("%s: %w", j, err)
 	}
@@ -230,11 +230,11 @@ func (p *Plan) joinEtcd(j string) error {
 	if err != nil {
 		return err
 	}
-	paths := []string{"srv/infra/compose.yaml", render.EtcdInitialPath}
+	paths := []string{p.dep().RelPath("infra", "compose.yaml"), render.EtcdInitialPath(p.dep())}
 	// compose parses every service's env_file when it loads the project, so
 	// a data site's patroni.env has to exist before its etcd can start.
-	if renders(rendered, j, "srv/infra/patroni.env") {
-		paths = append(paths, "srv/infra/patroni.env")
+	if env := p.dep().RelPath("infra", "patroni.env"); renders(rendered, j, env) {
+		paths = append(paths, env)
 	}
 	sp, err := apply.Build(j, rendered, "", t, apply.Scope(paths...))
 	if err != nil {
@@ -247,7 +247,7 @@ func (p *Plan) joinEtcd(j string) error {
 		return err
 	}
 	p.say("  %-9s %s's etcd\n", "start", j)
-	if out, err := t.Run(startEtcd); err != nil {
+	if out, err := t.Run(p.startEtcd()); err != nil {
 		return fmt.Errorf("%s: starting etcd: %s", j, lastLines(out, 5))
 	}
 
@@ -260,7 +260,7 @@ func (p *Plan) joinEtcd(j string) error {
 			break
 		}
 		if i >= n-1 {
-			return fmt.Errorf("%s's etcd has not joined after %s: it is a learner that never started. Read `docker compose -f /srv/infra/compose.yaml logs etcd` on %s", j, learnerWait, j)
+			return fmt.Errorf("%s's etcd has not joined after %s: it is a learner that never started. Read `%s logs etcd` on %s", j, learnerWait, p.dep().ComposeCmd("infra"), j)
 		}
 		sleep(learnerPoll)
 	}
@@ -268,7 +268,7 @@ func (p *Plan) joinEtcd(j string) error {
 	delay := promoteFirstDelay
 	var last string
 	for i := 0; i < promoteAttempts; i++ {
-		out, err := control.Run(apply.Etcdctl("member promote " + m.HexID()))
+		out, err := control.Run(apply.Etcdctl(p.dep(), "member promote "+m.HexID()))
 		if err == nil {
 			p.say("  %-9s %s to a voter\n", "promoted", j)
 			return nil
@@ -299,7 +299,7 @@ func (p *Plan) etcdGate() error {
 	n := attempts(etcdWait, etcdPoll)
 	for i := 0; i < n; i++ {
 		problems = nil
-		out, err := p.transports[p.control].Run(apply.Etcdctl("endpoint health --cluster -w json"))
+		out, err := p.transports[p.control].Run(apply.Etcdctl(p.dep(), "endpoint health --cluster -w json"))
 		var health []endpointHealth
 		if jerr := json.Unmarshal([]byte(strings.TrimSpace(out)), &health); jerr != nil {
 			problems = append(problems, "endpoint health: "+lastLines(out, 3))

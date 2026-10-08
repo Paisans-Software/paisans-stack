@@ -40,3 +40,6 @@ out/
 archive/
 *.log
 .DS_Store
+
+# `go build ./cmd/paisans` writes the binary at the repository root.
+/paisans

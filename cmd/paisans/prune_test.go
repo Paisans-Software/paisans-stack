@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 type danglingHost struct{ listing string }
@@ -20,9 +21,9 @@ func (danglingHost) Describe() string                       { return "ubuntu@hom
 // each volume's size and contents, so an operator can tell a leaked cache
 // from somebody's data before agreeing.
 func TestPruneDryRunShowsTheAssumptionAndEachVolume(t *testing.T) {
-	host := danglingHost{listing: "volume\t3a37a98261c4f658850d43b3d0ddc746ae25d9ec6bb58e83132662b7ea646191\t48234496\t{\"com.docker.volume.anonymous\":\"\"}\tcache log\n" +
+	host := danglingHost{listing: "volume\t3a37a98261c4f658850d43b3d0ddc746ae25d9ec6bb58e83132662b7ea646191\t48234496\t{\"community.paisans.deployment\":\"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01\"}\tcache log\n" +
 		"volume\tother_db\t9999\t{\"com.docker.compose.project\":\"other\"}\tpgdata\nend\n"}
-	plan, err := apply.BuildVolumePrune("home-a", host, false)
+	plan, err := apply.BuildVolumePrune(deployment.Deployment{ID: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}, "home-a", host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,28 +31,12 @@ func TestPruneDryRunShowsTheAssumptionAndEachVolume(t *testing.T) {
 	printVolumePrune(&out, plan)
 	t.Log("\n" + out.String())
 	for _, want := range []string{
-		"found nothing on this host but the deployment",
+		"only when it carries this deployment's label",
 		"  remove    3a37a98261c4f658850d43b3d0ddc746ae25d9ec6bb58e83132662b7ea646191  46.0 MiB  [cache log]",
 		"  keep      other_db",
 		"labelled by compose project other",
 		"1 of 2 dangling volume(s), 46.0 MiB",
 	} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("the plan does not say %q:\n%s", want, out.String())
-		}
-	}
-}
-
-// On a shared host the plan says why an anonymous volume is kept.
-func TestPruneOnASharedHostSaysWhatItKeeps(t *testing.T) {
-	host := danglingHost{listing: "volume\t3a37a98261c4f658850d43b3d0ddc746ae25d9ec6bb58e83132662b7ea646191\t48234496\t{\"com.docker.volume.anonymous\":\"\"}\tcache log\nend\n"}
-	plan, err := apply.BuildVolumePrune("home-a", host, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	printVolumePrune(&out, plan)
-	for _, want := range []string{"found services beside the deployment", "  keep      3a37a98261c4f658850d43b3d0ddc746ae25d9ec6bb58e83132662b7ea646191", "0 of 1 dangling volume(s)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the plan does not say %q:\n%s", want, out.String())
 		}

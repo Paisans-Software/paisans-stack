@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -23,6 +24,10 @@ type Claims struct {
 	// it.
 	Interface string
 	Mesh      *net.IPNet
+	// Deployment is whose host this is checked for: a Docker object is the
+	// toolkit's only when it carries this deployment's label, so another
+	// deployment's containers on the same host are as foreign as anyone's.
+	Deployment deployment.Deployment
 	// SSHPort is the site's ssh.port, which any advice about enabling a
 	// firewall has to allow first.
 	SSHPort int
@@ -53,11 +58,12 @@ func ClaimsFor(cfg *config.Config, site string) (Claims, error) {
 		return Claims{}, fmt.Errorf("host check: mesh.subnet %q is not a network", cfg.Mesh.Subnet)
 	}
 	claims := Claims{
-		Site:      site,
-		Listeners: render.SiteListeners(cfg, site),
-		Interface: meshInterface,
-		Mesh:      mesh,
-		SSHPort:   cfg.Sites[site].SSH.PortOrDefault(),
+		Site:       site,
+		Deployment: cfg.Deployment(),
+		Listeners:  render.SiteListeners(cfg, site),
+		Interface:  meshInterface,
+		Mesh:       mesh,
+		SSHPort:    cfg.Sites[site].SSH.PortOrDefault(),
 	}
 	for _, n := range render.SiteNetworks(cfg, site) {
 		_, subnet, err := net.ParseCIDR(n.Subnet)

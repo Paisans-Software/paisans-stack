@@ -19,6 +19,7 @@ func write(t *testing.T, body string) string {
 }
 
 const minimal = `version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 community:
   name: "Fixture"
   domain: example.org
@@ -46,6 +47,7 @@ apps:
 // data, apps and gateway, an address inside the mesh subnet, an ssh address,
 // and the acme block a gateway requires.
 const validConfig = `version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 community:
   name: "Fixture"
   domain: example.org

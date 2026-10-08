@@ -37,10 +37,12 @@
 #                   reason, which is a deliberate difference from upstream.
 #   valkey          mounts only valkey.conf, read only, so owns nothing.
 #   amqproxy        mounts nothing.
-name: paisans-{{ .App.Name }}
+name: {{ .Project }}
 
 services:
   app:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "app" }}
     restart: unless-stopped
     env_file:
@@ -122,6 +124,8 @@ services:
 {{- end }}
 
   messenger:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     # The same image as app, always: the consumers run the application's own
     # code, so they are not a service with an image of their own to declare.
     image: {{ .Image "app" }}
@@ -159,6 +163,8 @@ services:
 {{- if eq .MbinQueue "rabbitmq" }}
 
   amqproxy:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "amqproxy" }}
     restart: unless-stopped
     # Upstream's MBIN_USER default. Nothing is mounted, so there is no host
@@ -170,6 +176,8 @@ services:
         condition: service_healthy
 
   rabbitmq:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "rabbitmq" }}
     restart: unless-stopped
     # Fixed, because RabbitMQ keys its on disk state on the node name, which
@@ -192,6 +200,8 @@ services:
 {{- end }}
 
   valkey:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "valkey" }}
     restart: unless-stopped
     # The password is on the command line, as upstream has it, so it is
@@ -205,6 +215,8 @@ services:
 {{- if .App.Pinned }}
 
   postgres:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "postgres" }}
     restart: unless-stopped
     environment:
@@ -214,3 +226,10 @@ services:
     volumes:
       - {{ .DataPath }}/postgres:{{ .PostgresDataMount }}
 {{- end }}
+
+# Every network carries the deployment label too, so that what owns it is
+# read from the label rather than guessed from its name.
+networks:
+  default:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"

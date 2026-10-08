@@ -26,6 +26,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -232,7 +233,7 @@ func Build(cfg *config.Config, secrets *config.Secrets, transports map[string]ap
 		// A reset that stopped the nodes and rewrote every garage.toml, but
 		// was interrupted before starting them all, leaves no factor that
 		// differs. Its counts file is what says it is unfinished.
-		_, counted, err := transports[p.anchor].ReadFile(countsFile)
+		_, counted, err := transports[p.anchor].ReadFile(countsFile(p.dep()))
 		if err != nil {
 			// An unread counts file is not an absent one: reading it as
 			// absent would skip resuming a reset that is half done.
@@ -341,7 +342,7 @@ func (p *Plan) appEnvFiles(site string) []string {
 	prefix := site + "/"
 	for _, f := range p.rendered.Files {
 		rel, ok := strings.CutPrefix(f.Path, prefix)
-		if !ok || !strings.HasPrefix(rel, "srv/") || strings.HasPrefix(rel, "srv/infra/") {
+		if !ok || !strings.HasPrefix(rel, p.dep().Rel()+"/") || strings.HasPrefix(rel, p.dep().RelPath("infra")+"/") {
 			continue
 		}
 		if strings.HasSuffix(rel, "/.env") {
@@ -450,7 +451,10 @@ func (p *Plan) consistency() string {
 }
 
 // gcmd is one garage CLI command, run in the site's own Garage container.
-func gcmd(args string) string { return garage.Command + " " + args }
+func gcmd(d deployment.Deployment, args string) string { return garage.Command(d) + " " + args }
+
+// dep is the deployment every path and command here belongs to.
+func (p *Plan) dep() deployment.Deployment { return p.cfg.Deployment() }
 
 func lastLines(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")

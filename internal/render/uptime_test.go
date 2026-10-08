@@ -39,7 +39,7 @@ func renderSeed(t *testing.T, cfg *config.Config, secrets *config.Secrets) seedF
 		t.Fatal(err)
 	}
 	for _, f := range plan.Files {
-		if f.Path != "watch/srv/status/monitors.json" {
+		if f.Path != "watch/srv/paisans/f2a9/status/monitors.json" {
 			continue
 		}
 		if f.Mode != 0o600 {
@@ -51,7 +51,7 @@ func renderSeed(t *testing.T, cfg *config.Config, secrets *config.Secrets) seedF
 		}
 		return seed
 	}
-	t.Fatal("no watch/srv/status/monitors.json was rendered")
+	t.Fatal("no watch/srv/paisans/f2a9/status/monitors.json was rendered")
 	return seedFile{}
 }
 
@@ -217,7 +217,7 @@ func TestTheEdgeRefusesTheTokenAPIButNotTheUIsOwnJSON(t *testing.T) {
 	}
 	var snippet string
 	for _, f := range plan.Files {
-		if f.Path == "watch/srv/infra/caddy/snippets/status.caddy" {
+		if f.Path == "watch/srv/paisans/f2a9/infra/caddy/snippets/status.caddy" {
 			snippet = f.Content
 		}
 	}
@@ -258,7 +258,7 @@ func TestTheEdgeRefusesMetricsWithATrailingSlash(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range plan.Files {
-		if f.Path == "watch/srv/infra/caddy/snippets/status.caddy" {
+		if f.Path == "watch/srv/paisans/f2a9/infra/caddy/snippets/status.caddy" {
 			if !strings.Contains(f.Content, "@refused path /status* /badge/* /metrics /metrics/ /api/v1/*") {
 				t.Fatalf("%s", f.Content)
 			}

@@ -9,6 +9,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 )
 
 // rule answers any command containing match. The first matching rule wins,
@@ -269,9 +270,9 @@ func TestPreflightRefuses(t *testing.T) {
 			setup: func(h map[string]*fakeHost) {
 				h["home-b"].override(rule{match: "df -B1", out: "Avail\n1073741824\n"})
 			}},
-		{name: "postgres on nfs", site: "home-b", check: "storage", want: "/srv on nfs4 (nas:/export/srv) is network attached",
+		{name: "postgres on nfs", site: "home-b", check: "storage", want: "/srv/paisans/f2a9 on nfs4 (nas:/export/srv) is network attached",
 			setup: func(h map[string]*fakeHost) {
-				h["home-b"].override(rule{match: "d='/srv'", out: "nfs4 nas:/export/srv\n"})
+				h["home-b"].override(rule{match: "d='/srv/paisans/f2a9'", out: "nfs4 nas:/export/srv\n"})
 			}},
 		{name: "docker root on cifs", site: "home-b", check: "storage", want: "/mnt/share/docker on cifs",
 			setup: func(h map[string]*fakeHost) {
@@ -334,10 +335,10 @@ func TestUnknownFilesystemWarns(t *testing.T) {
 	}
 	var walked bool
 	for _, c := range h["home-b"].ran {
-		walked = walked || (strings.Contains(c, "d='/srv'") && strings.Contains(c, "dirname") && strings.Contains(c, "findmnt -no FSTYPE,SOURCE --target"))
+		walked = walked || (strings.Contains(c, "d='/srv/paisans/f2a9'") && strings.Contains(c, "dirname") && strings.Contains(c, "findmnt -no FSTYPE,SOURCE --target"))
 	}
 	if !walked {
-		t.Errorf("/srv was not probed by walking up to a directory that exists: %q", h["home-b"].ran)
+		t.Errorf("the deployment root was not probed by walking up to a directory that exists: %q", h["home-b"].ran)
 	}
 }
 
@@ -496,5 +497,29 @@ func TestASharedHostIsPreparedAsShared(t *testing.T) {
 	}
 	if c := find(r, "home-b", "host"); len(c) != 1 || c[0].Refused || !strings.Contains(c[0].Detail, "shared") {
 		t.Errorf("host check %+v", c)
+	}
+}
+
+// A host another deployment with the same token has claimed is refused, by
+// reading its registry; preflight never claims.
+func TestARegistryConflictIsRefused(t *testing.T) {
+	prepared(t)
+	h := hosts()
+	if h["home-b"].files == nil {
+		h["home-b"].files = map[string]string{}
+	}
+	h["home-b"].files[registry.Path] = `{"version":1,"deployments":{
+"f2a91111-2222-4333-8444-555566667777":{"token":"f2a9","root":"/srv/paisans/f2a9","domain":"example.net","site":"vm","claimed_at":"2026-10-01T00:00:00Z"}
+}}
+`
+	r := run(t, fixture(t), h)
+	got := refusedDetail(t, r, "home-b", "registry")
+	if !strings.Contains(got, "f2a91111-2222-4333-8444-555566667777") || !strings.Contains(got, "example.net") {
+		t.Errorf("the refusal does not name the other deployment: %q", got)
+	}
+	for _, c := range h["home-b"].ran {
+		if strings.Contains(c, "flock") {
+			t.Errorf("preflight claimed the host: %s", c)
+		}
 	}
 }

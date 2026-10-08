@@ -88,26 +88,26 @@ func TestServedBy(t *testing.T) {
 // its host block nor its snippet, and the monitor's Caddy carries only it.
 func TestMonitorAppsLeaveTheGatewayCaddyfile(t *testing.T) {
 	files := planFiles(build(t))
-	gateway := files["vm/srv/infra/caddy/Caddyfile"]
+	gateway := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	if strings.Contains(gateway, "status.example.org") {
 		t.Fatalf("the gateway routes the monitor:\n%s", gateway)
 	}
-	if _, ok := files["vm/srv/infra/caddy/snippets/status.caddy"]; ok {
+	if _, ok := files["vm/srv/paisans/f2a9/infra/caddy/snippets/status.caddy"]; ok {
 		t.Fatal("the gateway carries the monitor's snippet")
 	}
 	if !strings.Contains(gateway, "talk.example.org {") {
 		t.Fatal("the gateway lost an ordinary app")
 	}
-	monitor := files["watch/srv/infra/caddy/Caddyfile"]
+	monitor := files["watch/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	if !strings.Contains(monitor, "status.example.org {") || strings.Contains(monitor, "talk.example.org") {
 		t.Fatalf("the monitor's Caddyfile:\n%s", monitor)
 	}
 	for path := range files {
-		if strings.HasPrefix(path, "watch/srv/infra/caddy/snippets/") && path != "watch/srv/infra/caddy/snippets/status.caddy" {
+		if strings.HasPrefix(path, "watch/srv/paisans/f2a9/infra/caddy/snippets/") && path != "watch/srv/paisans/f2a9/infra/caddy/snippets/status.caddy" {
 			t.Errorf("the monitor carries %s", path)
 		}
 	}
-	snippet := files["watch/srv/infra/caddy/snippets/status.caddy"]
+	snippet := files["watch/srv/paisans/f2a9/infra/caddy/snippets/status.caddy"]
 	if !strings.Contains(snippet, "reverse_proxy 10.44.0.4:3001") {
 		t.Fatalf("the monitor's snippet does not reach the app on its own mesh address:\n%s", snippet)
 	}
@@ -130,17 +130,17 @@ func TestAPaisansMonitorRunsTheGatewaysCaddy(t *testing.T) {
 		j := strings.Index(block, "image: ")
 		return strings.SplitN(block[j:], "\n", 2)[0]
 	}
-	if image("watch/srv/infra/compose.yaml") == "" || image("watch/srv/infra/compose.yaml") != image("vm/srv/infra/compose.yaml") {
-		t.Fatalf("monitor %q, gateway %q", image("watch/srv/infra/compose.yaml"), image("vm/srv/infra/compose.yaml"))
+	if image("watch/srv/paisans/f2a9/infra/compose.yaml") == "" || image("watch/srv/paisans/f2a9/infra/compose.yaml") != image("vm/srv/paisans/f2a9/infra/compose.yaml") {
+		t.Fatalf("monitor %q, gateway %q", image("watch/srv/paisans/f2a9/infra/compose.yaml"), image("vm/srv/paisans/f2a9/infra/compose.yaml"))
 	}
-	compose := files["watch/srv/infra/compose.yaml"]
+	compose := files["watch/srv/paisans/f2a9/infra/compose.yaml"]
 	if !strings.Contains(compose, "network_mode: host") || strings.Contains(compose, "etcd:") || strings.Contains(compose, "patroni:") {
 		t.Fatalf("the monitor's infra stack:\n%s", compose)
 	}
-	if !strings.Contains(files["watch/srv/infra/caddy/Caddyfile"], "acme_dns desec") {
+	if !strings.Contains(files["watch/srv/paisans/f2a9/infra/caddy/Caddyfile"], "acme_dns desec") {
 		t.Fatal("the monitor's Caddy does not use DNS-01")
 	}
-	if !strings.Contains(files["watch/srv/infra/caddy/caddy.env"], "ACME_DNS_TOKEN=") {
+	if !strings.Contains(files["watch/srv/paisans/f2a9/infra/caddy/caddy.env"], "ACME_DNS_TOKEN=") {
 		t.Fatal("no token for the monitor's Caddy")
 	}
 }
@@ -149,11 +149,11 @@ func TestAnExternalMonitorRunsNoCaddy(t *testing.T) {
 	cfg := monitorConfig(t, &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"})
 	files := planFiles(mustBuild(t, cfg))
 	for path := range files {
-		if strings.HasPrefix(path, "watch/srv/infra/") {
+		if strings.HasPrefix(path, "watch/srv/paisans/f2a9/infra/") {
 			t.Errorf("an external monitor renders %s", path)
 		}
 	}
-	if strings.Contains(files["vm/srv/infra/caddy/Caddyfile"], "status.example.org") {
+	if strings.Contains(files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"], "status.example.org") {
 		t.Error("the gateway routes an external monitor's app")
 	}
 }
@@ -162,7 +162,7 @@ func TestAnExternalMonitorRunsNoCaddy(t *testing.T) {
 // and an ungated one does not carry them.
 func TestAMonitorCarriesTheGateOnlyWhenItsAppIsGated(t *testing.T) {
 	files := planFiles(build(t))
-	if strings.Contains(files["watch/srv/infra/caddy/Caddyfile"], "-gates.caddy") {
+	if strings.Contains(files["watch/srv/paisans/f2a9/infra/caddy/Caddyfile"], "-gates.caddy") {
 		t.Error("an ungated monitor imports the gate snippets")
 	}
 	cfg := fixture(t)
@@ -170,8 +170,8 @@ func TestAMonitorCarriesTheGateOnlyWhenItsAppIsGated(t *testing.T) {
 	status.Gate = "members"
 	cfg.Apps["status"] = status
 	files = planFiles(mustBuild(t, cfg))
-	if !strings.Contains(files["watch/srv/infra/caddy/Caddyfile"], "import /etc/caddy/snippets/gate-gates.caddy") || files["watch/srv/infra/caddy/snippets/gate-gates.caddy"] == "" {
-		t.Fatalf("a gated monitor lacks the gate snippets:\n%s", files["watch/srv/infra/caddy/Caddyfile"])
+	if !strings.Contains(files["watch/srv/paisans/f2a9/infra/caddy/Caddyfile"], "import /etc/caddy/snippets/gate-gates.caddy") || files["watch/srv/paisans/f2a9/infra/caddy/snippets/gate-gates.caddy"] == "" {
+		t.Fatalf("a gated monitor lacks the gate snippets:\n%s", files["watch/srv/paisans/f2a9/infra/caddy/Caddyfile"])
 	}
 }
 
@@ -194,7 +194,7 @@ func TestTrustProxyFollowsWhereTheProxyConnectsFrom(t *testing.T) {
 		{&config.Ingress{Mode: config.IngressExternal, Listen: "100.101.102.103:8480"}, "TRUST_PROXY=100.64.0.0/10"},
 		{&config.Ingress{Mode: config.IngressExternal, Listen: "10.44.0.4:8480"}, "TRUST_PROXY=10.44.0.0/24"},
 	} {
-		env := planFiles(mustBuild(t, monitorConfig(t, tc.ingress)))["watch/srv/status/.env"]
+		env := planFiles(mustBuild(t, monitorConfig(t, tc.ingress)))["watch/srv/paisans/f2a9/status/.env"]
 		if !strings.Contains(env, "\n"+tc.want+"\n") || !strings.Contains(env, "\nPUBLIC_BASE_URL=https://status.example.org\n") {
 			t.Errorf("%+v:\n%s", tc.ingress, env)
 		}
@@ -207,7 +207,7 @@ func TestTrustProxyFollowsWhereTheProxyConnectsFrom(t *testing.T) {
 // web server's connections arrive from is known. Mode paisans publishes on the
 // mesh address, where its Caddy reaches it, and pins nothing.
 func TestAnExternalAppIsPublishedOnListenOnly(t *testing.T) {
-	compose := planFiles(mustBuild(t, monitorConfig(t, &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"})))["watch/srv/status/compose.yaml"]
+	compose := planFiles(mustBuild(t, monitorConfig(t, &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"})))["watch/srv/paisans/f2a9/status/compose.yaml"]
 	for _, want := range []string{`"127.0.0.1:8480:3001"`, "subnet: 10.255.255.0/29", "gateway: 10.255.255.1"} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("missing %s:\n%s", want, compose)
@@ -216,7 +216,7 @@ func TestAnExternalAppIsPublishedOnListenOnly(t *testing.T) {
 	if strings.Contains(compose, "10.44.0.4:3001") {
 		t.Errorf("an external app is still published on the mesh:\n%s", compose)
 	}
-	compose = planFiles(build(t))["watch/srv/status/compose.yaml"]
+	compose = planFiles(build(t))["watch/srv/paisans/f2a9/status/compose.yaml"]
 	if strings.Contains(compose, "8480") || strings.Contains(compose, "ipam") || strings.Count(compose, ":3001:3001") != 1 {
 		t.Errorf("mode paisans publishes on the mesh address alone:\n%s", compose)
 	}
@@ -227,7 +227,7 @@ func TestAnExternalAppIsPublishedOnListenOnly(t *testing.T) {
 func TestAnExternalMonitorClaimsItsNetwork(t *testing.T) {
 	cfg := monitorConfig(t, &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"})
 	got := render.SiteNetworks(cfg, "watch")
-	if len(got) != 1 || got[0].Subnet != "10.255.255.0/29" || got[0].Key != "sites.watch.ingress" || got[0].Project != "paisans-status" {
+	if len(got) != 1 || got[0].Subnet != "10.255.255.0/29" || got[0].Key != "sites.watch.ingress" || got[0].Project != "paisans-f2a9-status" {
 		t.Fatalf("%+v", got)
 	}
 	for _, l := range render.SiteListeners(cfg, "watch") {

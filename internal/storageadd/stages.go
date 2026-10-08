@@ -9,6 +9,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
@@ -22,8 +23,8 @@ func (p *Plan) differs(n *node) bool {
 // asideName is where a reset moves a node's stored layout: named for the
 // factor it was built with, so that a later reset at another factor neither
 // mistakes it for its own nor overwrites it.
-func asideName(factor int) string {
-	return fmt.Sprintf("%s.rf%d", layoutFile, factor)
+func asideName(d deployment.Deployment, factor int) string {
+	return fmt.Sprintf("%s.rf%d", layoutFile(d), factor)
 }
 
 // buildNodes is stage 1: what every node said, and whether the join can go
@@ -53,7 +54,7 @@ func (p *Plan) buildNodes() *Stage {
 		var problems []string
 		for _, n := range p.nodes {
 			if !n.deployed {
-				problems = append(problems, fmt.Sprintf("%s has no %s. Run `paisans apply --site %s` first: it writes the file and starts Garage there", n.site, garageToml, n.site))
+				problems = append(problems, fmt.Sprintf("%s has no %s. Run `paisans apply --site %s` first: it writes the file and starts Garage there", n.site, garageToml(p.dep()), n.site))
 				continue
 			}
 			// A node the reset stopped is started again by it, so only an
@@ -105,7 +106,7 @@ func (p *Plan) buildNodes() *Stage {
 // an empty queue before the tables have synced proves nothing.
 func (p *Plan) syncState(st *Stage, sites []string) error {
 	for _, site := range sites {
-		out, err := p.transports[site].Run(gcmd("layout history"))
+		out, err := p.transports[site].Run(gcmd(p.dep(), "layout history"))
 		if err != nil {
 			return fmt.Errorf("%s: `garage layout history` failed: %s", site, lastLines(out, 3))
 		}
@@ -120,7 +121,7 @@ func (p *Plan) syncState(st *Stage, sites []string) error {
 		var busy []string
 		failing := false
 		for _, site := range sites {
-			out, err := p.transports[site].Run(gcmd("stats"))
+			out, err := p.transports[site].Run(gcmd(p.dep(), "stats"))
 			if err != nil {
 				return fmt.Errorf("%s: `garage stats` failed: %s", site, lastLines(out, 3))
 			}
@@ -183,12 +184,12 @@ func (p *Plan) buildReset() (*Stage, error) {
 	// An unread counts file is not an absent one. Read as absent, a resumed
 	// reset would count again after the first run's stop, and the provision
 	// gate would compare against those numbers instead of the real ones.
-	_, countsRecorded, err := p.transports[p.anchor].ReadFile(countsFile)
+	_, countsRecorded, err := p.transports[p.anchor].ReadFile(countsFile(p.dep()))
 	if err != nil {
 		return nil, fmt.Errorf("%s: could not read host state, so whether the object counts were recorded is unknown: %w", p.anchor, err)
 	}
 	if !countsRecorded {
-		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "count", Text: "record every bucket's object count in " + countsFile + ", for the provision gate to compare"})
+		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "count", Text: "record every bucket's object count in " + countsFile(p.dep()) + ", for the provision gate to compare"})
 	}
 	var changing []*node
 	for _, n := range p.nodes {
@@ -197,18 +198,18 @@ func (p *Plan) buildReset() (*Stage, error) {
 		}
 	}
 	for _, n := range changing {
-		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "stop", Text: "Garage: " + stopGarage})
+		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "stop", Text: "Garage: " + stopGarage(p.dep())})
 	}
 	for _, n := range changing {
 		if n.hasLayout {
-			st.Steps = append(st.Steps, Step{Site: n.site, Verb: "set aside", Text: fmt.Sprintf("the stored layout, built at replication %d: mv -n %s %s", n.factor, layoutFile, asideName(n.factor))})
+			st.Steps = append(st.Steps, Step{Site: n.site, Verb: "set aside", Text: fmt.Sprintf("the stored layout, built at replication %d: mv -n %s %s", n.factor, layoutFile(p.dep()), asideName(p.dep(), n.factor))})
 		}
 	}
 	for _, n := range changing {
-		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "write", Text: fmt.Sprintf("%s at replication %d (was %d)", garageToml, p.replication(), n.factor)})
+		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "write", Text: fmt.Sprintf("%s at replication %d (was %d)", garageToml(p.dep()), p.replication(), n.factor)})
 	}
 	for _, n := range p.nodes {
-		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "start", Text: "Garage: " + startGarage})
+		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "start", Text: "Garage: " + startGarage(p.dep())})
 	}
 	st.run = func() error {
 		if !countsRecorded {
@@ -218,13 +219,13 @@ func (p *Plan) buildReset() (*Stage, error) {
 		}
 		for _, n := range changing {
 			p.say("  %-9s Garage on %s\n", "stop", n.site)
-			if out, err := p.transports[n.site].Run(stopGarage); err != nil {
+			if out, err := p.transports[n.site].Run(stopGarage(p.dep())); err != nil {
 				return fmt.Errorf("%s: stopping Garage: %s", n.site, lastLines(out, 5))
 			}
 		}
 		for _, n := range changing {
 			t := p.transports[n.site]
-			out, err := t.Run(setAsideCommand(n.factor))
+			out, err := t.Run(setAsideCommand(p.dep(), n.factor))
 			if err == nil {
 				continue
 			}
@@ -232,16 +233,16 @@ func (p *Plan) buildReset() (*Stage, error) {
 			// failure without them is ssh's or the shell's, and says
 			// nothing about either file.
 			if !strings.Contains(out, layoutLeft) {
-				return fmt.Errorf("%s: could not read host state while setting the stored layout aside, so whether %s moved is unknown. Garage there is stopped; run storage add again once the host answers: %w", n.site, layoutFile, err)
+				return fmt.Errorf("%s: could not read host state while setting the stored layout aside, so whether %s moved is unknown. Garage there is stopped; run storage add again once the host answers: %w", n.site, layoutFile(p.dep()), err)
 			}
 			if strings.Contains(out, asidePresent) {
-				return fmt.Errorf("%s: setting the stored layout aside left %s in place, so Garage would refuse to start at the new factor. %s already exists there from an earlier attempt; move one of them by hand only once you know which is which", n.site, layoutFile, asideName(n.factor))
+				return fmt.Errorf("%s: setting the stored layout aside left %s in place, so Garage would refuse to start at the new factor. %s already exists there from an earlier attempt; move one of them by hand only once you know which is which", n.site, layoutFile(p.dep()), asideName(p.dep(), n.factor))
 			}
-			return fmt.Errorf("%s: %s could not be moved to %s, so Garage would refuse to start at the new factor: %s", n.site, layoutFile, asideName(n.factor), lastLines(out, 3))
+			return fmt.Errorf("%s: %s could not be moved to %s, so Garage would refuse to start at the new factor: %s", n.site, layoutFile(p.dep()), asideName(p.dep(), n.factor), lastLines(out, 3))
 		}
 		for _, n := range changing {
 			t := p.transports[n.site]
-			sp, err := apply.Build(n.site, p.rendered, acme.Module(p.cfg.ACME.Provider), t, p.applyOptions(n.site, apply.Scope(apply.GarageConfig), apply.ReplicationChange())...)
+			sp, err := apply.Build(n.site, p.rendered, acme.Module(p.cfg.ACME.Provider), t, p.applyOptions(n.site, apply.Scope(apply.GarageConfig(p.dep())), apply.ReplicationChange())...)
 			if err != nil {
 				return err
 			}
@@ -254,7 +255,7 @@ func (p *Plan) buildReset() (*Stage, error) {
 		}
 		for _, n := range p.nodes {
 			p.say("  %-9s Garage on %s\n", "start", n.site)
-			if out, err := p.transports[n.site].Run(startGarage); err != nil {
+			if out, err := p.transports[n.site].Run(startGarage(p.dep())); err != nil {
 				return fmt.Errorf("%s: starting Garage: %s", n.site, lastLines(out, 5))
 			}
 		}
@@ -264,7 +265,7 @@ func (p *Plan) buildReset() (*Stage, error) {
 		return poll(attempts(startWait, startPoll), startPoll, func() error {
 			for _, n := range p.nodes {
 				t := p.transports[n.site]
-				toml, _, err := t.ReadFile(garageToml)
+				toml, _, err := t.ReadFile(garageToml(p.dep()))
 				if err != nil {
 					return err
 				}
@@ -293,9 +294,9 @@ const (
 // error message is built from those markers, never from the failure alone: a
 // timed out ssh fails exactly as a refused mv does, and the first real storage
 // add reported a timeout as "already exists from an earlier attempt".
-func setAsideCommand(factor int) string {
+func setAsideCommand(d deployment.Deployment, factor int) string {
 	return fmt.Sprintf("if [ -e %[1]s ]; then mv -n %[1]s %[2]s; fi; if [ -e %[1]s ]; then echo %[3]s; if [ -e %[2]s ]; then echo %[4]s; fi; exit 3; fi",
-		layoutFile, asideName(factor), layoutLeft, asidePresent)
+		layoutFile(d), asideName(d, factor), layoutLeft, asidePresent)
 }
 
 // buckets is every bucket the configuration's apps store objects in, sorted.
@@ -319,7 +320,7 @@ func (p *Plan) recordCounts() error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Object counts before storage add changed the replication factor to %d.\n# Removed by storage add once its provision gate has compared them.\n", p.replication())
 	for _, bucket := range p.buckets() {
-		out, err := t.Run(gcmd("bucket info " + bucket))
+		out, err := t.Run(gcmd(p.dep(), "bucket info "+bucket))
 		if err != nil {
 			if strings.Contains(out, "Bucket not found") {
 				continue
@@ -332,7 +333,7 @@ func (p *Plan) recordCounts() error {
 		}
 		fmt.Fprintf(&b, "%s %d\n", bucket, n)
 	}
-	return t.WriteFile(countsFile, b.String(), 0o600)
+	return t.WriteFile(countsFile(p.dep()), b.String(), 0o600)
 }
 
 func parseCounts(content string) map[string]int {
@@ -360,7 +361,7 @@ func (p *Plan) buildConnect() *Stage {
 	}
 	seen := map[string]bool{}
 	if a := p.node(p.anchor); a.answers() && !p.reset {
-		if out, err := p.transports[p.anchor].Run(gcmd("status")); err == nil {
+		if out, err := p.transports[p.anchor].Run(gcmd(p.dep(), "status")); err == nil {
 			seen, _ = parseStatus(out)
 		}
 	}
@@ -372,7 +373,7 @@ func (p *Plan) buildConnect() *Stage {
 	}
 	st.run = func() error {
 		anchor := p.transports[p.anchor]
-		out, err := anchor.Run(gcmd("status"))
+		out, err := anchor.Run(gcmd(p.dep(), "status"))
 		if err != nil {
 			return fmt.Errorf("%s: `garage status` failed: %s", p.anchor, lastLines(out, 3))
 		}
@@ -389,7 +390,7 @@ func (p *Plan) buildConnect() *Stage {
 			}
 			p.say("  %-9s %s to %s\n", "connect", n.site, p.anchor)
 			target := fmt.Sprintf("%s@%s:3901", n.id, n.address)
-			if out, err := anchor.Run(gcmd("node connect " + target)); err != nil {
+			if out, err := anchor.Run(gcmd(p.dep(), "node connect "+target)); err != nil {
 				return fmt.Errorf("%s: connecting %s: %s", p.anchor, n.site, lastLines(out, 3))
 			}
 		}
@@ -409,7 +410,7 @@ func (p *Plan) everyNodeHealthy() error {
 			}
 		}
 		for _, n := range p.nodes {
-			out, err := p.transports[n.site].Run(gcmd("status"))
+			out, err := p.transports[n.site].Run(gcmd(p.dep(), "status"))
 			if err != nil {
 				return fmt.Errorf("%s: `garage status` failed: %s", n.site, lastLines(out, 3))
 			}
@@ -440,7 +441,7 @@ func (p *Plan) buildLayout() *Stage {
 	var shown layout
 	if a := p.node(p.anchor); a.answers() && !p.reset {
 		version = a.version
-		if out, err := p.transports[p.anchor].Run(gcmd("layout show")); err == nil {
+		if out, err := p.transports[p.anchor].Run(gcmd(p.dep(), "layout show")); err == nil {
 			shown, _ = parseLayout(out)
 		}
 	}
@@ -461,7 +462,7 @@ func (p *Plan) buildLayout() *Stage {
 	}
 	st.run = func() error {
 		anchor := p.transports[p.anchor]
-		out, err := anchor.Run(gcmd("layout show"))
+		out, err := anchor.Run(gcmd(p.dep(), "layout show"))
 		if err != nil {
 			return fmt.Errorf("%s: `garage layout show` failed: %s", p.anchor, lastLines(out, 3))
 		}
@@ -480,7 +481,7 @@ func (p *Plan) buildLayout() *Stage {
 			capacity := garageCfg.CapacityFor(n.site)
 			p.say("  %-9s %s a role in zone %s at %s\n", "assign", n.site, n.site, capacity)
 			cmd := fmt.Sprintf("layout assign -z %s -c %s %s", n.site, capacity, n.id)
-			if out, err := anchor.Run(gcmd(cmd)); err != nil {
+			if out, err := anchor.Run(gcmd(p.dep(), cmd)); err != nil {
 				return fmt.Errorf("%s: assigning %s: %s", p.anchor, n.site, lastLines(out, 3))
 			}
 			assigned++
@@ -490,7 +491,7 @@ func (p *Plan) buildLayout() *Stage {
 		}
 		next := current.version + 1
 		p.say("  %-9s the layout at version %d\n", "apply", next)
-		if out, err := anchor.Run(gcmd(fmt.Sprintf("layout apply --version %d", next))); err != nil {
+		if out, err := anchor.Run(gcmd(p.dep(), fmt.Sprintf("layout apply --version %d", next))); err != nil {
 			return fmt.Errorf("%s: applying the layout at version %d: %s", p.anchor, next, lastLines(out, 5))
 		}
 		return nil
@@ -499,7 +500,7 @@ func (p *Plan) buildLayout() *Stage {
 		return poll(attempts(layoutWait, layoutPoll), layoutPoll, func() error {
 			versions := map[int][]string{}
 			for _, n := range p.nodes {
-				out, err := p.transports[n.site].Run(gcmd("layout show"))
+				out, err := p.transports[n.site].Run(gcmd(p.dep(), "layout show"))
 				if err != nil {
 					return fmt.Errorf("%s: `garage layout show` failed: %s", n.site, lastLines(out, 3))
 				}
@@ -593,7 +594,7 @@ func (p *Plan) buildProvision() (*Stage, error) {
 			}
 			return fmt.Errorf("still missing on %s: %s", p.anchor, strings.Join(left, "; "))
 		}
-		recorded, found, err := t.ReadFile(countsFile)
+		recorded, found, err := t.ReadFile(countsFile(p.dep()))
 		if err != nil || !found {
 			return err
 		}
@@ -603,7 +604,7 @@ func (p *Plan) buildProvision() (*Stage, error) {
 			if !ok {
 				continue
 			}
-			out, err := t.Run(gcmd("bucket info " + bucket))
+			out, err := t.Run(gcmd(p.dep(), "bucket info "+bucket))
 			if err != nil {
 				return fmt.Errorf("%s: reading %s: %s", p.anchor, bucket, lastLines(out, 3))
 			}
@@ -614,11 +615,11 @@ func (p *Plan) buildProvision() (*Stage, error) {
 			if have < want {
 				return &Waiting{Stage: st, Detail: fmt.Sprintf(
 					"%s holds %d objects and held %d before the reset. Garage's object counters converge through table sync, every ten minutes; if the count stays short, objects are missing, and each node's previous layout is still in %s",
-					bucket, have, want, layoutFile+".rf<N>")}
+					bucket, have, want, layoutFile(p.dep())+".rf<N>")}
 			}
 		}
-		if out, err := t.Run("rm -f " + countsFile); err != nil {
-			return fmt.Errorf("%s: removing %s: %s", p.anchor, countsFile, lastLines(out, 3))
+		if out, err := t.Run("rm -f " + countsFile(p.dep())); err != nil {
+			return fmt.Errorf("%s: removing %s: %s", p.anchor, countsFile(p.dep()), lastLines(out, 3))
 		}
 		return nil
 	}

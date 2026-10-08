@@ -1273,7 +1273,7 @@ var composeSteeringPrefixes = []string{"COMPOSE_", "DOCKER_"}
 // configKeySteersCompose refuses an env key that would configure compose
 // rather than the application.
 //
-// apply runs `docker compose -f /srv/<app>/compose.yaml up -d`, and compose
+// apply runs `docker compose -f /srv/paisans/<token>/<app>/compose.yaml up -d`, and compose
 // reads the .env beside that file for its own settings as well as handing it
 // to the containers. Run with `docker compose config` on Docker Compose
 // v5.4.0 (the operator's Mac, not a host): COMPOSE_PROJECT_NAME in that .env

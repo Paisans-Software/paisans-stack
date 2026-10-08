@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -278,6 +279,21 @@ type Entry struct {
 type Plan struct {
 	Provider string
 	Entries  []Entry
+	// comment is what every record this plan creates carries.
+	comment string
+}
+
+// RecordComment is written on every record dns init creates for deployment
+// d, paisans-<token>: created by paisans dns init, so that a person looking
+// at the zone can tell which records the toolkit made and for which
+// deployment. Prune reads it back, but as a necessary condition and never a
+// sufficient one: a comment anyone can edit is not a claim anyone can trust,
+// so a record also has to sit at one of this deployment's names and point at
+// one of its sites' addresses before prune will remove it. A record carrying
+// another deployment's token is that deployment's, and is never this one's
+// to consider.
+func RecordComment(d deployment.Deployment) string {
+	return d.Prefix() + ": created by paisans dns init"
 }
 
 // Conflicts returns the entries that stop an execute.
@@ -296,10 +312,10 @@ func (p *Plan) only(a Action) []Entry {
 	return out
 }
 
-// Build compares the wanted records with what the provider holds. It reads
-// and never writes.
-func Build(ctx context.Context, provider Provider, wants []Want) (*Plan, error) {
-	plan := &Plan{Provider: provider.Name()}
+// Build compares the wanted records with what the provider holds, for
+// deployment d. It reads and never writes.
+func Build(ctx context.Context, provider Provider, d deployment.Deployment, wants []Want) (*Plan, error) {
+	plan := &Plan{Provider: provider.Name(), comment: RecordComment(d)}
 	zones := map[string]zone{}
 	wantedTypes := map[string]map[string]bool{}
 	for _, w := range wants {
@@ -381,7 +397,7 @@ func Execute(ctx context.Context, provider Provider, plan *Plan) error {
 		return fmt.Errorf("dns: %d conflicting record(s), listed above. Nothing was created: a partial set of records is a deployment some names reach and others do not", len(conflicts))
 	}
 	for _, e := range plan.Creates() {
-		record := Record{Type: e.Type, Name: e.Name, Content: e.Content}
+		record := Record{Type: e.Type, Name: e.Name, Content: e.Content, Comment: plan.comment}
 		if err := provider.Create(ctx, e.zoneID, record); err != nil {
 			return fmt.Errorf("dns: creating %s %s: %w", e.Type, e.Name, err)
 		}

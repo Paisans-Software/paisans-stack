@@ -58,16 +58,16 @@ func readOnly(cfg *config.Config) (exact []string, prefixes []string) {
 		doctor.ClockCommand,
 		doctor.EtcdHealthCommand(cfg),
 		doctor.EtcdVersionCommand,
-		doctor.SyncCommand,
-		doctor.PatroniLogCommand,
-		doctor.ContainersCommand,
-		patroni.ClusterCommand("10.44.0.1:8008"),
-		patroni.ClusterCommand("10.44.0.2:8008"),
+		doctor.SyncCommand(cfg.Deployment()),
+		doctor.PatroniLogCommand(cfg.Deployment()),
+		doctor.ContainersCommand(cfg.Deployment()),
+		patroni.ClusterCommand(cfg.Deployment(), "10.44.0.1:8008"),
+		patroni.ClusterCommand(cfg.Deployment(), "10.44.0.2:8008"),
 	}
 	prefixes = []string{
 		"docker inspect --format '{\"State\":{{json .State}},\"RestartCount\":{{.RestartCount}}}' ",
 		"docker logs --tail 20 ",
-		"if [ ! -f /srv/auth/compose.yaml ]; then echo absent; ",
+		"if [ ! -f /srv/paisans/f2a9/auth/compose.yaml ]; then echo absent; ",
 	}
 	return exact, prefixes
 }
@@ -98,27 +98,27 @@ func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
 	var sent, writes []string
 	inspect := "docker inspect "
 	homeA := map[string]string{
-		doctor.ReachCommand:                      "",
-		doctor.ClockCommand:                      "1760000000.100000000\n",
-		doctor.EtcdHealthCommand(cfg):            `[{"endpoint":"http://10.44.0.1:2379","health":true,"took":"4ms"},{"endpoint":"http://10.44.0.2:2379","health":false,"took":"5s","error":"context deadline exceeded"},{"endpoint":"http://10.44.0.3:2379","health":true,"took":"4ms"}]`,
-		doctor.EtcdVersionCommand:                `{"etcdserver":"3.5.16","etcdcluster":"3.5.0"}`,
-		doctor.SyncCommand:                       `{"leader":"home-b","quorum":0,"sync_standby":null}` + "\n",
-		patroni.ClusterCommand("10.44.0.1:8008"): `{"members":[{"name":"home-a","role":"replica","state":"running","timeline":2,"lag":1048576}],"scope":"paisans"}`,
-		doctor.PatroniLogCommand:                 "patroni-1  | INFO: following a different leader because i am not the healthiest node\n",
-		doctor.ContainersCommand:                 `{"Names":"paisans-infra-patroni-1","State":"running","Status":"Up 5 minutes"}` + "\n" + `{"Names":"paisans-talk-app-1","State":"restarting","Status":"Restarting (1) 3 seconds ago","Labels":"com.docker.compose.project=paisans-talk"}`,
-		inspect:                                  `{"State":{"Status":"restarting","Restarting":true,"ExitCode":1,"Error":""},"RestartCount":9}`,
-		"docker logs ":                           "booting\nSQLSTATE[08006] [7] connection to server at \"127.0.0.1\", port 5000 failed: Connection refused\n",
-		"if [ ! -f /srv/auth/compose.yaml ]":     "standby\n",
+		doctor.ReachCommand:                                        "",
+		doctor.ClockCommand:                                        "1760000000.100000000\n",
+		doctor.EtcdHealthCommand(cfg):                              `[{"endpoint":"http://10.44.0.1:2379","health":true,"took":"4ms"},{"endpoint":"http://10.44.0.2:2379","health":false,"took":"5s","error":"context deadline exceeded"},{"endpoint":"http://10.44.0.3:2379","health":true,"took":"4ms"}]`,
+		doctor.EtcdVersionCommand:                                  `{"etcdserver":"3.5.16","etcdcluster":"3.5.0"}`,
+		doctor.SyncCommand(cfg.Deployment()):                       `{"leader":"home-b","quorum":0,"sync_standby":null}` + "\n",
+		patroni.ClusterCommand(cfg.Deployment(), "10.44.0.1:8008"): `{"members":[{"name":"home-a","role":"replica","state":"running","timeline":2,"lag":1048576}],"scope":"paisans"}`,
+		doctor.PatroniLogCommand(cfg.Deployment()):                 "patroni-1  | INFO: following a different leader because i am not the healthiest node\n",
+		doctor.ContainersCommand(cfg.Deployment()):                 `{"Names":"paisans-f2a9-infra-patroni-1","State":"running","Status":"Up 5 minutes","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}` + "\n" + `{"Names":"paisans-f2a9-talk-app-1","State":"restarting","Status":"Restarting (1) 3 seconds ago","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01,com.docker.compose.project=paisans-f2a9-talk"}`,
+		inspect:        `{"State":{"Status":"restarting","Restarting":true,"ExitCode":1,"Error":""},"RestartCount":9}`,
+		"docker logs ": "booting\nSQLSTATE[08006] [7] connection to server at \"127.0.0.1\", port 5000 failed: Connection refused\n",
+		"if [ ! -f /srv/paisans/f2a9/auth/compose.yaml ]": "standby\n",
 	}
 	vm := map[string]string{
-		doctor.ReachCommand:      "",
-		doctor.ClockCommand:      "1760000000.000000000\n",
-		doctor.ContainersCommand: `{"Names":"paisans-infra-etcd-1","State":"running","Status":"Up 2 days"}`,
+		doctor.ReachCommand:                        "",
+		doctor.ClockCommand:                        "1760000000.000000000\n",
+		doctor.ContainersCommand(cfg.Deployment()): `{"Names":"paisans-f2a9-infra-etcd-1","State":"running","Status":"Up 2 days","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}`,
 	}
 	watch := map[string]string{
-		doctor.ReachCommand:      "",
-		doctor.ClockCommand:      "1760000000.000000000\n",
-		doctor.ContainersCommand: `{"Names":"paisans-status-app-1","State":"running","Status":"Up 2 days","Labels":"com.docker.compose.project=paisans-status"}`,
+		doctor.ReachCommand:                        "",
+		doctor.ClockCommand:                        "1760000000.000000000\n",
+		doctor.ContainersCommand(cfg.Deployment()): `{"Names":"paisans-f2a9-status-app-1","State":"running","Status":"Up 2 days","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}`,
 	}
 	withDoctorHosts(t, map[string]doctorHost{
 		"home-a.local":      {name: "home-a.local", answers: homeA, sent: &sent, writes: &writes},
@@ -138,7 +138,7 @@ func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
 		"FAIL  home-b: ssh to ubuntu@home-b.local did not answer (ssh: connect to host home-b.local port 22: Operation timed out)",
 		"WARN  quorum: 2 of 3 members healthy (needs 2), asked from home-a",
 		"FAIL  no primary: home-a is a replica and will not promote while home-b, which led, is gone",
-		"FAIL  home-a: paisans-talk-app-1 restarting (exit 1, restarted 9 time(s))",
+		"FAIL  home-a: paisans-f2a9-talk-app-1 restarting (exit 1, restarted 9 time(s))",
 		"It cannot reach its database",
 		"FAIL  auth: no active instance, so sign in is down",
 		"home-b   unreachable did not answer ssh (see reach)",
@@ -196,14 +196,18 @@ func TestDoctorRefusesAnUndeclaredSite(t *testing.T) {
 // --site narrows every check to the named sites, and the ones left out are
 // never contacted.
 func TestDoctorSiteNarrowsTheHostsReached(t *testing.T) {
+	cfg, err := config.Load(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
 	var sent, writes []string
 	withDoctorHosts(t, map[string]doctorHost{
 		"vm.example.org": {name: "vm.example.org", sent: &sent, writes: &writes, answers: map[string]string{
-			doctor.ReachCommand:       "",
-			doctor.ClockCommand:       "1760000000.000000000\n",
-			doctor.ContainersCommand:  `{"Names":"paisans-infra-etcd-1","State":"running","Status":"Up"}`,
-			doctor.EtcdVersionCommand: `{"etcdserver":"3.5.16","etcdcluster":"3.5.0"}`,
-			"docker compose -f /srv/infra/compose.yaml exec -T etcd etcdctl": `[{"endpoint":"http://10.44.0.1:2379","health":true},{"endpoint":"http://10.44.0.2:2379","health":true},{"endpoint":"http://10.44.0.3:2379","health":true}]`,
+			doctor.ReachCommand:                        "",
+			doctor.ClockCommand:                        "1760000000.000000000\n",
+			doctor.ContainersCommand(cfg.Deployment()): `{"Names":"paisans-f2a9-infra-etcd-1","State":"running","Status":"Up","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}`,
+			doctor.EtcdVersionCommand:                  `{"etcdserver":"3.5.16","etcdcluster":"3.5.0"}`,
+			"docker compose -f /srv/paisans/f2a9/infra/compose.yaml exec -T etcd etcdctl": `[{"endpoint":"http://10.44.0.1:2379","health":true},{"endpoint":"http://10.44.0.2:2379","health":true},{"endpoint":"http://10.44.0.3:2379","health":true}]`,
 		}},
 	})
 	var runErr error
