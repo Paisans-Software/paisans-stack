@@ -2168,11 +2168,6 @@ afterwards must never hold up a data site's apply: riding out that outage is
 what the witness is for. The gate reads the record on the site being applied
 rather than the live cluster, so it costs an ordinary apply no extra host.
 
-Rejected: having a data site's apply apply the witness itself. `apply` is a
-site at a time on purpose, and one that reaches into another site's stack is
-the half success across machines that rule exists to prevent. Also rejected:
-polling longer. No wait is long enough for a member nobody has started.
-
 ### `apply` creates each clustered app's role and database
 
 Step 6 needs something step 5 does not provide. Patroni creates its superuser,
