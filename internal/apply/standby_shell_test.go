@@ -16,7 +16,10 @@ import (
 // daemon, as Compose v2 does when a service's env_file is the root owned 0600
 // .env apply writes: it loads every env_file to build the project, even for
 // exec. `docker ps` and `docker exec` work, as they do for a member of the
-// docker group. FAKE_RUNNING and FAKE_STANDBY say what the container is doing.
+// docker group. FAKE_RUNNING and FAKE_STANDBY say what the container is doing;
+// FAKE_LEFTOVER lists a second, older container after it, as a recreate in
+// progress does; FAKE_NODOCKER makes docker unreachable, as it is for a deploy
+// user outside the docker group.
 const fakeDocker = `#!/bin/sh
 case "$1" in
 compose)
@@ -24,15 +27,20 @@ compose)
 	exit 1 ;;
 ps)
 	shift
-	want="-q --filter label=community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01 --filter label=com.docker.compose.project=paisans-f2a9-auth --filter label=com.docker.compose.service=app"
+	if [ -n "${FAKE_NODOCKER:-}" ]; then
+		echo "permission denied while trying to connect to the Docker daemon socket" >&2
+		exit 1
+	fi
+	want="-q --filter label=community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01 --filter label=com.docker.compose.project=paisans-f2a9-auth --filter label=com.docker.compose.service=app --filter label=com.docker.compose.oneoff=False"
 	if [ "$*" != "$want" ]; then
 		echo "unexpected docker ps $*" >&2
 		exit 2
 	fi
 	[ -n "${FAKE_RUNNING:-}" ] && echo 0123456789ab
+	[ -n "${FAKE_LEFTOVER:-}" ] && echo ba9876543210
 	exit 0 ;;
 exec)
-	[ "$2" = 0123456789ab ] && [ "$3 $4 $5" = "test -f /tmp/paisans-standby" ] && [ -n "${FAKE_STANDBY:-}" ] && exit 0
+	[ "$#" -eq 5 ] && [ "$2" = 0123456789ab ] && [ "$3 $4 $5" = "test -f /tmp/paisans-standby" ] && [ -n "${FAKE_STANDBY:-}" ] && exit 0
 	exit 1 ;;
 esac
 exit 2
@@ -100,6 +108,29 @@ func TestAStoppedContainerIsDown(t *testing.T) {
 
 func TestAnAnsweringHealthzIsActive(t *testing.T) {
 	if got := runInstanceCommand(t, "FAKE_RUNNING=1", "FAKE_ACTIVE=1"); got != "active" {
+		t.Fatalf("answered %q, want active", got)
+	}
+}
+
+// A container left over from a recreate is listed too; the standby is still
+// the one asked.
+func TestAStandbyWithALeftoverContainerIsStandby(t *testing.T) {
+	if got := runInstanceCommand(t, "FAKE_RUNNING=1", "FAKE_STANDBY=1", "FAKE_LEFTOVER=1"); got != "standby" {
+		t.Fatalf("answered %q, want standby", got)
+	}
+}
+
+// Docker cannot be asked: the standby question goes unanswered, and that is
+// said rather than reported as an ordinary down.
+func TestDockerThatCannotBeAskedIsNoDocker(t *testing.T) {
+	if got := runInstanceCommand(t, "FAKE_NODOCKER=1", "FAKE_RUNNING=1", "FAKE_STANDBY=1"); got != "nodocker" {
+		t.Fatalf("answered %q, want nodocker", got)
+	}
+}
+
+// /healthz needs no docker, so an active site is still found without it.
+func TestDockerThatCannotBeAskedStillFindsActive(t *testing.T) {
+	if got := runInstanceCommand(t, "FAKE_NODOCKER=1", "FAKE_ACTIVE=1"); got != "active" {
 		t.Fatalf("answered %q, want active", got)
 	}
 }

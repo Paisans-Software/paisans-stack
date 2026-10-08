@@ -72,16 +72,16 @@ func TestStandbyAppsAreThePocketIDsOnMoreThanOneSite(t *testing.T) {
 func TestTheInstanceQuestionAsksTheStateFileThenTheMeshPort(t *testing.T) {
 	cmd := apply.InstanceCommand(deployment.Deployment{ID: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}, "auth", "10.44.0.1", 1411)
 	for _, want := range []string{
-		"if [ ! -f /srv/paisans/f2a9/auth/compose.yaml ]; then echo absent;",
-		"docker ps -q --filter label=community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01 --filter label=com.docker.compose.project=paisans-f2a9-auth --filter label=com.docker.compose.service=app",
+		"if [ ! -f '/srv/paisans/f2a9/auth/compose.yaml' ]; then echo absent;",
+		"docker ps -q --filter 'label=community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01' --filter 'label=com.docker.compose.project=paisans-f2a9-auth' --filter 'label=com.docker.compose.service=app' --filter 'label=com.docker.compose.oneoff=False'",
 		`docker exec "$c" test -f /tmp/paisans-standby`,
-		"curl --silent --fail --max-time 5 --output /dev/null http://10.44.0.1:1411/healthz",
+		"curl --silent --fail --max-time 5 --output /dev/null 'http://10.44.0.1:1411/healthz'",
 	} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("the command lacks %q:\n%s", want, cmd)
 		}
 	}
-	if strings.Index(cmd, "paisans-standby") > strings.Index(cmd, "/healthz") {
+	if strings.Index(cmd, "paisans-standby") > strings.LastIndex(cmd, "/healthz") {
 		t.Error("the state file must be asked before /healthz: a standby's port refuses, so the other order would call it down")
 	}
 	if strings.Contains(cmd, "docker compose") {
@@ -164,6 +164,19 @@ func TestAnUnreachableSiteIsReportedNotCounted(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "home-a   unreachable ssh: connect to host home-a") {
+		t.Errorf("output:\n%s", out.String())
+	}
+}
+
+// docker could not be asked: down, since /healthz did not answer either, with
+// a detail that says the standby question went unanswered.
+func TestNoDockerIsDownAndSaysWhy(t *testing.T) {
+	transports, _, _ := standbyWorld(t, []string{"active"}, []string{"nodocker"})
+	var out bytes.Buffer
+	if err := apply.CheckOneActive(standbyFixture(t), "auth", transports, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "home-b   down        /healthz did not answer on 10.44.0.2:1411, and docker could not be asked whether it stands by") {
 		t.Errorf("output:\n%s", out.String())
 	}
 }

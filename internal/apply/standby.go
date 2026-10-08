@@ -78,14 +78,35 @@ func StandbyApps(cfg *config.Config) []string {
 // and apply's client step ask without sudo, as a deploy user in the docker
 // group, and there `docker compose` fails before it reaches the daemon, which
 // made every standby read as down.
+//
+// One-off containers (`docker compose run app ...`) carry the same project
+// and service labels, so they are filtered out, and the first remaining line
+// is the one asked: any second line is a container on its way out of a
+// recreate, and handing docker exec two ids would fail and read as down.
+//
+// When docker itself cannot be asked (the deploy user is not in the docker
+// group and the command runs without sudo), /healthz still decides active;
+// otherwise the answer is nodocker rather than down, so the operator is told
+// the standby question went unanswered instead of being told the site failed.
 func instanceCommand(d deployment.Deployment, app, address string, port int) string {
-	running := fmt.Sprintf("docker ps -q --filter %s --filter label=com.docker.compose.project=%s --filter label=com.docker.compose.service=app",
-		d.LabelFilter(), d.Project(app))
+	running := fmt.Sprintf("docker ps -q --filter %s --filter %s --filter %s --filter %s",
+		shellQuote(d.LabelFilter()),
+		shellQuote("label=com.docker.compose.project="+d.Project(app)),
+		shellQuote("label=com.docker.compose.service=app"),
+		shellQuote("label=com.docker.compose.oneoff=False"))
+	healthz := fmt.Sprintf("curl --silent --fail --max-time 5 --output /dev/null %s",
+		shellQuote(fmt.Sprintf("http://%s:%d/healthz", address, port)))
 	return fmt.Sprintf("if [ ! -f %[1]s ]; then echo absent; "+
-		"elif c=$(%[2]s 2>/dev/null) && [ -n \"$c\" ] && docker exec \"$c\" test -f /tmp/paisans-standby >/dev/null 2>&1; then echo standby; "+
-		"elif curl --silent --fail --max-time 5 --output /dev/null http://%[3]s:%[4]d/healthz; then echo active; "+
-		"else echo down; fi", d.Compose(app), running, address, port)
+		"elif ! ids=$(%[2]s 2>/dev/null); then if %[3]s; then echo active; else echo %[4]s; fi; "+
+		"elif c=$(printf '%%s\\n' \"$ids\" | head -n 1) && [ -n \"$c\" ] && docker exec \"$c\" test -f /tmp/paisans-standby >/dev/null 2>&1; then echo standby; "+
+		"elif %[3]s; then echo active; "+
+		"else echo down; fi", shellQuote(d.Compose(app)), running, healthz, noDocker)
 }
+
+// noDocker is the instance command's answer when docker could not be asked
+// and /healthz did not answer. It is reported as Down, since the site is not
+// serving, with a detail saying why the standby question went unanswered.
+const noDocker = "nodocker"
 
 // LookAtInstances asks every site an app runs on what its instance is doing,
 // in the order the gateway lists them.
@@ -112,6 +133,9 @@ func LookAtInstances(cfg *config.Config, app string, transports map[string]Trans
 			in.Detail = "another instance holds the database"
 		case Down:
 			in.Detail = "running neither as active nor on standby"
+		case noDocker:
+			in.State = Down
+			in.Detail = fmt.Sprintf("/healthz did not answer on %s:%d, and docker could not be asked whether it stands by. Ask with sudo, or as a member of the docker group", address, port)
 		case Absent:
 			in.Detail = fmt.Sprintf("no %s on this site yet", cfg.Deployment().Dir(app))
 		default:
