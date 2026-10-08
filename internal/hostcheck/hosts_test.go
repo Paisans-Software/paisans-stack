@@ -88,6 +88,7 @@ func cleanHost() *fakeHost {
 			"ip -j route":            `[{"dst":"default","gateway":"203.0.113.1","dev":"eth0"},{"dst":"203.0.113.0/24","dev":"eth0"},{"dst":"172.17.0.0/16","dev":"docker0"}]`,
 			"ufw status verbose":     ufwInactive,
 			"is-active firewalld":    "inactive\n",
+			"/srv/caddy.d/":          "",
 		},
 		files: map[string]string{},
 	}

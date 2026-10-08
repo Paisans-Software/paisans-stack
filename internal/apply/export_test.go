@@ -91,3 +91,11 @@ type exitStatus int
 
 func (e exitStatus) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 func (e exitStatus) ExitCode() int { return int(e) }
+
+// SetNow replaces the clock a left over mark is stamped with, and returns a
+// function restoring it.
+func SetNow(at func() time.Time) func() {
+	old := now
+	now = at
+	return func() { now = old }
+}

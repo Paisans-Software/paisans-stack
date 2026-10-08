@@ -50,6 +50,7 @@ func webHost(ufw string) *inventoryHost {
 		"ip -j route":            `[{"dst":"default","dev":"eth0"}]`,
 		"ufw status verbose":     ufw,
 		"is-active firewalld":    "inactive\n",
+		"/srv/caddy.d/":          "",
 		"docker inspect":         "",
 		"docker volume inspect":  "",
 		"docker network inspect": "",
@@ -79,7 +80,7 @@ func TestTheGateRefusesAConflictHavingOnlyLooked(t *testing.T) {
 	if !strings.Contains(out.String(), "CONFLICT  *:80/tcp (Caddy): claimed by sites.edge.roles (gateway), held by process nginx (pid 900)") {
 		t.Errorf("the report does not name the conflict:\n%s", out.String())
 	}
-	probes := []string{"id -u", "docker version", "dpkg-query", "ss -Hltnup", "/proc/", "ip -o link", "ip -j route", "ufw status verbose", "is-active firewalld"}
+	probes := []string{"id -u", "docker version", "dpkg-query", "ss -Hltnup", "/proc/", "ip -o link", "ip -j route", "ufw status verbose", "is-active firewalld", "/srv/caddy.d/"}
 	for _, c := range h.ran {
 		known := false
 		for _, p := range probes {

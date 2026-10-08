@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -176,6 +177,11 @@ type Plan struct {
 	// against what its service mounts, nil when no stack moves. Any uncovered
 	// path refuses the apply before anything is written. See VolumeCheck.
 	Volumes *VolumeCheck
+	// HostSites is set when this site's Caddy mounts the host's own
+	// render.HostSitesDir. Execute creates the directory, root's and 0755,
+	// before the first container that mounts it, when it is missing, and
+	// never touches what is inside it.
+	HostSites bool
 	// KeepImages skips pruning for this run, as --keep-images does.
 	KeepImages bool
 	// images is what each stack of this site renders, from its compose file.
@@ -189,6 +195,14 @@ type Plan struct {
 	// recorded is the manifest as Build read it, which a scoped plan's own
 	// manifest write keeps for every file outside its scope.
 	recorded map[string]render.ManifestFile
+	// Leftovers are the manifest's entries for files this site no longer
+	// renders, marked left over, set only on a whole plan. Its manifest write
+	// keeps them, and nothing deletes the files: they are this deployment's,
+	// and what to do with them is the operator's decision.
+	Leftovers []render.ManifestFile
+	// rendered is every path this site renders, relative to the root of the
+	// host, for the manifest write's left over marks.
+	rendered map[string]bool
 	// heldOwed is what the record of owed actions held for stacks this plan
 	// holds back with Except. Execute keeps it there, so the apply that
 	// releases a held stack still force-recreates it.
@@ -269,6 +283,10 @@ func (w WireGuardStep) Describe(d deployment.Deployment) string {
 	}
 }
 
+// Whole reports whether the plan covers the whole site: built without Scope,
+// Only or Except. Only a whole plan marks files left over.
+func (p Plan) Whole() bool { return !p.scoped && !p.partial }
+
 // Conflicts returns the files somebody edited on the host.
 func (p Plan) Conflicts() []Change {
 	var out []Change
@@ -300,6 +318,12 @@ const remoteRoot = "/"
 // changed it" from "somebody edited this on the host", and without it every
 // apply would be a blind overwrite.
 func manifestPath(d deployment.Deployment) string { return d.Manifest() }
+
+// HostSitesCommand creates render.HostSitesDir, root's and 0755, when it is
+// missing, and changes nothing when it exists.
+func HostSitesCommand() string {
+	return fmt.Sprintf("[ -d %[1]s ] || install -d -m 755 -o root -g root %[1]s", render.HostSitesDir)
+}
 
 // gatewayCaddyfile and gatewayCompose are the two rendered files that say a
 // site runs the gateway and that its Caddy is about to be replaced, as paths
@@ -522,6 +546,15 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	}
 
 	prefix := site + "/"
+	out.rendered = map[string]bool{}
+	for _, file := range plan.Files {
+		if rel, ok := strings.CutPrefix(file.Path, prefix); ok && rel != render.ManifestName {
+			out.rendered[rel] = true
+		}
+	}
+	if !out.scoped && !out.partial {
+		out.Leftovers = leftovers(entries, out.rendered, now())
+	}
 	stacks := map[string]bool{}
 	// Every stack this site renders, changed or not, which is what a
 	// --recreate may name.
@@ -819,6 +852,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	if out.GatewayChanging {
 		out.ACMEModule = acmeModule
 	}
+	out.HostSites = out.GatewayChanging && plan.HostSites[site]
 
 	if wireguard != nil {
 		step, err := wireguardStep(d, *wireguard, wireguardBefore, t)
@@ -988,6 +1022,15 @@ func execute(plan *Plan, t Transport) error {
 	// container starts, so a Caddy that cannot load its configuration is
 	// reported as a successful apply and is discovered by whoever visits the
 	// site.
+	// The host's own Caddy site directory exists before the first container
+	// that mounts it, the validation below. An existing one is left exactly
+	// as it is, owner and mode included: it is the host's.
+	if plan.HostSites {
+		if out, err := t.Run(HostSitesCommand()); err != nil {
+			return fmt.Errorf("%s: creating %s, so the gateway was not changed:\n%s", plan.Site, render.HostSitesDir, out)
+		}
+	}
+
 	if plan.GatewayChanging && plan.ACMEModule != "" {
 		// Ask the binary rather than trusting the image's name. A DNS provider
 		// is compiled into Caddy, so a wrong image or a provider no module
@@ -1245,17 +1288,45 @@ func readManifestFiles(t Transport, d deployment.Deployment) (map[string]render.
 	return out, nil
 }
 
+// now is the clock a left over mark is stamped with; tests replace it.
+var now = time.Now
+
+// leftovers is every recorded entry the site no longer renders, marked left
+// over, keeping the time an earlier apply first marked it.
+func leftovers(recorded map[string]render.ManifestFile, rendered map[string]bool, at time.Time) []render.ManifestFile {
+	var out []render.ManifestFile
+	for path, entry := range recorded {
+		if rendered[path] {
+			continue
+		}
+		if !entry.Leftover || entry.LeftoverSince == "" {
+			entry.Leftover = true
+			entry.LeftoverSince = at.UTC().Format(time.RFC3339)
+		}
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
 // writeManifest records what is now on the host, so the next apply can tell its
 // own writes from somebody's edit.
 //
-// A whole plan records exactly what it renders. A scoped one starts from the
-// manifest it read and replaces only its own files, because the rest of the
-// site is still what the last whole apply wrote.
+// A whole plan records what it renders, and keeps every entry for a file it
+// no longer renders, marked left over: the file is still on the host and
+// still this deployment's, and an entry dropped here would make it look like
+// somebody else's. A scoped one starts from the manifest it read and replaces
+// only its own files, because the rest of the site is still what the last
+// whole apply wrote.
 func writeManifest(plan *Plan, t Transport) error {
 	entries := map[string]render.ManifestFile{}
 	if plan.scoped || plan.partial {
 		for path, entry := range plan.recorded {
 			entries[path] = entry
+		}
+	} else {
+		for _, entry := range plan.Leftovers {
+			entries[entry.Path] = entry
 		}
 	}
 	for _, change := range plan.Changes {

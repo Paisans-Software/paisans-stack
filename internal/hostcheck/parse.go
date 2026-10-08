@@ -17,6 +17,9 @@ import (
 // network it creates.
 const composeProject = "com.docker.compose.project"
 
+// composeService is the label naming a container's compose service.
+const composeService = "com.docker.compose.service"
+
 // anonymousLabel is the label Docker puts on an anonymous volume, and
 // anonymousName the name an engine that sets no label gives one.
 const anonymousLabel = "com.docker.volume.anonymous"
@@ -103,10 +106,15 @@ type Container struct {
 	ID, Name string
 	// Project is its compose project label, "" for none.
 	Project string
+	// Service is its compose service label, "" for none.
+	Service string
 	// Deployment is the id in its deployment label, "" for none.
 	Deployment string
 	// PID is its main process, 0 when it is not running.
 	PID int
+	// Networks are the Docker networks it is attached to, by name and
+	// sorted: "host" for one in the host's network namespace.
+	Networks []string
 	// Bindings are the host ports it publishes. They come from its
 	// configuration rather than from what is listening, because Docker
 	// without its userland proxy publishes a port with no listener at all,
@@ -116,11 +124,12 @@ type Container struct {
 }
 
 type inspectedContainer struct {
-	ID     string            `json:"id"`
-	Name   string            `json:"name"`
-	PID    int               `json:"pid"`
-	Labels map[string]string `json:"labels"`
-	Ports  map[string][]struct {
+	ID       string                     `json:"id"`
+	Name     string                     `json:"name"`
+	PID      int                        `json:"pid"`
+	Labels   map[string]string          `json:"labels"`
+	Networks map[string]json.RawMessage `json:"networks"`
+	Ports    map[string][]struct {
 		HostIP   string `json:"HostIp"`
 		HostPort string `json:"HostPort"`
 	} `json:"ports"`
@@ -133,7 +142,11 @@ func parseContainers(out string) ([]Container, error) {
 		if err := json.Unmarshal(line, &in); err != nil {
 			return err
 		}
-		c := Container{ID: in.ID, Name: strings.TrimPrefix(in.Name, "/"), Project: in.Labels[composeProject], Deployment: in.Labels[deployment.Label], PID: in.PID}
+		c := Container{ID: in.ID, Name: strings.TrimPrefix(in.Name, "/"), Project: in.Labels[composeProject], Service: in.Labels[composeService], Deployment: in.Labels[deployment.Label], PID: in.PID}
+		for name := range in.Networks {
+			c.Networks = append(c.Networks, name)
+		}
+		sort.Strings(c.Networks)
 		ports := make([]string, 0, len(in.Ports))
 		for p := range in.Ports {
 			ports = append(ports, p)

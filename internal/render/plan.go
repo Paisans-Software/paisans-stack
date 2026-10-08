@@ -34,6 +34,9 @@ type Plan struct {
 	Files []File
 	// Deployment is the identity every path and name in Files derives from.
 	Deployment deployment.Deployment
+	// HostSites names the sites whose Caddy mounts the host's own
+	// HostSitesDir, which apply creates there when it is missing.
+	HostSites map[string]bool
 }
 
 // appPort is the port an application listens on inside its container. The
@@ -165,10 +168,34 @@ type planner struct {
 // an etcd member was born with. Without them every site renders as it would
 // on a fresh deployment.
 func Build(cfg *config.Config, secrets *config.Secrets, opts ...Option) (*Plan, error) {
-	p := &planner{cfg: cfg, secrets: secrets, mesh: cfg.Mesh.Subnet, sites: map[string]*siteView{}}
+	p := newPlanner(cfg, secrets)
 	for _, opt := range opts {
 		opt(p)
 	}
+	if err := p.placeApps(); err != nil {
+		return nil, err
+	}
+
+	var files []File
+	hostSites := map[string]bool{}
+	for _, name := range p.order {
+		siteFiles, err := p.renderSite(p.sites[name])
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, siteFiles...)
+		if hostSitesMount(p.sites[name]) != "" {
+			hostSites[name] = true
+		}
+	}
+
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return &Plan{Files: files, Deployment: cfg.Deployment(), HostSites: hostSites}, nil
+}
+
+// newPlanner is a planner with every site laid out and no app placed yet.
+func newPlanner(cfg *config.Config, secrets *config.Secrets) *planner {
+	p := &planner{cfg: cfg, secrets: secrets, mesh: cfg.Mesh.Subnet, sites: map[string]*siteView{}}
 	for _, name := range cfg.SiteNames() {
 		site := cfg.Sites[name]
 		p.order = append(p.order, name)
@@ -189,21 +216,31 @@ func Build(cfg *config.Config, secrets *config.Secrets, opts ...Option) (*Plan, 
 		}
 	}
 
+	return p
+}
+
+// SiteStacks is every stack a site renders, by directory name and sorted:
+// infra when the site runs any infrastructure service, and each app placed
+// on it. It is what Build renders for the site, decided without secrets, for
+// a command that reads a host and has none.
+func SiteStacks(cfg *config.Config, site string) ([]string, error) {
+	p := newPlanner(cfg, nil)
 	if err := p.placeApps(); err != nil {
 		return nil, err
 	}
-
-	var files []File
-	for _, name := range p.order {
-		siteFiles, err := p.renderSite(p.sites[name])
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, siteFiles...)
+	view, ok := p.sites[site]
+	if !ok {
+		return nil, fmt.Errorf("no site %q is declared", site)
 	}
-
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-	return &Plan{Files: files, Deployment: cfg.Deployment()}, nil
+	var out []string
+	if view.runsInfra() {
+		out = append(out, "infra")
+	}
+	for _, app := range view.Apps {
+		out = append(out, app.Name)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // placeApps decides where each app runs.

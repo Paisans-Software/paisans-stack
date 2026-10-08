@@ -784,7 +784,7 @@ root's and 0600, listing every deployment that has claimed it:
 
 ```json
 {"version":1,"deployments":{
-"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01":{"token":"f2a9","root":"/srv/paisans/f2a9","domain":"example.org","site":"vm","claimed_at":"2026-10-01T00:00:00Z","interface":"psns-f2a9","listen_port":51820,"subnet":"10.44.0.0/24","address":"10.44.0.3"}
+"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01":{"token":"f2a9","root":"/srv/paisans/f2a9","domain":"example.org","site":"vm","claimed_at":"2026-10-01T00:00:00Z","interface":"psns-f2a9","listen_port":51820,"subnet":"10.44.0.0/24","address":"10.44.0.3","roles":"gateway"}
 }}
 ```
 
@@ -795,7 +795,8 @@ Every command that writes to a host **claims it first**: `apply`,
 claim is one remote shell command run under `flock` on
 `/var/lib/paisans/registry.lock`: it reads the registry, refuses if another
 id already holds this deployment's token or root (or its WireGuard interface,
-listen port or an overlapping mesh subnet, see the next section), and
+listen port or an overlapping mesh subnet, see the next section, or the
+gateway or data role, see below), and
 otherwise adds this
 deployment's entry, or refreshes it, in a temporary file it then moves over
 the registry. A refusal names the other deployment's id and domain and
@@ -805,6 +806,15 @@ from ever being half written. The merge is done with awk, which a host has
 before `host prepare` has installed anything, so the file keeps one
 deployment per line, and a registry in any other layout is refused rather
 than guessed at.
+
+**A host runs one deployment's gateway and one deployment's data site.** The
+gateway binds ports 80 and 443, and its Caddy imports `/srv/caddy.d`; a data
+site binds the Postgres and etcd ports and holds the cluster's storage. None
+of these can be split between two deployments, so each entry records the
+site's `roles`, sorted and joined with commas, and the claim refuses a
+deployment claiming `gateway` on a host where another already holds
+`gateway`, and the same for `data`. The refusal says to use another host for
+one of them. Every other role shares a host freely.
 
 Without `--execute` the same commands only read the registry and refuse the
 same way, so a dry run shows the conflict the real run would meet. `preflight`
@@ -1276,6 +1286,28 @@ Containers never know they exist, and nothing is written *into* a container —
 Compose passes env at start. Changing a secret in an `.env` therefore means
 re-render plus `compose up -d` to **recreate**; a `restart` will not pick it up.
 A secret in a bind-mounted file is cheaper to change, for the reason below.
+
+#### A file `apply` no longer renders is left over, and stays recorded
+
+Taking an app out of `paisans.yaml`, or moving it to another site, leaves its
+files and containers on the host. **`apply` never deletes them**, because
+stopping a stack and removing its data is a decision with member data in it,
+and an apply that only meant to change a configuration must not make it.
+
+**It keeps them recorded.** The manifest is the only proof that a file under
+the root is this deployment's, so a whole apply keeps the entry of every file
+it no longer renders, marked `"leftover": true` with `"leftover_since"`, the
+time a whole apply first found it so. The file stays this deployment's rather
+than turning into one nobody can account for, and a file rendered again loses
+the mark. A scoped apply, and one run with `--only`, marks nothing and keeps
+every entry outside what it writes exactly as it was.
+
+The dry run and the real one end with a `left over` section listing them:
+each such file, and each of this deployment's compose projects still on the
+host (by the deployment label with this id and a `paisans-<token>-<stack>`
+project) that the site no longer renders, saying that `apply` leaves them in
+place. `doctor` reports the same, as a warning (see *`paisans doctor` reports
+what is stuck and how to recover*).
 
 #### A `kind` ships a template set, not a single `.env`
 
@@ -3832,7 +3864,7 @@ at, and "could not look" is not "looked and it was fine".
 | Clock | every site | `timedatectl show -p NTPSynchronized --value` | not `yes` |
 | Host | new site | the host check (see *The host check*) | something foreign holds a claim, or the host is shared and its firewall is not already up and denying by default |
 | Prepared | new site | `host prepare`'s own plan, without the firewall's defaults on a shared host | it has any step left |
-| Registry | new site | `/var/lib/paisans/registry.json`, read and never claimed | another deployment there holds this one's token, root, interface or listen port, or a mesh subnet overlapping this one's |
+| Registry | new site | `/var/lib/paisans/registry.json`, read and never claimed | another deployment there holds this one's token, root, interface or listen port, a mesh subnet overlapping this one's, or the gateway or data role this one claims |
 | Platform | new data site, against each existing data site | `/etc/os-release` `ID` and `VERSION_ID`, and the release at the end of `ldd --version`'s first line | any of the three differs |
 | WireGuard | new site | `/sys/module/wireguard`, else `modprobe -n wireguard` | neither |
 | Watchdog | new data site, unless its mode is `off` | `/dev/watchdog` exists | it does not |
@@ -3942,7 +3974,7 @@ An outage is the worst time to remember which container to look at, which etcd
 key holds the answer, or which Patroni log line means what.
 `paisans doctor` reaches every declared site, or only those named with
 `--site` (repeatable), reads its state, and prints one line per finding,
-`ok`, `skip`, `WARN` or `FAIL`, with what happened and how to recover under
+`ok`, `skip`, `info`, `WARN` or `FAIL`, with what happened and how to recover under
 each one that is not `ok`. It exits 1 when any finding is `FAIL`, so a script
 or a monitor can tell a healthy deployment from one that needs a human.
 
@@ -3972,6 +4004,7 @@ that the first `FAIL` is usually the cause of those after it:
 | Containers | `docker ps -a --filter label=community.paisans.deployment=<id>` on every site, then `docker inspect` and the end of `docker logs` for each container not running | any container is not running |
 | Pocket ID | the same question `apply` asks after acting on a Pocket ID stack on more than one site, asked once | no site, or more than one, has an active instance |
 | Clocks | `date +%s.%N` on each site, against the workstation's clock taken on either side of the call, less half the round trip | never; more than 1 s off is a `WARN` |
+| Leftovers | the host check's inventory (*The host check: what is already on a host decides how much is touched*) on every site that answered, and the manifest; skipped under `--sudo=false`, since the inventory reads as root | never. Anything of this deployment's the site no longer renders (a compose project by label and name, a manifest entry marked left over) is a `WARN`, with the note that `apply` does not remove it. On the gateway, each `*.caddy` in `/srv/caddy.d` and each container without this deployment's label on one of its Caddy's Docker networks is listed as `info`: foreign, and served by this deployment's Caddy |
 
 The health check names each member rather than using `--cluster`, because
 `--cluster` first asks the cluster for its member list (etcd v3.5.16,
@@ -4188,6 +4221,27 @@ proxy and auth gate as one unit rather than letting someone move half of it.
 OIDC callback URLs point at the public domain, not at the gateway host, so they
 need no change. Worth stating plainly, because "will this break single sign-on"
 is the first question anyone asks about this move.
+
+### The gateway host's own sites live in `/srv/caddy.d`
+
+A gateway host often serves something that is not part of the community, Eg: a
+blog its owner runs beside it. Only one thing can bind 80 and 443, so that site
+goes through the gateway's Caddy too, and its site block lives in the host's
+`/srv/caddy.d`. The gateway's Caddy mounts that directory read only at
+`/etc/caddy.d`, and the Caddyfile ends with `import /etc/caddy.d/*.caddy`, at
+the top level and after the toolkit's own snippets, so each file there is a
+whole site block and may import `upstream_unavailable` or `upstream_single`.
+
+**paisans never touches what is in it.** `apply` creates the directory, root's
+and 0755, when it is missing, and leaves an existing one as it is. It never
+writes a file there, never records one in its manifest and never removes one,
+because the directory belongs to the host's owner rather than to any
+deployment, which is also why its path carries no token. An empty directory is
+fine: Caddy logs a warning for an import glob that matches no file and starts
+(Caddy v2.11.7, `caddyconfig/caddyfile/parse.go`, `doImport`). The directory
+stays on the host when the gateway role moves, and its files move by hand.
+`doctor` lists each file there, so whoever moves or stops the gateway can see
+what else depends on it.
 
 ### It is a config change
 

@@ -37,7 +37,10 @@ deployment on it" has the reasoning.
 The registry entry also carries the deployment's WireGuard interface
 (`psns-<token>`), its listen port (the site's endpoint port) and its mesh
 subnet, and a claim refuses another deployment's same interface, same port or
-overlapping subnet. `apply` and `host prepare` also read the host's routes,
+overlapping subnet. It carries the site's roles too (`roles`, sorted and
+comma joined so the awk matches one with `index()`), and a claim refuses
+`gateway` or `data` when another deployment on the host holds the same role.
+`apply` and `host prepare` also read the host's routes,
 addresses, Docker networks and Docker's address pools before they claim it,
 and refuse an overlap with the mesh subnet; `internal/mesh` holds the parsing
 and the overlap test as pure functions, and `cmd/paisans/mesh.go` the probes
@@ -160,12 +163,26 @@ healthy and answering through the gateway, polled for three minutes. See
 `doctor` reaches every site, or the ones `--site` names, and reports what is
 stuck with how to recover: sites that do not answer and what is lost while
 they are gone, etcd quorum and cluster version, the Patroni leader or why no
-replica promotes, containers that are down, Pocket ID's active instance, and
-clock drift. It has no `--execute` and sends only reads, which its command
+replica promotes, containers that are down, Pocket ID's active instance,
+clock drift, and what is left over or foreign (below). It has no `--execute` and sends only reads, which its command
 level test checks against an allow list. The judgements are pure functions in
 `internal/doctor`, tested with what live hosts answered; `cmd/paisans` runs the
 commands. It exits 1 on any `FAIL`. See *`paisans doctor` reports what is
 stuck and how to recover* in `README.md`.
+
+**Leftovers and foreign users of Caddy** are `internal/ownership`: `Classify`
+is a pure function of the configuration, a `hostcheck.Inventory` and the
+manifest's entries. Something is this deployment's only when provable: a
+container with this id's deployment label and a `paisans-<token>-<stack>`
+project, or a manifest entry. A stack that `render.SiteStacks` no longer names
+for the site, and a manifest entry marked left over, is a leftover; on the
+gateway, a `*.caddy` in `render.HostSitesDir` and a container without this
+deployment's label on one of its Caddy's Docker networks (never `host` or
+`none`, which attach nothing) is foreign. `apply` prints the leftovers after
+its plan (`printLeftovers` in `cmd/paisans/leftover.go`); `doctor` runs
+`hostcheck.Inspect` on each site that answered and reports them as `WARN`,
+and the foreign users as `info`. Its allow list takes the inventory's probes
+from `hostcheck.ReadCommands`.
 
 `render` and `apply` refuse a gateway site when `external.acme_dns_token` is
 empty. `init` lists it as owed, but rendering without it produced a Caddy that
@@ -220,7 +237,7 @@ a host decides how much is touched* has the reasoning; what the code does:
   (`id -u`, `docker version`, `dpkg-query`,
   `docker inspect`, `docker volume inspect`, `docker network inspect`,
   `ss -Hltnup`, `/proc/`, `ip -o link`, `ip -j route`, `ufw status verbose`,
-  `is-active firewalld`); a fake transport elsewhere that reaches one of
+  `is-active firewalld`, `/srv/caddy.d/`); a fake transport elsewhere that reaches one of
   these commands has to answer it.
 * **Classification** (`hostcheck.Classify`) is a pure function of the
   claims and the inventory, tested with recorded output: a clean host with
@@ -392,6 +409,24 @@ another id's, an unlabelled one, an anonymous one and a named one are kept. The 
 short answer is an error rather than a shorter list. README.md "Every volume
 an image declares is mounted, and `apply` checks it" has the audit table and
 the reasoning.
+
+**A file no longer rendered stays recorded, marked left over.** A whole plan
+(`Plan.Whole`) lists the manifest's entries for files the site no longer
+renders as `Plan.Leftovers`, each with `leftover` set and `leftover_since`
+kept from the manifest or stamped now, and `writeManifest` keeps them. Nothing
+deletes the file. Dropping the entry would make the deployment's own file
+unprovable, and the next apply would read it as somebody else's. A file
+rendered again is written with a fresh entry, which clears the mark. Scoped
+and partial plans mark nothing and keep every entry outside what they write.
+`leftover_test.go` covers all three.
+
+**The gateway creates `/srv/caddy.d` and never touches what is in it.** The
+gateway's Caddy mounts the host's `render.HostSitesDir` read only, and the
+Caddyfile imports `*.caddy` from it last, at the top level. `Plan.HostSites`
+is set on a gateway whose Caddy is changing, and `Execute` runs
+`HostSitesCommand` before the Caddy validation, the first container that
+mounts it: it creates the directory root's and 0755 when it is missing and
+leaves an existing one alone. Nothing under it is written or recorded.
 
 **Files are recorded as soon as they land.** The manifest is written right
 after the files, and again at the end, not only on success. A manifest written
@@ -810,6 +845,7 @@ installed, on a workstation or anywhere else.
 | `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
 | `internal/ingress` | a monitor's ingress: the hand-off sheet for an operator's own web server, and the read only checks run from the workstation |
 | `internal/hostcheck` | what a site claims on its host, what the host already runs, and whether that is clean, shared or a conflict |
+| `internal/ownership` | what of this deployment is left over on a host, and what foreign relies on its Caddy, from the host check's inventory |
 | `internal/preflight` | `site add`'s first stage: read only checks on the new site and every running one, as a report |
 | `internal/failover` | `failover test`: its checks, the switchover and its gates |
 | `internal/doctor` | `doctor`: the read commands it sends, and the findings and recovery advice made from their answers |

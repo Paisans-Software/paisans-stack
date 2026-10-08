@@ -89,6 +89,7 @@ func healthy(name string) *fakeHost {
 			{match: "ip -o link", out: "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n"},
 			{match: "ufw status verbose", out: "Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n"},
 			{match: "is-active firewalld", out: "inactive\n"},
+			{match: "/srv/caddy.d/", out: ""},
 			{match: "/proc/", out: ""},
 		},
 	}

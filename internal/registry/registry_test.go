@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/paisans-software/paisans-stack/internal/config"
 )
 
 const (
@@ -319,3 +321,95 @@ func TestMeshesListsOtherDeploymentsSubnets(t *testing.T) {
 		t.Errorf("Meshes = %+v", got)
 	}
 }
+
+// roleEntry is meshEntry on disjoint meshes, with roles.
+func roleEntry(token, domain string, port int, subnet, roles string) Entry {
+	e := meshEntry(token, domain, "vm", port, subnet)
+	e.Roles = roles
+	return e
+}
+
+// The gateway and data roles are one deployment's per host, in Merge and in
+// the awk merge alike; every other role, and an entry without roles, shares.
+func TestRoleConflicts(t *testing.T) {
+	theirsEntry := roleEntry("0c1d", "example.net", 51820, "10.44.0.0/24", "apps,data,gateway")
+	base := Registry{Version: Version, Deployments: map[string]Entry{other: theirsEntry}}
+	input, err := Encode(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, roles, clash, advice string
+	}{
+		{"a second gateway", "gateway", "the gateway role", "Use another host for one of the gateways"},
+		{"a second data site", "apps,data", "the data role", "Use another host for one of the data sites"},
+		{"both", "data,gateway", "the data role", "Use another host for one of the data sites"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := roleEntry("f2a9", "example.org", 51821, "10.45.0.0/24", tc.roles)
+			_, err := Merge(base, ours, e)
+			var c Conflict
+			if !errors.As(err, &c) || c.ID != other || len(c.Clashes) == 0 || c.Clashes[0] != tc.clash {
+				t.Fatalf("Merge = %v, want a conflict with %s on %q", err, other, tc.clash)
+			}
+			stdout, stderr, code := runMerge(t, string(input), ours, e)
+			if code != 3 || stdout != "" {
+				t.Fatalf("the awk merge did not refuse: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+			}
+			if err := ParseClaim(stderr); !errors.As(err, &c) || c.ID != other {
+				t.Fatalf("the awk refusal parsed to %v", err)
+			}
+			c.Clashes = clashes(c.Entry, e)
+			msg := refused(fakeHost{}, e, c).Error()
+			if !strings.Contains(msg, tc.clash) || !strings.Contains(msg, tc.advice) {
+				t.Errorf("the refusal %q does not name %q and say %q", msg, tc.clash, tc.advice)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name   string
+		theirs string
+		ours   string
+	}{
+		{"apps beside a gateway and data", "apps,data,gateway", "apps,witness"},
+		{"an entry without roles holds none", "", "data,gateway"},
+		{"a claim without roles claims none", "apps,data,gateway", ""},
+		{"a role that only contains the word", "databases", "data"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := Registry{Version: Version, Deployments: map[string]Entry{
+				other: roleEntry("0c1d", "example.net", 51820, "10.44.0.0/24", tc.theirs),
+			}}
+			in, _ := Encode(start)
+			e := roleEntry("f2a9", "example.org", 51821, "10.45.0.0/24", tc.ours)
+			got, err := Merge(start, ours, e)
+			if err != nil {
+				t.Fatalf("Merge = %v", err)
+			}
+			stdout, stderr, code := runMerge(t, string(in), ours, e)
+			if code != 0 {
+				t.Fatalf("exit %d: %s", code, stderr)
+			}
+			back, err := Parse([]byte(stdout))
+			if err != nil || back.Deployments[ours] != got.Deployments[ours] || back.Deployments[other] != got.Deployments[other] {
+				t.Errorf("the awk merge wrote %+v, %v, want %+v", back, err, got)
+			}
+		})
+	}
+}
+
+func TestJoinRolesSorts(t *testing.T) {
+	if got := JoinRoles([]config.Role{config.RoleGateway, config.RoleApps, config.RoleData}); got != "apps,data,gateway" {
+		t.Errorf("JoinRoles = %q", got)
+	}
+	if got := JoinRoles(nil); got != "" {
+		t.Errorf("JoinRoles(nil) = %q", got)
+	}
+}
+
+type fakeHost struct{}
+
+func (fakeHost) Run(string) (string, error)            { return "", nil }
+func (fakeHost) ReadFile(string) (string, bool, error) { return "", false, nil }
+func (fakeHost) Describe() string                      { return "vm" }

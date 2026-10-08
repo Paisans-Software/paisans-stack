@@ -196,6 +196,8 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		"PostgresVersion":         p.postgresVersion(),
 		"SpiloTag":                spilo,
 		"CaddyImage":              caddy,
+		"HostSites":               HostSitesMount,
+		"HostSitesSource":         HostSitesDir,
 		"EtcdClientPort":          etcdClientPort,
 		"EtcdPeerPort":            etcdPeerPort,
 		"EtcdCompactionRetention": etcdCompactionRetention,
@@ -207,7 +209,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	// A site with no roles exists only to host what is pinned to it and runs
 	// no infrastructure, so it gets no infra stack: a compose project with an
 	// empty services map is nothing apply could start or recreate.
-	if site.IsEtcd || site.IsData || site.NeedsProxy || site.IsGarage || site.RunsCaddy {
+	if site.runsInfra() {
 		files = append(files, File{Path: base + p.dep().RelPath("infra", "compose.yaml"), Content: infra, Mode: 0o644})
 	}
 	if site.IsEtcd {
@@ -290,11 +292,13 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			mounts = p.gateSnippetMounts()
 		}
 		caddyfile, err := p.renderTemplate("Caddyfile.tmpl", map[string]any{
-			"Domain":         p.cfg.Community.Domain,
-			"Routes":         routes,
-			"GateSnippets":   mounts,
-			"TrustedProxies": p.mesh,
-			"ACMEDirective":  acme.Directive(p.cfg.ACME.Provider),
+			"Domain":          p.cfg.Community.Domain,
+			"Routes":          routes,
+			"GateSnippets":    mounts,
+			"TrustedProxies":  p.mesh,
+			"ACMEDirective":   acme.Directive(p.cfg.ACME.Provider),
+			"HostSites":       hostSitesMount(site),
+			"HostSitesSource": HostSitesDir,
 		})
 		if err != nil {
 			return nil, err
@@ -333,6 +337,22 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	}
 
 	return files, nil
+}
+
+// runsInfra reports whether the site runs any infrastructure service, and so
+// gets an infra stack.
+func (site *siteView) runsInfra() bool {
+	return site.IsEtcd || site.IsData || site.NeedsProxy || site.IsGarage || site.RunsCaddy
+}
+
+// hostSitesMount is where the Caddyfile imports the host's own site blocks
+// from: the gateway's mount of HostSitesDir, and nothing on a monitor, which
+// serves only the apps pinned to it.
+func hostSitesMount(site *siteView) string {
+	if site.IsGateway {
+		return HostSitesMount
+	}
+	return ""
 }
 
 // snippetTemplate is the file in a kind's set that describes how the gateway

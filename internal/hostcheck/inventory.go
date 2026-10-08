@@ -46,6 +46,13 @@ type Inventory struct {
 	ManifestPath      string
 	Manifest          bool
 	ManifestWireGuard bool
+	// ManifestFiles is every file that record lists, nil when there is
+	// none or it is unreadable.
+	ManifestFiles []render.ManifestFile
+	// HostSites are the *.caddy files in the host's own render.HostSitesDir,
+	// by full path and sorted: site blocks somebody added to the gateway's
+	// Caddy, which no deployment owns.
+	HostSites []string
 }
 
 // Docker is the engine, if there is one.
@@ -69,7 +76,7 @@ const (
 	rootProbe      = "id -u"
 	dockerProbe    = `command -v docker >/dev/null 2>&1 || { echo absent; exit 0; }; docker version --format '{{.Server.Version}}'`
 	packageProbe   = `dpkg-query -W -f='${Package} ${Status}\n' docker-ce docker.io 2>/dev/null; snap list docker 2>/dev/null; true`
-	containerProbe = `docker ps -aq --no-trunc | xargs -r docker inspect --format '{"id":{{json .Id}},"name":{{json .Name}},"pid":{{.State.Pid}},"labels":{{json .Config.Labels}},"ports":{{json .HostConfig.PortBindings}}}' 2>/dev/null || true`
+	containerProbe = `docker ps -aq --no-trunc | xargs -r docker inspect --format '{"id":{{json .Id}},"name":{{json .Name}},"pid":{{.State.Pid}},"labels":{{json .Config.Labels}},"networks":{{json .NetworkSettings.Networks}},"ports":{{json .HostConfig.PortBindings}}}' 2>/dev/null || true`
 	volumeProbe    = `docker volume ls -q | xargs -r docker volume inspect --format '{"name":{{json .Name}},"labels":{{json .Labels}}}' 2>/dev/null || true`
 	networkProbe   = `docker network ls -q --no-trunc | xargs -r docker network inspect --format '{"id":{{json .Id}},"name":{{json .Name}},"labels":{{json .Labels}},"ipam":{{json .IPAM.Config}}}' 2>/dev/null || true`
 	socketProbe    = "ss -Hltnup"
@@ -77,9 +84,26 @@ const (
 	routeProbe     = "ip -j route"
 	ufwProbe       = `command -v ufw >/dev/null 2>&1 || { echo 'ufw absent'; exit 0; }; ufw status verbose`
 	firewalldProbe = "systemctl is-active firewalld || true"
+	// Each file is printed only when it is one, since an unmatched glob is
+	// left as the literal pattern.
+	hostSitesProbe = `for f in ` + render.HostSitesDir + `/*.caddy; do [ -f "$f" ] && echo "$f"; done; true`
 
 	cLocale = "export LC_ALL=C; "
 )
+
+// ReadCommands is every fixed command Inspect sends, exactly as it sends it,
+// for a caller's allow list of reads. The one command that varies is the
+// cgroup read, which starts with CgroupPrefix.
+func ReadCommands() []string {
+	var out []string
+	for _, probe := range []string{rootProbe, dockerProbe, packageProbe, containerProbe, volumeProbe, networkProbe, socketProbe, linkProbe, routeProbe, ufwProbe, firewalldProbe, hostSitesProbe} {
+		out = append(out, cLocale+probe)
+	}
+	return out
+}
+
+// CgroupPrefix starts the cgroup read, whose PID list varies.
+const CgroupPrefix = cLocale + "for p in "
 
 // cgroupProbe prints, per PID, the PID and its cgroup lines on one line. A
 // process that exited since ss ran prints its PID alone.
@@ -186,6 +210,16 @@ func Inspect(t Transport, d deployment.Deployment) (*Inventory, error) {
 	}
 	inv.Firewall.Firewalld = strings.TrimSpace(out) == "active"
 
+	if out, err = run("listing "+render.HostSitesDir, hostSitesProbe); err != nil {
+		return nil, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			inv.HostSites = append(inv.HostSites, line)
+		}
+	}
+	sort.Strings(inv.HostSites)
+
 	content, found, err := t.ReadFile(inv.ManifestPath)
 	if err != nil {
 		return nil, fail("reading "+inv.ManifestPath, err)
@@ -196,6 +230,7 @@ func Inspect(t Transport, d deployment.Deployment) (*Inventory, error) {
 		// it is not known to be the toolkit's. apply refuses that manifest itself.
 		var m render.Manifest
 		if json.Unmarshal([]byte(content), &m) == nil {
+			inv.ManifestFiles = m.Files
 			for _, f := range m.Files {
 				if f.Path == d.WireGuardConf() {
 					inv.ManifestWireGuard = true

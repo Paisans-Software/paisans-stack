@@ -14,10 +14,7 @@
 # This file holds only what is cross cutting: certificates, the trusted proxy
 # range, and one host block per application. How an application is routed is a
 # fact about that application, so it lives in that kind's own snippet and is
-# imported here. The rejected alternative was one file that knows every kind
-# through conditionals, where adding an application means editing a file every
-# other application shares and one mistake takes the whole gateway down rather
-# than one host block.
+# imported here.
 {
 	email admin@example.org
 	acme_dns desec {

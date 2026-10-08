@@ -12,7 +12,9 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/doctor"
+	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/mesh"
+	"github.com/paisans-software/paisans-stack/internal/ownership"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -81,7 +83,8 @@ func runDoctor(args []string) error {
 
 // gatherDoctor runs every read doctor makes and records each answer. Every
 // command here is one of internal/doctor's read commands, patroni's
-// ClusterCommand, or apply.LookAtInstances' question; none writes.
+// ClusterCommand, apply.LookAtInstances' question, or the host check's
+// inventory (hostcheck.Inspect); none writes.
 func gatherDoctor(cfg *config.Config, sites []string, transports map[string]apply.Transport) doctor.Input {
 	in := doctor.Input{Sites: sites}
 	reached := map[string]bool{}
@@ -203,6 +206,13 @@ func gatherDoctor(cfg *config.Config, sites []string, transports map[string]appl
 		if !reached[name] {
 			continue
 		}
+		in.Leftovers = append(in.Leftovers, gatherLeftovers(cfg, name, transports[name]))
+	}
+
+	for _, name := range sites {
+		if !reached[name] {
+			continue
+		}
 		before := doctorNow()
 		out, err := transports[name].Run(doctor.ClockCommand)
 		after := doctorNow()
@@ -213,6 +223,21 @@ func gatherDoctor(cfg *config.Config, sites []string, transports map[string]appl
 		in.Clocks = append(in.Clocks, sample)
 	}
 	return in
+}
+
+// gatherLeftovers takes one site's inventory with the host check's probes,
+// all reads, and classifies what is left over and what relies on its Caddy.
+func gatherLeftovers(cfg *config.Config, site string, t apply.Transport) doctor.LeftoverProbe {
+	p := doctor.LeftoverProbe{Site: site}
+	inv, err := hostcheck.Inspect(t, cfg.Deployment())
+	if err != nil {
+		p.Err = firstOf(err.Error())
+		return p
+	}
+	if p.Report, err = ownership.Classify(cfg, site, inv, inv.ManifestFiles); err != nil {
+		p.Err = err.Error()
+	}
+	return p
 }
 
 // gatherContainers lists one site's containers and looks closer at each one

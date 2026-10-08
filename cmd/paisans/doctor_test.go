@@ -10,6 +10,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/doctor"
+	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
 )
@@ -74,7 +75,10 @@ func readOnly(cfg *config.Config) (exact []string, prefixes []string) {
 		"docker inspect --format '{\"State\":{{json .State}},\"RestartCount\":{{.RestartCount}}}' ",
 		"docker logs --tail 20 ",
 		"if [ ! -f '/srv/paisans/f2a9/auth/compose.yaml' ]; then echo absent; ",
+		hostcheck.CgroupPrefix,
 	}
+	exact = append(exact, hostcheck.ReadCommands()...)
+	exact = append(exact, "read "+cfg.Deployment().Manifest())
 	return exact, prefixes
 }
 
@@ -239,5 +243,79 @@ func TestDoctorSiteNarrowsTheHostsReached(t *testing.T) {
 	}
 	if runErr == nil {
 		t.Error("a deployment whose database could not be read is not a pass")
+	}
+}
+
+// The leftovers check: on the gateway, a stack of this deployment the
+// configuration no longer renders is a warning, a site block in the host's
+// own directory and a foreign container on Caddy's network are info, and
+// every command it sent is a read.
+func TestDoctorReportsLeftoversAndForeignCaddyUsers(t *testing.T) {
+	cfg, err := config.Load(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := cfg.Deployment().ID
+	probes := hostcheck.ReadCommands()
+	answers := map[string]string{
+		doctor.ReachCommand:                        "",
+		doctor.ClockCommand:                        "1760000000.000000000\n",
+		doctor.ContainersCommand(cfg.Deployment()): `{"Names":"paisans-f2a9-infra-etcd-1","State":"running","Status":"Up","Labels":"community.paisans.deployment=` + id + `"}`,
+		doctor.EtcdVersionCommand:                  `{"etcdserver":"3.5.16","etcdcluster":"3.5.0"}`,
+		"docker compose -f /srv/paisans/f2a9/infra/compose.yaml exec -T etcd etcdctl": `[{"endpoint":"http://10.44.0.1:2379","health":true},{"endpoint":"http://10.44.0.2:2379","health":true},{"endpoint":"http://10.44.0.3:2379","health":true}]`,
+		mesh.LinkCommand("psns-f2a9"): `[{"ifname":"psns-f2a9","flags":["POINTOPOINT","NOARP","UP","LOWER_UP"]}]`,
+		mesh.RouteCommand:             `[{"dst":"10.44.0.0/24","dev":"psns-f2a9"}]`,
+		mesh.AddrCommand:              "[]",
+		mesh.NetworksCommand:          "[]",
+		probes[0]:                     "0\n",
+		probes[1]:                     "27.3.1\n",
+		probes[2]:                     "docker-ce install ok installed\n",
+		probes[3]: `{"id":"a","name":"/paisans-f2a9-infra-caddy-1","pid":10,"labels":{"community.paisans.deployment":"` + id + `","com.docker.compose.project":"paisans-f2a9-infra","com.docker.compose.service":"caddy"},"networks":{"web":{}},"ports":{}}
+{"id":"b","name":"/paisans-f2a9-old-app-1","pid":11,"labels":{"community.paisans.deployment":"` + id + `","com.docker.compose.project":"paisans-f2a9-old","com.docker.compose.service":"app"},"networks":{"paisans-f2a9-old_default":{}},"ports":{}}
+{"id":"c","name":"/blog-ghost-1","pid":12,"labels":{"com.docker.compose.project":"blog"},"networks":{"web":{}},"ports":{}}
+`,
+		probes[4]:  "",
+		probes[5]:  "",
+		probes[6]:  "",
+		probes[7]:  "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n",
+		probes[8]:  "[]",
+		probes[9]:  "ufw absent\n",
+		probes[10]: "inactive\n",
+		probes[11]: "/srv/caddy.d/blog.caddy\n",
+	}
+	var sent, writes []string
+	withDoctorHosts(t, map[string]doctorHost{
+		"vm.example.org": {name: "vm.example.org", sent: &sent, writes: &writes, answers: answers},
+	})
+	out := captureStdout(t, func() { _ = runDoctor([]string{"--config", fixtureConfig(), "--site", "vm"}) })
+	for _, want := range []string{
+		"leftovers",
+		"WARN  vm: 1 thing(s) of this deployment left over",
+		"stack old (compose project paisans-f2a9-old, 1 of 1 running): paisans-f2a9-old-app-1",
+		"apply leaves them in place and does not remove them.",
+		"info  vm: 2 foreign thing(s) rely on this deployment's Caddy",
+		"site block /srv/caddy.d/blog.caddy, served by this deployment's Caddy",
+		"container blog-ghost-1, on network web with this deployment's Caddy",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	exact, prefixes := readOnly(cfg)
+	for _, s := range sent {
+		command := s[strings.Index(s, ": ")+2:]
+		allowed := false
+		for _, e := range exact {
+			allowed = allowed || command == e
+		}
+		for _, p := range prefixes {
+			allowed = allowed || strings.HasPrefix(command, p)
+		}
+		if !allowed {
+			t.Errorf("doctor sent a command outside its read allow list: %s", s)
+		}
+	}
+	if len(writes) > 0 {
+		t.Errorf("doctor wrote: %v", writes)
 	}
 }
