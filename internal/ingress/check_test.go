@@ -83,6 +83,8 @@ type world struct {
 	dialErr error
 	// dialled records every address the upstream check dialled.
 	dialled *[]string
+	// dialErrs overrides dialErr per address dialled.
+	dialErrs map[string]error
 }
 
 func good() world {
@@ -135,6 +137,9 @@ func (w world) probes(t *testing.T) ingress.Probes {
 				a, b := net.Pipe()
 				b.Close()
 				return a, nil
+			}
+			if err, ok := w.dialErrs[address]; ok {
+				return nil, err
 			}
 			if w.dialErr != nil {
 				return nil, w.dialErr
@@ -319,5 +324,36 @@ func TestCheckDialsTheIPv6AddressToo(t *testing.T) {
 	r := result(t, run(t, w, target), ingress.CheckUpstream)
 	if !r.OK || strings.Join(dialled, ",") != "203.0.113.20:8480,[2001:db8::20]:8480" {
 		t.Fatalf("%+v dialled %v", r, dialled)
+	}
+}
+
+// One conclusive answer is enough. A machine with no IPv6 route cannot test
+// the IPv6 address, but the IPv4 one refusing still shows the port closed,
+// so the check passes and names the family it could not reach. With no
+// address answering conclusively it stays inconclusive.
+func TestCheckPassesWhenOneFamilyIsConclusive(t *testing.T) {
+	cfg := fixture(t)
+	watch := cfg.Sites["watch"]
+	watch.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}
+	watch.PublicAddress6 = "2001:db8::20"
+	cfg.Sites["watch"] = watch
+	target, err := ingress.For(cfg, "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noRoute := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.EHOSTUNREACH)}
+	var dialled []string
+	w := good()
+	w.resolves = []string{"203.0.113.20", "2001:db8::20"}
+	w.dialled = &dialled
+	w.dialErrs = map[string]error{"[2001:db8::20]:8480": noRoute}
+	r := result(t, run(t, w, target), ingress.CheckUpstream)
+	if !r.OK || !strings.Contains(r.Detail, "refused, or the host did not answer") || !strings.Contains(r.Detail, "IPv6") || !strings.Contains(r.Detail, "2001:db8::20") {
+		t.Fatalf("%+v", r)
+	}
+
+	w.dialErrs["203.0.113.20:8480"] = noRoute
+	if r := result(t, run(t, w, target), ingress.CheckUpstream); r.OK || !strings.Contains(r.Detail, "inconclusive") {
+		t.Fatalf("no conclusive answer passed: %+v", r)
 	}
 }

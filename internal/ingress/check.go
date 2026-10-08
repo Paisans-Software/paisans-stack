@@ -234,6 +234,7 @@ func checkUpstream(ctx context.Context, t Target, p Probes) Result {
 		addresses = append(addresses, t.PublicAddress6)
 	}
 	var closed, open, inconclusive []string
+	var unreachable []string // families, for the note
 	for _, a := range addresses {
 		address := net.JoinHostPort(a, strconv.Itoa(t.ListenPort))
 		conn, err := p.Dial(ctx, "tcp", address)
@@ -245,20 +246,37 @@ func checkUpstream(ctx context.Context, t Target, p Probes) Result {
 			closed = append(closed, address)
 		default:
 			inconclusive = append(inconclusive, fmt.Sprintf("%s (%v)", address, err))
+			unreachable = append(unreachable, family(a))
 		}
 	}
 	switch {
 	case len(open) > 0:
 		r.Detail = fmt.Sprintf("%s answers: the app is reachable around your web server", strings.Join(open, " and "))
 		r.Fix = fmt.Sprintf("Docker publishes %s in front of ufw. Set sites.%s.ingress.listen to 127.0.0.1:%d when the web server runs on this machine, or drop port %d from outside in Docker's DOCKER-USER chain", t.Listen, t.Site, t.ListenPort, t.ListenPort)
-	case len(inconclusive) > 0:
+	case len(closed) == 0:
+		// Not one address answered either way, so nothing is known about
+		// the port.
 		r.Detail = fmt.Sprintf("inconclusive: %s; the address was unreachable from here, which says nothing about the port", strings.Join(inconclusive, ", "))
 		r.Fix = "run the check from a machine that can reach the site's public address, where only a refused or timed out connection shows the port closed"
 	default:
+		// One conclusive answer shows the publish is not on the public
+		// interface. A family this machine has no route for, commonly IPv6
+		// on a home connection, is named rather than failed.
 		r.OK = true
-		r.Detail = fmt.Sprintf("%s refused or timed out, so the app is reachable only through the web server", strings.Join(closed, " and "))
+		r.Detail = fmt.Sprintf("%s refused, or the host did not answer, so the app is reachable only through the web server", strings.Join(closed, " and "))
+		if len(inconclusive) > 0 {
+			r.Detail += fmt.Sprintf("; %s not tested, unreachable from here: %s", strings.Join(unreachable, " and "), strings.Join(inconclusive, ", "))
+		}
 	}
 	return r
+}
+
+// family names an address's IP version, for a message.
+func family(address string) string {
+	if ip := net.ParseIP(address); ip != nil && ip.To4() == nil {
+		return "IPv6"
+	}
+	return "IPv4"
 }
 
 // refusedOrTimedOut reports whether a dial failed because the port is

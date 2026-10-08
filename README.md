@@ -545,8 +545,9 @@ nothing else, so a stale record still on the gateway fails;
 hostname, and its days to expiry; the sign in redirect naming a callback under
 `https://<hostname>/`; and the published port refusing the connection, or not
 answering, on the public addresses. Any other dial failure, such as no route
-from where the check runs, says nothing about the port and fails as
-inconclusive. In `mode: paisans` there is nothing to hand off, and `check`
+from where the check runs, says nothing about the port: one conclusive answer
+still passes, naming the family that could not be reached (commonly IPv6 from
+a home connection), and with none the check fails as inconclusive. In `mode: paisans` there is nothing to hand off, and `check`
 runs only the first two.
 
 **Moving an existing monitor.** A deployment whose uptime hostname already has
