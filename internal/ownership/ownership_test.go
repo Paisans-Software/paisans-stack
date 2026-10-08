@@ -131,3 +131,21 @@ func TestAnUndeclaredSiteIsAnError(t *testing.T) {
 		t.Error("Classify answered for an undeclared site")
 	}
 }
+
+// The apps leftovers belong to, for `paisans app remove`: a stack's name, a
+// file's stack directory, and the app a route is named for. The
+// infrastructure stack is never one.
+func TestLeftoversNameTheirApps(t *testing.T) {
+	r := ownership.Report{
+		Stacks: []ownership.Stack{{Name: "old"}, {Name: "infra"}},
+		Files: []render.ManifestFile{
+			{Path: "srv/paisans/f2a9/docs/.env"},
+			{Path: "srv/paisans/f2a9/infra/caddy/snippets/wiki-media.caddy"},
+			{Path: "srv/paisans/f2a9/infra/caddy/snippets/gate-gates.caddy"},
+			{Path: "srv/paisans/f2a9/infra/haproxy/haproxy.cfg"},
+		},
+	}
+	if got, want := r.Apps(), []string{"docs", "gate", "old", "wiki"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Apps = %v, want %v", got, want)
+	}
+}

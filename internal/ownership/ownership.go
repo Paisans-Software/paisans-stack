@@ -16,11 +16,14 @@ package ownership
 
 import (
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -181,6 +184,81 @@ func (r Report) ForeignLines() []string {
 		out = append(out, fmt.Sprintf("container %s, on network %s with this deployment's Caddy", n.Container, n.Network))
 	}
 	return out
+}
+
+// Apps names the apps the leftovers belong to, sorted: each left over stack
+// but the infrastructure stack, and the app each left over file is under or
+// routes to. These are what `paisans app remove <app>` takes.
+func (r Report) Apps() []string {
+	seen := map[string]bool{}
+	for _, s := range r.Stacks {
+		if s.Name != "infra" {
+			seen[s.Name] = true
+		}
+	}
+	for _, f := range r.Files {
+		if app := FileApp(f.Path); app != "" {
+			seen[app] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for app := range seen {
+		out = append(out, app)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// FileApp names the app a rendered path belongs to, empty for none: the
+// stack directory it is under, or for a route in the infrastructure stack's
+// snippets, the app the snippet is named for, without a role suffix.
+func FileApp(rel string) string {
+	token, stack, _, ok := deployment.SplitRel(rel)
+	if !ok {
+		return ""
+	}
+	if stack != "infra" {
+		return stack
+	}
+	dir, file := path.Split(rel)
+	if dir != render.SnippetsDir(deployment.Deployment{ID: token})+"/" {
+		return ""
+	}
+	name, ok := strings.CutSuffix(file, ".caddy")
+	if !ok {
+		return ""
+	}
+	for _, role := range RouteSuffixes() {
+		if app, ok := strings.CutSuffix(name, "-"+role); ok && app != "" {
+			return app
+		}
+	}
+	return name
+}
+
+// RouteSuffixes are what follows <app>- in the name of an app's snippet
+// other than its primary route: each hostname role a kind understands, and
+// an oauth2-proxy app's named gate snippets.
+func RouteSuffixes() []string {
+	return append(kinds.ExtraRoles(), render.GatesSnippet)
+}
+
+// RouteOf reports whether a snippet name, without .caddy, is one an app's
+// routes are written under: <app>, or <app>-<suffix>.
+func RouteOf(app, name string) bool {
+	if name == app {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(name, app+"-")
+	if !ok {
+		return false
+	}
+	for _, s := range RouteSuffixes() {
+		if suffix == s {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(list []string, s string) bool {

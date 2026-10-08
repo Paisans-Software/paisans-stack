@@ -28,8 +28,11 @@ var adminTransport = func(t apply.SSHTransport) appadmin.Transport { return t }
 
 // runApp dispatches `paisans app <subcommand>`.
 func runApp(args []string) error {
+	if len(args) >= 1 && args[0] == "remove" {
+		return runAppRemove(args[1:], os.Stdin, os.Stdout)
+	}
 	if len(args) < 2 || args[0] != "admin" || args[1] != "create" {
-		return fmt.Errorf("app takes one subcommand, admin create: paisans app admin create --app <pocket-id app> --username <u> --email <e>")
+		return fmt.Errorf("app takes two subcommands: paisans app admin create --app <pocket-id app> --username <u> --email <e>, and paisans app remove <app>")
 	}
 	return runAppAdminCreate(args[2:], os.Stdin)
 }

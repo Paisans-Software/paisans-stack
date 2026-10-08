@@ -16,8 +16,8 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 validate and render touch nothing outside the working directory. init writes
 only local files, and reads every site over ssh to settle the mesh subnet.
 `host prepare`, `apply`, `prune`, `site add`, `storage init`, `storage add`,
-`storage rotate-key`, `app admin create` and `oidc client create` reach a
-machine, and each changes
+`storage rotate-key`, `app admin create`, `app remove` and `oidc client
+create` reach a machine, and each changes
 it only with `--execute`. `preflight` and `doctor`
 reach every site and never change one; `failover test` changes which site
 is primary, only with `--execute`. `dns init` and `dns prune` reach no
@@ -59,6 +59,7 @@ paisans prune    --site home-a            # lists dangling volumes, and which go
 paisans preflight --site home-b           # site add's read only checks
 paisans storage add                       # every Garage stage, from live state
 paisans storage rotate-key --app talk     # replaces one app's S3 key, staged
+paisans app remove docs                   # an app out of paisans.yaml, off every host
 paisans failover test                     # checks, and prints the plan
 paisans doctor                            # what is stuck, and how to recover
 paisans dns init                          # shows which records it would create
@@ -146,6 +147,22 @@ toolkit default (`kinds.ToolkitLaunchURLs`); any other value is left, with a
 warning if `sso_dashboard_link` asks for something else. See *`oidc client
 create` makes an app's client at Pocket ID* in `README.md`.
 
+`app remove <app>` takes an app that has left `paisans.yaml` off every host.
+`internal/appremove` holds it: `Refusal` and `Build` are pure functions of the
+configuration and what the probes read (`ProbeSite`, which runs
+`hostcheck.Inspect`, hashes the app's manifest files and reads its stack
+directory; `ProbeClient`; `ProbeDatabase`; `ProbeStorage`), and `Executor`
+runs the plan, each step from live state so a re-run resumes. What belongs to
+the app is `AppFile`: its stack directory, and in the infrastructure stack's
+snippets a file named by `ownership.RouteOf`, unless a declared app's route
+could carry the same name. The gate is the left over mark on every one of
+those entries. `cmd/paisans/appremove.go` wires the hosts, Pocket ID through
+`clientAPI` at the site `pocketIDSite` picks, and the claims, and asks for
+the app's name at a terminal before `--delete-data` deletes anything. Tests
+run a fake world in maps (`world_test.go`): files, containers, networks and
+volumes per host, a Postgres and a Garage with S3 objects. See *`app remove`
+takes an app off its hosts* in `README.md`.
+
 `preflight --site <new>` makes every check `site add` makes before it changes
 anything, on the site being added and on every site already running, and
 prints each as `ok`, `WARNING` or `REFUSED`. It exits non zero on a refusal.
@@ -181,7 +198,8 @@ deployment's label on one of its Caddy's Docker networks (never `host` or
 `none`, which attach nothing) is foreign. `apply` prints the leftovers after
 its plan (`printLeftovers` in `cmd/paisans/leftover.go`); `doctor` runs
 `hostcheck.Inspect` on each site that answered and reports them as `WARN`,
-and the foreign users as `info`. Its allow list takes the inventory's probes
+and the foreign users as `info`. Both name `paisans app remove <app>` for
+each app the leftovers belong to (`Report.Apps`). Its allow list takes the inventory's probes
 from `hostcheck.ReadCommands`.
 
 `render` and `apply` refuse a gateway site when `external.acme_dns_token` is
@@ -846,6 +864,7 @@ installed, on a workstation or anywhere else.
 | `internal/ingress` | a monitor's ingress: the hand-off sheet for an operator's own web server, and the read only checks run from the workstation |
 | `internal/hostcheck` | what a site claims on its host, what the host already runs, and whether that is clean, shared or a conflict |
 | `internal/ownership` | what of this deployment is left over on a host, and what foreign relies on its Caddy, from the host check's inventory |
+| `internal/appremove` | `app remove`: which of a host's things are a removed app's, the gate, the plan, and each idempotent step |
 | `internal/preflight` | `site add`'s first stage: read only checks on the new site and every running one, as a report |
 | `internal/failover` | `failover test`: its checks, the switchover and its gates |
 | `internal/doctor` | `doctor`: the read commands it sends, and the findings and recovery advice made from their answers |
