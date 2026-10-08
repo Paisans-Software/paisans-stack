@@ -185,11 +185,37 @@ func (u ubuntu) unitState(t Transport, unit string) (enabled, active bool, err e
 	return enabled, active, nil
 }
 
-// Services makes Docker start at boot and now. Docker's packages enable it on
-// install, so on a freshly installed host this is a no-op that is planned
-// anyway: the probe runs before the install and cannot know that.
+// dockerAfterWG0 is the drop-in that orders Docker after the mesh interface.
+const dockerAfterWG0 = "/etc/systemd/system/docker.service.d/paisans-after-wg0.conf"
+
+// Services makes Docker start at boot and now, and after wg0 at boot. Docker's
+// packages enable it on install, so on a freshly installed host enabling it is
+// a no-op that is planned anyway: the probe runs before the install and cannot
+// know that.
+//
+// The ordering is a drop-in rather than an edit to Docker's own unit, which a
+// package upgrade replaces. Writing it needs only a daemon-reload: it takes
+// effect at the next boot, which is the only moment it matters, so Docker and
+// every container on the host keep running.
 func (u ubuntu) Services(t Transport) (Section, error) {
 	var out Section
+	dropIn, err := snippet(u.tmpl("docker-after-wg0.conf.tmpl"), nil)
+	if err != nil {
+		return out, err
+	}
+	current, found, err := t.ReadFile(dockerAfterWG0)
+	if err != nil {
+		return out, err
+	}
+	if found && current == dropIn {
+		out.Present = append(out.Present, "service: docker starts after wg0 at boot")
+	} else {
+		out.Steps = append(out.Steps, Step{
+			Describe: "service: start docker after wg0 at boot, so containers can bind the mesh address (" + dockerAfterWG0 + ")",
+			File:     &File{Path: dockerAfterWG0, Content: dropIn, Mode: 0o644},
+			Command:  "systemctl daemon-reload",
+		})
+	}
 	enabled, active, err := u.unitState(t, "docker")
 	if err != nil {
 		return out, err

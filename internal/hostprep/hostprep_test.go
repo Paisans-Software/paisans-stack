@@ -129,6 +129,21 @@ Signed-By: /etc/apt/keyrings/docker.asc
 
 // preparedHost is what a fresh host looks like after prepare ran on it with a
 // hardware watchdog present, for a site with the given rules.
+// dockerAfterWG0 is the drop-in as host prepare writes it, so a prepared host
+// carries exactly that file.
+const dockerAfterWG0 = `# Written by paisans host prepare. Do not edit: it is rewritten if it differs.
+#
+# Docker starts after the mesh interface, so a container publishing a port on
+# the site's mesh address can bind it at boot. Started first, Docker meets an
+# address that does not exist yet ("cannot assign requested address"), and it
+# does not retry a container that failed while setting up its network.
+[Unit]
+Wants=wg-quick@wg0.service
+After=wg-quick@wg0.service
+`
+
+const dockerDropIn = "/etc/systemd/system/docker.service.d/paisans-after-wg0.conf"
+
 func preparedHost(gateway bool) *fakeHost {
 	firewall := "ufw present\nstatus active\n" + owned("allow 22/tcp", "allow 51820/udp", "allow in on wg0")
 	if !gateway {
@@ -144,6 +159,7 @@ func preparedHost(gateway bool) *fakeHost {
 			"/etc/os-release":                        ubuntu2404,
 			"/etc/default/ufw":                       "IPV6=yes\nDEFAULT_INPUT_POLICY=\"DROP\"\nDEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n",
 			"/etc/apt/sources.list.d/docker.sources": dockerSources,
+			dockerDropIn:                             dockerAfterWG0,
 		},
 		responses: map[string]string{
 			probePackages: "compose present\npkg docker-ce install ok installed\npkg wireguard-tools install ok installed\npkg ufw install ok installed\nkeyring present\narch amd64\n",
@@ -340,8 +356,8 @@ func TestExecuteRunsEveryStepInOrder(t *testing.T) {
 	if err := hostprep.Execute(plan, host); err != nil {
 		t.Fatal(err)
 	}
-	if len(host.written) != 2 {
-		t.Errorf("want the apt source and the unit written, got %v", host.written)
+	if len(host.written) != 3 {
+		t.Errorf("want the apt source, the docker drop-in and the unit written, got %v", host.written)
 	}
 	if last := host.ran[len(host.ran)-1]; last != "ufw --force enable" {
 		t.Errorf("enabling the firewall is the last thing run, got %q", last)
@@ -1079,6 +1095,35 @@ func TestContainerRulesLetTheMonitorReachLocalApps(t *testing.T) {
 	for _, r := range hostprep.ContainerRules(cfg, "home-b") {
 		if r.Why == "the uptime monitor to apps on this site" {
 			t.Errorf("home-b hosts no monitor and was given a monitor rule: %s", r)
+		}
+	}
+}
+
+// Docker starts after wg0 at boot, or a container publishing a port on the
+// mesh address fails to bind it and is never retried. The drop-in is written
+// when missing or different, and installing it reloads systemd without
+// restarting Docker, so no running container is touched.
+func TestDockerIsOrderedAfterWG0(t *testing.T) {
+	for _, current := range []string{"", "[Unit]\nAfter=network.target\n"} {
+		host := preparedHost(false)
+		if current == "" {
+			delete(host.files, dockerDropIn)
+		} else {
+			host.files[dockerDropIn] = current
+		}
+		plan, err := hostprep.Build("home-a", fixture(t), host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Steps) != 1 || plan.Steps[0].File == nil || plan.Steps[0].File.Path != dockerDropIn {
+			t.Fatalf("want only the drop-in planned, got %+v", plan.Steps)
+		}
+		step := plan.Steps[0]
+		if !strings.Contains(step.File.Content, "After=wg-quick@wg0.service") {
+			t.Errorf("the drop-in does not order docker after wg0:\n%s", step.File.Content)
+		}
+		if step.Command != "systemctl daemon-reload" {
+			t.Errorf("installing the drop-in runs %q; it must not restart docker", step.Command)
 		}
 	}
 }

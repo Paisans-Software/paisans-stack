@@ -1831,6 +1831,19 @@ rest) are **refused, not removed**: on a host already running containers from
 them, removing them stops those containers, and that is a decision for
 whoever started them. Every `apt-get` runs non-interactively.
 
+#### Docker starts after `wg0`
+
+Every app publishes its port on its site's mesh address, which exists only once
+`wg-quick@wg0` has brought the interface up. If Docker starts first at boot,
+those containers fail with `cannot assign requested address`, and Docker does
+not retry a container that failed while setting up its network, so the site
+comes back with its app stacks down. `host prepare` therefore writes a systemd
+drop-in, `/etc/systemd/system/docker.service.d/paisans-after-wg0.conf`, with
+`Wants=` and `After=wg-quick@wg0.service`. Installing it is a
+`systemctl daemon-reload` and nothing else: the order matters only at boot, so
+Docker and its containers keep running. A drop-in leaves Docker's own unit,
+which a package upgrade replaces, untouched.
+
 #### The firewall follows roles
 
 | Rule | Sites |
