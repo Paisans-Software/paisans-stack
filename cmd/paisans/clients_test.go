@@ -234,7 +234,7 @@ func TestApplyHoldsBackOnlyAppsWithoutAClientWhenPocketIDIsUnreachable(t *testin
 					t.Fatal(err)
 				}
 			}
-			c := stepFor(t, "vm", path)
+			c := stepFor(t, "watch", path)
 			var log passLog
 			var err error
 			stdout, _ := captureOutput(t, func() {
@@ -535,7 +535,7 @@ func TestApplyNamesAMissingAPIKey(t *testing.T) {
 	if err := config.WriteSecrets(path, secrets, nil); err != nil {
 		t.Fatal(err)
 	}
-	c := stepFor(t, "vm", path)
+	c := stepFor(t, "watch", path)
 	var err error
 	// render refuses a missing key for every site, so the step is driven
 	// directly: this is what it says when it meets one.
@@ -567,7 +567,7 @@ func TestApplyReportsAnOverwriteItHeldBack(t *testing.T) {
 	var asked []string
 	lookWith(t, map[string]string{"home-a.local": "down", "home-b.local": "down"}, &asked)
 	withIDPFake(t)
-	c := stepFor(t, "vm", secretsWithout(t, "status"))
+	c := stepFor(t, "watch", secretsWithout(t, "status"))
 	log := passLog{heldOverwrites: []string{"/srv/paisans/f2a9/status/.env"}}
 	var err error
 	stdout, _ := captureOutput(t, func() {

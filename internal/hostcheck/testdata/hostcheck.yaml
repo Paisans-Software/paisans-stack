@@ -1,4 +1,6 @@
-# A data and apps site and a gateway, for the host check's tests. The mesh is
+# A data and apps site, a gateway, and two monitors, one serving its own
+# hostname and one behind the operator's web server, for the host check's
+# tests. The mesh is
 # the fixtures' usual private range; every other address is a documentation
 # range.
 version: 1
@@ -33,6 +35,25 @@ sites:
       user: ubuntu
       public_key: |
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+  watch:
+    roles: [monitor]
+    address: 10.44.0.4
+    public_address: 203.0.113.40
+    ssh:
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+  porch:
+    roles: [monitor]
+    address: 10.44.0.5
+    public_address: 203.0.113.50
+    ingress:
+      mode: external
+      listen: 127.0.0.1:8480
+    ssh:
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 
 cluster:
   sites: [home-a]
@@ -58,3 +79,15 @@ apps:
     kind: writefreely
     hostname: blog.example.org
     placement: cluster
+  status:
+    kind: uptime
+    hostname: status.example.org
+    placement: { pinned: watch }
+    settings:
+      admin_group: admins
+  porch-status:
+    kind: uptime
+    hostname: porch-status.example.org
+    placement: { pinned: porch }
+    settings:
+      admin_group: admins

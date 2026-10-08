@@ -120,6 +120,13 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 		add("Caddy", roles(config.RoleGateway), "tcp", "", caddyHTTPPort)
 		add("Caddy", roles(config.RoleGateway), "tcp", "", caddyHTTPSPort)
 	}
+	// A monitor in ingress mode paisans runs the gateway's Caddy image for its
+	// own apps, binding the same two ports on every interface. On a gateway,
+	// which validate refuses as a monitor, it is the gateway's one Caddy.
+	if s.Has(config.RoleMonitor) && s.IngressMode() == config.IngressPaisans && !s.Has(config.RoleGateway) {
+		add("Caddy", roles(config.RoleMonitor), "tcp", "", caddyHTTPPort)
+		add("Caddy", roles(config.RoleMonitor), "tcp", "", caddyHTTPSPort)
+	}
 
 	var apps []string
 	for name, sites := range AppSites(cfg) {
@@ -131,7 +138,11 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 	for _, name := range apps {
 		kind := cfg.Apps[name].Kind
 		owner := fmt.Sprintf("app %s (%s)", name, kind)
-		if port, ok := appPort[kind]; ok {
+		// In ingress mode external the app is published on listen alone, for
+		// the operator's own web server; nothing dials its mesh address.
+		if host, port, ok := ExternalListen(cfg, name); ok {
+			add(owner, fmt.Sprintf("sites.%s.ingress.listen", site), "tcp", host, port)
+		} else if port, ok := appPort[kind]; ok {
 			add(owner, "apps."+name, "tcp", addr, port)
 		}
 		switch kind {

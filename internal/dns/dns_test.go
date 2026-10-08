@@ -476,3 +476,45 @@ func TestDesiredDerivesAndDedupes(t *testing.T) {
 		t.Fatalf("got  %v\nwant %v", got, want)
 	}
 }
+
+// A monitor serves its own hostname, so its records point at the monitor's
+// public address, IPv6 too, while every other app's stay on the gateway.
+func TestMonitorAppsPointAtTheMonitor(t *testing.T) {
+	cfg := declared()
+	cfg.Sites["watch"] = config.Site{Roles: []config.Role{config.RoleMonitor}, Address: "10.44.0.4", PublicAddress: "203.0.113.20", PublicAddress6: "2001:db8::20"}
+	cfg.Apps["status"] = config.App{Kind: config.KindUptime, Hostname: "status.example.org", Placement: config.Placement{Mode: config.PlacementPinned, Site: "watch"}}
+	wants, err := Desired(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, w := range wants {
+		got[w.Type+" "+w.Name] = w.Content
+	}
+	if got["A status.example.org"] != "203.0.113.20" || got["AAAA status.example.org"] != "2001:db8::20" {
+		t.Errorf("the monitor: %v", got)
+	}
+	if got["A talk.example.org"] != "203.0.113.10" {
+		t.Errorf("an ordinary app moved off the gateway: %v", got)
+	}
+	if _, ok := got["AAAA talk.example.org"]; ok {
+		t.Errorf("the gateway has no IPv6 address, yet talk got AAAA: %v", got)
+	}
+
+	// The monitor's hostnames need no gateway, and its own address is
+	// required.
+	delete(cfg.Apps, "talk")
+	delete(cfg.Apps, "docs")
+	vm := cfg.Sites["vm"]
+	vm.Roles = []config.Role{config.RoleWitness}
+	cfg.Sites["vm"] = vm
+	if _, err := Desired(cfg); err != nil {
+		t.Fatalf("a deployment whose only hostname is the monitor's: %v", err)
+	}
+	watch := cfg.Sites["watch"]
+	watch.PublicAddress = ""
+	cfg.Sites["watch"] = watch
+	if _, err := Desired(cfg); err == nil || !strings.Contains(err.Error(), "sites.watch.public_address is not set") {
+		t.Fatalf("a monitor with no address: %v", err)
+	}
+}

@@ -34,6 +34,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // Record is one DNS record as a provider reports it.
@@ -115,13 +116,15 @@ func Desired(cfg *config.Config) ([]Want, error) {
 		}
 	}
 
-	// Every public hostname is served by the gateway.
-	type claim struct{ key, name string }
+	// Every public hostname is served by the gateway, except a monitor's,
+	// which the monitor serves from its own address so that it does not go
+	// dark with the gateway it reports on.
+	type claim struct{ key, name, app string }
 	var hostnames []claim
 	for _, appName := range cfg.AppNames() {
 		app := cfg.Apps[appName]
 		if app.Hostname != "" {
-			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostname", appName), app.Hostname})
+			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostname", appName), app.Hostname, appName})
 		}
 		roles := make([]string, 0, len(app.Hostnames))
 		for role := range app.Hostnames {
@@ -129,7 +132,7 @@ func Desired(cfg *config.Config) ([]Want, error) {
 		}
 		sort.Strings(roles)
 		for _, role := range roles {
-			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostnames.%s", appName, role), app.Hostnames[role]})
+			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostnames.%s", appName, role), app.Hostnames[role], appName})
 		}
 	}
 	// Each app that stores objects serves them on a media hostname of its
@@ -141,10 +144,30 @@ func Desired(cfg *config.Config) ([]Want, error) {
 			continue
 		}
 		if media := kinds.MediaHostname(app, cfg.Community.Domain); media != "" {
-			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostnames.media (derived)", appName), media})
+			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostnames.media (derived)", appName), media, appName})
 		}
 	}
-	if len(hostnames) > 0 {
+	var viaGateway []claim
+	refusedMonitor := map[string]bool{}
+	for _, h := range hostnames {
+		monitor, ok := render.ServedBy(cfg, h.app)
+		if !ok {
+			viaGateway = append(viaGateway, h)
+			continue
+		}
+		site := cfg.Sites[monitor]
+		if site.PublicAddress == "" {
+			if !refusedMonitor[monitor] {
+				refusedMonitor[monitor] = true
+				problems = append(problems, fmt.Sprintf(
+					"sites.%s.public_address is not set. %s holds the monitor role and serves its own hostnames, so they point at it, and the address the internet reaches it on cannot be guessed from here. Declare it, for example public_address: 203.0.113.20.",
+					monitor, monitor))
+			}
+			continue
+		}
+		addSite(site, normalise(h.name), h.key)
+	}
+	if len(viaGateway) > 0 {
 		gateways := cfg.GatewaySites()
 		switch {
 		case len(gateways) == 0:
@@ -160,7 +183,7 @@ func Desired(cfg *config.Config) ([]Want, error) {
 					"sites.%s.public_address is not set. %s holds the gateway role, so every hostname points at it, and the address the internet reaches it on cannot be guessed from here. Declare it, for example public_address: 203.0.113.10.",
 					gateways[0], gateways[0]))
 			} else {
-				for _, h := range hostnames {
+				for _, h := range viaGateway {
 					addSite(gateway, normalise(h.name), h.key)
 				}
 			}

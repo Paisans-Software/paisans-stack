@@ -150,9 +150,7 @@ func preparedHost(gateway bool) *fakeHost {
 		firewall += owned("allow in on br-+ to 10.44.0.1 port 5000 proto tcp", "allow in on br-+ to 10.44.0.1 port 3900 proto tcp")
 	}
 	if gateway {
-		// The fixture's gateway also hosts the uptime monitor beside the
-		// homeserver, so preparing it allowed the monitor to reach 8008.
-		firewall += owned("allow 80/tcp", "allow 443/tcp", "allow in on br-+ to 10.44.0.3 port 8008 proto tcp")
+		firewall += owned("allow 80/tcp", "allow 443/tcp")
 	}
 	return keysPrepared(&fakeHost{
 		files: map[string]string{
@@ -191,8 +189,8 @@ func fixture(t *testing.T) *config.Config {
 }
 
 // withoutMonitor is the fixture without its uptime app, for a test about the
-// firewall's handling of rules on vm that the monitor's own rule there would
-// only add noise to.
+// firewall's handling of rules on vm that nothing about the monitor should
+// bear on.
 func withoutMonitor(t *testing.T) *config.Config {
 	t.Helper()
 	cfg := fixture(t)
@@ -401,6 +399,29 @@ func TestFirewallRulesFollowRoles(t *testing.T) {
 	}
 }
 
+// A monitor serving its own apps opens 80 and 443 like a gateway; behind the
+// operator's own web server it opens nothing for the web, because that server
+// already holds both.
+func TestAPaisansMonitorOpensEightyAndFourFortyThree(t *testing.T) {
+	cfg := fixture(t)
+	var got []string
+	for _, r := range hostprep.Rules(cfg.Sites["watch"]) {
+		got = append(got, r.String())
+	}
+	if want := "22/tcp,51820/udp,all inbound on wg0,80/tcp,443/tcp"; strings.Join(got, ",") != want {
+		t.Errorf("paisans: got %s, want %s", strings.Join(got, ","), want)
+	}
+	watch := cfg.Sites["watch"]
+	watch.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}
+	got = nil
+	for _, r := range hostprep.Rules(watch) {
+		got = append(got, r.String())
+	}
+	if want := "22/tcp,51820/udp,all inbound on wg0"; strings.Join(got, ",") != want {
+		t.Errorf("external: got %s, want %s", strings.Join(got, ","), want)
+	}
+}
+
 // A fresh gateway gets 80 and 443 and no watchdog: it holds no data role.
 func TestAFreshGatewaySiteDiffersFromADataSite(t *testing.T) {
 	host := freshHost()
@@ -557,8 +578,8 @@ func TestARemovedPackageIsNotInstalled(t *testing.T) {
 
 // An apps site lets its containers reach the database proxy and, where Garage
 // runs, object storage on its own mesh address, over the compose bridges and
-// nothing wider. A gateway only site gets neither; the fixture's gateway hosts
-// the uptime monitor beside the pinned homeserver, so it gets that one rule.
+// nothing wider. A gateway only site gets neither, and so does the fixture's
+// monitor site, where the monitor is the only app and does not check itself.
 func TestContainerRulesReachOnlyWhatAppsUse(t *testing.T) {
 	cfg := fixture(t)
 	var got []string
@@ -568,12 +589,10 @@ func TestContainerRulesReachOnlyWhatAppsUse(t *testing.T) {
 	if want := "5000/tcp on br-+ to 10.44.0.1,3900/tcp on br-+ to 10.44.0.1"; strings.Join(got, ",") != want {
 		t.Errorf("home-a: got %s, want %s", strings.Join(got, ","), want)
 	}
-	got = nil
-	for _, r := range hostprep.ContainerRules(cfg, "vm") {
-		got = append(got, r.String())
-	}
-	if want := "8008/tcp on br-+ to 10.44.0.3"; strings.Join(got, ",") != want {
-		t.Errorf("vm: got %s, want only the monitor's rule %s", strings.Join(got, ","), want)
+	for _, site := range []string{"vm", "watch"} {
+		if rules := hostprep.ContainerRules(cfg, site); len(rules) != 0 {
+			t.Errorf("%s: got %v, want none", site, rules)
+		}
 	}
 }
 
@@ -1100,6 +1119,9 @@ func TestContainerRulesLetTheMonitorReachLocalApps(t *testing.T) {
 	status := cfg.Apps["status"]
 	status.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-a"}
 	cfg.Apps["status"] = status
+	homeA := cfg.Sites["home-a"]
+	homeA.Roles = append(homeA.Roles, config.RoleMonitor)
+	cfg.Sites["home-a"] = homeA
 	var got []string
 	for _, r := range hostprep.ContainerRules(cfg, "home-a") {
 		if r.Why == "the uptime monitor to apps on this site" {

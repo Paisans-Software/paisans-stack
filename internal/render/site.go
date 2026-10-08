@@ -168,14 +168,14 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"cluster.postgres_version: %q has no Spilo image known to this toolkit. Spilo publishes one repository per major version with its own tags, so there is nothing to fall back to. Use one of %s, or add the tag",
 			p.postgresVersion(), strings.Join(sortedKeys(spiloTag), ", "))
 	}
-	// Resolved only for a gateway site: a site holding no gateway role needs no
-	// Caddy image, and acme.provider is not even required in a deployment with
-	// no gateway anywhere, so demanding one here would refuse a legitimate
-	// configuration over an image nothing will use. The template gates the
-	// caddy service on Site.IsGateway, so an empty string here never reaches
-	// a compose file.
+	// Resolved only where Caddy runs, a gateway or a monitor serving its own
+	// apps: any other site needs no Caddy image, and acme.provider is not
+	// even required in a deployment where Caddy runs nowhere, so demanding one
+	// here would refuse a legitimate configuration over an image nothing will
+	// use. The template gates the caddy service on Site.RunsCaddy, so an
+	// empty string here never reaches a compose file.
 	var caddy string
-	if site.IsGateway {
+	if site.RunsCaddy {
 		caddy, err = p.caddyImage()
 		if err != nil {
 			return nil, err
@@ -207,7 +207,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	// A site with no roles exists only to host what is pinned to it and runs
 	// no infrastructure, so it gets no infra stack: a compose project with an
 	// empty services map is nothing apply could start or recreate.
-	if site.IsEtcd || site.IsData || site.NeedsProxy || site.IsGarage || site.IsGateway {
+	if site.IsEtcd || site.IsData || site.NeedsProxy || site.IsGarage || site.RunsCaddy {
 		files = append(files, File{Path: base + p.dep().RelPath("infra", "compose.yaml"), Content: infra, Mode: 0o644})
 	}
 	if site.IsEtcd {
@@ -278,11 +278,21 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		files = append(files, File{Path: base + p.dep().RelPath("infra", "garage", "garage.toml"), Content: toml, Mode: 0o600})
 	}
 
-	if site.IsGateway {
+	if site.RunsCaddy {
+		// A gateway routes every app but a monitor's; a monitor serves only
+		// the apps pinned to it. Both are the same Caddyfile, image and
+		// certificate story, so a monitor's edge is the gateway's minus the
+		// other hostnames.
+		routes := p.routesFor(site)
+		gates := site.IsGateway || gated(routes)
+		var mounts []string
+		if gates {
+			mounts = p.gateSnippetMounts()
+		}
 		caddyfile, err := p.renderTemplate("Caddyfile.tmpl", map[string]any{
 			"Domain":         p.cfg.Community.Domain,
-			"Routes":         p.routes(),
-			"GateSnippets":   p.gateSnippetMounts(),
+			"Routes":         routes,
+			"GateSnippets":   mounts,
 			"TrustedProxies": p.mesh,
 			"ACMEDirective":  acme.Directive(p.cfg.ACME.Provider),
 		})
@@ -291,17 +301,19 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		}
 		files = append(files, File{Path: base + p.dep().RelPath("infra", "caddy", "Caddyfile"), Content: caddyfile, Mode: 0o644})
 
-		snippets, err := p.renderSnippets(base)
+		snippets, err := p.renderSnippets(base, routes)
 		if err != nil {
 			return nil, err
 		}
 		files = append(files, snippets...)
 
-		gateSnippets, err := p.renderGateSnippets(base)
-		if err != nil {
-			return nil, err
+		if gates {
+			gateSnippets, err := p.renderGateSnippets(base)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, gateSnippets...)
 		}
-		files = append(files, gateSnippets...)
 
 		env, err := p.renderTemplate("caddy.env.tmpl", map[string]any{
 			"ACMEDNSToken": p.secrets.External["acme_dns_token"],
@@ -346,15 +358,16 @@ func (p *planner) snippetDir() string { return p.dep().RelPath("infra", "caddy",
 // dep is the deployment every rendered path and name derives from.
 func (p *planner) dep() deployment.Deployment { return p.cfg.Deployment() }
 
-// renderSnippets renders every hostname's routing onto a gateway.
+// renderSnippets renders every hostname's routing onto a site running Caddy.
 //
-// It walks the whole configuration rather than the gateway's own apps: a
-// gateway routes to applications that run elsewhere, which is the usual case.
-// One route renders one snippet, from the template its role selects, because
-// two hostnames on the same app can serve entirely different things.
-func (p *planner) renderSnippets(base string) ([]File, error) {
+// On a gateway the routes come from the whole configuration rather than the
+// gateway's own apps: a gateway routes to applications that run elsewhere,
+// which is the usual case. One route renders one snippet, from the template
+// its role selects, because two hostnames on the same app can serve entirely
+// different things.
+func (p *planner) renderSnippets(base string, routes []route) ([]File, error) {
 	var files []File
-	for _, r := range p.routes() {
+	for _, r := range routes {
 		app := p.cfg.Apps[r.App]
 		planned, err := p.plannedFor(r.App, app)
 		if err != nil {
@@ -663,12 +676,20 @@ func (p *planner) relays() []string {
 	return out
 }
 
-// routes is the gateway's inventory: one host block per hostname, each
-// importing the snippet for that hostname's role.
-func (p *planner) routes() []route {
+// routesFor is a Caddy site's inventory: one host block per hostname, each
+// importing the snippet for that hostname's role. A gateway routes every app
+// that no monitor serves; a monitor routes only the apps pinned to it.
+func (p *planner) routesFor(site *siteView) []route {
 	var out []route
 	for _, name := range p.cfg.AppNames() {
 		app := p.cfg.Apps[name]
+		monitor, onMonitor := ServedBy(p.cfg, name)
+		switch {
+		case site.IsGateway && onMonitor:
+			continue
+		case !site.IsGateway && (!onMonitor || monitor != site.Name):
+			continue
+		}
 		gate := app.Gate
 		if gate == "none" {
 			// Carried to the template as empty rather than as the literal
@@ -714,6 +735,18 @@ func (p *planner) routes() []route {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })
 	return out
+}
+
+// gated reports whether any route sits behind a gate, so a monitor's Caddy
+// carries the gate's named snippets only when one of its own routes imports
+// them.
+func gated(routes []route) bool {
+	for _, r := range routes {
+		if r.Gate != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // upstreams is where an app's traffic goes: its own location when pinned, and

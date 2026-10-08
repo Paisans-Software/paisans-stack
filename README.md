@@ -425,18 +425,136 @@ which is the right answer there too.
 ## Monitoring
 
 The `uptime` kind runs the [`Paisans-Software/uptime`](https://github.com/Paisans-Software/uptime)
-fork. It is an app like any other, not a site role, and it is **pinned only**:
-it keeps SQLite on local disk, so `cluster` is refused by the same rule that
-refuses Element and oauth2-proxy. The design and the reasoning behind each
-choice are in `docs/specs/2026-10-07-uptime-monitoring.md`.
+fork. It is **pinned only**, because it keeps SQLite on local disk, so
+`cluster` is refused by the same rule that refuses Element and oauth2-proxy,
+and it is pinned to a site holding the `monitor` role (below). The design and
+the reasoning behind each choice are in
+`docs/specs/2026-10-07-uptime-monitoring.md`, as amended by
+`docs/specs/2026-10-08-monitor-role-and-host-check.md`.
 
-**Where it goes.** On a single site it runs beside everything else and watches
-the software, not the host: nothing can report its own machine dying, and a
-single site losing everything at once is what having one site means. With
-several sites the gateway VM is the usual choice, so a home going dark does not
-take the monitor with it. A site may have **no roles at all** when an app is
-pinned to it, so a small dedicated VM is declared as `roles: []`. `apps` would
-be wrong there: it means "runs every clustered app", not "may host an app".
+### The monitor has a site of its own
+
+A monitor exists to report everything else failing, so it must not fail with
+what it reports. `monitor` is a site role, and the uptime app is pinned to a
+site that holds it. Founder decision.
+
+| Combination | Result | Rule |
+|---|---|---|
+| `monitor` with `gateway` | refused | `monitor-on-gateway` |
+| `monitor` with `witness` | refused | `monitor-on-witness` |
+| `monitor` with `data` or `apps` | warned | `monitor-shares-a-site` |
+| `monitor` with no uptime app pinned to it | refused | `monitor-without-uptime` |
+| an uptime app pinned to a site without `monitor` | refused | `uptime-needs-a-monitor-site` |
+| `monitor` without `public_address` | refused | `monitor-without-public-address` |
+
+On the gateway the monitor goes dark with the edge it is meant to watch. On
+the witness, etcd's tiebreaker and the thing that reports etcd losing quorum
+would fail together, and the witness is usually the gateway machine anyway.
+There is no override for either. Beside `data` or `apps` it is allowed with a
+warning, because a small deployment may have no other machine; the monitor
+then cannot report that machine dying. A single machine that is also the
+gateway cannot host the monitor at all, so the smallest deployment with one is
+two machines: the second can be a small VM or box declared `roles: [monitor]`,
+which needs no other role. `roles: []` stays legal for a site hosting a pinned
+app of any other kind.
+
+**It serves its own hostname.** An app pinned to a monitor site is left out
+of the gateway's Caddyfile, and `dns init` points its hostname at the
+monitor's `public_address` (and `public_address6`), which is why that address
+is required. A monitor reached only through the gateway would go dark at
+exactly the moment it is needed. What is in front of it is the site's
+`ingress` block, which only a monitor site may carry
+(`ingress-outside-monitor`):
+
+```yaml
+sites:
+  watch:
+    roles: [monitor]
+    address: 10.44.0.4
+    endpoint: watch.example.org:51820
+    public_address: 203.0.113.20
+    ingress:
+      mode: external              # paisans (default) or external
+      listen: 127.0.0.1:8480      # external only, and required there
+```
+
+* **`mode: paisans`**, the default, runs the toolkit's Caddy on the monitor,
+  the same image the gateway runs, in its `infra` stack with host networking
+  and certificates over DNS-01 through `acme.provider`, with a host block for
+  each app pinned there and nothing else. It claims tcp 80 and 443, and
+  `host prepare` opens both. `acme.provider` and `external.acme_dns_token` are
+  required wherever this Caddy runs, as they are on a gateway, which puts the
+  DNS token on the monitor too: a second machine holding a credential that
+  can edit the whole zone. To narrow it, CNAME every `_acme-challenge` record
+  into a challenge only zone and scope the token to that zone, as the header
+  of the rendered `caddy.env` describes (and *Certificates use DNS-01,
+  everywhere* in `docs/development.md`); then the token on either machine can
+  write challenges and nothing else.
+* **`mode: external`** runs the app and nothing in front of it, for a machine
+  that already runs a web server on 80 and 443. The app is published on
+  `listen` alone: nothing dials its mesh address, since the gateway does not
+  route it and the monitor does not check its own container. Its compose
+  network is pinned at `10.255.255.0/29`, outside Docker's default pools, so
+  the address the web server's connections arrive from is known; `validate`
+  refuses a mesh over it (`ingress-network-overlaps-mesh`), and the host
+  check refuses a host where a foreign network or route already holds it.
+  The certificate and its renewal belong to whoever runs that web server: the
+  toolkit cannot know how an unfamiliar server obtains one, and must not edit
+  a configuration it does not own. `docs/guides/behind-your-own-web-server.md`
+  walks through it.
+
+`listen` belongs to `mode: external` alone, which cannot work without it
+(`ingress-listen-mode`). Docker publishes a port with its own iptables rules,
+in front of ufw, so a `listen` the internet can reach would expose the app
+around the web server whatever the firewall says: only loopback, a private LAN
+address (RFC 1918, or `100.64.0.0/10` as Tailscale uses) or the site's own
+mesh address are accepted (`ingress-listen-public`), and all but loopback warn
+that ufw does not cover them (`ingress-listen-bypasses-firewall`). One `listen` publishes one app, so an
+external monitor hosts the monitor alone (`ingress-external-serves-one-app`).
+
+Either way the app is rendered for a proxy in front of it:
+`PUBLIC_BASE_URL=https://<hostname>`, from which the fork builds its sign in
+callback, and `TRUST_PROXY` set to exactly where that proxy connects from,
+because the login rate limiter is keyed on the client address and whatever is
+trusted may claim any client address. Behind the monitor's own Caddy that is
+the site's own mesh address, `/32`, since that Caddy runs on the host and dials
+the app there. For a loopback `listen` it is the pinned network's gateway,
+`10.255.255.1/32`, because Docker hands a connection on a loopback publish to
+the container from that gateway, never from 127.0.0.1. A LAN or mesh `listen`
+is reached by the web server's own address, which Docker's forwarding keeps
+and which the toolkit knows only by its network, so it is that private block
+or the mesh subnet.
+
+**Helping an operator behind their own web server.** Two commands, neither of
+which reaches a host or changes anything:
+
+```sh
+paisans ingress show  --app status   # the hand-off sheet, from paisans.yaml alone
+paisans ingress check --app status   # from your machine, as a visitor would
+```
+
+`show` prints the hostname, the upstream (`listen`) and the health path; what
+the web server must do (terminate TLS for the hostname, pass `Host`, set
+`X-Forwarded-For` and `X-Forwarded-Proto`, refuse what the toolkit's own edge
+refuses, below); a filled in snippet for Caddy, nginx and Apache, each marked
+where the operator's certificate lines go; and the ufw warning when `listen`
+is not loopback. `check` reports pass or fail, with the fix, for: the hostname
+resolving to the monitor's `public_address` (and `public_address6`) and to
+nothing else, so a stale record still on the gateway fails;
+`https://<hostname>/healthz` answering with a certificate valid for the
+hostname, and its days to expiry; the sign in redirect naming a callback under
+`https://<hostname>/`; and the published port refusing the connection, or not
+answering, on the public addresses. Any other dial failure, such as no route
+from where the check runs, says nothing about the port: one conclusive answer
+still passes, naming the family that could not be reached (commonly IPv6 from
+a home connection), and with none the check fails as inconclusive. In `mode: paisans` there is nothing to hand off, and `check`
+runs only the first two.
+
+**Moving an existing monitor.** A deployment whose uptime hostname already has
+an A record pointing at the gateway gets a `conflict` from `dns init` once the
+app moves to a monitor site, because `dns init` never updates a record, and
+`dns prune` keeps it too, since the name is still wanted. Change that record
+by hand at the provider, then run `dns init` again.
 
 **What it checks is generated, never typed.** `apply` renders `monitors.json`
 from this configuration and the fork reconciles it at every start:
@@ -453,7 +571,16 @@ from this configuration and the fork reconciles it at every start:
   app's public check expects the gate's `401` to a request with no session:
   it proves the edge and the gate, and the direct check proves the app.
 * every site but the monitor's own gets a **ping** over the mesh.
-* the monitor does not watch itself.
+* the monitor checks no container of its own, which could only ever pass,
+  but it does check its own public URL, `https://<hostname>/healthz`: it is
+  alive whenever it can run that check, so what the check proves is the path
+  in front of it, DNS, the web server and the certificate. Behind an
+  operator's web server it is the only thing that notices a renewal that
+  silently stopped.
+
+Every other app's public check now runs from a machine that is not the
+gateway, so a dead gateway shows as every public check failing while the
+direct checks stay green.
 
 Monitors the file creates are tagged `managed` and belong to it. Monitors an
 admin makes by hand, and the channels an admin attaches to any monitor, are
@@ -464,11 +591,15 @@ channel is subscribed to apps added later; nobody's recipients are in YAML.
 VACUUM rewrites the whole file every six hours, which is the one burst of I/O
 worth refusing next to a member whose heartbeats are measured in hundreds of
 milliseconds, and at steady state it reclaims nothing that SQLite would not
-reuse anyway. `pinned-app-on-witness` still warns, because the rule is generic
-and the risk is real.
+reuse anyway. It matters wherever the monitor shares a machine with an etcd
+member, which `monitor-shares-a-site` warns about on a data site.
 
-**At the edge** the gateway refuses `/status*`, `/badge/*`, `/metrics` and
-the token API `/api/v1/*` with 404 whatever the app's own settings say. The
+**At the edge** the monitor's Caddy refuses `/status*`, `/badge/*`, `/metrics`
+and the token API `/api/v1/*` with 404 whatever the app's own settings say,
+and `ingress show` carries the same refusal into each snippet for an
+operator's own web server. The app is Express with its default routing, which
+ignores case and a trailing slash, so every refusal does too: `/metrics/` and
+`/STATUS` are refused as well. The
 UI's own session authenticated JSON under `/api/sites` passes, because the
 dashboard's live refresh and the response time chart fetch it. The status page would
 list every monitor, mesh addresses included, and `/metrics` is public whenever
@@ -1472,7 +1603,9 @@ paisans dns init --execute      # creates it
 **The records are derived, never declared.** Each app's `hostname`, each of its
 role `hostnames`, and the media hostname of each app that stores objects,
 derived or declared, get an A record pointing at the gateway site's
-`public_address`. A site whose `endpoint` is a name rather than
+`public_address`, except an app pinned to a monitor site, whose names point at
+that monitor's own `public_address` (see *The monitor has a site of its
+own*). A site whose `endpoint` is a name rather than
 an address gets an A record pointing at that site's own `public_address`,
 because that is the name the other sites' WireGuard dials. Where a site also
 declares `public_address6`, each of its names gets an AAAA record as well.
@@ -2034,11 +2167,13 @@ which a package upgrade replaces, untouched.
 | the site's `ssh.port`, 22 unless declared | every site |
 | 51820/udp, WireGuard | every site |
 | everything arriving on `wg0` | every site |
-| 80/tcp, 443/tcp | sites with the gateway role |
+| 80/tcp, 443/tcp | sites with the gateway role, and monitor sites in ingress mode paisans |
 | `br-+` to the site's mesh address, cluster port and Garage's S3 port | sites with the apps role |
 
 Nothing is listed per site. A site that gains the gateway role gains 80 and 443
-at its next prepare, and one that loses it loses them at its next prepare.
+at its next prepare, and one that loses it loses them at its next prepare. A
+monitor behind the operator's own web server opens neither: that server holds
+both, and its rules are the operator's.
 
 #### host prepare owns its rules, and only its rules
 
@@ -3441,7 +3576,7 @@ at, and "could not look" is not "looked and it was fine".
 | Platform | new data site, against each existing data site | `/etc/os-release` `ID` and `VERSION_ID`, and the release at the end of `ldd --version`'s first line | any of the three differs |
 | WireGuard | new site | `/sys/module/wireguard`, else `modprobe -n wireguard` | neither |
 | Watchdog | new data site, unless its mode is `off` | `/dev/watchdog` exists | it does not |
-| Ports | new site | the host check's `ss -Hltnup` against its claims | anything listens where the site will bind: 51820/udp; 2379 or 2380 for an etcd member; 5432, 8008 or 8009 for a data site; the cluster port where the site runs HAProxy; 80 and 443 for a gateway; each app's published port |
+| Ports | new site | the host check's `ss -Hltnup` against its claims | anything listens where the site will bind: 51820/udp; 2379 or 2380 for an etcd member; 5432, 8008 or 8009 for a data site; the cluster port where the site runs HAProxy; 80 and 443 for a gateway or a monitor in ingress mode paisans; `listen` for a monitor in ingress mode external; each app's published port |
 | Routes | new site | `ip -j route` | a route overlaps `mesh.subnet`, other than one through `wg0` |
 | Disk | new data site | the leader's `sum(pg_database_size(...))`, through its Patroni container's `psql`; `df` on the deepest existing directory towards `/srv/paisans/<token>/infra/postgres` | free space is under that plus 2 GiB |
 | Storage | new site | `docker info --format '{{.DockerRootDir}}'`, then `findmnt -no FSTYPE,SOURCE --target` on Docker's root and on the deployment's root, `/srv/paisans/<token>` (or the deepest directory towards it that exists) | either is a network filesystem (`nfs`, `nfs4`, `cifs`, `smb3`, `glusterfs`, `ceph`, `fuse.sshfs` and the others preflight lists); a type that is neither that nor a local block filesystem (`ext4`, `xfs`, `btrfs`, `zfs`, `f2fs`) warns |

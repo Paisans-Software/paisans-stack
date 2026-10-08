@@ -1,14 +1,16 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
-# Routing for {{ .App.Name }}, imported by the gateway's block for
-# {{ .Hostname }}. The UI, sign in, the OIDC callback, heartbeat URLs
-# (/ping/*) and the UI's own session authenticated JSON (/api/sites*, which
-# the dashboard's live refresh and the response time chart fetch) pass. The
-# status page, badges, /metrics and the token API (/api/v1/*) are refused here
-# whatever the app's own settings say: the status page lists every monitor,
-# mesh addresses included, and /metrics is public whenever no API token
-# exists, which under this toolkit is always.
-@refused path /status* /badge/* /metrics /api/v1/*
+# Routing for {{ .App.Name }}, imported by the host block for
+# {{ .Hostname }} in the Caddy on the monitor's own site. The UI, sign in,
+# the OIDC callback, heartbeat URLs (/ping/*) and the UI's own session
+# authenticated JSON (/api/sites*, which the dashboard's live refresh and the
+# response time chart fetch) pass. The status page, badges, /metrics and the
+# token API (/api/v1/*) are refused here whatever the app's own settings say:
+# the status page lists every monitor, mesh addresses included, and /metrics
+# is public whenever no API token exists, which under this toolkit is always.
+# Express ignores a trailing slash, so /metrics/ is refused too; Caddy's path
+# matcher already ignores case.
+@refused path /status* /badge/* /metrics /metrics/ /api/v1/*
 respond @refused 404
 reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
 {{- if .UpstreamElsewhere }}

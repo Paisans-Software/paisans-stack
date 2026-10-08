@@ -130,11 +130,6 @@ id.example.org {
 	import /etc/caddy/snippets/auth.caddy
 }
 
-status.example.org {
-	import upstream_unavailable
-	import /etc/caddy/snippets/status.caddy
-}
-
 talk-media.example.org {
 	import upstream_unavailable
 	import /etc/caddy/snippets/talk-media.caddy

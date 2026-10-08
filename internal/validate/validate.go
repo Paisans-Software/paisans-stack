@@ -143,6 +143,8 @@ func Check(cfg *config.Config) Result {
 	c.gatedMatrixHostname()
 	c.homeserverMustBePinned()
 	c.uptimeNeedsAnAdminGroup()
+	c.monitorRoles()
+	c.ingress()
 	c.smtpOnAKindWithoutMail()
 	c.mediaHostnameShape()
 	c.mediaHostnameUnderAnAppHostname()
@@ -586,7 +588,7 @@ func (c *checker) clusterPlacementWithoutACluster() {
 }
 
 // acmeProviderHasAnImage refuses a provider whose module cannot reach the
-// gateway.
+// gateway, or a monitor's own Caddy, which runs the same image.
 //
 // A DNS provider in Caddy is a Go module compiled into the binary, and nothing
 // is built on a host, so a provider the toolkit publishes no image for needs an
@@ -594,8 +596,8 @@ func (c *checker) clusterPlacementWithoutACluster() {
 // that cannot load its own configuration, and would hold no certificate for
 // any hostname. That is incoherent rather than risky, so it is a refusal.
 func (c *checker) acmeProviderHasAnImage() {
-	if len(c.cfg.GatewaySites()) == 0 || c.cfg.ACME.Provider == "" {
-		return // no gateway needs certificates; a missing provider is structural
+	if len(c.cfg.CaddySites()) == 0 || c.cfg.ACME.Provider == "" {
+		return // no Caddy needs certificates; a missing provider is structural
 	}
 	if _, ok := acme.Image(c.cfg.ACME.Provider); ok {
 		return
@@ -761,7 +763,7 @@ func (c *checker) portCollision() {
 		reported := map[string]bool{}
 		for i, a := range listeners {
 			for _, b := range listeners[i+1:] {
-				if a.Owner == b.Owner || !a.Overlaps(b) {
+				if !collides(a, b) {
 					continue
 				}
 				// One finding per pair and port: a service on the mesh
@@ -777,6 +779,18 @@ func (c *checker) portCollision() {
 			}
 		}
 	}
+}
+
+// collides reports whether two listeners on one site cannot both bind. The
+// same owner under the same key is one listener named twice, such as a
+// service on its mesh address and on loopback, which never overlaps anyway;
+// the same owner under two keys, such as an app published on its mesh
+// address and again on an ingress listen, is two binds like any others.
+func collides(a, b render.Listener) bool {
+	if a.Owner == b.Owner && a.Key == b.Key {
+		return false
+	}
+	return a.Overlaps(b)
 }
 
 // pocketIDFileBackend warns about anything other than the database backend.

@@ -315,3 +315,51 @@ func TestAnIPv4MappedListenerIsItsIPv4Address(t *testing.T) {
 		t.Errorf("a mapped loopback listener was counted as foreign: %q", r.Foreign)
 	}
 }
+
+// A foreign host network Caddy on 80 and 443 is no conflict for a monitor
+// behind the operator's own web server, which claims neither: it may well be
+// that web server. For a monitor running the toolkit's Caddy it is a conflict
+// on both ports.
+func TestAForeignCaddyAndTheTwoIngressModes(t *testing.T) {
+	wantClass(t, check(t, "porch", caddyHost()), hostcheck.Shared)
+	r := check(t, "watch", caddyHost())
+	wantClass(t, r, hostcheck.Conflicted)
+	wantLine(t, r, "CONFLICT  *:80/tcp (Caddy): claimed by sites.watch.roles (monitor), held by container web-caddy-1 (compose project web)")
+	wantLine(t, r, "CONFLICT  *:443/tcp (Caddy): claimed by sites.watch.roles (monitor), held by container web-caddy-1 (compose project web)")
+}
+
+// An external monitor's compose network is pinned, so a foreign network or a
+// route over it is a conflict named after the ingress block, as one over the
+// mesh is.
+func TestSomethingOverlappingTheIngressNetworkConflicts(t *testing.T) {
+	h := cleanHost()
+	h.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"lab_default","labels":{"com.docker.compose.project":"lab"},"ipam":[{"Subnet":"10.255.255.0/24"}]}
+`, id("6"))
+	h.answers["ip -j route"] = `[{"dst":"default","dev":"eth0"},{"dst":"10.255.255.0/24","dev":"br-` + id("6")[:12] + `"},{"dst":"10.255.255.0/29","dev":"tun0"}]`
+	r := check(t, "porch", h)
+	wantClass(t, r, hostcheck.Conflicted)
+	wantLine(t, r, "CONFLICT  subnet 10.255.255.0/24: claimed by sites.porch.ingress, held by docker network lab_default (compose project lab)")
+	wantLine(t, r, "CONFLICT  route 10.255.255.0/29 dev tun0: claimed by sites.porch.ingress, held by the host's routing table")
+	// The same network on a site with no external monitor is nobody's claim.
+	wantClass(t, check(t, "watch", h), hostcheck.Shared)
+}
+
+// The pinned network belongs to one compose project, paisans-<token>-<app>. Another
+// of the toolkit's own projects holding it, such as the stack an app left
+// behind when it was renamed, makes compose refuse the new one mid apply
+// ("Pool overlaps"), so it is a conflict naming the stale stack. The app's
+// own network holding it is what an apply leaves, and is clean.
+func TestAStaleToolkitStackOnTheIngressNetworkConflicts(t *testing.T) {
+	stale := cleanHost()
+	stale.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-f2a9-status_default","labels":{"com.docker.compose.project":"paisans-f2a9-status","community.paisans.deployment":"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},"ipam":[{"Subnet":"10.255.255.0/29"}]}
+`, id("7"))
+	r := check(t, "porch", stale)
+	wantClass(t, r, hostcheck.Conflicted)
+	wantLine(t, r, "CONFLICT  subnet 10.255.255.0/29: claimed by sites.porch.ingress, held by docker network paisans-f2a9-status_default (compose project paisans-f2a9-status)")
+	wantLine(t, r, "docker compose -p paisans-f2a9-status down")
+
+	own := cleanHost()
+	own.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-f2a9-porch-status_default","labels":{"com.docker.compose.project":"paisans-f2a9-porch-status","community.paisans.deployment":"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},"ipam":[{"Subnet":"10.255.255.0/29"}]}
+`, id("8"))
+	wantClass(t, check(t, "porch", own), hostcheck.Clean)
+}

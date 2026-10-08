@@ -106,7 +106,10 @@ func (o owners) ours(label string) bool { return o.id != "" && label == o.id }
 
 // labelled describes an object's compose project and, when it is another
 // deployment's, which one.
-func labelled(project, owner string) string {
+func (o owners) labelled(project, owner string) string {
+	if o.ours(owner) {
+		owner = ""
+	}
 	desc := "no compose project"
 	if project != "" {
 		desc = "compose project " + project
@@ -118,7 +121,7 @@ func labelled(project, owner string) string {
 }
 
 func (o owners) container(c Container) holder {
-	return holder{ours: o.ours(c.Deployment), desc: "container " + c.Name + " (" + labelled(c.Project, c.Deployment) + ")"}
+	return holder{ours: o.ours(c.Deployment), desc: "container " + c.Name + " (" + o.labelled(c.Project, c.Deployment) + ")"}
 }
 
 // socket decides who holds a listener. A process in a container's cgroup is
@@ -208,12 +211,24 @@ func Classify(claims Claims, inv *Inventory) *Report {
 		if len(n.ID) >= 12 {
 			bridges["br-"+n.ID[:12]] = true
 		}
-		if o.ours(n.Deployment) {
-			continue
-		}
 		for _, subnet := range n.Subnets {
-			if overlapsMesh(claims.Mesh, subnet) {
-				conflict(Conflict{Resource: "subnet " + subnet, Key: "mesh.subnet", Holder: networkDesc(n)})
+			if !o.ours(n.Deployment) && overlapsMesh(claims.Mesh, subnet) {
+				conflict(Conflict{Resource: "subnet " + subnet, Key: "mesh.subnet", Holder: o.networkDesc(n)})
+			}
+			// A pinned network may be held by its own project and nothing
+			// else. One of the toolkit's other stacks holding it, such as
+			// the one an app left behind when it was renamed, makes compose
+			// refuse the new network mid apply, so it is a conflict too,
+			// naming the stack to take down.
+			for _, pinned := range claims.Networks {
+				if n.Project == pinned.Project || !overlapsMesh(pinned.Net, subnet) {
+					continue
+				}
+				holder := o.networkDesc(n)
+				if o.ours(n.Deployment) {
+					holder += fmt.Sprintf(", a stack of this deployment's that %s does not run; if nothing uses it any more, remove it with `docker compose -p %s down`", claims.Site, n.Project)
+				}
+				conflict(Conflict{Resource: "subnet " + subnet, Key: pinned.Key, Holder: holder})
 			}
 		}
 	}
@@ -226,10 +241,21 @@ func Classify(claims Claims, inv *Inventory) *Report {
 			continue
 		}
 		n, ok := network(route.Dst)
-		if !ok || !(n.Contains(claims.Mesh.IP) || claims.Mesh.Contains(n.IP)) {
+		if !ok {
 			continue
 		}
 		resource := "route " + route.Dst + " dev " + route.Dev
+		// A pinned network's bridge route is more specific than any broader
+		// route, as wg0's is, so only one equal to it or inside it captures
+		// its traffic.
+		for _, pinned := range claims.Networks {
+			if within(n, pinned.Net) {
+				conflict(Conflict{Resource: resource, Key: pinned.Key, Holder: "the host's routing table"})
+			}
+		}
+		if !(n.Contains(claims.Mesh.IP) || claims.Mesh.Contains(n.IP)) {
+			continue
+		}
 		if within(n, claims.Mesh) {
 			conflict(Conflict{Resource: resource, Key: "mesh.subnet", Holder: "the host's routing table"})
 		} else {
@@ -265,14 +291,14 @@ func foreign(o owners) []string {
 	}
 	for _, n := range o.inv.Networks {
 		if !o.ours(n.Deployment) && !(defaultNetworks[n.Name] && n.Project == "") {
-			out = append(out, networkDesc(n))
+			out = append(out, o.networkDesc(n))
 		}
 	}
 	for _, v := range o.inv.Volumes {
 		switch {
 		case o.ours(v.Deployment), v.Project == "" && v.Deployment == "" && v.Anonymous:
 		case v.Project != "" || v.Deployment != "":
-			out = append(out, fmt.Sprintf("volume %s (%s)", v.Name, labelled(v.Project, v.Deployment)))
+			out = append(out, fmt.Sprintf("volume %s (%s)", v.Name, o.labelled(v.Project, v.Deployment)))
 		default:
 			out = append(out, fmt.Sprintf("volume %s (named, no compose project)", v.Name))
 		}
@@ -280,11 +306,11 @@ func foreign(o owners) []string {
 	return out
 }
 
-func networkDesc(n Network) string {
+func (o owners) networkDesc(n Network) string {
 	if n.Project == "" && n.Deployment == "" {
 		return "docker network " + n.Name
 	}
-	return fmt.Sprintf("docker network %s (%s)", n.Name, labelled(n.Project, n.Deployment))
+	return fmt.Sprintf("docker network %s (%s)", n.Name, o.labelled(n.Project, n.Deployment))
 }
 
 // overlapsMesh reports whether a network, as CIDR or as a bare address,
@@ -294,7 +320,8 @@ func overlapsMesh(mesh *net.IPNet, cidr string) bool {
 	return ok && (n.Contains(mesh.IP) || mesh.Contains(n.IP))
 }
 
-// within reports whether n equals the mesh or lies inside it.
+// within reports whether n equals the mesh, or another claimed network, or
+// lies inside it.
 func within(n, mesh *net.IPNet) bool {
 	nOnes, _ := n.Mask.Size()
 	meshOnes, _ := mesh.Mask.Size()
