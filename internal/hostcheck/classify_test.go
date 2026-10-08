@@ -279,3 +279,17 @@ func TestTheFirewallAdviceAllowsSSHFirst(t *testing.T) {
 		t.Errorf("the advice does not allow SSH on 2222 before enabling ufw: %s", msg)
 	}
 }
+
+// An IPv4-mapped address is the IPv4 address, so a listener ss prints as
+// [::ffff:127.0.0.1] holds 127.0.0.1 and conflicts with a claim there.
+func TestAnIPv4MappedListenerIsItsIPv4Address(t *testing.T) {
+	h := cleanHost()
+	h.answers["ss -Hltnup"] = baseSockets + `tcp LISTEN 0 244 [::ffff:127.0.0.1]:5432 *:* users:(("postgres",pid=1200,fd=5))
+`
+	r := check(t, "home-a", h)
+	wantClass(t, r, hostcheck.Conflicted)
+	wantLine(t, r, "CONFLICT  127.0.0.1:5432/tcp (Postgres): claimed by sites.home-a.roles (data), held by process postgres (pid 1200)")
+	if len(r.Foreign) != 0 {
+		t.Errorf("a mapped loopback listener was counted as foreign: %q", r.Foreign)
+	}
+}

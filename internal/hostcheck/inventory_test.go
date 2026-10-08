@@ -86,12 +86,14 @@ tcp LISTEN 0 4096 *:80 *:* users:(("caddy",pid=812,fd=7))
 udp UNCONN 0 0 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=402,fd=14))
 udp UNCONN 0 0 0.0.0.0:51820 0.0.0.0:*
 tcp LISTEN 0 4096 [::1]:2379 [::]:* users:(("etcd",pid=600,fd=7))
+tcp LISTEN 0 4096 [::ffff:10.44.0.1]:8080 *:* users:(("app",pid=601,fd=7))
+tcp LISTEN 0 4096 [::ffff:0.0.0.0]:8081 *:* users:(("app",pid=601,fd=8))
 `
 	var got []string
 	for _, s := range inspect(t, h).Sockets {
 		got = append(got, s.Listener().String()+" "+s.Process)
 	}
-	want := []string{"*:22/tcp sshd", "*:5432/tcp postgres", "*:80/tcp caddy", "127.0.0.53:53/udp systemd-resolve", "*:51820/udp ", "::1:2379/tcp etcd"}
+	want := []string{"*:22/tcp sshd", "*:5432/tcp postgres", "*:80/tcp caddy", "127.0.0.53:53/udp systemd-resolve", "*:51820/udp ", "::1:2379/tcp etcd", "10.44.0.1:8080/tcp app", "*:8081/tcp app"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}

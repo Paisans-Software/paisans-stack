@@ -323,8 +323,9 @@ func contains(list []string, s string) bool {
 // Refusal is the reason a command must not go on, or nil. A conflict is
 // always refused, with no override: the operator moves what holds the claim
 // or changes the configuration. A shared host is refused when its firewall
-// is not already up and denying (or rejecting) by default, because on a shared host the
-// toolkit never sets the default policy or enables ufw itself.
+// is not already up and denying (or rejecting) by default, because on a
+// shared host the toolkit never sets the default policy or enables ufw
+// itself.
 func (r *Report) Refusal() error {
 	switch r.Class {
 	case Conflicted:

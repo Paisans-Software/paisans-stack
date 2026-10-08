@@ -3,6 +3,7 @@ package hostcheck
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"regexp"
 	"sort"
 	"strconv"
@@ -78,13 +79,17 @@ func parseSockets(out string) ([]Socket, error) {
 }
 
 // bindAddress normalises an address as ss or Docker prints it: the interface
-// scope and brackets dropped, and every spelling of "any address" made "",
-// as render.Listener has it.
+// scope and brackets dropped, an IPv4-mapped IPv6 address read as the IPv4
+// address it is ([::ffff:127.0.0.1] is 127.0.0.1), and every spelling of
+// "any address" made "", as render.Listener has it.
 func bindAddress(a string) string {
 	if i := strings.Index(a, "%"); i >= 0 {
 		a = a[:i]
 	}
 	a = strings.TrimSuffix(strings.TrimPrefix(a, "["), "]")
+	if ip := net.ParseIP(a); ip != nil && strings.Contains(a, ":") && ip.To4() != nil {
+		a = ip.To4().String()
+	}
 	switch a {
 	case "*", "0.0.0.0", "::":
 		return ""
