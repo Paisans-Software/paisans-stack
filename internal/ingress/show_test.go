@@ -1,0 +1,108 @@
+package ingress_test
+
+import (
+	"bytes"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/ingress"
+)
+
+// fixture is the render fixture: status pinned to watch, a monitor in
+// ingress mode paisans with public_address 203.0.113.20.
+func fixture(t *testing.T) *config.Config {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "render", "testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+// external is the fixture's monitor behind the operator's web server.
+func external(t *testing.T, listen string) ingress.Target {
+	t.Helper()
+	cfg := fixture(t)
+	watch := cfg.Sites["watch"]
+	watch.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: listen}
+	cfg.Sites["watch"] = watch
+	target, err := ingress.For(cfg, "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return target
+}
+
+func TestForReadsTheMonitor(t *testing.T) {
+	target := external(t, "127.0.0.1:8480")
+	want := ingress.Target{
+		App: "status", Site: "watch", Hostname: "status.example.org",
+		Mode: config.IngressExternal, Listen: "127.0.0.1:8480", ListenHost: "127.0.0.1", ListenPort: 8480,
+		PublicAddress: "203.0.113.20", HealthPath: "/healthz", HealthExpect: "200",
+	}
+	if target != want {
+		t.Fatalf("got  %+v\nwant %+v", target, want)
+	}
+}
+
+// Only an app a monitor serves has an ingress to hand off: the gateway's
+// apps are the toolkit's own Caddy's.
+func TestForRefusesAnAppTheGatewayServes(t *testing.T) {
+	cfg := fixture(t)
+	if _, err := ingress.For(cfg, "talk"); err == nil || !strings.Contains(err.Error(), "gateway") {
+		t.Fatalf("talk: %v", err)
+	}
+	if _, err := ingress.For(cfg, "nothing"); err == nil || !strings.Contains(err.Error(), "declares no app") {
+		t.Fatalf("an undeclared app: %v", err)
+	}
+}
+
+func TestShowHandsOffAnExternalApp(t *testing.T) {
+	var buf bytes.Buffer
+	ingress.Show(&buf, external(t, "127.0.0.1:8480"))
+	out := buf.String()
+	for _, want := range []string{
+		"status.example.org", "http://127.0.0.1:8480", "/healthz",
+		"terminate TLS", "Host", "X-Forwarded-For", "X-Forwarded-Proto",
+		"203.0.113.20",
+		"reverse_proxy 127.0.0.1:8480",
+		"proxy_pass http://127.0.0.1:8480;",
+		"proxy_set_header X-Forwarded-Proto $scheme;",
+		"ProxyPass        / http://127.0.0.1:8480/",
+		`RequestHeader set X-Forwarded-Proto "https"`,
+		"paisans ingress check --app status",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	if n := strings.Count(out, "YOUR CERTIFICATE"); n != 3 {
+		t.Errorf("want a certificate marker in each of the three snippets, got %d:\n%s", n, out)
+	}
+	if strings.Contains(out, "ufw") {
+		t.Errorf("a loopback listen needs no firewall warning:\n%s", out)
+	}
+}
+
+func TestShowWarnsWhenListenIsNotLoopback(t *testing.T) {
+	var buf bytes.Buffer
+	ingress.Show(&buf, external(t, "192.168.1.20:8480"))
+	if !strings.Contains(buf.String(), "ufw") || !strings.Contains(buf.String(), "proxy_pass http://192.168.1.20:8480;") {
+		t.Fatal(buf.String())
+	}
+}
+
+func TestShowHasNothingToHandOffInPaisansMode(t *testing.T) {
+	target, err := ingress.For(fixture(t), "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	ingress.Show(&buf, target)
+	out := buf.String()
+	if !strings.Contains(out, "nothing to hand off") || strings.Contains(out, "proxy_pass") || strings.Contains(out, "YOUR CERTIFICATE") {
+		t.Fatal(out)
+	}
+}
