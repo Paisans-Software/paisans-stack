@@ -194,9 +194,9 @@ manifest's entries. Something is this deployment's only when provable: a
 container with this id's deployment label and a `paisans-<token>-<stack>`
 project, or a manifest entry. A stack that `render.SiteStacks` no longer names
 for the site, and a manifest entry marked left over, is a leftover; on the
-gateway, a `*.caddy` in `render.HostSitesDir` and a container without this
-deployment's label on one of its Caddy's Docker networks (never `host` or
-`none`, which attach nothing) is foreign. `apply` prints the leftovers after
+gateway, a `*.caddy` in `render.HostSitesDir` is foreign: the Caddyfile is
+this deployment's and Caddy runs in the host's network namespace, so that
+directory is the only way something foreign is served by it. `apply` prints the leftovers after
 its plan (`printLeftovers` in `cmd/paisans/leftover.go`); `doctor` runs
 `hostcheck.Inspect` on each site that answered and reports them as `WARN`,
 and the foreign users as `info`. Both name `paisans app remove <app>` for

@@ -79,10 +79,9 @@ func TestLeftoversAreOnlyWhatIsProvablyOurs(t *testing.T) {
 	}
 }
 
-// On the gateway: every site block in the host's own directory, and every
-// container without this deployment's label on a network the Caddy is
-// attached to, is foreign and relies on it. The host's own namespace is not
-// such a network.
+// On the gateway, every site block in the host's own directory is foreign
+// and relies on its Caddy. A foreign container is not, whatever networks it
+// shares: Caddy serves only what its Caddyfile and those blocks name.
 func TestForeignUsersOfTheGatewaysCaddy(t *testing.T) {
 	cfg := fixture(t)
 	inv := &hostcheck.Inventory{
@@ -106,13 +105,9 @@ func TestForeignUsersOfTheGatewaysCaddy(t *testing.T) {
 	if !reflect.DeepEqual(r.HostSites, []string{"/srv/caddy.d/blog.caddy"}) {
 		t.Errorf("host sites = %v", r.HostSites)
 	}
-	want := []ownership.Neighbour{{Container: "blog-ghost-1", Network: "web"}, {Container: "paisans-0c1d-talk-app-1", Network: "web"}}
-	if !reflect.DeepEqual(r.Neighbours, want) {
-		t.Errorf("neighbours = %+v, want %+v", r.Neighbours, want)
-	}
-	lines := strings.Join(r.ForeignLines(), "\n")
-	if !strings.Contains(lines, "site block /srv/caddy.d/blog.caddy, served by this deployment's Caddy") || !strings.Contains(lines, "container blog-ghost-1, on network web with this deployment's Caddy") {
-		t.Errorf("foreign lines:\n%s", lines)
+	lines := r.ForeignLines()
+	if want := []string{"site block /srv/caddy.d/blog.caddy, served by this deployment's Caddy"}; !reflect.DeepEqual(lines, want) {
+		t.Errorf("foreign lines = %q, want %q", lines, want)
 	}
 
 	// The same directory on a site whose Caddy is not the gateway's is not
