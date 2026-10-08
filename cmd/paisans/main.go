@@ -464,12 +464,18 @@ func runApply(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
+	host, err := hostGate(os.Stdout, cfg, *site, transport)
+	if err != nil {
+		return err
+	}
 	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
 
 	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...)}
-	if *keepImages {
+	// On a shared host an image the toolkit renders (caddy, postgres) may
+	// be what a foreign project runs from, so none is removed.
+	if *keepImages || host.Shared() {
 		options = append(options, apply.KeepImages())
 	}
 	plan, err := planSiteApply(cfg, secrets, *site, transport, options...)
@@ -717,10 +723,18 @@ func runHostPrepare(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
+	host, err := hostGate(os.Stdout, cfg, *site, transport)
+	if err != nil {
+		return err
+	}
 	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
-	plan, err := hostprep.Build(*site, cfg, transport)
+	var options []hostprep.Option
+	if host.Shared() {
+		options = append(options, hostprep.Shared())
+	}
+	plan, err := hostprep.Build(*site, cfg, transport, options...)
 	if err != nil {
 		return err
 	}

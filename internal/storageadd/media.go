@@ -63,7 +63,7 @@ func (p *Plan) buildMedia() (*Stage, error) {
 		Gate: "the gateway's media routes match the render, the Garage nodes in storage.garage.sites order",
 	}
 	t := p.transports[p.gateway]
-	sp, err := apply.Build(p.gateway, p.rendered, acme.Module(p.cfg.ACME.Provider), t, apply.Scope(paths...))
+	sp, err := apply.Build(p.gateway, p.rendered, acme.Module(p.cfg.ACME.Provider), t, p.applyOptions(p.gateway, apply.Scope(paths...))...)
 	if err != nil {
 		return nil, err
 	}

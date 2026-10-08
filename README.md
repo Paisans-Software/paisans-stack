@@ -1869,6 +1869,94 @@ exactly what the operator typed, never a blend. `host prepare` still manages
 the section's user's authorized keys under `--ssh`, because those come from the
 file, not from the connection.
 
+### The host check: what is already on a host decides how much is touched
+
+`host prepare`, `apply`, `site add` and `prune` each assumed the host was the
+deployment's alone: prepare set ufw's default policy and enabled it, apply
+removed the images it superseded, and prune removed every anonymous volume
+nothing mounted. Each is right on a dedicated host and wrong on one where
+somebody else runs a web server or a database. So before any of them changes
+anything, in a dry run as well as with `--execute`, it runs the **host
+check** on the site it is about to change and prints what it found. So do
+`storage rotate-key` and `storage add`, which apply files on the sites they
+change: rotate-key checks every site the app runs on, storage add every
+Garage site and the gateway, all before the first change.
+
+The check has three parts, in `internal/hostcheck`:
+
+* **Claims**, from `paisans.yaml` alone: every port the site will bind, with
+  its protocol, its address and the key that makes the site bind it
+  (`render.SiteListeners`, the list the renderer itself uses, so the check
+  cannot drift from what is deployed), the `wg0` interface, and the mesh
+  subnet as a route.
+* **Inventory**, read only, one command per fact, in the C locale because
+  the parsers read ufw's, dpkg's and ss's English words, and as root, which
+  `ss -p` needs to name another user's process: it asks `id -u` first and
+  refuses unless it is 0, so `--sudo=false` as a normal user is refused
+  rather than reading every root listener as unowned. Then Docker's version and package,
+  every container with its compose project, PID and published ports,
+  volumes, networks and their subnets, `ss -Hltnup`, `ip -o link`,
+  `ip -j route`, `ufw status verbose`, whether firewalld is active, and
+  whether this deployment's manifest, `/srv/paisans/<token>/.paisans-manifest.json`,
+  exists and records `wg0.conf`.
+* **Classification.** A container or network is the toolkit's when it
+  carries the label `community.paisans.deployment` with this deployment's id,
+  the same rule `prune` follows. Another deployment's containers on the same
+  host are foreign like anyone else's, whatever their names. A listener is the toolkit's when its process is in one of
+  those containers' cgroups (a host network container), or it is the
+  `docker-proxy` publishing one of their ports, or it is the kernel's
+  WireGuard socket for a `wg0` the manifest records. A loopback listener, and
+  `sshd`, `systemd-resolved`, `systemd-networkd`, `chronyd` and `tailscaled`,
+  are the base system and count as neither. Everything else is foreign.
+
+| Class | When | What the command does |
+|---|---|---|
+| clean | nothing foreign; an empty Docker install is clean | what it always did, including enabling ufw with incoming denied by default |
+| shared | something foreign, holding nothing the site claims | proceeds, touching only what is the toolkit's (below) |
+| conflict | something foreign holds a claim | refuses, changes nothing, one line per conflict |
+
+A listener conflicts when the ports and protocols match and either side binds
+every address or both bind the same one, which is exactly when the second
+bind fails. That holds for a base system listener too: a loopback Postgres
+does not make a host shared, but the toolkit's own loopback bind on 5432
+would fail on it. A foreign container's published ports count whether or not
+anything listens, because Docker without its userland proxy publishes with no
+listener, and a stopped container binds again when it starts. A foreign
+Docker network whose subnet overlaps the mesh conflicts, because containers
+would be handed the mesh's addresses. A route conflicts when it equals the
+mesh subnet or lies inside it, because the kernel picks the longest matching
+prefix and it would take the mesh's traffic. A route broader than the mesh (a
+provider's 10.0.0.0/8 private network) is shorter than the one `wg0` adds, so
+the mesh still wins; it is printed as a note. A `wg0` the toolkit did not
+write conflicts.
+
+A conflict line names the resource, the `paisans.yaml` key that claims it, and
+what holds it (a container and its compose project, or a process and its PID).
+**There is no override.** The operator moves the other service or changes the
+configuration, because the claim cannot be taken while something else holds
+it: the bind fails all the same, only later and halfway through a change.
+
+On a **shared** host:
+
+* **The firewall must already be up.** ufw active with incoming traffic
+  denied or rejected by default, and firewalld not active, or the command
+  refuses and says which. Its advice allows the site's `ssh.port` first, so
+  following it over SSH keeps the session. The toolkit never runs `ufw default` or `ufw --force enable` there:
+  both decide the other services' traffic as well, and enabling a deny
+  default under a web server the toolkit knows nothing about takes it off
+  the network. It still adds and removes its own `paisans-<token>:` rules.
+* **No image is removed**, as with `apply --keep-images`, because an image the
+  toolkit renders (`caddy`, `postgres`) may be what a foreign project runs.
+* **Docker is left alone**, as it already is whenever `docker compose` works,
+  and Ubuntu's `docker.io` and a Docker snap are still refused rather than
+  removed.
+
+The class is computed on every run and never stored: a host becomes shared
+the day someone installs something beside the deployment. `apply`'s manifest
+gate is unchanged and still refuses to overwrite a file it has no record of;
+the host check runs before it and covers what a manifest cannot see: ports,
+interfaces, firewall policy and other people's containers.
+
 ### `host prepare` takes a blank host to an apply-able state
 
 `apply` assumes a host that already has Docker with the compose plugin, the
@@ -1920,7 +2008,9 @@ from the same source whenever it was prepared. The packages that page lists as
 conflicting (`docker.io`, `docker-compose-v2`, `containerd`, `runc` and the
 rest) are **refused, not removed**: on a host already running containers from
 them, removing them stops those containers, and that is a decision for
-whoever started them. Every `apt-get` runs non-interactively.
+whoever started them. Docker installed as a snap is refused the same way,
+whether or not `docker compose` works with it, since it is an engine from a
+third source. Every `apt-get` runs non-interactively.
 
 #### Docker starts after `wg0`
 
@@ -1939,7 +2029,7 @@ which a package upgrade replaces, untouched.
 
 | Rule | Sites |
 |------|-------|
-| deny incoming, allow outgoing by default | every site |
+| deny incoming, allow outgoing by default | every clean site; a shared site must have it already (see *The host check*) |
 | the site's `ssh.port`, 22 unless declared | every site |
 | 51820/udp, WireGuard | every site |
 | everything arriving on `wg0` | every site |
@@ -3295,12 +3385,13 @@ at, and "could not look" is not "looked and it was fine".
 |---|---|---|---|
 | SSH and sudo | every site | `sudo -n true` | the host does not answer, or sudo wants a password |
 | Clock | every site | `timedatectl show -p NTPSynchronized --value` | not `yes` |
-| Prepared | new site | `host prepare`'s own plan | it has any step left |
+| Host | new site | the host check (see *The host check*) | something foreign holds a claim, or the host is shared and its firewall is not already up and denying by default |
+| Prepared | new site | `host prepare`'s own plan, without the firewall's defaults on a shared host | it has any step left |
 | Registry | new site | `/var/lib/paisans/registry.json`, read and never claimed | another deployment there holds this one's token or root |
 | Platform | new data site, against each existing data site | `/etc/os-release` `ID` and `VERSION_ID`, and the release at the end of `ldd --version`'s first line | any of the three differs |
 | WireGuard | new site | `/sys/module/wireguard`, else `modprobe -n wireguard` | neither |
 | Watchdog | new data site, unless its mode is `off` | `/dev/watchdog` exists | it does not |
-| Ports | new site | `ss -Hltnu` | anything listens on 51820/udp; on 2379 or 2380 for an etcd member; on 5432, 8008 or 8009 for a data site; on the cluster port where the site runs HAProxy |
+| Ports | new site | the host check's `ss -Hltnup` against its claims | anything listens where the site will bind: 51820/udp; 2379 or 2380 for an etcd member; 5432, 8008 or 8009 for a data site; the cluster port where the site runs HAProxy; 80 and 443 for a gateway; each app's published port |
 | Routes | new site | `ip -j route` | a route overlaps `mesh.subnet`, other than one through `wg0` |
 | Disk | new data site | the leader's `sum(pg_database_size(...))`, through its Patroni container's `psql`; `df` on the deepest existing directory towards `/srv/paisans/<token>/infra/postgres` | free space is under that plus 2 GiB |
 | Storage | new site | `docker info --format '{{.DockerRootDir}}'`, then `findmnt -no FSTYPE,SOURCE --target` on Docker's root and on the deployment's root, `/srv/paisans/<token>` (or the deepest directory towards it that exists) | either is a network filesystem (`nfs`, `nfs4`, `cifs`, `smb3`, `glusterfs`, `ceph`, `fuse.sshfs` and the others preflight lists); a type that is neither that nor a local block filesystem (`ext4`, `xfs`, `btrfs`, `zfs`, `f2fs`) warns |

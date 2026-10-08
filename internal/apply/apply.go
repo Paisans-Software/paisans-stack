@@ -272,7 +272,7 @@ const remoteRoot = "/"
 // deployment's own root. It is what separates "this file changed because we
 // changed it" from "somebody edited this on the host", and without it every
 // apply would be a blind overwrite.
-func manifestPath(d deployment.Deployment) string { return d.Path(".paisans-manifest.json") }
+func manifestPath(d deployment.Deployment) string { return d.Manifest() }
 
 // gatewayCaddyfile and gatewayCompose are the two rendered files that say a
 // site runs the gateway and that its Caddy is about to be replaced, as paths

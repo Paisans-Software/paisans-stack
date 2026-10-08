@@ -51,6 +51,9 @@ func runPrune(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
+	if _, err := hostGate(os.Stdout, cfg, *site, transport); err != nil {
+		return err
+	}
 	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}

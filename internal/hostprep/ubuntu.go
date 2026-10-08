@@ -46,6 +46,7 @@ type packageFacts struct {
 	installed    map[string]bool
 	keyring      bool
 	arch         string
+	snapDocker   bool
 }
 
 func (u ubuntu) probePackages(t Transport) (packageFacts, error) {
@@ -73,6 +74,8 @@ func (u ubuntu) probePackages(t Transport) (packageFacts, error) {
 			facts.keyring = rest == "present"
 		case "arch":
 			facts.arch = strings.TrimSpace(rest)
+		case "snap":
+			facts.snapDocker = strings.TrimSpace(rest) == "docker"
 		}
 	}
 	return facts, nil
@@ -88,6 +91,14 @@ func (u ubuntu) Packages(t Transport, host OSRelease) (Section, error) {
 	facts, err := u.probePackages(t)
 	if err != nil {
 		return out, err
+	}
+
+	// Refused, not removed, for the docker.io reason below, and whether or
+	// not compose works with it: every host runs Docker from Docker's own
+	// repository, which is what the toolkit is tested against, and a snap
+	// beside those packages would be a second engine.
+	if facts.snapDocker {
+		return out, fmt.Errorf("docker: Docker is installed as a snap, and every host here runs Docker Engine from Docker's own apt repository. Remove it yourself (snap remove docker), after checking nothing running depends on it, and prepare again")
 	}
 
 	var install []string
@@ -289,8 +300,10 @@ func (u ubuntu) WatchdogModule(t Transport, d deployment.Deployment, module stri
 // stood in for is in place. `--force` is what stops `ufw enable` asking
 // whether to disrupt existing connections, a prompt that would hang a
 // non-interactive run. Which rules are added, adopted, removed or left alone
-// is planRules, in ufw.go.
-func (u ubuntu) Firewall(t Transport, d deployment.Deployment, rules []Rule) (Section, error) {
+// is planRules, in ufw.go. On a shared host (hostWide false) only the rules
+// are planned: the default policy and enabling belong to the host, not to
+// the deployment.
+func (u ubuntu) Firewall(t Transport, d deployment.Deployment, rules []Rule, hostWide bool) (Section, error) {
 	var out Section
 	script, err := snippet(u.tmpl("firewall-probe.sh.tmpl"), nil)
 	if err != nil {
@@ -321,6 +334,12 @@ func (u ubuntu) Firewall(t Transport, d deployment.Deployment, rules []Rule) (Se
 		return out, err
 	}
 	out.add(planned)
+
+	if !hostWide {
+		out.Present = append(out.Present, "firewall: default policy and enabled state left alone, since the host is shared")
+		out.Steps = append(out.Steps, removals...)
+		return out, nil
+	}
 
 	input, output := "", ""
 	if present {

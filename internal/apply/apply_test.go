@@ -1915,3 +1915,31 @@ func TestOnlyMovesTheNamedStackAndKeepsTheRestRecorded(t *testing.T) {
 		t.Error("--only accepted a stack the site does not render")
 	}
 }
+
+// apply on a shared host runs as --keep-images does, because an image the
+// toolkit renders may be what a foreign project runs from: no image is
+// listed or removed. A dangling volume its own containers did not leave is
+// never a candidate either; only the anonymous volume the replaced paisans
+// container mounted goes.
+func TestASharedHostApplyRemovesNoImageAndNoForeignVolume(t *testing.T) {
+	const (
+		ours    = "3a37a98261c4f658850d43b3d0ddc746ae25d9ec6bb58e83132662b7ea646191"
+		foreign = "8cce176c65a4f3a4a255ca46dc4588b38d917bffc8f0c13fd4d5335d4fc8f830"
+	)
+	host := supersededHost()
+	host.stackVolumes = map[string]string{"talk": ours + "\n"}
+	host.dangling = ours + "\n" + foreign + "\nshop_data\n"
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.KeepImages())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if host.ran("docker image rm") || host.ran("docker image ls") {
+		t.Error("a shared host's apply listed or removed images")
+	}
+	if len(host.removedVolumes) != 1 || host.removedVolumes[0] != ours {
+		t.Errorf("removed %v, want only %s, which the replaced paisans container mounted", host.removedVolumes, ours)
+	}
+}
