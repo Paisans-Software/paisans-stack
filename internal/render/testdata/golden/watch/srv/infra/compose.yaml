@@ -1,0 +1,22 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# Infrastructure for site watch. Bind mounts under /srv, never named
+# volumes, so relocating a stack is a tar rather than a volumes-from dance.
+name: paisans-infra
+
+services:
+  caddy:
+    image: ghcr.io/paisans-software/caddy:2.11.7@sha256:b401d1cb18074026a535a1facc5f6d9d35bc62fdff480f3b1fd91042c8e48186
+    restart: unless-stopped
+    network_mode: host
+    # Relative to this file, so the path names the caddy/ directory the token
+    # is rendered into. The token stays out of this file because compose.yaml
+    # is 0644 and readable by anything that can list the stack.
+    env_file:
+      - caddy/caddy.env
+    volumes:
+      - /srv/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # One file per application, imported by that application's host block.
+      - /srv/infra/caddy/snippets:/etc/caddy/snippets:ro
+      - /srv/infra/caddy/data:/data
+      - /srv/infra/caddy/config:/config

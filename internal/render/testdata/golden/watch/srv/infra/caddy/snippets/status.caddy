@@ -1,7 +1,7 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
-# Routing for {{ .App.Name }}, imported by the host block for
-# {{ .Hostname }} in the Caddy on the monitor's own site. The UI, sign in,
+# Routing for status, imported by the host block for
+# status.example.org in the Caddy on the monitor's own site. The UI, sign in,
 # the OIDC callback, heartbeat URLs (/ping/*) and the UI's own session
 # authenticated JSON (/api/sites*, which the dashboard's live refresh and the
 # response time chart fetch) pass. The status page, badges, /metrics and the
@@ -10,10 +10,6 @@
 # is public whenever no API token exists, which under this toolkit is always.
 @refused path /status* /badge/* /metrics /api/v1/*
 respond @refused 404
-reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
-{{- if .UpstreamElsewhere }}
-	# One site, not the gateway's machine; see upstream_single in the Caddyfile.
-	import upstream_single
-{{- end }}
+reverse_proxy 10.44.0.4:3001 {
 	header_up X-Forwarded-Proto https
 }

@@ -109,16 +109,19 @@ type plannedApp struct {
 }
 
 type siteView struct {
-	Name       string
-	Address    string
-	Endpoint   string
-	Roles      []config.Role
-	IsData     bool
-	IsApps     bool
-	IsGateway  bool
-	IsWitness  bool
-	IsEtcd     bool
-	IsGarage   bool
+	Name      string
+	Address   string
+	Endpoint  string
+	Roles     []config.Role
+	IsData    bool
+	IsApps    bool
+	IsGateway bool
+	IsWitness bool
+	IsEtcd    bool
+	IsGarage  bool
+	// RunsCaddy is set where the toolkit's Caddy runs: a gateway, and a
+	// monitor in ingress mode paisans, which serves its own apps.
+	RunsCaddy  bool
 	Apps       []plannedApp
 	NeedsProxy bool
 	// WatchdogOff renders Patroni without fencing and drops the device
@@ -163,6 +166,7 @@ func Build(cfg *config.Config, secrets *config.Secrets, opts ...Option) (*Plan, 
 			IsWitness: site.Has(config.RoleWitness),
 			IsEtcd:    contains(cfg.Etcd.Members, name),
 			IsGarage:  contains(cfg.Storage.Garage.Sites, name),
+			RunsCaddy: site.RunsCaddy(),
 
 			WatchdogOff: site.WatchdogMode() == config.WatchdogOff,
 		}

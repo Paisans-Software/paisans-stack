@@ -84,7 +84,7 @@ services:
       - /srv/infra/garage/meta:/var/lib/garage/meta
       - /srv/infra/garage/data:/var/lib/garage/data
 {{- end }}
-{{- if .Site.IsGateway }}
+{{- if .Site.RunsCaddy }}
   caddy:
     image: {{ .CaddyImage }}
     restart: unless-stopped

@@ -33,7 +33,7 @@
     },
     {
       "path": "srv/infra/caddy/Caddyfile",
-      "sha256": "e3ffcaf53d3d963e0e386bcff4041ad27f519477d218226109e4074490ec95fc",
+      "sha256": "e1e224a347a2110f0909998f56472790e4b181920361de527b4f7109752d139c",
       "mode": "0644"
     },
     {
@@ -84,11 +84,6 @@
     {
       "path": "srv/infra/caddy/snippets/gate.caddy",
       "sha256": "033168495474282b17ede4d37ac7eae9dff998aab665a4d75c0d746f37fddffa",
-      "mode": "0644"
-    },
-    {
-      "path": "srv/infra/caddy/snippets/status.caddy",
-      "sha256": "b3a4bf2a3ab405f691a23d07a331fc841da85424d02d605e5012869564b0ef6d",
       "mode": "0644"
     },
     {

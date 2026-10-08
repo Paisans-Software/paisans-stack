@@ -684,9 +684,11 @@ func TestGatewayUsesDNSChallenge(t *testing.T) {
 	if _, ok := files["vm/srv/infra/caddy/caddy.env"]; !ok {
 		t.Error("the DNS provider token was not rendered for the gateway")
 	}
+	// The token goes where Caddy runs and nowhere else: the gateway, and the
+	// monitor serving its own hostname.
 	for path := range files {
-		if strings.HasSuffix(path, "caddy.env") && !strings.HasPrefix(path, "vm/") {
-			t.Errorf("%s holds the zone token on a site that is not the gateway", path)
+		if strings.HasSuffix(path, "caddy.env") && !strings.HasPrefix(path, "vm/") && !strings.HasPrefix(path, "watch/") {
+			t.Errorf("%s holds the zone token on a site that runs no Caddy", path)
 		}
 	}
 }
@@ -927,10 +929,11 @@ func TestADeclaredImageReachesTheGateway(t *testing.T) {
 	}
 }
 
-// A deployment with no gateway site is legitimate: internal/config requires
-// acme.provider only when a site holds the gateway role. The renderer must not
-// demand a Caddy image for a site that will never run Caddy, or a config that
-// validation accepts fails to render anyway, over an image nothing needs.
+// A deployment where Caddy runs nowhere is legitimate: internal/config
+// requires acme.provider only when a site runs it, a gateway or a monitor in
+// ingress mode paisans. The renderer must not demand a Caddy image for a site
+// that will never run Caddy, or a config that validation accepts fails to
+// render anyway, over an image nothing needs.
 func TestNoGatewayNeedsNoACMEProvider(t *testing.T) {
 	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
@@ -941,6 +944,9 @@ func TestNoGatewayNeedsNoACMEProvider(t *testing.T) {
 	vm := cfg.Sites["vm"]
 	vm.Roles = []config.Role{config.RoleWitness}
 	cfg.Sites["vm"] = vm
+	watch := cfg.Sites["watch"]
+	watch.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}
+	cfg.Sites["watch"] = watch
 
 	plan, err := render.Build(cfg, secrets)
 	if err != nil {

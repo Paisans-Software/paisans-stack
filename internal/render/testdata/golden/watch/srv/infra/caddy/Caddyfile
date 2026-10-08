@@ -85,63 +85,7 @@
 	}
 }
 
-# Named Caddy snippets, not a hostname's routing: imported here, at the top
-# level, so that a site block below can import a name this file defines. See
-# templates/oauth2-proxy/caddy.snippet.gates.tmpl for what it declares.
-import /etc/caddy/snippets/gate-gates.caddy
-
-blog-media.example.org {
+status.example.org {
 	import upstream_unavailable
-	import /etc/caddy/snippets/blog-media.caddy
-}
-
-blog.example.org {
-	import upstream_unavailable
-	import /etc/caddy/snippets/blog.caddy
-}
-
-chat.example.org {
-	import upstream_unavailable
-	import /etc/caddy/snippets/chat.caddy
-}
-
-docs-media.example.org {
-	import upstream_unavailable
-	import /etc/caddy/snippets/docs-media.caddy
-}
-
-docs.example.org {
-	import upstream_unavailable
-	import /etc/caddy/snippets/docs.caddy
-}
-
-example.org {
-	import upstream_unavailable
-	import /etc/caddy/snippets/chat-wellknown.caddy
-}
-
-gate.example.org {
-	import upstream_unavailable
-	import /etc/caddy/snippets/gate.caddy
-}
-
-id.example.org {
-	import upstream_unavailable
-	import /etc/caddy/snippets/auth.caddy
-}
-
-talk-media.example.org {
-	import upstream_unavailable
-	import /etc/caddy/snippets/talk-media.caddy
-}
-
-talk.example.org {
-	import upstream_unavailable
-	import gate_members
-	import /etc/caddy/snippets/talk.caddy
-}
-
-web.example.org {
-	import upstream_unavailable
-	import /etc/caddy/snippets/web.caddy
+	import /etc/caddy/snippets/status.caddy
 }

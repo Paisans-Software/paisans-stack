@@ -7,6 +7,26 @@
       "mode": "0600"
     },
     {
+      "path": "srv/infra/caddy/Caddyfile",
+      "sha256": "968ca9412b84f22a8062450eff8483ffb77895fefaab1cc7c78a07405c45dcc9",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/caddy/caddy.env",
+      "sha256": "63c1ee176d77ecd7518a773aff4acfc7b4075ecc3ebe659f00909a0167bcdd44",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/infra/caddy/snippets/status.caddy",
+      "sha256": "6c88f3b597221bae4514fc071f0d1c1c4cc46a3fe4d819f2d1b6bc05ad96b43d",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/infra/compose.yaml",
+      "sha256": "e8bc12298eea23889e5d4f13b446b1c5fe2a4da9d6a57d40680a4db58ebe99bc",
+      "mode": "0644"
+    },
+    {
       "path": "srv/status/.env",
       "sha256": "ae9b7befff81ab44a5df619bfad87d3e60478e4a923b6f5b5852f4f6ece4b970",
       "mode": "0600"

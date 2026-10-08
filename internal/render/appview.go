@@ -323,6 +323,11 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	v.OIDC = p.oidcFor(planned)
 	v.Upstreams = p.upstreams(planned.Name)
 	v.UpstreamElsewhere = p.elsewhere(v.Upstreams)
+	if _, onMonitor := ServedBy(p.cfg, planned.Name); onMonitor {
+		// The Caddy in front of a monitor's app is on the monitor itself, so
+		// the app cannot die while its edge stays up.
+		v.UpstreamElsewhere = false
+	}
 	if planned.Kind == config.KindOAuth2Proxy {
 		v.GateMembersPort = gateMembersPort
 		v.GateMembersUpstreams = p.upstreamsOnPort(planned.Name, gateMembersPort)
