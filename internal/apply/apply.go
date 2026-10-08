@@ -385,8 +385,8 @@ func Only(stacks ...string) Option {
 // manifest keeps their entries as the last apply recorded them. A held app's
 // route on this site's Caddy is held with it, since a route reloaded before
 // its app moves points at the app as it was; one the host does not have yet
-// is the exception, written because the Caddyfile imports it (see
-// heldRoute). Everything else on the site, the mesh included, applies as
+// is the exception, written and live in this pass because the Caddyfile
+// imports it (see heldRoute). Everything else on the site, the mesh included, applies as
 // usual. apply's identity
 // step uses it for an app whose client at Pocket ID is not in place, and to
 // start Pocket ID before the apps that sign in through it. A held stack that
@@ -602,7 +602,14 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		if onlySet != nil && !onlySet[change.Stack] {
 			continue
 		}
-		if exceptSet[change.Stack] || heldRoute(exceptSet, file, change) {
+		// A held file somebody edited on the host stays in the plan as the
+		// conflict it is. Holding a file back means not writing it, not
+		// overlooking it: dropped, it would let this pass apply the rest of
+		// the site, and a dry run show nothing, while the apply releasing the
+		// app refused on it. A conflict is never written or recorded, so
+		// keeping it changes nothing else here.
+		held := exceptSet[change.Stack] || heldRoute(exceptSet, file, change)
+		if held && change.Kind != Conflict {
 			if change.Overwritten {
 				out.HeldOverwrites = append(out.HeldOverwrites, change.Path)
 			}
@@ -915,6 +922,10 @@ func execute(plan *Plan, t Transport) error {
 	// this record the next apply would see nothing to do, and an app stack
 	// held back by a failed gate would stay down until something unrelated
 	// changed it.
+	//
+	// A reload is owed through GatewayChanging, which Build sets whenever it
+	// sets GatewayReload: a failed reload leaves the new routing written and
+	// recorded, and only this record brings the next apply back to it.
 	owes := len(plan.Actions) > 0 || plan.GatewayChanging
 	if owes {
 		if err := writePending(plan, plan.Actions, t); err != nil {
@@ -1262,8 +1273,10 @@ func writeManifest(plan *Plan, t Transport) error {
 // pass writes imports every route by path, and Caddy refuses to load an
 // import of a file that does not exist ("File to import not found",
 // caddyconfig/caddyfile/parse.go), so holding it would fail the gateway's
-// validation gate and stop the pass. Until the app starts, its hostname
-// answers with the Caddyfile's upstream_unavailable 503.
+// validation gate and stop the pass. That route goes live in this pass,
+// pointing wherever the app runs: a gateway routes to apps on other sites
+// too, so the app may already be serving there. It gets its client in the
+// second pass of its own site's apply.
 func heldRoute(exceptSet map[string]bool, file render.File, change Change) bool {
 	return file.App != "" && exceptSet[file.App] && change.Kind != Create
 }

@@ -415,3 +415,92 @@ func sum(content string) string {
 	digest := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(digest[:])
 }
+
+// A held file somebody edited on the host is still a conflict. Holding a
+// file back means not writing it, not overlooking it: a pass that dropped
+// it would apply the rest of the site, and its dry run would show nothing,
+// while the apply releasing the app refused on it.
+func TestAHeldFileEditedOnTheHostIsStillAConflict(t *testing.T) {
+	host := newHost()
+	first, err := apply.Build("watch", pocketIDOnWatch(t, nil), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+	host.files[statusSnippet] += "# edited on the host\n"
+	host.files["/srv/paisans/f2a9/status/.env"] += "# edited on the host\n"
+	p, err := apply.Build("watch", pocketIDOnWatch(t, nil), acmeModule(t), host, apply.Except("status"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.commands = nil
+	got := map[string]bool{}
+	for _, c := range p.Conflicts() {
+		got[c.Path] = true
+	}
+	for _, path := range []string{statusSnippet, "/srv/paisans/f2a9/status/.env"} {
+		if !got[path] {
+			t.Errorf("held %s, edited on the host, is not a conflict", path)
+		}
+	}
+	if err := apply.Refusal(p); err == nil || !strings.Contains(err.Error(), statusSnippet) {
+		t.Errorf("Refusal gave %v", err)
+	}
+	if err := apply.Execute(p, host); err == nil {
+		t.Error("a pass holding an edited file back applied the rest of the site")
+	}
+	if len(host.commands) != 0 {
+		t.Errorf("a refused pass ran %v", host.commands)
+	}
+}
+
+// A reload that fails leaves the new routing on the host and recorded in
+// the manifest, so the next apply sees nothing changed. The reload is owed
+// until it succeeds, and the next apply makes it.
+func TestAFailedReloadIsOwedToTheNextApply(t *testing.T) {
+	host := applied(t, "vm")
+	host.running = true
+	changed := plan(t)
+	found := false
+	for i, file := range changed.Files {
+		if file.Path == "vm/srv/paisans/f2a9/infra/caddy/snippets/chat.caddy" {
+			changed.Files[i].Content += "# a later change\n"
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("vm renders no route for chat")
+	}
+	host.fail = "caddy reload"
+	p, err := apply.Build("vm", changed, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.GatewayReload {
+		t.Fatal("a changed route plans no reload")
+	}
+	if err := apply.Execute(p, host); err == nil {
+		t.Fatal("a failed reload was reported as success")
+	}
+
+	host.fail = ""
+	host.commands = nil
+	again, err := apply.Build("vm", changed, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.GatewayReload {
+		t.Fatal("the next apply does not owe the failed reload")
+	}
+	if err := apply.Execute(again, host); err != nil {
+		t.Fatal(err)
+	}
+	if !host.ran("caddy reload") {
+		t.Error("the owed reload was not made")
+	}
+	if _, owed := host.files["/srv/paisans/f2a9/.paisans-pending.json"]; owed {
+		t.Error("the reload is still owed after it was made")
+	}
+}

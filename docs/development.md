@@ -418,7 +418,9 @@ running Pocket ID applies in two passes (`executeWithClients`): the first
 holds every other app stack back with `apply.Except`, and with it each held
 app's Caddy route on that site (`render.File.App` names the app a file
 outside its stack directory belongs to; `heldRoute` holds it unless it is
-not on the host yet, since the Caddyfile imports it by path), then `CheckOneActive`
+not on the host yet, since the Caddyfile imports it by path; a held file
+edited on the host stays in the plan as a conflict, so the pass refuses on
+it), then `CheckOneActive`
 waits for Pocket ID's `/healthz`, then the clients are ensured, then the site
 is planned again with the new credentials and executed. Any other site
 ensures first and applies once. An app with no recorded client is held back

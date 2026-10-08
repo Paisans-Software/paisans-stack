@@ -3227,8 +3227,10 @@ it and written by the pass that starts the app, because a route reloaded
 first would point at the app as it was, or at one still without its client.
 The one exception is a route the host does not have yet: the Caddyfile
 imports every route by path and Caddy will not load an import of a missing
-file, so a new app's route is written in the first pass and its hostname
-answers 503 until the app starts. A deployment that declares
+file, so a new app's route is written in the first pass and goes live then,
+pointing wherever the app runs. A gateway routes to apps on other sites as
+well, so the app may already be serving there; it gets its client in the
+second pass of its own site's apply. A deployment that declares
 no `pocket-id` app has no identity step, and its apps are applied as before,
 without sign in. An app whose client is already
 recorded is not held back by an unreachable Pocket ID: its client was right
