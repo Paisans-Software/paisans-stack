@@ -2,6 +2,8 @@ package validate
 
 import (
 	"fmt"
+	"net"
+	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 )
@@ -69,4 +71,63 @@ func (c *checker) hostsUptime(site string) bool {
 		}
 	}
 	return false
+}
+
+// ingress checks a site's ingress block. README.md: "The monitor has a site
+// of its own".
+//
+// Only a monitor may carry one: a gateway always runs the toolkit's Caddy,
+// and every other site is reached through the gateway, so the block would be
+// ignored anywhere else. listen is where Docker publishes the app for the
+// operator's own web server, so it belongs to mode external alone and that
+// mode cannot work without it. Docker publishes a port in front of ufw, so a
+// listen address the internet could reach would expose the app around the
+// proxy whatever the firewall says: only loopback, a private LAN address or
+// the site's own mesh address are accepted, and the last two with a warning.
+// One listen publishes one app, so an external monitor hosts the monitor and
+// nothing else: a second app pinned there would be routed by nothing.
+func (c *checker) ingress() {
+	for _, name := range c.cfg.SiteNames() {
+		site := c.cfg.Sites[name]
+		if site.Ingress == nil {
+			continue
+		}
+		key := fmt.Sprintf("sites.%s.ingress", name)
+		if !site.Has(config.RoleMonitor) {
+			c.refuse("ingress-outside-monitor", key,
+				"is declared on %s, which does not hold the monitor role. A gateway always runs the toolkit's Caddy, and every other site is reached through the gateway, so the block would be ignored. Remove it, or give the site the monitor role.", name)
+			continue
+		}
+		mode, listen := site.IngressMode(), site.Ingress.Listen
+		switch {
+		case mode == config.IngressPaisans && listen != "":
+			c.refuse("ingress-listen-mode", key+".listen",
+				"is set, but the ingress mode is paisans, where the toolkit's own Caddy serves the app and nothing is published for another web server. Remove listen, or set mode: external if your own web server is to proxy to it.")
+			continue
+		case mode == config.IngressExternal && listen == "":
+			c.refuse("ingress-listen-mode", key+".listen",
+				"is required with mode: external. It is where the app is published for your web server to proxy to, for example 127.0.0.1:8480.")
+			continue
+		case mode != config.IngressExternal:
+			continue
+		}
+		if pinned := c.cfg.PinnedTo(name); len(pinned) > 1 {
+			c.refuse("ingress-external-serves-one-app", key+".listen",
+				"publishes one app, but %s are pinned to %s. With mode: external nothing but your own web server is in front of the site, and it is handed the monitor alone, so the others would be routed by nothing. Pin them elsewhere, or use mode: paisans.", strings.Join(pinned, ", "), name)
+		}
+		host, _, ok := site.Ingress.ListenHostPort()
+		if !ok {
+			continue // the loader has already reported this
+		}
+		ip := net.ParseIP(host)
+		switch {
+		case ip.IsLoopback():
+		case host == site.Address || (!c.cfg.Mesh.Contains(host) && ip.IsPrivate()):
+			c.warn("ingress-listen-bypasses-firewall", key+".listen",
+				"is %s, which is not loopback. Docker publishes a port with its own iptables rules, in front of ufw, so the firewall does not protect it: anything that can reach %s can reach the app around your web server. Prefer 127.0.0.1 when the web server runs on this machine.", listen, host)
+		default:
+			c.refuse("ingress-listen-public", key+".listen",
+				"is %s. The app would be published where the proxy is not in front of it, and Docker's rules bypass ufw. Use loopback (127.0.0.1), a private LAN address, or this site's own mesh address, %s.", listen, site.Address)
+		}
+	}
 }

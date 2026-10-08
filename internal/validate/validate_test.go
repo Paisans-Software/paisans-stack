@@ -84,6 +84,11 @@ func TestRulesFire(t *testing.T) {
 		{"monitor-without-uptime", "monitor-without-uptime", validate.Refuse},
 		{"uptime-needs-a-monitor-site", "uptime-needs-a-monitor-site", validate.Refuse},
 		{"monitor-without-public-address", "monitor-without-public-address", validate.Refuse},
+		{"ingress-outside-monitor", "ingress-outside-monitor", validate.Refuse},
+		{"ingress-listen-mode", "ingress-listen-mode", validate.Refuse},
+		{"ingress-listen-public", "ingress-listen-public", validate.Refuse},
+		{"ingress-listen-bypasses-firewall", "ingress-listen-bypasses-firewall", validate.Warn},
+		{"ingress-external-serves-one-app", "ingress-external-serves-one-app", validate.Refuse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
@@ -401,5 +406,44 @@ func TestARolelessSiteStillHostsOtherKinds(t *testing.T) {
 	delete(cfg.Apps, "status")
 	for _, f := range validate.Check(cfg).Refusals() {
 		t.Errorf("a role-less site hosting element was refused: %s", f)
+	}
+}
+
+// A listen address is where Docker publishes the app for the operator's web
+// server. Loopback is quiet; a LAN address or the site's own mesh address is
+// allowed with the firewall warning; anything the internet or another host
+// could be reached on is refused. 10.44.0.1 is RFC 1918 as well as inside the
+// mesh, but it is another site's address, which nothing on this host binds.
+func TestIngressListenAddresses(t *testing.T) {
+	for _, tc := range []struct {
+		listen         string
+		refused, warns bool
+	}{
+		{"127.0.0.1:8480", false, false},
+		{"192.168.1.20:8480", false, true},
+		{"10.44.0.4:8480", false, true},
+		{"10.44.0.1:8480", true, false},
+		{"203.0.113.20:8480", true, false},
+		{"0.0.0.0:8480", true, false},
+	} {
+		cfg := load(t, "uptime-without-smtp")
+		site := cfg.Sites["watch"]
+		site.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: tc.listen}
+		cfg.Sites["watch"] = site
+		result := validate.Check(cfg)
+		if result.Has("ingress-listen-public") != tc.refused || result.Has("ingress-listen-bypasses-firewall") != tc.warns {
+			t.Errorf("%s: %v", tc.listen, result.Findings)
+		}
+	}
+}
+
+// mode external without listen has nowhere to publish the app.
+func TestExternalIngressNeedsListen(t *testing.T) {
+	cfg := load(t, "uptime-without-smtp")
+	site := cfg.Sites["watch"]
+	site.Ingress = &config.Ingress{Mode: config.IngressExternal}
+	cfg.Sites["watch"] = site
+	if !refusedFor(validate.Check(cfg), "ingress-listen-mode", "sites.watch.ingress.listen") {
+		t.Fatal("external with no listen was not refused")
 	}
 }

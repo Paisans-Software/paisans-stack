@@ -144,6 +144,7 @@ func Check(cfg *config.Config) Result {
 	c.homeserverMustBePinned()
 	c.uptimeNeedsAnAdminGroup()
 	c.monitorRoles()
+	c.ingress()
 	c.smtpOnAKindWithoutMail()
 	c.mediaHostnameShape()
 	c.mediaHostnameUnderAnAppHostname()
