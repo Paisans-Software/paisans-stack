@@ -175,21 +175,23 @@ func TestAMonitorCarriesTheGateOnlyWhenItsAppIsGated(t *testing.T) {
 	}
 }
 
-// TRUST_PROXY names where the proxy in front of the monitor connects from,
-// because the login rate limiter is keyed on the client address and only a
-// trusted proxy's X-Forwarded-For is read. A port Docker publishes on
-// 127.0.0.1 reaches the container from its compose network's gateway, a
-// private address, never from loopback, so loopback alone would make every
-// visitor one client.
+// TRUST_PROXY names exactly where the proxy in front of the monitor connects
+// from, because the login rate limiter is keyed on the client address and
+// only a trusted proxy's X-Forwarded-For is read. The monitor's own Caddy
+// dials the app on the site's mesh address from the host itself. A port
+// Docker publishes on 127.0.0.1 reaches the container from its compose
+// network's gateway, which the template pins. A LAN or mesh listen keeps
+// the proxy's own address, which is known only to lie in that network.
 func TestTrustProxyFollowsWhereTheProxyConnectsFrom(t *testing.T) {
 	for _, tc := range []struct {
 		ingress *config.Ingress
 		want    string
 	}{
-		{nil, "TRUST_PROXY=10.44.0.0/24"},
-		{&config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}, "TRUST_PROXY=loopback,uniquelocal"},
+		{nil, "TRUST_PROXY=10.44.0.4/32"},
+		{&config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}, "TRUST_PROXY=10.255.255.1/32"},
 		{&config.Ingress{Mode: config.IngressExternal, Listen: "192.168.1.20:8480"}, "TRUST_PROXY=192.168.0.0/16"},
 		{&config.Ingress{Mode: config.IngressExternal, Listen: "172.20.0.5:8480"}, "TRUST_PROXY=172.16.0.0/12"},
+		{&config.Ingress{Mode: config.IngressExternal, Listen: "100.101.102.103:8480"}, "TRUST_PROXY=100.64.0.0/10"},
 		{&config.Ingress{Mode: config.IngressExternal, Listen: "10.44.0.4:8480"}, "TRUST_PROXY=10.44.0.0/24"},
 	} {
 		env := planFiles(mustBuild(t, monitorConfig(t, tc.ingress)))["watch/srv/status/.env"]
@@ -199,17 +201,41 @@ func TestTrustProxyFollowsWhereTheProxyConnectsFrom(t *testing.T) {
 	}
 }
 
-// In mode external the app is published on listen for the operator's web
-// server, and still on the mesh address, where the direct checks reach it.
-func TestAnExternalAppIsPublishedOnListenAsWell(t *testing.T) {
+// In mode external the app is published on listen alone: nothing dials its
+// mesh address, since the gateway does not route it and the monitor does not
+// check its own container. Its compose network is pinned, so the address the
+// web server's connections arrive from is known. Mode paisans publishes on the
+// mesh address, where its Caddy reaches it, and pins nothing.
+func TestAnExternalAppIsPublishedOnListenOnly(t *testing.T) {
 	compose := planFiles(mustBuild(t, monitorConfig(t, &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"})))["watch/srv/status/compose.yaml"]
-	for _, want := range []string{`"10.44.0.4:3001:3001"`, `"127.0.0.1:8480:3001"`} {
+	for _, want := range []string{`"127.0.0.1:8480:3001"`, "subnet: 10.255.255.0/29", "gateway: 10.255.255.1"} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("missing %s:\n%s", want, compose)
 		}
 	}
+	if strings.Contains(compose, "10.44.0.4:3001") {
+		t.Errorf("an external app is still published on the mesh:\n%s", compose)
+	}
 	compose = planFiles(build(t))["watch/srv/status/compose.yaml"]
-	if strings.Contains(compose, "8480") || strings.Count(compose, ":3001:3001") != 1 {
+	if strings.Contains(compose, "8480") || strings.Contains(compose, "ipam") || strings.Count(compose, ":3001:3001") != 1 {
 		t.Errorf("mode paisans publishes on the mesh address alone:\n%s", compose)
+	}
+}
+
+// The pinned network is a claim like a port: the host check refuses a host
+// where something else already uses it.
+func TestAnExternalMonitorClaimsItsNetwork(t *testing.T) {
+	cfg := monitorConfig(t, &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"})
+	got := render.SiteNetworks(cfg, "watch")
+	if len(got) != 1 || got[0].Subnet != "10.255.255.0/29" || got[0].Key != "sites.watch.ingress" {
+		t.Fatalf("%+v", got)
+	}
+	for _, l := range render.SiteListeners(cfg, "watch") {
+		if l.Address == "10.44.0.4" && l.Port == 3001 {
+			t.Errorf("an external app still claims its mesh publish: %s", l)
+		}
+	}
+	if got := render.SiteNetworks(monitorConfig(t, nil), "watch"); len(got) != 0 {
+		t.Errorf("mode paisans claims %+v", got)
 	}
 }

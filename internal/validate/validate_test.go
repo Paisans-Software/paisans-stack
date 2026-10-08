@@ -473,3 +473,23 @@ func TestACGNATListenIsWarnedNotRefused(t *testing.T) {
 		t.Fatalf("%v", result.Findings)
 	}
 }
+
+// An external monitor's compose network is pinned at 10.255.255.0/29, so a
+// mesh over it would route the mesh into a Docker bridge.
+func TestTheIngressNetworkMustNotOverlapTheMesh(t *testing.T) {
+	cfg := load(t, "uptime-without-smtp")
+	site := cfg.Sites["watch"]
+	site.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}
+	cfg.Sites["watch"] = site
+	if validate.Check(cfg).Has("ingress-network-overlaps-mesh") {
+		t.Fatal("refused with the usual mesh")
+	}
+	cfg.Mesh.Subnet = "10.255.0.0/16"
+	for name, s := range cfg.Sites {
+		s.Address = strings.Replace(s.Address, "10.44.", "10.255.", 1)
+		cfg.Sites[name] = s
+	}
+	if !refusedFor(validate.Check(cfg), "ingress-network-overlaps-mesh", "sites.watch.ingress") {
+		t.Fatalf("%v", validate.Check(cfg).Findings)
+	}
+}

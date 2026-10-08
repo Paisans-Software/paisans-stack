@@ -23,9 +23,10 @@ services:
     # ICMP for the per site ping checks.
     cap_add:
       - NET_RAW
-    # The mesh address only. Docker's own iptables rules bypass a host
-    # firewall, so a port published on every interface of a host with a
-    # public address is reachable from the internet whatever ufw says.
+    # The mesh address only, where the Caddy on this site reaches it. Docker's
+    # own iptables rules bypass a host firewall, so a port published on every
+    # interface of a host with a public address is reachable from the
+    # internet whatever ufw says.
     ports:
       - "10.44.0.4:3001:3001"
     volumes:

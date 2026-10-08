@@ -26,6 +26,16 @@ type Claims struct {
 	// SSHPort is the site's ssh.port, which any advice about enabling a
 	// firewall has to allow first.
 	SSHPort int
+	// Networks are the subnets the site's stacks pin, each with the key
+	// behind it (render.SiteNetworks): a foreign Docker network or route
+	// over one is a conflict, as one over the mesh is.
+	Networks []ClaimedNetwork
+}
+
+// ClaimedNetwork is one pinned subnet a site claims.
+type ClaimedNetwork struct {
+	Net *net.IPNet
+	Key string
 }
 
 // ClaimsFor is what the toolkit will take on one site's host, from the
@@ -38,11 +48,19 @@ func ClaimsFor(cfg *config.Config, site string) (Claims, error) {
 	if err != nil {
 		return Claims{}, fmt.Errorf("host check: mesh.subnet %q is not a network", cfg.Mesh.Subnet)
 	}
-	return Claims{
+	claims := Claims{
 		Site:      site,
 		Listeners: render.SiteListeners(cfg, site),
 		Interface: meshInterface,
 		Mesh:      mesh,
 		SSHPort:   cfg.Sites[site].SSH.PortOrDefault(),
-	}, nil
+	}
+	for _, n := range render.SiteNetworks(cfg, site) {
+		_, subnet, err := net.ParseCIDR(n.Subnet)
+		if err != nil {
+			return Claims{}, fmt.Errorf("host check: %s pins %q, which is not a network", n.Key, n.Subnet)
+		}
+		claims.Networks = append(claims.Networks, ClaimedNetwork{Net: subnet, Key: n.Key})
+	}
+	return claims, nil
 }

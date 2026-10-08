@@ -138,13 +138,12 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 	for _, name := range apps {
 		kind := cfg.Apps[name].Kind
 		owner := fmt.Sprintf("app %s (%s)", name, kind)
-		if port, ok := appPort[kind]; ok {
-			add(owner, "apps."+name, "tcp", addr, port)
-		}
-		// In ingress mode external the app is published a second time, on
-		// listen, for the operator's own web server.
+		// In ingress mode external the app is published on listen alone, for
+		// the operator's own web server; nothing dials its mesh address.
 		if host, port, ok := ExternalListen(cfg, name); ok {
 			add(owner, fmt.Sprintf("sites.%s.ingress.listen", site), "tcp", host, port)
+		} else if port, ok := appPort[kind]; ok {
+			add(owner, "apps."+name, "tcp", addr, port)
 		}
 		switch kind {
 		case config.KindOAuth2Proxy:

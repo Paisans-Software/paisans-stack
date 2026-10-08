@@ -40,27 +40,69 @@ func ExternalListen(cfg *config.Config, app string) (string, int, bool) {
 	return s.Ingress.ListenHostPort()
 }
 
-// privateBlocks are the RFC 1918 ranges, for naming the network a LAN listen
-// address sits in.
-var privateBlocks = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
+// privateBlocks are the RFC 1918 ranges and carrier grade NAT space, for
+// naming the network a LAN listen address sits in.
+var privateBlocks = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"}
 
-// trustProxy is what an app trusts to tell it the client's address, in
-// Express's `trust proxy` syntax, which the uptime fork reads from
-// TRUST_PROXY (src/server.js at 1.1.0-oidc.3): a comma separated list of
-// addresses, networks and the names loopback, linklocal and uniquelocal. It
-// is where the proxy in front of the app connects from, because the fork's
-// login rate limiter is keyed on the client address, and with the proxy
-// untrusted every visitor is one client and one attacker locks every admin
-// out.
+// IngressNetwork is the compose network an app on a monitor in ingress mode
+// external runs on, pinned so that the address the operator's web server
+// reaches it from is known, and IngressGateway that network's gateway, which
+// is that address for a loopback listen. Docker's default address pools are
+// 172.17.0.0/16 to 172.31.0.0/16 and 192.168.0.0/16, so a network it creates
+// for anything else never lands here; validate refuses a mesh over it
+// (ingress-network-overlaps-mesh), and the host check refuses a host where a
+// foreign network or route already holds it.
+const (
+	IngressNetwork = "10.255.255.0/29"
+	IngressGateway = "10.255.255.1"
+)
+
+// Network is a subnet a site's rendered stacks create, with the paisans.yaml
+// key behind it, as Listener is for a port.
+type Network struct {
+	Owner  string
+	Key    string
+	Subnet string
+}
+
+// SiteNetworks is every subnet the rendered stacks on one site pin. Only an
+// app on a monitor in ingress mode external pins one; every other compose
+// network takes what Docker's pools give it.
+func SiteNetworks(cfg *config.Config, site string) []Network {
+	var out []Network
+	for _, name := range cfg.PinnedTo(site) {
+		if _, _, ok := ExternalListen(cfg, name); ok {
+			out = append(out, Network{
+				Owner:  fmt.Sprintf("app %s (%s)", name, cfg.Apps[name].Kind),
+				Key:    fmt.Sprintf("sites.%s.ingress", site),
+				Subnet: IngressNetwork,
+			})
+		}
+	}
+	return out
+}
+
+// trustProxy is what an app on a monitor site trusts to tell it the
+// client's address, in Express's `trust proxy` syntax, which the uptime fork
+// reads from TRUST_PROXY (src/server.js at 1.1.0-oidc.3): a comma separated
+// list of addresses and networks. It is exactly where the proxy in front of
+// the app connects from, because the fork's login rate limiter is keyed on
+// the client address: with the proxy untrusted every visitor is one client,
+// and with anything wider trusted, whatever else can reach the app can
+// claim any client address.
 //
-// The gateway, and a monitor's own Caddy, reach the app on its site's mesh
-// address, so the mesh subnet. A web server reaching a loopback listen goes
-// through Docker's publish, which hands the connection to the container from
-// the compose network's gateway (docker-proxy, or with the userland proxy off
-// a masqueraded hairpin): a private address, never 127.0.0.1, so loopback is
-// joined by uniquelocal. A LAN listen is reached from the LAN, so the private
-// block holding it; the site's own mesh address, from the mesh.
+// The monitor's own Caddy runs on the host and dials the app on the site's
+// mesh address, so the connection comes from that address. A web server
+// reaching a loopback listen goes through Docker's publish, which hands the
+// connection to the container from the compose network's gateway
+// (docker-proxy, or with the userland proxy off a masqueraded hairpin), and
+// that network is pinned (IngressNetwork). A LAN or mesh listen is reached
+// by the web server's own address, which Docker's forwarding keeps; the
+// toolkit knows only the network it lies in.
 func trustProxy(cfg *config.Config, app string) string {
+	if site, ok := ServedBy(cfg, app); ok && cfg.Sites[site].IngressMode() == config.IngressPaisans {
+		return cfg.Sites[site].Address + "/32"
+	}
 	host, _, ok := ExternalListen(cfg, app)
 	if !ok {
 		return cfg.Mesh.Subnet
@@ -68,7 +110,7 @@ func trustProxy(cfg *config.Config, app string) string {
 	ip := net.ParseIP(host)
 	switch {
 	case ip.IsLoopback():
-		return "loopback,uniquelocal"
+		return IngressGateway + "/32"
 	case cfg.Mesh.Contains(host):
 		return cfg.Mesh.Subnet
 	}

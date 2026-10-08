@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // monitorRoles checks where the uptime monitor may run. README.md: "The
@@ -111,6 +112,12 @@ func (c *checker) ingress() {
 			continue
 		case mode != config.IngressExternal:
 			continue
+		}
+		if _, network, err := net.ParseCIDR(render.IngressNetwork); err == nil {
+			if _, mesh, err := net.ParseCIDR(c.cfg.Mesh.Subnet); err == nil && (mesh.Contains(network.IP) || network.Contains(mesh.IP)) {
+				c.refuse("ingress-network-overlaps-mesh", key,
+					"puts the app on the compose network %s, which this toolkit pins so that the address your web server's connections arrive from is known, and mesh.subnet %s overlaps it. The mesh would be routed into a Docker bridge. Declare a mesh outside %s.", render.IngressNetwork, c.cfg.Mesh.Subnet, render.IngressNetwork)
+			}
 		}
 		if pinned := c.cfg.PinnedTo(name); len(pinned) > 1 {
 			c.refuse("ingress-external-serves-one-app", key+".listen",

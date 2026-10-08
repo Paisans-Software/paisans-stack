@@ -207,6 +207,11 @@ func Classify(claims Claims, inv *Inventory) *Report {
 			if overlapsMesh(claims.Mesh, subnet) {
 				conflict(Conflict{Resource: "subnet " + subnet, Key: "mesh.subnet", Holder: networkDesc(n)})
 			}
+			for _, pinned := range claims.Networks {
+				if overlapsMesh(pinned.Net, subnet) {
+					conflict(Conflict{Resource: "subnet " + subnet, Key: pinned.Key, Holder: networkDesc(n)})
+				}
+			}
 		}
 	}
 	// A route equal to the mesh or inside it captures mesh traffic: the
@@ -218,10 +223,21 @@ func Classify(claims Claims, inv *Inventory) *Report {
 			continue
 		}
 		n, ok := network(route.Dst)
-		if !ok || !(n.Contains(claims.Mesh.IP) || claims.Mesh.Contains(n.IP)) {
+		if !ok {
 			continue
 		}
 		resource := "route " + route.Dst + " dev " + route.Dev
+		// A pinned network's bridge route is more specific than any broader
+		// route, as wg0's is, so only one equal to it or inside it captures
+		// its traffic.
+		for _, pinned := range claims.Networks {
+			if within(n, pinned.Net) {
+				conflict(Conflict{Resource: resource, Key: pinned.Key, Holder: "the host's routing table"})
+			}
+		}
+		if !(n.Contains(claims.Mesh.IP) || claims.Mesh.Contains(n.IP)) {
+			continue
+		}
 		if within(n, claims.Mesh) {
 			conflict(Conflict{Resource: resource, Key: "mesh.subnet", Holder: "the host's routing table"})
 		} else {
@@ -286,7 +302,8 @@ func overlapsMesh(mesh *net.IPNet, cidr string) bool {
 	return ok && (n.Contains(mesh.IP) || mesh.Contains(n.IP))
 }
 
-// within reports whether n equals the mesh or lies inside it.
+// within reports whether n equals the mesh, or another claimed network, or
+// lies inside it.
 func within(n, mesh *net.IPNet) bool {
 	nOnes, _ := n.Mask.Size()
 	meshOnes, _ := mesh.Mask.Size()

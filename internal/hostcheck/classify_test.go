@@ -293,3 +293,31 @@ func TestAnIPv4MappedListenerIsItsIPv4Address(t *testing.T) {
 		t.Errorf("a mapped loopback listener was counted as foreign: %q", r.Foreign)
 	}
 }
+
+// A foreign host network Caddy on 80 and 443 is no conflict for a monitor
+// behind the operator's own web server, which claims neither: it may well be
+// that web server. For a monitor running the toolkit's Caddy it is a conflict
+// on both ports.
+func TestAForeignCaddyAndTheTwoIngressModes(t *testing.T) {
+	wantClass(t, check(t, "porch", caddyHost()), hostcheck.Shared)
+	r := check(t, "watch", caddyHost())
+	wantClass(t, r, hostcheck.Conflicted)
+	wantLine(t, r, "CONFLICT  *:80/tcp (Caddy): claimed by sites.watch.roles (monitor), held by container web-caddy-1 (compose project web)")
+	wantLine(t, r, "CONFLICT  *:443/tcp (Caddy): claimed by sites.watch.roles (monitor), held by container web-caddy-1 (compose project web)")
+}
+
+// An external monitor's compose network is pinned, so a foreign network or a
+// route over it is a conflict named after the ingress block, as one over the
+// mesh is.
+func TestSomethingOverlappingTheIngressNetworkConflicts(t *testing.T) {
+	h := cleanHost()
+	h.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"lab_default","labels":{"com.docker.compose.project":"lab"},"ipam":[{"Subnet":"10.255.255.0/24"}]}
+`, id("6"))
+	h.answers["ip -j route"] = `[{"dst":"default","dev":"eth0"},{"dst":"10.255.255.0/24","dev":"br-` + id("6")[:12] + `"},{"dst":"10.255.255.0/29","dev":"tun0"}]`
+	r := check(t, "porch", h)
+	wantClass(t, r, hostcheck.Conflicted)
+	wantLine(t, r, "CONFLICT  subnet 10.255.255.0/24: claimed by sites.porch.ingress, held by docker network lab_default (compose project lab)")
+	wantLine(t, r, "CONFLICT  route 10.255.255.0/29 dev tun0: claimed by sites.porch.ingress, held by the host's routing table")
+	// The same network on a site with no external monitor is nobody's claim.
+	wantClass(t, check(t, "watch", h), hostcheck.Shared)
+}
