@@ -167,3 +167,47 @@ func TestTheFirewallIsRead(t *testing.T) {
 		t.Errorf("firewall %+v", f)
 	}
 }
+
+// Every probe runs in the C locale: ufw, dpkg, ss and systemctl translate
+// what they print, and the parsers read the English words.
+func TestEveryProbeRunsInTheCLocale(t *testing.T) {
+	h := caddyHost()
+	inspect(t, h)
+	for _, c := range h.ran {
+		if !strings.HasPrefix(c, "export LC_ALL=C; ") {
+			t.Errorf("a probe runs in the host's locale: %s", c)
+		}
+	}
+}
+
+// The inventory runs as root, or it cannot name the process behind
+// another user's listener, and every root listener would read as a kernel
+// socket. It asks first, and refuses rather than misreading the host.
+func TestAProbeThatIsNotRootIsRefused(t *testing.T) {
+	h := cleanHost()
+	h.answers["id -u"] = "1000\n"
+	_, err := hostcheck.Inspect(h)
+	if err == nil || !strings.Contains(err.Error(), "uid 1000") || !strings.Contains(err.Error(), "--sudo") {
+		t.Fatalf("got %v", err)
+	}
+	if len(h.ran) != 1 || !strings.Contains(h.ran[0], "id -u") {
+		t.Errorf("asked more than who it runs as: %q", h.ran)
+	}
+}
+
+// A container, volume or network removed between the listing and its
+// inspect is gone, not an error: its inspect's complaint is discarded and
+// what did answer is read. A failed cgroup read says nothing on stderr
+// either, since the redirect that hides it comes before the one that fails.
+func TestTheProbesTolerateWhatVanishesMidway(t *testing.T) {
+	h := cleanHost()
+	inspect(t, h)
+	for _, c := range h.ran {
+		if strings.Contains(c, "xargs -r docker") && !strings.HasSuffix(c, "2>/dev/null || true") {
+			t.Errorf("an inspect fails the gate when something vanishes: %s", c)
+		}
+		if strings.Contains(c, "/proc/") && !strings.Contains(c, `2>/dev/null < /proc/$p/cgroup`) {
+			t.Errorf("the cgroup read reports a vanished process: %s", c)
+		}
+	}
+}

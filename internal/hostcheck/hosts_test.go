@@ -76,6 +76,7 @@ const (
 func cleanHost() *fakeHost {
 	return &fakeHost{
 		answers: map[string]string{
+			"id -u":                  "0\n",
 			"docker version":         "27.3.1\n",
 			"dpkg-query":             "docker-ce install ok installed\n",
 			"docker inspect":         "",

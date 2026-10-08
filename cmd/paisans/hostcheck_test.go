@@ -31,6 +31,7 @@ func (h *inventoryHost) ReadFile(string) (string, bool, error) { return "", fals
 // webHost runs somebody's web server on 80 and 443, outside Docker.
 func webHost(ufw string) *inventoryHost {
 	return &inventoryHost{answers: map[string]string{
+		"id -u":                  "0\n",
 		"docker version":         "absent\n",
 		"dpkg-query":             "",
 		"ss -Hltnup":             "tcp LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=900,fd=6))\ntcp LISTEN 0 511 0.0.0.0:443 0.0.0.0:* users:((\"nginx\",pid=900,fd=7))\n",
@@ -68,7 +69,7 @@ func TestTheGateRefusesAConflictHavingOnlyLooked(t *testing.T) {
 	if !strings.Contains(out.String(), "CONFLICT  *:80/tcp (Caddy): claimed by sites.edge.roles (gateway), held by process nginx (pid 900)") {
 		t.Errorf("the report does not name the conflict:\n%s", out.String())
 	}
-	probes := []string{"docker version", "dpkg-query", "ss -Hltnup", "/proc/", "ip -o link", "ip -j route", "ufw status verbose", "is-active firewalld"}
+	probes := []string{"id -u", "docker version", "dpkg-query", "ss -Hltnup", "/proc/", "ip -o link", "ip -j route", "ufw status verbose", "is-active firewalld"}
 	for _, c := range h.ran {
 		known := false
 		for _, p := range probes {

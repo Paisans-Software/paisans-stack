@@ -77,6 +77,7 @@ func healthy(name string) *fakeHost {
 			{match: "docker info", out: "/var/lib/docker\n"},
 			{match: "findmnt", out: "ext4 /dev/sda1\n"},
 			// The host check's inventory: Docker and nothing run on it.
+			{match: "id -u", out: "0\n"},
 			{match: "docker version", out: "27.3.1\n"},
 			{match: "dpkg-query", out: "docker-ce install ok installed\n"},
 			{match: "docker inspect", out: ""},

@@ -54,19 +54,28 @@ type Docker struct {
 }
 
 // The probes, one command per fact. Every one only reads. The transport runs
-// them under sudo, which `ss -p` needs to name another user's process.
+// them under sudo, which `ss -p` needs to name another user's process, and
+// rootProbe checks that it did.
+//
+// The three inspects take a list read a moment earlier, and a container,
+// volume or network removed in between makes `docker inspect` complain and
+// exit non zero while still printing the rest. That is not a failure to
+// look: what is gone holds nothing, so the complaint is discarded and what
+// answered is read.
 const (
+	rootProbe      = "id -u"
 	dockerProbe    = `command -v docker >/dev/null 2>&1 || { echo absent; exit 0; }; docker version --format '{{.Server.Version}}'`
 	packageProbe   = `dpkg-query -W -f='${Package} ${Status}\n' docker-ce docker.io 2>/dev/null; snap list docker 2>/dev/null; true`
-	containerProbe = `docker ps -aq --no-trunc | xargs -r docker inspect --format '{"id":{{json .Id}},"name":{{json .Name}},"pid":{{.State.Pid}},"labels":{{json .Config.Labels}},"ports":{{json .HostConfig.PortBindings}}}'`
-	volumeProbe    = `docker volume ls -q | xargs -r docker volume inspect --format '{"name":{{json .Name}},"labels":{{json .Labels}}}'`
-	networkProbe   = `docker network ls -q --no-trunc | xargs -r docker network inspect --format '{"id":{{json .Id}},"name":{{json .Name}},"labels":{{json .Labels}},"ipam":{{json .IPAM.Config}}}'`
+	containerProbe = `docker ps -aq --no-trunc | xargs -r docker inspect --format '{"id":{{json .Id}},"name":{{json .Name}},"pid":{{.State.Pid}},"labels":{{json .Config.Labels}},"ports":{{json .HostConfig.PortBindings}}}' 2>/dev/null || true`
+	volumeProbe    = `docker volume ls -q | xargs -r docker volume inspect --format '{"name":{{json .Name}},"labels":{{json .Labels}}}' 2>/dev/null || true`
+	networkProbe   = `docker network ls -q --no-trunc | xargs -r docker network inspect --format '{"id":{{json .Id}},"name":{{json .Name}},"labels":{{json .Labels}},"ipam":{{json .IPAM.Config}}}' 2>/dev/null || true`
 	socketProbe    = "ss -Hltnup"
 	linkProbe      = "ip -o link"
 	routeProbe     = "ip -j route"
 	ufwProbe       = `command -v ufw >/dev/null 2>&1 || { echo 'ufw absent'; exit 0; }; ufw status verbose`
 	firewalldProbe = "systemctl is-active firewalld || true"
 
+	cLocale       = "export LC_ALL=C; "
 	manifestPath  = "/srv/.paisans-manifest.json"
 	wireguardFile = "etc/wireguard/wg0.conf"
 )
@@ -78,7 +87,9 @@ func cgroupProbe(pids []int) string {
 	for i, p := range pids {
 		list[i] = strconv.Itoa(p)
 	}
-	return fmt.Sprintf(`for p in %s; do printf '%%s ' "$p"; tr '\n' ' ' < /proc/$p/cgroup 2>/dev/null; echo; done`, strings.Join(list, " "))
+	// 2>/dev/null comes first: redirections apply left to right, and the
+	// one that fails for an exited process is the < after it.
+	return fmt.Sprintf(`for p in %s; do printf '%%s ' "$p"; tr '\n' ' ' 2>/dev/null < /proc/$p/cgroup; echo; done`, strings.Join(list, " "))
 }
 
 // Inspect reads what a host already runs. It changes nothing. A probe that
@@ -89,15 +100,25 @@ func Inspect(t Transport) (*Inventory, error) {
 	fail := func(what string, err error) error {
 		return fmt.Errorf("host check on %s: %s: %w", inv.Host, what, err)
 	}
+	// Every probe runs in the C locale, because ufw, dpkg, ss and systemctl
+	// translate what they print and the parsers read the English words.
 	run := func(what, command string) (string, error) {
-		out, err := t.Run(command)
+		out, err := t.Run(cLocale + command)
 		if err != nil {
 			return "", fail(what, fmt.Errorf("%v: %s", err, firstLine(out)))
 		}
 		return out, nil
 	}
 
-	out, err := run("asking Docker for its version", dockerProbe)
+	out, err := run("asking who the probes run as", rootProbe)
+	if err != nil {
+		return nil, err
+	}
+	if uid := strings.TrimSpace(out); uid != "0" {
+		return nil, fail("asking who the probes run as", fmt.Errorf("they run as uid %s, not root, so ss cannot name the process behind another user's listener and every one of them would read as unowned. Run without --sudo=false, or as root", uid))
+	}
+
+	out, err = run("asking Docker for its version", dockerProbe)
 	if err != nil {
 		return nil, fmt.Errorf("%w. Docker is installed and did not answer, so the containers on this host cannot be seen. Start it (Eg: systemctl start docker) and run again", err)
 	}
