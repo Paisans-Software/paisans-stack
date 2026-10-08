@@ -1127,3 +1127,41 @@ func TestDockerIsOrderedAfterWG0(t *testing.T) {
 		}
 	}
 }
+
+// On a shared host, prepare adds and removes only its own commented rules.
+// The default policy and enabling ufw are host wide, and something else
+// lives there whose traffic they would decide.
+func TestASharedHostNeverSetsTheFirewallsDefaults(t *testing.T) {
+	cfg := fixture(t)
+	host := freshHost()
+	host.responses[probeFirewall] = "ufw present\nstatus inactive\n" + owned("allow 9999/tcp")
+	host.files["/etc/default/ufw"] = "DEFAULT_INPUT_POLICY=\"ACCEPT\"\nDEFAULT_OUTPUT_POLICY=\"DROP\"\n"
+	dedicated, err := hostprep.Build("home-a", cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexOf(commands(dedicated), "ufw --force enable") < 0 || indexOf(commands(dedicated), "ufw default deny incoming") < 0 {
+		t.Fatalf("the dedicated plan does not set the defaults, so this test proves nothing:\n%s", strings.Join(commands(dedicated), "\n"))
+	}
+	shared, err := hostprep.Build("home-a", cfg, host, hostprep.Shared())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := commands(shared)
+	for _, c := range cmds {
+		if strings.HasPrefix(c, "ufw default") || strings.Contains(c, "ufw --force enable") || c == "ufw enable" {
+			t.Errorf("a shared host's plan runs %q", c)
+		}
+	}
+	for _, want := range []string{
+		"ufw allow 22/tcp comment 'paisans: ssh, the bootstrap route'",
+		"ufw delete allow 9999/tcp comment 'paisans: test'",
+	} {
+		if indexOf(cmds, want) < 0 {
+			t.Errorf("a shared host's plan does not manage its own rules, missing %q:\n%s", want, strings.Join(cmds, "\n"))
+		}
+	}
+	if !strings.Contains(printed(shared), "default policy and enabled state left alone") {
+		t.Errorf("the plan does not say the defaults were left alone:\n%s", printed(shared))
+	}
+}

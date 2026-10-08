@@ -281,8 +281,10 @@ func (u ubuntu) WatchdogModule(t Transport, module string, loaded bool) (Section
 // stood in for is in place. `--force` is what stops `ufw enable` asking
 // whether to disrupt existing connections, a prompt that would hang a
 // non-interactive run. Which rules are added, adopted, removed or left alone
-// is planRules, in ufw.go.
-func (u ubuntu) Firewall(t Transport, rules []Rule) (Section, error) {
+// is planRules, in ufw.go. On a shared host (hostWide false) only the rules
+// are planned: the default policy and enabling belong to the host, not to
+// the deployment.
+func (u ubuntu) Firewall(t Transport, rules []Rule, hostWide bool) (Section, error) {
 	var out Section
 	script, err := snippet(u.tmpl("firewall-probe.sh.tmpl"), nil)
 	if err != nil {
@@ -313,6 +315,12 @@ func (u ubuntu) Firewall(t Transport, rules []Rule) (Section, error) {
 		return out, err
 	}
 	out.add(planned)
+
+	if !hostWide {
+		out.Present = append(out.Present, "firewall: default policy and enabled state left alone, since the host is shared")
+		out.Steps = append(out.Steps, removals...)
+		return out, nil
+	}
 
 	input, output := "", ""
 	if present {

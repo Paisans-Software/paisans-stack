@@ -109,7 +109,7 @@ func run(t *testing.T, cfg *config.Config, h map[string]*fakeHost) Report {
 // prepared stubs host prepare's plan, which hostprep's own tests cover.
 func prepared(t *testing.T, steps ...string) {
 	old := buildHostPrep
-	buildHostPrep = func(site string, _ *config.Config, _ hostprep.Transport) (*hostprep.Plan, error) {
+	buildHostPrep = func(site string, _ *config.Config, _ hostprep.Transport, _ ...hostprep.Option) (*hostprep.Plan, error) {
 		plan := &hostprep.Plan{Site: site, Profile: "ubuntu 24.04"}
 		for _, s := range steps {
 			plan.Steps = append(plan.Steps, hostprep.Step{Describe: s})
