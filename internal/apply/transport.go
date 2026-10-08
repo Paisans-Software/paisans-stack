@@ -77,6 +77,10 @@ type SSHTransport struct {
 	// Sudo prefixes every command. The paths written here are under /srv and
 	// /etc, which a deploy user does not own.
 	Sudo bool
+	// Auth is how sudo is satisfied on this host, shared by every copy of
+	// the transport so a site is asked once. Nil runs sudo as it is, which
+	// works only where it asks for no password.
+	Auth *SudoAuth
 }
 
 func (t SSHTransport) Describe() string {
@@ -175,10 +179,11 @@ func writeKeyFiles(dir string, keys []string) ([]string, error) {
 }
 
 func (t SSHTransport) Run(command string) (string, error) {
-	if t.Sudo {
-		command = "sudo sh -c " + shellQuote(command)
+	command, stdin, err := t.sudo(command, nil)
+	if err != nil {
+		return "", err
 	}
-	out, err := t.run(command, nil)
+	out, err := t.run(command, stdin)
 	if err != nil {
 		return out, fmt.Errorf("%s: %s: %w\n%s", t.Describe(), firstLine(command), err, out)
 	}
@@ -317,10 +322,11 @@ func (t SSHTransport) WriteFile(path, content string, mode uint32) error {
 	script := fmt.Sprintf(
 		"set -e; mkdir -p %s; tmp=%s.paisans-tmp; cat > $tmp; chmod %04o $tmp; mv $tmp %s",
 		shellQuote(dir), shellQuote(path), mode, shellQuote(path))
-	if t.Sudo {
-		script = "sudo sh -c " + shellQuote(script)
+	script, stdin, err := t.sudo(script, &content)
+	if err != nil {
+		return err
 	}
-	if out, err := t.run(script, &content); err != nil {
+	if out, err := t.run(script, stdin); err != nil {
 		return fmt.Errorf("%s: writing %s: %w\n%s", t.Describe(), path, err, out)
 	}
 	return nil
@@ -330,10 +336,11 @@ func (t SSHTransport) WriteFile(path, content string, mode uint32) error {
 // content that way: what goes in carries credentials, and only the command
 // line is visible in the process table.
 func (t SSHTransport) RunInput(command, stdin string) (string, error) {
-	if t.Sudo {
-		command = "sudo sh -c " + shellQuote(command)
+	command, in, err := t.sudo(command, &stdin)
+	if err != nil {
+		return "", err
 	}
-	out, err := t.run(command, &stdin)
+	out, err := t.run(command, in)
 	if err != nil {
 		return out, fmt.Errorf("%s: %s: %w\n%s", t.Describe(), firstLine(command), err, out)
 	}

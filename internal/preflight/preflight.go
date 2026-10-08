@@ -10,6 +10,7 @@ package preflight
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -137,13 +138,15 @@ func (r *runner) existing() []string {
 	return out
 }
 
-// ssh checks the site answers and that sudo needs no password.
+// ssh checks the site answers and that sudo can be used.
 //
 // One command does both: `sudo -n` fails rather than prompting, and its
 // failure says "sudo:", which is how a refused sudo is told apart from a host
 // that never answered. A transport that already runs everything through sudo
-// wraps this in another sudo, and a password prompt there fails the same way,
-// since ssh is run without a terminal.
+// wraps this in another sudo, which runs it as root, where it always passes;
+// the outer sudo is then the one tested, and a host where it cannot be used
+// (a password and no terminal to ask on, a password it refused) is reported
+// with apply.ErrSudo.
 func (r *runner) ssh(name string) {
 	t, ok := r.transports[name]
 	if !ok || t == nil {
@@ -154,9 +157,11 @@ func (r *runner) ssh(name string) {
 	switch {
 	case err == nil:
 		r.reachable[name] = true
-		r.pass(name, "ssh", "%s answers, and sudo needs no password", t.Describe())
+		r.pass(name, "ssh", "%s answers, and sudo works", t.Describe())
+	case errors.Is(err, apply.ErrSudo):
+		r.refuse(name, "ssh", "%s", firstLine(err.Error()))
 	case strings.Contains(out, "sudo:"):
-		r.refuse(name, "ssh", "%s answers, but sudo asks for a password: %s. Every command here runs through sudo without a terminal; allow the login user passwordless sudo", t.Describe(), firstLine(out))
+		r.refuse(name, "ssh", "%s answers, but sudo asks for a password: %s. Every command here runs through sudo; it asks for the password on a terminal, and an unattended run needs the login user given passwordless sudo", t.Describe(), firstLine(out))
 	default:
 		r.refuse(name, "ssh", "%s does not answer: %s", t.Describe(), firstLine(errText(out, err)))
 	}

@@ -17,6 +17,10 @@ func TestSiteTransportUsesTheSectionOrTheOverride(t *testing.T) {
 	}
 	site := cfg.Sites["home-a"]
 	got := siteTransport(site, "", true)
+	if got.Auth == nil || got.Auth != siteTransport(site, "", true).Auth {
+		t.Fatalf("want one shared SudoAuth per site, got %p", got.Auth)
+	}
+	got.Auth = nil
 	keys, _ := site.SSH.Keys()
 	want := apply.SSHTransport{User: "ubuntu", Host: "home-a.local", Port: 22, PublicKeys: []string{keys[0].Line}, Sudo: true}
 	if !reflect.DeepEqual(got, want) {
