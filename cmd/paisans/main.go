@@ -945,16 +945,22 @@ func (l *pathList) Set(value string) error {
 // than one part of it, so what is used is always either everything the file
 // says or exactly what the operator typed, never a blend of the two.
 func siteTransport(site config.Site, override string, sudo bool) apply.SSHTransport {
+	var t apply.SSHTransport
 	if override != "" {
-		return apply.SSHTransport{Destination: override, Sudo: sudo}
+		t = apply.SSHTransport{Destination: override, Sudo: sudo}
+	} else {
+		// validate has already refused a bad key, so problems are empty here.
+		keys, _ := site.SSH.Keys()
+		lines := make([]string, len(keys))
+		for i, k := range keys {
+			lines[i] = k.Line
+		}
+		t = apply.SSHTransport{User: site.SSH.User, Host: site.SSHHost(), Port: site.SSH.PortOrDefault(), PublicKeys: lines, Sudo: sudo}
 	}
-	// validate has already refused a bad key, so problems are empty here.
-	keys, _ := site.SSH.Keys()
-	lines := make([]string, len(keys))
-	for i, k := range keys {
-		lines[i] = k.Line
+	if sudo {
+		t.Auth = sudoAuthFor(t.Describe())
 	}
-	return apply.SSHTransport{User: site.SSH.User, Host: site.SSHHost(), Port: site.SSH.PortOrDefault(), PublicKeys: lines, Sudo: sudo}
+	return t
 }
 
 func contains(list []string, s string) bool {

@@ -221,6 +221,10 @@ func TestPreflightRefuses(t *testing.T) {
 			setup: func(h map[string]*fakeHost) {
 				h["home-b"].override(rule{match: "sudo -n true", out: "sudo: a password is required\n", err: errors.New("exit status 1")})
 			}},
+		{name: "sudo cannot be asked", site: "home-b", check: "ssh", want: "no terminal to ask on",
+			setup: func(h map[string]*fakeHost) {
+				h["home-b"].override(rule{match: "sudo -n true", err: fmt.Errorf("home-b: sudo asks for a password, and there is no terminal to ask on: %w", apply.ErrSudo)})
+			}},
 		{name: "clock", site: "vm", check: "clock", want: "not synchronised",
 			setup: func(h map[string]*fakeHost) { h["vm"].override(rule{match: "timedatectl", out: "no\n"}) }},
 		{name: "host prepare owes steps", site: "home-b", check: "prepared", want: "install Docker", steps: []string{"install Docker"}},
