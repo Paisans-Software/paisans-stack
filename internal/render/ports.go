@@ -11,8 +11,6 @@ import (
 // named here so that SiteListeners and the templates read one number rather
 // than two copies of it.
 const (
-	// wireguardPort is wg0's ListenPort, on every site.
-	wireguardPort = 51820
 	// etcdClientPort and etcdPeerPort are etcd's two listeners.
 	etcdClientPort = 2379
 	etcdPeerPort   = 2380
@@ -28,9 +26,6 @@ const (
 	caddyHTTPPort  = 80
 	caddyHTTPSPort = 443
 )
-
-// WireGuardPort is wg0's listen port, for a command that checks it is free.
-const WireGuardPort = wireguardPort
 
 // EtcdClientPort and EtcdPeerPort are an etcd member's two listeners.
 const (
@@ -89,7 +84,9 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 	}
 	roles := func(role config.Role) string { return fmt.Sprintf("sites.%s.roles (%s)", site, role) }
 
-	add("WireGuard", "mesh", "udp", "", wireguardPort)
+	if port := s.ListenPort(); port != 0 {
+		add("WireGuard", "mesh", "udp", "", port)
+	}
 	if contains(cfg.Etcd.Members, site) {
 		add("etcd client", "etcd.members", "tcp", addr, etcdClientPort)
 		add("etcd client", "etcd.members", "tcp", loopback, etcdClientPort)

@@ -5,8 +5,6 @@ import (
 	"io"
 	"net"
 	"strings"
-
-	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // Class is what a host is to the toolkit.
@@ -35,7 +33,7 @@ func (c Class) String() string {
 
 // Conflict is one claim something foreign holds.
 type Conflict struct {
-	// Resource is what is claimed, Eg: "*:80/tcp (Caddy)" or "interface wg0".
+	// Resource is what is claimed, Eg: "*:80/tcp (Caddy)" or "interface psns-f2a9".
 	Resource string
 	// Key is the paisans.yaml key that claims it.
 	Key string
@@ -100,6 +98,10 @@ type owners struct {
 	inv  *Inventory
 	id   string
 	byID map[string]Container
+	// iface and port are this deployment's WireGuard interface and listen
+	// port, whose kernel socket is the toolkit's.
+	iface string
+	port  int
 }
 
 func (o owners) ours(label string) bool { return o.id != "" && label == o.id }
@@ -129,7 +131,7 @@ func (o owners) container(c Container) holder {
 // A docker-proxy runs in Docker's cgroup rather than the container's, so it
 // is matched to the container publishing the same address and port. The
 // kernel's own WireGuard socket has no process, and is the toolkit's when
-// the toolkit wrote the wg0 it serves.
+// the toolkit wrote the interface it serves.
 func (o owners) socket(s Socket) holder {
 	if s.PID > 0 {
 		if c, ok := o.byID[o.inv.Cgroups[s.PID]]; ok {
@@ -145,8 +147,8 @@ func (o owners) socket(s Socket) holder {
 			}
 		}
 	}
-	if s.Process == "" && s.Proto == "udp" && s.Port == render.WireGuardPort && o.inv.ManifestWireGuard && contains(o.inv.Links, meshInterface) {
-		return holder{ours: true, desc: "WireGuard (" + meshInterface + ")"}
+	if s.Process == "" && s.Proto == "udp" && o.port != 0 && s.Port == o.port && o.inv.ManifestWireGuard && contains(o.inv.Links, o.iface) {
+		return holder{ours: true, desc: "WireGuard (" + o.iface + ")"}
 	}
 	desc := "a kernel socket (no process)"
 	if s.Process != "" {
@@ -165,7 +167,7 @@ func (o owners) socket(s Socket) holder {
 // loopback bind on its port would fail.
 func Classify(claims Claims, inv *Inventory) *Report {
 	r := &Report{Site: claims.Site, Host: inv.Host, Inventory: inv, SSHPort: claims.SSHPort}
-	o := owners{inv: inv, id: claims.Deployment.ID, byID: map[string]Container{}}
+	o := owners{inv: inv, id: claims.Deployment.ID, byID: map[string]Container{}, iface: claims.Interface, port: claims.ListenPort}
 	for _, c := range inv.Containers {
 		o.byID[c.ID] = c
 	}
@@ -200,7 +202,7 @@ func Classify(claims Claims, inv *Inventory) *Report {
 		conflict(Conflict{
 			Resource: "interface " + claims.Interface,
 			Key:      "mesh",
-			Holder:   "an interface this deployment did not write (" + inv.ManifestPath + " records no " + wireguardFile + ")",
+			Holder:   "an interface this deployment did not write (" + inv.ManifestPath + " records no " + claims.Deployment.WireGuardConf() + ")",
 		})
 	}
 
@@ -234,8 +236,9 @@ func Classify(claims Claims, inv *Inventory) *Report {
 	}
 	// A route equal to the mesh or inside it captures mesh traffic: the
 	// kernel picks the longest matching prefix, and it is at least as long
-	// as wg0's. A broader one (a provider's 10.0.0.0/8 private network) is
-	// shorter than wg0's route, so the mesh still wins, and it is noted.
+	// as the mesh interface's. A broader one (a provider's 10.0.0.0/8 private
+	// network) is shorter than the mesh interface's route, so the mesh still
+	// wins, and it is noted.
 	for _, route := range inv.Routes {
 		if route.Dst == "default" || route.Dev == claims.Interface || bridges[route.Dev] {
 			continue
@@ -246,7 +249,7 @@ func Classify(claims Claims, inv *Inventory) *Report {
 		}
 		resource := "route " + route.Dst + " dev " + route.Dev
 		// A pinned network's bridge route is more specific than any broader
-		// route, as wg0's is, so only one equal to it or inside it captures
+		// route, as the mesh interface's is, so only one equal to it or inside it captures
 		// its traffic.
 		for _, pinned := range claims.Networks {
 			if within(n, pinned.Net) {
@@ -259,7 +262,7 @@ func Classify(claims Claims, inv *Inventory) *Report {
 		if within(n, claims.Mesh) {
 			conflict(Conflict{Resource: resource, Key: "mesh.subnet", Holder: "the host's routing table"})
 		} else {
-			r.Notes = append(r.Notes, fmt.Sprintf("%s contains the mesh subnet %s; wg0's route is more specific and takes the mesh's traffic", resource, claims.Mesh))
+			r.Notes = append(r.Notes, fmt.Sprintf("%s contains the mesh subnet %s; %s's route is more specific and takes the mesh's traffic", resource, claims.Mesh, claims.Interface))
 		}
 	}
 

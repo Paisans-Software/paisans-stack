@@ -10,9 +10,6 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
-// meshInterface is the interface every site's wg0.conf creates.
-const meshInterface = "wg0"
-
 // Claims is what the toolkit will take on one site's host.
 type Claims struct {
 	Site string
@@ -20,10 +17,12 @@ type Claims struct {
 	// stacks bind, each with the paisans.yaml key behind it. A listener
 	// added there is claimed here without a change to this package.
 	Listeners []render.Listener
-	// Interface is the mesh interface, and Mesh the subnet routed through
-	// it.
-	Interface string
-	Mesh      *net.IPNet
+	// Interface is this deployment's mesh interface, psns-<token>, and Mesh
+	// the subnet routed through it. ListenPort is the WireGuard port the
+	// site's endpoint declares, 0 when it has none.
+	Interface  string
+	ListenPort int
+	Mesh       *net.IPNet
 	// Deployment is whose host this is checked for: a Docker object is the
 	// toolkit's only when it carries this deployment's label, so another
 	// deployment's containers on the same host are as foreign as anyone's.
@@ -61,7 +60,8 @@ func ClaimsFor(cfg *config.Config, site string) (Claims, error) {
 		Site:       site,
 		Deployment: cfg.Deployment(),
 		Listeners:  render.SiteListeners(cfg, site),
-		Interface:  meshInterface,
+		Interface:  cfg.Deployment().Interface(),
+		ListenPort: cfg.Sites[site].ListenPort(),
 		Mesh:       mesh,
 		SSHPort:    cfg.Sites[site].SSH.PortOrDefault(),
 	}

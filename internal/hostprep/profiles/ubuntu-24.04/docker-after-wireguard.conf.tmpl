@@ -1,9 +1,9 @@
 # Written by paisans host prepare. Do not edit: it is rewritten if it differs.
 #
-# Docker starts after the mesh interface, so a container publishing a port on
+# Docker starts after this deployment's mesh interface, {{ .Interface }}, so a container publishing a port on
 # the site's mesh address can bind it at boot. Started first, Docker meets an
 # address that does not exist yet ("cannot assign requested address"), and it
 # does not retry a container that failed while setting up its network.
 [Unit]
-Wants=wg-quick@wg0.service
-After=wg-quick@wg0.service
+Wants={{ .Unit }}.service
+After={{ .Unit }}.service

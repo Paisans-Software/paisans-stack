@@ -41,8 +41,8 @@ type Inventory struct {
 	Firewall Firewall
 	// Manifest is whether this deployment's record of what it wrote exists
 	// at ManifestPath, and ManifestWireGuard whether that record lists
-	// wg0.conf, which is how a wg0 the deployment wrote is told from one it
-	// did not.
+	// its WireGuard config, which is how a mesh interface the deployment
+	// wrote is told from one it did not.
 	ManifestPath      string
 	Manifest          bool
 	ManifestWireGuard bool
@@ -78,8 +78,7 @@ const (
 	ufwProbe       = `command -v ufw >/dev/null 2>&1 || { echo 'ufw absent'; exit 0; }; ufw status verbose`
 	firewalldProbe = "systemctl is-active firewalld || true"
 
-	cLocale       = "export LC_ALL=C; "
-	wireguardFile = "etc/wireguard/wg0.conf"
+	cLocale = "export LC_ALL=C; "
 )
 
 // cgroupProbe prints, per PID, the PID and its cgroup lines on one line. A
@@ -193,12 +192,12 @@ func Inspect(t Transport, d deployment.Deployment) (*Inventory, error) {
 	}
 	inv.Manifest = found
 	if found {
-		// An unreadable manifest records nothing, so a wg0 beside it is not
-		// known to be the toolkit's. apply refuses that manifest itself.
+		// An unreadable manifest records nothing, so a mesh interface beside
+		// it is not known to be the toolkit's. apply refuses that manifest itself.
 		var m render.Manifest
 		if json.Unmarshal([]byte(content), &m) == nil {
 			for _, f := range m.Files {
-				if f.Path == wireguardFile {
+				if f.Path == d.WireGuardConf() {
 					inv.ManifestWireGuard = true
 				}
 			}

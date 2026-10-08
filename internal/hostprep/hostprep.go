@@ -264,7 +264,7 @@ func Build(site string, cfg *config.Config, t Transport, opts ...Option) (*Plan,
 	}
 	plan.add(keys)
 
-	firewall, err := profile.Firewall(t, d, append(Rules(declared), ContainerRules(cfg, site)...), !o.shared)
+	firewall, err := profile.Firewall(t, d, append(Rules(d, declared), ContainerRules(cfg, site)...), !o.shared)
 	if err != nil {
 		return nil, fmt.Errorf("firewall on %s: %w", t.Describe(), err)
 	}

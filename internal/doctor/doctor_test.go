@@ -350,7 +350,7 @@ func TestContainerThatStartedBeforeWg0(t *testing.T) {
 		t.Fatalf("level %v", f.Level)
 	}
 	text := strings.Join(f.More, "\n")
-	for _, want := range []string{"Docker started before wg0 at boot", "`paisans host prepare --site home-b --execute`", "`docker start paisans-f2a9-talk-app-1` on home-b", "`paisans apply --site home-b --recreate talk --execute`"} {
+	for _, want := range []string{"Docker started before psns-f2a9 at boot", "`paisans host prepare --site home-b --execute`", "`docker start paisans-f2a9-talk-app-1` on home-b", "`paisans apply --site home-b --recreate talk --execute`"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q:\n%s", want, text)
 		}

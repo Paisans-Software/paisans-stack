@@ -548,7 +548,15 @@ func trimTrailingNewline(s string) string {
 // Load reads and structurally checks a configuration file. Unknown keys are an
 // error: `trusted_proxies` is deliberately absent from the schema, and a typo
 // that silently does nothing is worse than a refusal.
-func Load(path string) (*Config, error) {
+func Load(path string) (*Config, error) { return load(path, false) }
+
+// LoadForInit is Load for `paisans init`, which is what gives a declaration
+// its mesh.subnet: a file without one is accepted, and every other problem
+// is refused as Load refuses it. Nothing else may run on such a file, since
+// every address a host binds is in that subnet.
+func LoadForInit(path string) (*Config, error) { return load(path, true) }
+
+func load(path string, noSubnet bool) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
@@ -566,7 +574,7 @@ func Load(path string) (*Config, error) {
 	if cfg.Storage.Garage.Consistency == "" {
 		cfg.Storage.Garage.Consistency = GarageConsistent
 	}
-	if err := cfg.structural(); err != nil {
+	if err := cfg.structural(noSubnet); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -669,7 +677,7 @@ func (c *Config) GatewaySites() []string {
 // structural checks the things that are wrong regardless of policy: missing
 // required values, unknown enum members, malformed addresses. Every message
 // names the key and says what to do about it.
-func (c *Config) structural() error {
+func (c *Config) structural(noSubnet bool) error {
 	var problems []string
 	add := func(format string, args ...any) {
 		problems = append(problems, fmt.Sprintf(format, args...))
@@ -688,8 +696,9 @@ func (c *Config) structural() error {
 		add("community.domain: required. It is the community's federation identity and cannot be changed later.")
 	}
 	switch {
+	case c.Mesh.Subnet == "" && noSubnet:
 	case c.Mesh.Subnet == "":
-		add("mesh.subnet: required. Declare the private network every site sits on, for example 10.44.0.0/24. It is what applications trust for forwarded client addresses, so it is declared rather than guessed and it never changes.")
+		add("mesh.subnet: required. Run `paisans init`, which reaches every site, picks a /24 that overlaps nothing on any of them, and writes it here with each site's address moved into it. It is what applications trust for forwarded client addresses, so once a site is deployed it never changes.")
 	default:
 		ip, network, err := net.ParseCIDR(c.Mesh.Subnet)
 		switch {
@@ -729,6 +738,11 @@ func (c *Config) structural() error {
 			add("sites.%s.address: required. Every site needs a mesh address, and it never changes.", name)
 		} else if !isIPv4(site.Address) {
 			add("sites.%s.address: %q is not an IPv4 address. Use the site's WireGuard address, for example 10.44.0.1.", name, site.Address)
+		}
+		if site.Endpoint != "" {
+			if _, err := ParseEndpointPort(site.Endpoint); err != nil {
+				add("sites.%s.endpoint: %q %v. Write it as a host and a port, for example vm.example.org:51820: the port is also the one this site's WireGuard listens on.", name, site.Endpoint, err)
+			}
 		}
 		if site.Watchdog != "" && !knownWatchdogModes[site.Watchdog] {
 			add("sites.%s.watchdog: unknown mode %q. Valid modes are auto, required, softdog and off.", name, site.Watchdog)

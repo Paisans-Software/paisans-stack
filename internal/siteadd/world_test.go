@@ -131,12 +131,12 @@ func (h *host) Run(command string) (string, error) {
 		return `{"Service":"app","Name":"x","State":"exited","ExitCode":1}` + "\n", nil
 	case strings.Contains(command, " ps --all --format json"):
 		return `{"Service":"x","Name":"x","State":"running","Health":""}` + "\n", nil
-	case strings.Contains(command, "ip link show wg0"):
+	case strings.Contains(command, "ip link show psns-f2a9"):
 		if h.wgUp {
 			return "up\n", nil
 		}
 		return "down\n", nil
-	case strings.Contains(command, "enable --now wg-quick@wg0"), strings.Contains(command, "restart wg-quick@wg0"):
+	case strings.Contains(command, "enable --now wg-quick@psns-f2a9"), strings.Contains(command, "restart wg-quick@psns-f2a9"):
 		h.wgUp = true
 		return "", nil
 	case strings.HasPrefix(command, "ping "):
@@ -260,12 +260,12 @@ func (w *world) stats(site string) (string, error) {
 	return b.String(), nil
 }
 
-// handshakes answers `wg show wg0 latest-handshakes` from the files: two
+// handshakes answers `wg show psns-f2a9 latest-handshakes` from the files: two
 // sites have a fresh handshake when each lists the other's key and both
 // interfaces are up.
 func (w *world) handshakes(h *host) string {
 	var b strings.Builder
-	mine := h.files["/etc/wireguard/wg0.conf"]
+	mine := h.files["/etc/wireguard/psns-f2a9.conf"]
 	for _, name := range w.cfg.SiteNames() {
 		if name == h.name {
 			continue
@@ -279,7 +279,7 @@ func (w *world) handshakes(h *host) string {
 			continue
 		}
 		stamp := 0
-		if h.wgUp && other.wgUp && strings.Contains(other.files["/etc/wireguard/wg0.conf"], w.key(h.name)) {
+		if h.wgUp && other.wgUp && strings.Contains(other.files["/etc/wireguard/psns-f2a9.conf"], w.key(h.name)) {
 			stamp = 990
 		}
 		fmt.Fprintf(&b, "%s\t%d\n", key, stamp)

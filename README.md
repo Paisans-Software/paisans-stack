@@ -55,7 +55,7 @@ Host networking for the apps would fix that and cost the isolation of each
 stack's own sidecars, and two kinds listening on the same port would collide.
 The Docker bridge gateway would work only if HAProxy bound an address that
 differs per compose network and does not exist until Docker creates it. The
-mesh address exists as soon as `wg0` is up, before anything else starts, and
+mesh address exists as soon as the deployment's WireGuard interface is up, before anything else starts, and
 is already declared in the configuration. HAProxy still listens on loopback as
 well, for a tool run on the host.
 
@@ -732,7 +732,8 @@ every container name is noise. With the id above the token is `f2a9`, and:
 | everything apply renders on a host | under `/srv/paisans/<token>/`: `/srv/paisans/f2a9/<stack>/`, `/srv/paisans/f2a9/.paisans-manifest.json` |
 | every service and every compose network | the Docker label `community.paisans.deployment=<id>`, the full id |
 | a firewall rule `host prepare` adds | the ufw comment `paisans-<token>: <why>` |
-| `host prepare`'s own files | `paisans-<token>-watchdog.service`, `docker.service.d/paisans-<token>-after-wg0.conf`, `/etc/paisans/authorized_keys.<user>.paisans-<token>.owned` |
+| the WireGuard interface | `psns-<token>`, Eg: `psns-f2a9`, from `/etc/wireguard/psns-f2a9.conf` by `wg-quick@psns-f2a9` (see *Two deployments on one host never share a mesh*) |
+| `host prepare`'s own files | `paisans-<token>-watchdog.service`, `docker.service.d/paisans-<token>-after-wireguard.conf`, `/etc/paisans/authorized_keys.<user>.paisans-<token>.owned` |
 | a DNS record `dns init` creates | the comment `paisans-<token>: created by paisans dns init` |
 
 Code that decides whether a Docker object is this deployment's matches the
@@ -754,7 +755,7 @@ root's and 0600, listing every deployment that has claimed it:
 
 ```json
 {"version":1,"deployments":{
-"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01":{"token":"f2a9","root":"/srv/paisans/f2a9","domain":"example.org","site":"home-a","claimed_at":"2026-10-01T00:00:00Z"}
+"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01":{"token":"f2a9","root":"/srv/paisans/f2a9","domain":"example.org","site":"vm","claimed_at":"2026-10-01T00:00:00Z","interface":"psns-f2a9","listen_port":51820,"subnet":"10.44.0.0/24","address":"10.44.0.3"}
 }}
 ```
 
@@ -764,7 +765,9 @@ Every command that writes to a host **claims it first**: `apply`,
 `failover test`, each with `--execute`, on every site it will write to. The
 claim is one remote shell command run under `flock` on
 `/var/lib/paisans/registry.lock`: it reads the registry, refuses if another
-id already holds this deployment's token or root, and otherwise adds this
+id already holds this deployment's token or root (or its WireGuard interface,
+listen port or an overlapping mesh subnet, see the next section), and
+otherwise adds this
 deployment's entry, or refreshes it, in a temporary file it then moves over
 the registry. A refusal names the other deployment's id and domain and
 changes nothing, on that host or any other. The lock is what serialises two
@@ -779,6 +782,102 @@ same way, so a dry run shows the conflict the real run would meet. `preflight`
 reads it on the site being added. `app admin create` and `oidc client create`
 reach a host without sudo, and their dry runs leave the registry alone; with
 `--execute` they claim through sudo, since the registry is root's.
+
+### Two deployments on one host never share a mesh
+
+Every site of a deployment sits on its mesh: a WireGuard interface with an
+address in `mesh.subnet`, which every service binds and every app trusts for
+forwarded client addresses. Two deployments on one host each need their own,
+and three things about a mesh can collide there: the interface's name, the UDP
+port it listens on, and the subnet it routes.
+
+**Each deployment has its own interface, `psns-<token>`.** One interface
+carries one address, one private key and one peer list, so a second
+deployment's peers in the first one's file would be routed by the wrong mesh.
+The name is derived from the token like every other name (`psns-f2a9`), and
+everything that touches the interface uses it: `/etc/wireguard/psns-f2a9.conf`,
+`wg-quick@psns-f2a9`, `wg syncconf psns-f2a9`, the firewall's
+`allow in on psns-f2a9` and Docker's boot ordering. It is nine characters,
+inside Linux's limit of fifteen: `IFNAMSIZ` is 16 bytes including the
+terminating NUL (Linux v6.8, `include/uapi/linux/if.h`).
+
+**A site listens on its endpoint's port.** `sites.<name>.endpoint` is
+`host:port`, and the port is what every other site dials, so it is the
+`ListenPort` rendered for that site and the UDP port `host prepare` opens
+there. Behind NAT, forward that same port. A site with no endpoint is never
+dialled, so it is rendered without `ListenPort` and opens no port: WireGuard
+then picks one ("Optional; if not specified, chosen randomly",
+wireguard-tools v1.0.20210914, `src/man/wg.8`), and the firewall lets in the
+replies to what it sends as part of that exchange. Two deployments sharing a host behind NAT
+therefore never choose ports at all; two sharing a host with an endpoint give
+it two different ports. `validate` refuses an endpoint that is not
+`host:port`.
+
+**The registry refuses a clash.** Each entry records the deployment's
+`interface`, `listen_port`, `subnet` and this site's `address`, and the claim
+described above refuses, in the same locked command, when another deployment
+on the host holds the same interface, the same listen port, or a mesh subnet
+overlapping this one's in either direction (one inside the other, or equal).
+The refusal names the other deployment's id, its domain and the value that
+clashes.
+
+**The host itself is checked too.** A mesh subnet also collides with networks
+no registry knows about: a LAN, another VPN, a Docker network, or a range
+Docker will hand to its next network. Whichever route the kernel prefers takes
+the other side's traffic. So `apply` and `host prepare`, dry run or not, read
+the host before they claim it, and refuse naming the clash when the mesh
+subnet overlaps:
+
+| Source | Read with |
+|--------|-----------|
+| a route, other than one through this deployment's own interface | `ip -j route` |
+| an address and its network, on any other interface | `ip -j addr` |
+| a Docker network's subnet | `docker network inspect` over `docker network ls -q`, `IPAM.Config` |
+| a pool Docker allocates new networks from | `default-address-pools` in `/etc/docker/daemon.json` when set, and otherwise Docker's defaults: `172.17.0.0/16`, `172.18.0.0/16`, `172.19.0.0/16`, `172.20.0.0/14`, `172.24.0.0/14`, `172.28.0.0/14` and `192.168.0.0/16` (moby v27.5.1, `libnetwork/ipamutils/utils.go`, `localScopeDefaultNetworks`, which `daemon/daemon.go` uses unless the pools are configured) |
+
+A pool counts before any network holds it, because the next compose project's
+first `up` may take a range from it. `preflight` runs the same check on the
+site being added.
+
+**`init` chooses the subnet.** Until this deployment is on any site, `paisans
+init` reaches every site over ssh, as the commands that reach a host do. When
+`mesh.subnet` is missing, or is declared but overlaps something, it gathers
+every other deployment's mesh from each host's registry and everything the
+table above finds on each host, and rolls a random `10.<a>.<b>.0/24` from
+`crypto/rand` that overlaps none of it, rolling again on a collision, up to 32
+times; past that it refuses, naming every network that blocked a roll. A /24
+holds 254 sites and the rest of `10.0.0.0/8` offers 65536 of them, so a
+second roll almost always clears. It writes `mesh.subnet` and moves every
+site's `address` into the new network with its host number kept (`10.44.0.3`
+becomes `10.212.37.3`), replacing each value where it stands so comments and
+layout survive, and says what it chose and why:
+
+```
+paisans.yaml: rolled mesh.subnet 10.212.37.0/24 (10.44.0.0/24 overlapped deployment 0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5 (example.net)'s mesh 10.44.0.0/24 on home-a).
+  sites.home-a.address 10.44.0.1 -> 10.212.37.1
+```
+
+A declared subnet that overlaps nothing is kept as it is. A site that cannot
+be reached makes `init` refuse with nothing written, secrets included, since an
+unchecked host is exactly where a collision would go unseen. A clash on the
+interface or listen port is reported the same way, before anything is
+written.
+
+**Once any site's registry records this deployment, the subnet is fixed.**
+`init` never changes it again, and an unreachable site no longer stops it; it
+says the subnet is deployed. From then on `apply` and `host prepare` only
+check it, and the advice on a clash is that the other network moves: every
+app trusts the mesh subnet and every service binds an address in it, so moving
+it is a rebuild of every site.
+
+`validate` refuses a file without `mesh.subnet` and says to run `init`, and
+refuses one that is not an IPv4 network or a site address outside it.
+
+`doctor` has a `mesh` section, checked on every site it reaches: the
+interface exists and is up (`ip -j link show dev psns-<token>`), and the live
+overlap test above passes. An overlap is a `FAIL` naming both sides, with the
+advice that the subnet is fixed once deployed and the other network has to
+move.
 
 ### The image an app runs is declared, not implied
 
@@ -1370,7 +1469,7 @@ A cloud VM holding the apps role is exactly that host.
 What remains the operator's is the mesh itself. A port on the mesh address is
 reachable from every mesh peer, so a compromised peer reaches the app ungated.
 `gate: members` is not protection against that, and nothing in this file
-claims it is. It also means `wg0` has to be up before the app stacks start,
+claims it is. It also means the mesh interface has to be up before the app stacks start,
 because Docker cannot publish on an address the host does not have yet; that
 is the ordering that step 4 under *`init`, one site, no mesh* already requires.
 
@@ -2021,7 +2120,7 @@ The check has three parts, in `internal/hostcheck`:
 * **Claims**, from `paisans.yaml` alone: every port the site will bind, with
   its protocol, its address and the key that makes the site bind it
   (`render.SiteListeners`, the list the renderer itself uses, so the check
-  cannot drift from what is deployed), the `wg0` interface, and the mesh
+  cannot drift from what is deployed), the `psns-<token>` interface, and the mesh
   subnet as a route.
 * **Inventory**, read only, one command per fact, in the C locale because
   the parsers read ufw's, dpkg's and ss's English words, and as root, which
@@ -2032,14 +2131,15 @@ The check has three parts, in `internal/hostcheck`:
   volumes, networks and their subnets, `ss -Hltnup`, `ip -o link`,
   `ip -j route`, `ufw status verbose`, whether firewalld is active, and
   whether this deployment's manifest, `/srv/paisans/<token>/.paisans-manifest.json`,
-  exists and records `wg0.conf`.
+  exists and records `psns-<token>.conf`.
 * **Classification.** A container or network is the toolkit's when it
   carries the label `community.paisans.deployment` with this deployment's id,
   the same rule `prune` follows. Another deployment's containers on the same
   host are foreign like anyone else's, whatever their names. A listener is the toolkit's when its process is in one of
   those containers' cgroups (a host network container), or it is the
   `docker-proxy` publishing one of their ports, or it is the kernel's
-  WireGuard socket for a `wg0` the manifest records. A loopback listener, and
+  WireGuard socket, on the site's endpoint port, for a `psns-<token>` the
+  manifest records. A loopback listener, and
   `sshd`, `systemd-resolved`, `systemd-networkd`, `chronyd` and `tailscaled`,
   are the base system and count as neither. Everything else is foreign.
 
@@ -2060,9 +2160,9 @@ Docker network whose subnet overlaps the mesh conflicts, because containers
 would be handed the mesh's addresses. A route conflicts when it equals the
 mesh subnet or lies inside it, because the kernel picks the longest matching
 prefix and it would take the mesh's traffic. A route broader than the mesh (a
-provider's 10.0.0.0/8 private network) is shorter than the one `wg0` adds, so
-the mesh still wins; it is printed as a note. A `wg0` the toolkit did not
-write conflicts.
+provider's 10.0.0.0/8 private network) is shorter than the one `psns-<token>`
+adds, so the mesh still wins; it is printed as a note. A `psns-<token>` the
+toolkit did not write conflicts.
 
 A conflict line names the resource, the `paisans.yaml` key that claims it, and
 what holds it (a container and its compose project, or a process and its PID).
@@ -2146,15 +2246,19 @@ whoever started them. Docker installed as a snap is refused the same way,
 whether or not `docker compose` works with it, since it is an engine from a
 third source. Every `apt-get` runs non-interactively.
 
-#### Docker starts after `wg0`
+#### Docker starts after the mesh interface
 
 Every app publishes its port on its site's mesh address, which exists only once
-`wg-quick@wg0` has brought the interface up. If Docker starts first at boot,
+`wg-quick@psns-<token>` has brought the interface up. If Docker starts first at boot,
 those containers fail with `cannot assign requested address`, and Docker does
 not retry a container that failed while setting up its network, so the site
 comes back with its app stacks down. `host prepare` therefore writes a systemd
-drop-in, `/etc/systemd/system/docker.service.d/paisans-<token>-after-wg0.conf`, with
-`Wants=` and `After=wg-quick@wg0.service`. Installing it is a
+drop-in, `/etc/systemd/system/docker.service.d/paisans-<token>-after-wireguard.conf`, with
+`Wants=` and `After=wg-quick@psns-<token>.service`. Each deployment on a host
+writes its own, so Docker waits for every mesh a container binds. A drop-in
+this deployment wrote as `paisans-<token>-after-wg0.conf`, from when every
+deployment's interface was `wg0`, is removed, because its `Wants=` would still
+start `wg-quick@wg0` at boot. Installing it is a
 `systemctl daemon-reload` and nothing else: the order matters only at boot, so
 Docker and its containers keep running. A drop-in leaves Docker's own unit,
 which a package upgrade replaces, untouched.
@@ -2165,8 +2269,8 @@ which a package upgrade replaces, untouched.
 |------|-------|
 | deny incoming, allow outgoing by default | every clean site; a shared site must have it already (see *The host check*) |
 | the site's `ssh.port`, 22 unless declared | every site |
-| 51820/udp, WireGuard | every site |
-| everything arriving on `wg0` | every site |
+| the endpoint's port, UDP, WireGuard | sites with an `endpoint` |
+| everything arriving on `psns-<token>` | every site |
 | 80/tcp, 443/tcp | sites with the gateway role, and monitor sites in ingress mode paisans |
 | `br-+` to the site's mesh address, cluster port and Garage's S3 port | sites with the apps role |
 
@@ -2350,13 +2454,13 @@ paisans init --domain example.org --site home-a --ssh home-a.local
 2. Generate every secret — WireGuard keypair, database passwords, object storage
    keys — into `secrets.enc.yaml`.
 3. Render and push.
-4. **Bring up `wg0` with this site's address and an empty peer list.**
+4. **Bring up the mesh interface with this site's address and an empty peer list.**
 5. Spilo as a cluster of one, etcd as a single member, HAProxy with one backend,
    Garage single-node.
 6. Apps start, pointed at this site's own HAProxy on its mesh address, port
    5000.
 
-Step 4 is the one that is easy to skip and expensive to add later. A `wg0` with
+Step 4 is the one that is easy to skip and expensive to add later. An interface with
 zero peers still provides `10.44.0.1`, and every service binds to it from the
 first install. Joining a site then only **adds peers** — no service is
 reconfigured and no address changes.
@@ -2364,7 +2468,7 @@ reconfigured and no address changes.
 Same principle as running the cluster at one node: build the final shape
 immediately, then grow it.
 
-### `apply` brings `wg0` up before anything binds to it
+### `apply` brings the mesh interface up before anything binds to it
 
 Step 4 is `apply`'s job, and it runs after the files are written and before any
 container is started, checked or restarted. A stack started first fails to bind
@@ -2374,13 +2478,13 @@ the apply would claim success over a site where nothing listens.
 What it runs depends on what changed, and the narrower action wins here as it
 does for stacks:
 
-| `wg0.conf` | Interface | Action |
-|------------|-----------|--------|
-| new | any | `systemctl enable --now wg-quick@wg0` |
+| `psns-<token>.conf` | Interface | Action |
+|---------------------|-----------|--------|
+| new | any | `systemctl enable --now wg-quick@psns-<token>` |
 | unchanged | down | the same, so a rebooted or hand stopped site recovers on the next apply |
 | unchanged | up | nothing |
 | changed peers | up | `wg syncconf` from `wg-quick strip`, in place |
-| changed `Address`, `MTU`, `PostUp` or another wg-quick only line | up | `systemctl restart wg-quick@wg0` |
+| changed `Address`, `MTU`, `PostUp` or another wg-quick only line | up | `systemctl restart wg-quick@psns-<token>` |
 
 **A peer change is synced rather than restarted.** A restart takes the
 interface down, and on a data site that partitions etcd and Patroni for as long as it is down; with election timeouts
@@ -2393,7 +2497,7 @@ Nor does it add routes, which wg-quick does at start for each peer's
 inside the mesh subnet, which the interface's own `Address` already routes
 (wireguard-tools, `src/wg-quick/linux.bash`).
 
-"Up" is read from the kernel (`ip link show wg0`), not from the unit. An
+"Up" is read from the kernel (`ip link show psns-<token>`), not from the unit. An
 interface brought up by hand serves every service just as well, and starting the
 unit on top of it would fail on an interface that already exists.
 
@@ -3374,8 +3478,8 @@ paisans site add vm --roles gateway,witness --ssh vm.example.org
 
 1. Preflight the VM.
 2. Generate its keypair; record it.
-3. Render the VM's `wg0`: peer home-a, no endpoint — home-a dials out.
-4. Render home-a's `wg0`: peer vm **with** an endpoint, and `PersistentKeepalive`
+3. Render the VM's mesh interface: peer home-a, no endpoint; home-a dials out.
+4. Render home-a's mesh interface: peer vm **with** an endpoint, and `PersistentKeepalive`
    so the NAT mapping stays open.
 5. Push both; bring both up.
 6. **Verify handshakes in both directions.** Stop here on failure.
@@ -3446,19 +3550,19 @@ paisans site add home-b --execute   # runs them, stopping at the first failed ga
 ```
 
 The configuration is the end state, and `site add` plans only what differs
-from the live deployment: the `wg0.conf` on each site, `etcdctl member list`,
+from the live deployment: the `psns-<token>.conf` on each site, `etcdctl member list`,
 `patronictl list` and `show-config`, and HAProxy's statistics. A stage the live
 state already satisfies plans no steps, and its gate is still checked, so a
 re-run proves each stage again and resumes at the first gate that fails.
 Preflight is the exception: it checks a host the join has not touched, and once
-stage 2 has run the new site's own `wg0` holds 51820/udp, which the ports check
-refuses. A join is recognised as started from what only stage 2 or later leaves
-(the new site's `wg0.conf`, or its etcd member), and the plan says preflight is
+stage 2 has run the new site's own mesh interface holds its endpoint's port,
+which the ports check refuses. A join is recognised as started from what only
+stage 2 or later leaves (the new site's `psns-<token>.conf`, or its etcd member), and the plan says preflight is
 skipped and why.
 
 | Stage | What runs | Gate |
 |-------|-----------|------|
-| 2. Mesh | each site's `wg0.conf`, as a scoped `apply`, then `wg syncconf` (the new site's `wg0` is started) | a handshake younger than two minutes for every pair, read on both ends, and a ping of the new mesh address from every site |
+| 2. Mesh | each site's `psns-<token>.conf`, as a scoped `apply`, then `wg syncconf` (the new site's interface is started) | a handshake younger than two minutes for every pair, read on both ends, and a ping of the new mesh address from every site |
 | 3. etcd | for each joiner, witness first: `member add --learner`, its compose file and record written, `up -d etcd` alone, `member promote` retried until etcd accepts it | `endpoint health --cluster` all healthy, and the voters are exactly `etcd.members` |
 | 4. Replica | the new site's remaining files by a whole `apply`, then `up -d`, which starts Patroni beside the running etcd | the member `streaming`, its replay lag zero or falling over three samples five seconds apart |
 | 5. Cluster configuration | `patronictl edit-config --force -q -s synchronous_mode=true -s synchronous_mode_strict=<value>` when the live values differ | a member with the role `Sync Standby` |
@@ -3572,12 +3676,13 @@ at, and "could not look" is not "looked and it was fine".
 | Clock | every site | `timedatectl show -p NTPSynchronized --value` | not `yes` |
 | Host | new site | the host check (see *The host check*) | something foreign holds a claim, or the host is shared and its firewall is not already up and denying by default |
 | Prepared | new site | `host prepare`'s own plan, without the firewall's defaults on a shared host | it has any step left |
-| Registry | new site | `/var/lib/paisans/registry.json`, read and never claimed | another deployment there holds this one's token or root |
+| Registry | new site | `/var/lib/paisans/registry.json`, read and never claimed | another deployment there holds this one's token, root, interface or listen port, or a mesh subnet overlapping this one's |
 | Platform | new data site, against each existing data site | `/etc/os-release` `ID` and `VERSION_ID`, and the release at the end of `ldd --version`'s first line | any of the three differs |
 | WireGuard | new site | `/sys/module/wireguard`, else `modprobe -n wireguard` | neither |
 | Watchdog | new data site, unless its mode is `off` | `/dev/watchdog` exists | it does not |
-| Ports | new site | the host check's `ss -Hltnup` against its claims | anything listens where the site will bind: 51820/udp; 2379 or 2380 for an etcd member; 5432, 8008 or 8009 for a data site; the cluster port where the site runs HAProxy; 80 and 443 for a gateway or a monitor in ingress mode paisans; `listen` for a monitor in ingress mode external; each app's published port |
-| Routes | new site | `ip -j route` | a route overlaps `mesh.subnet`, other than one through `wg0` |
+| Ports | new site | the host check's `ss -Hltnup` against its claims | anything listens where the site will bind: the endpoint's port, UDP, on a site with an `endpoint`; 2379 or 2380 for an etcd member; 5432, 8008 or 8009 for a data site; the cluster port where the site runs HAProxy; 80 and 443 for a gateway or a monitor in ingress mode paisans; `listen` for a monitor in ingress mode external; each app's published port |
+| Mesh | new site | `ip -j route`, `ip -j addr`, `docker network inspect`, `/etc/docker/daemon.json` | a route, an address, a Docker network or a Docker address pool overlaps `mesh.subnet`, other than a route or address on this deployment's own interface (see *Two deployments on one host never share a mesh*) |
+| Routes | new site | `ip -j route` | a route overlaps `mesh.subnet`, other than one through `psns-<token>` |
 | Disk | new data site | the leader's `sum(pg_database_size(...))`, through its Patroni container's `psql`; `df` on the deepest existing directory towards `/srv/paisans/<token>/infra/postgres` | free space is under that plus 2 GiB |
 | Storage | new site | `docker info --format '{{.DockerRootDir}}'`, then `findmnt -no FSTYPE,SOURCE --target` on Docker's root and on the deployment's root, `/srv/paisans/<token>` (or the deepest directory towards it that exists) | either is a network filesystem (`nfs`, `nfs4`, `cifs`, `smb3`, `glusterfs`, `ceph`, `fuse.sshfs` and the others preflight lists); a type that is neither that nor a local block filesystem (`ext4`, `xfs`, `btrfs`, `zfs`, `f2fs`) warns |
 | Round trip | new site to every other site | three TCP connects to the site's `public_address` on its ssh port, timed with bash's `/dev/tcp` and `$EPOCHREALTIME`; the median is used | `etcd.election_timeout_ms` is under five round trips |
@@ -3616,7 +3721,7 @@ or a Ceph RBD image carries an ordinary `ext4` or `xfs` and passes, so a
 network disk presented as a local one is still the operator's to know about.
 
 The ports check reads listeners, not owners. After the mesh stage the new
-site's own `wg0` holds 51820/udp, so preflight is the gate for a join that
+site's own mesh interface holds its endpoint's port, so preflight is the gate for a join that
 has not begun, and a join resumed past stage 1 must not be sent back through
 it.
 
@@ -3704,6 +3809,7 @@ that the first `FAIL` is usually the cause of those after it:
 | Check | How | FAIL when |
 |---|---|---|
 | Reach | `true` over ssh, on every site asked | the site does not answer, or sudo cannot be used. The finding says what the deployment is without while it is gone: the gateway, an etcd vote, a Patroni member, a Garage node, its copy of each clustered app, the apps pinned to it |
+| Mesh | `ip -j link show dev psns-<token>`, then the overlap test of *Two deployments on one host never share a mesh*: `ip -j route`, `ip -j addr`, `docker network inspect` and `/etc/docker/daemon.json`, on every site that answered | the interface is missing or down, or anything outside it overlaps `mesh.subnet`, named with the subnet. The advice is that the subnet is fixed once deployed and the other network moves |
 | etcd quorum | `etcdctl endpoint health -w json` in the etcd container of the first member that answers, naming every member of `etcd.members` by its mesh address | fewer than half the members plus one are healthy. One member down with quorum intact is a `WARN` |
 | etcd version | `curl` on the host to `http://127.0.0.1:2379/version`; skipped, and said so, where the host has no `curl` | the cluster version is `3.0.0` under a 3.5 server |
 | Patroni | `/cluster` from every database site's Patroni, through `curl` in its container as `apply` asks it, and Patroni's `/sync` key from etcd | there is no running leader. A replica that is not `streaming`, or more than 16 MiB behind, is a `WARN`, and so is a leader with no Sync Standby while `cluster.synchronous` is true |
@@ -3730,10 +3836,11 @@ forever and no primary appears. The advice is to apply the members not
 running; see *A new deployment is applied witness first*.
 
 A container that failed with `cannot assign requested address` started before
-`wg0` at boot: it publishes its port on the mesh address, which exists only
-once `wg-quick@wg0` is up, and Docker does not retry a container whose network
-setup failed. The advice is `paisans host prepare --site <site> --execute`,
-which orders Docker after `wg-quick@wg0` from the next boot on, then `docker
+the mesh interface at boot: it publishes its port on the mesh address, which
+exists only once `wg-quick@psns-<token>` is up, and Docker does not retry a
+container whose network setup failed. The advice is `paisans host prepare
+--site <site> --execute`, which orders Docker after `wg-quick@psns-<token>`
+from the next boot on, then `docker
 start <container>` on the host or `paisans apply --site <site> --recreate
 <stack> --execute`. A container Docker keeps restarting while its log says it
 cannot reach the database points at the Patroni finding when there is no

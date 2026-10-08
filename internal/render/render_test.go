@@ -543,6 +543,53 @@ func TestPocketIDWithoutAnEncryptionKeyIsRefused(t *testing.T) {
 	}
 }
 
+// Each deployment has its own interface, named from its token, and each site
+// listens on its endpoint's port: a site with no endpoint has no ListenPort
+// and lets WireGuard pick one. Two deployments on one host then differ in
+// both, and the listeners other commands check agree with the file.
+func TestWireGuardInterfaceAndListenPort(t *testing.T) {
+	cfg := fixture(t)
+	vm := cfg.Sites["vm"]
+	vm.Endpoint = "vm.example.org:51999"
+	cfg.Sites["vm"] = vm
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{}
+	for _, f := range plan.Files {
+		files[f.Path] = f.Content
+		if strings.Contains(f.Path, "wg0") {
+			t.Errorf("%s is still named for wg0", f.Path)
+		}
+	}
+	vmConf, ok := files["vm/etc/wireguard/psns-f2a9.conf"]
+	if !ok {
+		t.Fatal("no vm/etc/wireguard/psns-f2a9.conf was rendered")
+	}
+	if !strings.Contains(vmConf, "\nListenPort = 51999\n") {
+		t.Errorf("vm does not listen on its endpoint's port:\n%s", vmConf)
+	}
+	home := files["home-a/etc/wireguard/psns-f2a9.conf"]
+	if home == "" || strings.Contains(home, "ListenPort") {
+		t.Errorf("home-a, which has no endpoint, has a ListenPort:\n%s", home)
+	}
+	var udp []string
+	for _, l := range render.SiteListeners(cfg, "vm") {
+		if l.Proto == "udp" {
+			udp = append(udp, l.String())
+		}
+	}
+	if strings.Join(udp, ",") != "*:51999/udp" {
+		t.Errorf("vm's UDP listeners = %v, want *:51999/udp", udp)
+	}
+	for _, l := range render.SiteListeners(cfg, "home-a") {
+		if l.Proto == "udp" {
+			t.Errorf("home-a, with no endpoint, lists %s", l)
+		}
+	}
+}
+
 // The mesh subnet is whatever the file declares, not a constant in the code.
 // It reaches both the trusted proxy list and the WireGuard interface address.
 func TestMeshSubnetComesFromTheConfiguration(t *testing.T) {
@@ -568,7 +615,7 @@ func TestMeshSubnetComesFromTheConfiguration(t *testing.T) {
 				t.Errorf("%s did not follow the declared mesh:\n%s", f.Path, f.Content)
 			}
 		}
-		if strings.HasSuffix(f.Path, "wg0.conf") {
+		if strings.HasSuffix(f.Path, "psns-f2a9.conf") {
 			sawInterface = true
 			if !strings.Contains(f.Content, "/16\n") {
 				t.Errorf("%s did not use the declared prefix length:\n%s", f.Path, f.Content)
@@ -2635,7 +2682,7 @@ func TestAStorageSiteRendersGarageAlone(t *testing.T) {
 		}
 	}
 	sort.Strings(mine)
-	want := "etc/wireguard/wg0.conf,srv/paisans/f2a9/infra/compose.yaml,srv/paisans/f2a9/infra/garage/garage.toml"
+	want := "etc/wireguard/psns-f2a9.conf,srv/paisans/f2a9/infra/compose.yaml,srv/paisans/f2a9/infra/garage/garage.toml"
 	if got := strings.Join(mine, ","); got != want {
 		t.Fatalf("a storage site renders %s, want %s", got, want)
 	}
@@ -2650,8 +2697,8 @@ func TestAStorageSiteRendersGarageAlone(t *testing.T) {
 	}
 	// It is a peer on the mesh like any other site; which sites dial it
 	// directly is the mesh's rule, not this role's.
-	if !strings.Contains(files["vm/etc/wireguard/wg0.conf"], "# store\n") {
-		t.Errorf("the gateway's mesh has no peer for the storage site:\n%s", files["vm/etc/wireguard/wg0.conf"])
+	if !strings.Contains(files["vm/etc/wireguard/psns-f2a9.conf"], "# store\n") {
+		t.Errorf("the gateway's mesh has no peer for the storage site:\n%s", files["vm/etc/wireguard/psns-f2a9.conf"])
 	}
 }
 
@@ -2676,7 +2723,7 @@ func TestARolelessSiteRendersItsPinnedAppAndNoInfraStack(t *testing.T) {
 	for _, f := range plan.Files {
 		have[f.Path] = true
 	}
-	for _, want := range []string{"mon/etc/wireguard/wg0.conf", "mon/srv/paisans/f2a9/status/compose.yaml", "mon/srv/paisans/f2a9/status/monitors.json"} {
+	for _, want := range []string{"mon/etc/wireguard/psns-f2a9.conf", "mon/srv/paisans/f2a9/status/compose.yaml", "mon/srv/paisans/f2a9/status/monitors.json"} {
 		if !have[want] {
 			t.Errorf("%s was not rendered", want)
 		}
