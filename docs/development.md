@@ -13,7 +13,8 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 
 ## Run
 
-validate, init and render touch nothing outside the working directory.
+validate and render touch nothing outside the working directory. init writes
+only local files, and reads every site over ssh to settle the mesh subnet.
 `host prepare`, `apply`, `prune`, `site add`, `storage init`, `storage add`,
 `storage rotate-key`, `app admin create` and `oidc client create` reach a
 machine, and each changes
@@ -32,6 +33,16 @@ holds the decision and the locked shell command. Every name and path those
 commands use comes from `internal/deployment`, derived from the `id` in
 `paisans.yaml`. README.md "A deployment has an id, and a host knows every
 deployment on it" has the reasoning.
+
+The registry entry also carries the deployment's WireGuard interface
+(`psns-<token>`), its listen port (the site's endpoint port) and its mesh
+subnet, and a claim refuses another deployment's same interface, same port or
+overlapping subnet. `apply` and `host prepare` also read the host's routes,
+addresses, Docker networks and Docker's address pools before they claim it,
+and refuse an overlap with the mesh subnet; `internal/mesh` holds the parsing
+and the overlap test as pure functions, and `cmd/paisans/mesh.go` the probes
+over the transport. README.md "Two deployments on one host never share a mesh"
+has the reasoning.
 
 ```
 paisans validate --config examples/paisans.example.yaml
@@ -61,7 +72,13 @@ exits non zero when anything was refused.
 
 `init` first gives the declaration an `id` if it has none, written as one line
 after `version:` with every other byte left as it was, and never changes one
-that is there. Then it generates the secrets a declaration needs and writes
+that is there. Then it settles `mesh.subnet`: until any site's registry
+records this deployment, it reads every site's registry and networks, keeps a
+declared subnet that overlaps none of them, and otherwise rolls a random
+`10.<a>.<b>.0/24` that does, moving each site's address into it with its host
+number kept and every comment left in place. A site it cannot reach makes it
+refuse with nothing written. Once a registry records the deployment it leaves
+the subnet alone. Then it generates the secrets a declaration needs and writes
 them, encrypted to the age recipients named in a `.sops.yaml` beside the file.
 It prints names and never values, because a secret printed to a terminal is
 in a scrollback buffer and often in a multiplexer's log as well. Three things
@@ -189,7 +206,8 @@ a host decides how much is touched* has the reasoning; what the code does:
 
 * **Claims** (`hostcheck.ClaimsFor`) are `render.SiteListeners`, each
   listener carrying the `paisans.yaml` key behind it (`render.Listener.Key`),
-  plus `wg0` and the mesh subnet. A new listener is added to
+  plus the `psns-<token>` interface, the endpoint's port (none without an
+  endpoint) and the mesh subnet. A new listener is added to
   `render.SiteListeners` with its key, and the host check, preflight's ports
   check and validate's collision check all see it.
 * **Inventory** (`hostcheck.Inspect`) runs one probe per fact and changes
@@ -208,7 +226,7 @@ a host decides how much is touched* has the reasoning; what the code does:
   claims and the inventory, tested with recorded output: a clean host with
   an empty Docker, the toolkit's own running stack, a foreign host network
   Caddy against a site that claims 80 and 443 and one that does not, a
-  foreign Postgres, a published port with no listener, a foreign `wg0`, a
+  foreign Postgres, a published port with no listener, a foreign `psns-<token>`, a
   network over the mesh, and the three ways a shared host's firewall is
   refused.
 
@@ -267,14 +285,14 @@ mounted file changed and whose container was left in place (`Action.Refresh`).
 `gatewayaction_test.go` and `infraservices_test.go` pin both with a fake whose
 `up -d` replaces only the containers a test names.
 
-**`wg0` is up before any container moves.** Every service binds the site's
+**The mesh interface, `psns-<token>`, is up before any container moves.** Every service binds the site's
 mesh address, so the mesh comes up right after the files are written and before
 the gateway checks and stack actions below. A first apply enables and starts
-`wg-quick@wg0`; a peer change is handed over with `wg syncconf` so the mesh
+`wg-quick@psns-<token>`; a peer change is handed over with `wg syncconf` so the mesh
 stays up; a change to a line only wg-quick applies restarts it; and an
 unchanged file on a host whose interface is down starts it. A failure stops the
-apply there. `README.md` has the table under "`apply` brings `wg0` up before
-anything binds to it".
+apply there. `README.md` has the table under "`apply` brings the mesh
+interface up before anything binds to it".
 
 **The infrastructure stack moves first, and app stacks only after their
 databases exist.** Sorted order alone started `blog` and `docs` before
@@ -476,7 +494,7 @@ design. What the code relies on, and what is easy to undo:
 
 The tests in `internal/siteadd` run a three host world in maps: etcd's
 membership, Patroni's members, each HAProxy's served configuration and the
-handshakes implied by each `wg0.conf`. They cover the dry run changing nothing,
+handshakes implied by each `psns-<token>.conf`. They cover the dry run changing nothing,
 a whole join leaving nothing to do, the mesh rollback, the promotion retry and
 its limit, resuming after a stopped learner and after a failed replica gate,
 and the stage 5 and 6 gates failing.
@@ -760,6 +778,7 @@ installed, on a workstation or anywhere else.
 | `internal/config` | loading `paisans.yaml`, and decrypting `secrets.enc.yaml` |
 | `internal/deployment` | a deployment's id and token, and every name, path and label derived from them |
 | `internal/registry` | a host's record of the deployments on it, and the locked claim every writing command makes |
+| `internal/mesh` | reading a host's routes, addresses and Docker networks and pools, the overlap test, and `init`'s subnet roll |
 | `internal/validate` | the rules, and nothing else |
 | `internal/secretsgen` | what a deployment's secrets are, and which of them the toolkit may invent |
 | `internal/kinds` | what an application kind is: its compose services, and the image each runs by default |
@@ -992,7 +1011,7 @@ changes the replication factor, sizes each node and can stop one to prove
 failover, and has run against containers; removing or replacing a Garage node
 is not built. Its first stage is `preflight`, and
 `failover test` exists; both are described above. `apply`
-pushes files, brings up `wg0`, creates clustered apps' roles and databases, and
+pushes files, brings up the mesh interface, creates clustered apps' roles and databases, and
 takes the narrowest action that makes the rest live. `site add` has never been
 run against a real host, so every command it sends is reasoned from upstream
 source and documentation, not observed.

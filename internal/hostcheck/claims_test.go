@@ -61,7 +61,7 @@ func TestClaimsFollowRoles(t *testing.T) {
 			t.Errorf("the gateway does not claim %s: %v", spec, gateway.Listeners)
 		}
 	}
-	if data.Site != "home-a" || data.Interface != "wg0" || data.Mesh.String() != "10.44.0.0/24" {
+	if data.Site != "home-a" || data.Interface != "psns-f2a9" || data.Mesh.String() != "10.44.0.0/24" {
 		t.Errorf("site %q, interface %q, mesh %v", data.Site, data.Interface, data.Mesh)
 	}
 }

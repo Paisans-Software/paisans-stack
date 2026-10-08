@@ -100,10 +100,10 @@ tcp LISTEN 0 4096 [::ffff:0.0.0.0]:8081 *:* users:(("app",pid=601,fd=8))
 	}
 }
 
-// The manifest is how a wg0 the toolkit wrote is told from one it did not.
+// The manifest is how a psns-f2a9 the toolkit wrote is told from one it did not.
 func TestTheManifestSaysWhetherWireGuardIsOurs(t *testing.T) {
 	h := cleanHost()
-	h.files["/srv/paisans/f2a9/.paisans-manifest.json"] = `{"version":1,"files":[{"path":"etc/wireguard/wg0.conf","sha256":"x","mode":"0600"}]}`
+	h.files["/srv/paisans/f2a9/.paisans-manifest.json"] = `{"version":1,"files":[{"path":"etc/wireguard/psns-f2a9.conf","sha256":"x","mode":"0600"}]}`
 	inv := inspect(t, h)
 	if !inv.Manifest || !inv.ManifestWireGuard {
 		t.Errorf("manifest %v, wireguard %v", inv.Manifest, inv.ManifestWireGuard)

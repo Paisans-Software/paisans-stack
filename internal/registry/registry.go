@@ -11,6 +11,14 @@
 // that writes to a host claims it first. A claim by an id whose token or root
 // is already another id's is refused, and the host is left as it was.
 //
+// The same record keeps two deployments' meshes apart. Each entry carries the
+// deployment's WireGuard interface, the port it listens on and its mesh
+// subnet, and a claim is refused when another deployment on the host holds
+// the same interface, the same port, or a subnet overlapping this one's:
+// two interfaces cannot bind one port, and two meshes on overlapping ranges
+// route each other's traffic. See internal/mesh for the checks against
+// everything else on the host.
+//
 // The claim runs as one remote shell command under flock, so two operators
 // claiming one host at once are serialised rather than both reading the old
 // file. The merge itself is awk, which a host has before host prepare has
@@ -27,12 +35,14 @@ package registry
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/mesh"
 )
 
 // Dir holds the registry and its lock. It is root's and 0700: the registry
@@ -65,6 +75,15 @@ type Entry struct {
 	Site string `json:"site"`
 	// ClaimedAt is when a command last claimed the host for it, RFC 3339.
 	ClaimedAt string `json:"claimed_at"`
+	// Interface is the deployment's WireGuard interface, psns-<token>.
+	Interface string `json:"interface,omitempty"`
+	// ListenPort is the UDP port that interface listens on here, zero when
+	// the site has no endpoint and WireGuard picks one.
+	ListenPort int `json:"listen_port,omitempty"`
+	// Subnet is the deployment's mesh subnet, and Address this site's
+	// address in it.
+	Subnet  string `json:"subnet,omitempty"`
+	Address string `json:"address,omitempty"`
 }
 
 // Registry is the whole file.
@@ -76,12 +95,17 @@ type Registry struct {
 // For is the entry a deployment claims a site's host with.
 func For(cfg *config.Config, site string, now time.Time) (string, Entry) {
 	d := cfg.Deployment()
+	declared := cfg.Sites[site]
 	return d.ID, Entry{
-		Token:     d.Token(),
-		Root:      d.Root(),
-		Domain:    cfg.Community.Domain,
-		Site:      site,
-		ClaimedAt: now.UTC().Format(time.RFC3339),
+		Token:      d.Token(),
+		Root:       d.Root(),
+		Domain:     cfg.Community.Domain,
+		Site:       site,
+		ClaimedAt:  now.UTC().Format(time.RFC3339),
+		Interface:  d.Interface(),
+		ListenPort: declared.ListenPort(),
+		Subnet:     cfg.Mesh.Subnet,
+		Address:    declared.Address,
 	}
 }
 
@@ -108,27 +132,96 @@ func Parse(data []byte) (Registry, error) {
 type Conflict struct {
 	ID    string
 	Entry Entry
+	// Clashes is each thing the other deployment holds that the claim
+	// needs, in words: Eg: "WireGuard listen port 51820/udp".
+	Clashes []string
 }
 
 func (c Conflict) Error() string {
-	what := "token " + c.Entry.Token
-	if c.Entry.Root != "" {
-		what += " and root " + c.Entry.Root
+	what := strings.Join(c.Clashes, ", ")
+	if what == "" {
+		what = "token " + c.Entry.Token
+		if c.Entry.Root != "" {
+			what += " and root " + c.Entry.Root
+		}
 	}
 	return fmt.Sprintf("deployment %s (%s) already holds %s on this host", c.ID, c.Entry.Domain, what)
 }
 
-// Conflicts lists every other deployment whose token or root is the one id
-// would claim, sorted by id. The same id is never a conflict: that is a
-// refresh.
+// clashes is everything theirs holds that ours needs: the same token, root,
+// interface or listen port, or a mesh subnet overlapping ours either way.
+// An empty or zero value holds nothing, so an entry written before a field
+// existed never clashes on it.
+func clashes(theirs, ours Entry) []string {
+	var out []string
+	if theirs.Token == ours.Token {
+		out = append(out, "token "+theirs.Token)
+	}
+	if theirs.Root == ours.Root {
+		out = append(out, "root "+theirs.Root)
+	}
+	if theirs.Interface != "" && theirs.Interface == ours.Interface {
+		out = append(out, "WireGuard interface "+theirs.Interface)
+	}
+	if theirs.ListenPort != 0 && theirs.ListenPort == ours.ListenPort {
+		out = append(out, fmt.Sprintf("WireGuard listen port %d/udp", theirs.ListenPort))
+	}
+	if subnetsOverlap(theirs.Subnet, ours.Subnet) {
+		if theirs.Subnet == ours.Subnet {
+			out = append(out, "mesh subnet "+theirs.Subnet)
+		} else {
+			out = append(out, fmt.Sprintf("mesh subnet %s, which overlaps this deployment's %s", theirs.Subnet, ours.Subnet))
+		}
+	}
+	return out
+}
+
+func subnetsOverlap(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	pa, errA := mesh.ParsePrefix(a)
+	pb, errB := mesh.ParsePrefix(b)
+	return errA == nil && errB == nil && mesh.Overlap(pa, pb)
+}
+
+// Conflicts lists every other deployment holding something id's claim
+// needs, sorted by id. The same id is never a conflict: that is a refresh.
 func Conflicts(r Registry, id string, e Entry) []Conflict {
 	var out []Conflict
 	for other, entry := range r.Deployments {
-		if other != id && (entry.Token == e.Token || entry.Root == e.Root) {
-			out = append(out, Conflict{ID: other, Entry: entry})
+		if other == id {
+			continue
+		}
+		if c := clashes(entry, e); len(c) > 0 {
+			out = append(out, Conflict{ID: other, Entry: entry, Clashes: c})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// Meshes is every other deployment's mesh subnet on this host, as networks
+// taken, for `paisans init` to choose a subnet clear of them. on names the
+// host in each description.
+func Meshes(r Registry, id, on string) []mesh.Taken {
+	ids := make([]string, 0, len(r.Deployments))
+	for other := range r.Deployments {
+		ids = append(ids, other)
+	}
+	sort.Strings(ids)
+	var out []mesh.Taken
+	for _, other := range ids {
+		e := r.Deployments[other]
+		if other == id || e.Subnet == "" {
+			continue
+		}
+		p, err := mesh.ParsePrefix(e.Subnet)
+		if err != nil {
+			continue
+		}
+		out = append(out, mesh.Taken{Prefix: p, What: fmt.Sprintf("deployment %s (%s)'s mesh %s on %s", other, e.Domain, e.Subnet, on)})
+	}
 	return out
 }
 
@@ -202,11 +295,45 @@ const (
 
 // mergeProgram is the claim's merge, in awk. It reads the registry in
 // Encode's layout, keeps every other deployment's line, drops id's own line
-// (the refresh), and prints the result with entry last. A line holding the
-// claimed token or root under another id is a conflict: it is printed to
-// stderr after conflictMarker and the program exits 3 without printing a
-// registry. A file in any other layout exits 4.
+// (the refresh), and prints the result with entry last. A line under another
+// id holding the claimed token, root, interface or listen port, or a mesh
+// subnet overlapping the claimed one, is a conflict: it is printed to stderr
+// after conflictMarker and the program exits 3 without printing a registry.
+// A file in any other layout exits 4.
+//
+// A value is found by its key with both quotes, "token":", which no value
+// can contain since json.Marshal escapes every quote inside one. The overlap
+// test is integer arithmetic on each network's first address and size,
+// since POSIX awk has no bitwise operators; awk's numbers are doubles, exact
+// far beyond 2^32.
 const mergeProgram = `
+function str(line, name,   key, i, rest) {
+	key = "\"" name "\":\""
+	i = index(line, key)
+	if (!i) return ""
+	rest = substr(line, i + length(key))
+	return substr(rest, 1, index(rest, "\"") - 1)
+}
+function num(line, name,   key, i, rest) {
+	key = "\"" name "\":"
+	i = index(line, key)
+	if (!i) return ""
+	rest = substr(line, i + length(key))
+	if (!match(rest, /^[0-9]+/)) return ""
+	return substr(rest, 1, RLENGTH)
+}
+function ipnum(a,   p) {
+	split(a, p, ".")
+	return ((p[1] * 256 + p[2]) * 256 + p[3]) * 256 + p[4]
+}
+function overlaps(a, b,   pa, pb, la, lb, sa, sb) {
+	if (a == "" || b == "") return 0
+	split(a, pa, "/"); split(b, pb, "/")
+	la = 2 ^ (32 - pa[2]); lb = 2 ^ (32 - pb[2])
+	sa = ipnum(pa[1]); sa -= sa % la
+	sb = ipnum(pb[1]); sb -= sb % lb
+	return sa < sb + lb && sb < sa + la
+}
 NR == 1 { if ($0 != header) bad = 1; next }
 done { if ($0 != "") bad = 1; next }
 $0 == footer { done = 1; next }
@@ -216,7 +343,10 @@ $0 == footer { done = 1; next }
 	if (line !~ /^"[^"]+":\{.*\}$/) { bad = 1; next }
 	key = substr(line, 2, index(line, "\":") - 2)
 	if (key == id) next
-	if (index(line, "\"token\":\"" token "\"") || index(line, "\"root\":\"" root "\"")) {
+	if (index(line, "\"token\":\"" token "\"") || index(line, "\"root\":\"" root "\"") ||
+		(iface != "" && str(line, "interface") == iface) ||
+		(port != "" && port != "0" && num(line, "listen_port") == port) ||
+		(subnet != "" && overlaps(subnet, str(line, "subnet")))) {
 		print marker line > "/dev/stderr"
 		conflict = 1
 	}
@@ -241,12 +371,17 @@ func awkArgs(id string, e Entry) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	port := ""
+	if e.ListenPort != 0 {
+		port = fmt.Sprint(e.ListenPort)
+	}
 	vars := map[string]string{
 		"id": id, "token": e.Token, "root": e.Root, "entry": entry,
+		"iface": e.Interface, "port": port, "subnet": e.Subnet,
 		"header": header, "footer": footer, "marker": conflictMarker, "unreadable": unreadableMarker,
 	}
 	var args []string
-	for _, name := range []string{"id", "token", "root", "entry", "header", "footer", "marker", "unreadable"} {
+	for _, name := range []string{"id", "token", "root", "iface", "port", "subnet", "entry", "header", "footer", "marker", "unreadable"} {
 		args = append(args, "-v", name+"="+awkString(vars[name]))
 	}
 	return append(args, mergeProgram), nil
@@ -295,7 +430,7 @@ func ParseClaim(out string) error {
 					return Conflict{ID: id, Entry: e}
 				}
 			}
-			return fmt.Errorf("another deployment holds this token or root: %s", rest)
+			return fmt.Errorf("another deployment holds what this one needs on the host: %s", rest)
 		}
 		if line == unreadableMarker {
 			return fmt.Errorf("%s is not in the layout this toolkit writes, so it was not changed. Restore it, or move it aside if no deployment on this host is running", Path)
@@ -325,6 +460,11 @@ func Claim(t Runner, cfg *config.Config, site string, now time.Time) error {
 		return nil
 	}
 	if refusal := ParseClaim(out); refusal != nil {
+		var c Conflict
+		if errors.As(refusal, &c) {
+			c.Clashes = clashes(c.Entry, e)
+			refusal = c
+		}
 		return refused(t, e, refusal)
 	}
 	return fmt.Errorf("%s: claiming the host in %s: %w\n%s", t.Describe(), Path, err, strings.TrimSpace(out))
@@ -334,13 +474,9 @@ func Claim(t Runner, cfg *config.Config, site string, now time.Time) error {
 // only commands: it reads the registry and reports a conflict as Claim would.
 func Check(t Runner, cfg *config.Config, site string) error {
 	id, e := For(cfg, site, time.Time{})
-	content, _, err := t.ReadFile(Path)
+	r, err := Read(t)
 	if err != nil {
-		return fmt.Errorf("%s: reading %s: %w", t.Describe(), Path, err)
-	}
-	r, err := Parse([]byte(content))
-	if err != nil {
-		return fmt.Errorf("%s: %w", t.Describe(), err)
+		return err
 	}
 	if c := Conflicts(r, id, e); len(c) > 0 {
 		return refused(t, e, c[0])
@@ -348,8 +484,32 @@ func Check(t Runner, cfg *config.Config, site string) error {
 	return nil
 }
 
+// Read reads the registry on the host t reaches. A host no deployment has
+// claimed has none, which is an empty registry.
+func Read(t Runner) (Registry, error) {
+	content, _, err := t.ReadFile(Path)
+	if err != nil {
+		return Registry{}, fmt.Errorf("%s: reading %s: %w", t.Describe(), Path, err)
+	}
+	r, err := Parse([]byte(content))
+	if err != nil {
+		return Registry{}, fmt.Errorf("%s: %w", t.Describe(), err)
+	}
+	return r, nil
+}
+
 func refused(t Runner, e Entry, why error) error {
-	return fmt.Errorf("%s: %v, so this deployment (token %s, root %s) cannot share the host with it, and nothing was changed. Two deployments with one token would share every name and directory. Use another host for one of them", t.Describe(), why, e.Token, e.Root)
+	advice := "Two deployments with one token would share every name, directory and WireGuard interface. Use another host for one of them"
+	var c Conflict
+	if errors.As(why, &c) && len(c.Clashes) > 0 && !strings.HasPrefix(c.Clashes[0], "token") && !strings.HasPrefix(c.Clashes[0], "root") && !strings.HasPrefix(c.Clashes[0], "WireGuard interface") {
+		switch {
+		case strings.HasPrefix(c.Clashes[0], "WireGuard listen port"):
+			advice = "Two WireGuard interfaces cannot listen on one port. Give this site's endpoint another port in paisans.yaml, and forward that port where the host is behind NAT"
+		default:
+			advice = "Two meshes on overlapping subnets would route each other's traffic. A deployed mesh subnet never changes, so the deployment not yet applied here moves: if this one has never been applied, run `paisans init`, which picks a subnet clear of every host"
+		}
+	}
+	return fmt.Errorf("%s: %v, so this deployment (token %s, interface %s, mesh %s) cannot share the host with it, and nothing was changed. %s", t.Describe(), why, e.Token, e.Interface, e.Subnet, advice)
 }
 
 // awkString escapes a value for an awk -v assignment, which processes

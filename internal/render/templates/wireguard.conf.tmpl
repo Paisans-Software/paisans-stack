@@ -1,11 +1,14 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
-# wg0 exists from the first install, with an empty peer list at one site.
-# Every service binds to this address, so joining a site only adds peers: no
-# service is reconfigured and no address changes.
+# This deployment's mesh interface exists from the first install, with an
+# empty peer list at one site. Every service binds to this address, so joining
+# a site only adds peers: no service is reconfigured and no address changes.
 [Interface]
 Address = {{ .Site.Address }}/{{ .MeshPrefix }}
+{{- if .ListenPort }}
+# The port of this site's endpoint, which every other site dials.
 ListenPort = {{ .ListenPort }}
+{{- end }}
 PrivateKey = {{ .PrivateKey }}
 {{- if .IsRelay }}
 # This site has a stable endpoint, so it relays traffic between sites that

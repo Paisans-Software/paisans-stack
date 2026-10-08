@@ -24,6 +24,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
+	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -108,6 +109,7 @@ func Run(cfg *config.Config, newSite string, transports map[string]apply.Transpo
 		r.wireguard(t)
 		r.watchdog(t)
 		r.ports()
+		r.meshClear(t)
 		r.routes(t)
 		r.disk(t)
 		r.storage(t)
@@ -402,10 +404,43 @@ func (r *runner) ports() {
 	r.pass(r.newSite, "ports", "free: %s", strings.Join(free, ", "))
 }
 
+// meshClear checks the mesh subnet overlaps nothing the host already holds:
+// a route or address outside this deployment's own interface (a LAN, a
+// Docker bridge, another VPN or another deployment's mesh), a Docker network,
+// or a range Docker allocates new networks from. Any of those would capture
+// mesh traffic, or have its own captured. A route through this deployment's
+// own interface is the mesh itself and is not a collision. See internal/mesh.
+func (r *runner) meshClear(t apply.Transport) {
+	subnet, err := mesh.ParsePrefix(r.cfg.Mesh.Subnet)
+	if err != nil {
+		r.refuse(r.newSite, "mesh", "mesh.subnet %q is not a network", r.cfg.Mesh.Subnet)
+		return
+	}
+	probed, err := mesh.Probe(t)
+	if err != nil {
+		r.refuse(r.newSite, "mesh", "%v", err)
+		return
+	}
+	taken, err := probed.Taken(r.cfg.Deployment().Interface(), "")
+	if err != nil {
+		r.refuse(r.newSite, "mesh", "%v", err)
+		return
+	}
+	if clash := mesh.Clashes(subnet, taken); len(clash) > 0 {
+		var what []string
+		for _, c := range clash {
+			what = append(what, c.What)
+		}
+		r.refuse(r.newSite, "mesh", "mesh subnet %s overlaps %s. The subnet is fixed once a site is deployed, so the other network has to move", r.cfg.Mesh.Subnet, strings.Join(what, ", "))
+		return
+	}
+	r.pass(r.newSite, "mesh", "nothing on the host overlaps the mesh subnet %s", r.cfg.Mesh.Subnet)
+}
+
 // routes checks the mesh subnet overlaps no route the host already has: a
 // Docker bridge, a LAN or another VPN on the same range would capture mesh
-// traffic, or have its own captured. A route through wg0 is the mesh itself
-// and is not a collision.
+// traffic, or have its own captured. A route through this deployment's own
+// interface is the mesh itself and is not a collision.
 func (r *runner) routes(t apply.Transport) {
 	_, mesh, err := net.ParseCIDR(r.cfg.Mesh.Subnet)
 	if err != nil {
@@ -426,8 +461,9 @@ func (r *runner) routes(t apply.Transport) {
 		return
 	}
 	var clash []string
+	iface := r.cfg.Deployment().Interface()
 	for _, route := range routes {
-		if route.Dst == "default" || route.Dev == "wg0" {
+		if route.Dst == "default" || route.Dev == iface {
 			continue
 		}
 		dst := route.Dst
@@ -458,7 +494,7 @@ func (r *runner) registry(t apply.Transport) {
 		return
 	}
 	d := r.cfg.Deployment()
-	r.pass(r.newSite, "registry", "no other deployment on the host holds token %s or %s", d.Token(), d.Root())
+	r.pass(r.newSite, "registry", "no other deployment on the host holds token %s, %s, interface %s or an overlapping mesh", d.Token(), d.Root(), d.Interface())
 }
 
 // diskProbe reads free bytes on the deepest directory that exists on the way

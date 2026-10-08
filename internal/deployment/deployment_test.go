@@ -53,6 +53,9 @@ func TestNamesAndPathsDeriveFromTheToken(t *testing.T) {
 		d.Path("infra", "x"):      "/srv/paisans/f2a9/infra/x",
 		d.RelPath("talk", ".env"): "srv/paisans/f2a9/talk/.env",
 		d.LabelFilter():           "label=community.paisans.deployment=" + fixtureID,
+		d.Interface():             "psns-f2a9",
+		d.WireGuardConf():         "etc/wireguard/psns-f2a9.conf",
+		d.WireGuardUnit():         "wg-quick@psns-f2a9",
 	} {
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
@@ -65,9 +68,22 @@ func TestSplitRel(t *testing.T) {
 	if !ok || token != "f2a9" || stack != "talk" || rest != "config/x.yaml" {
 		t.Errorf("SplitRel = %q %q %q %v", token, stack, rest, ok)
 	}
-	for _, rel := range []string{"etc/wireguard/wg0.conf", "srv/talk/.env", "srv/paisans/f2a9/talk", "srv/paisans/f2a9/.paisans-manifest.json"} {
+	for _, rel := range []string{"etc/wireguard/psns-f2a9.conf", "srv/talk/.env", "srv/paisans/f2a9/talk", "srv/paisans/f2a9/.paisans-manifest.json"} {
 		if _, _, _, ok := deployment.SplitRel(rel); ok {
 			t.Errorf("SplitRel(%q) reported a stack", rel)
 		}
+	}
+}
+
+// The interface name fits Linux's limit for any id, since the token has a
+// fixed length.
+func TestInterfaceFitsIFNAMSIZ(t *testing.T) {
+	id, err := deployment.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := deployment.Deployment{ID: id}.Interface()
+	if len(name) != 9 || len(name) > deployment.MaxInterfaceName {
+		t.Errorf("Interface() = %q, %d characters, want 9 and at most %d", name, len(name), deployment.MaxInterfaceName)
 	}
 }

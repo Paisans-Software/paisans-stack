@@ -148,19 +148,19 @@ func TestAJoinCompletesAndLeavesNothingToDo(t *testing.T) {
 	}
 }
 
-// A failed mesh gate restores every existing site's wg0.conf and stops
+// A failed mesh gate restores every existing site's psns-f2a9.conf and stops
 // before etcd is touched.
 func TestAFailedMeshGateRollsBack(t *testing.T) {
 	defer siteadd.SetFast()()
 	w := newWorld(t)
 	w.noPing = true
-	before := w.hosts["home-a"].files["/etc/wireguard/wg0.conf"]
+	before := w.hosts["home-a"].files["/etc/wireguard/psns-f2a9.conf"]
 	err := siteadd.Execute(build(t, w))
 	if err == nil || !strings.Contains(err.Error(), "stage 2") {
 		t.Fatalf("want a stage 2 failure, got %v", err)
 	}
-	if w.hosts["home-a"].files["/etc/wireguard/wg0.conf"] != before {
-		t.Error("home-a's wg0.conf was not restored")
+	if w.hosts["home-a"].files["/etc/wireguard/psns-f2a9.conf"] != before {
+		t.Error("home-a's psns-f2a9.conf was not restored")
 	}
 	if w.hosts["home-a"].ran("member add") > 0 {
 		t.Error("etcd was touched after a failed mesh gate")

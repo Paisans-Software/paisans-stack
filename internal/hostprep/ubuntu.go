@@ -198,13 +198,24 @@ func (u ubuntu) unitState(t Transport, unit string) (enabled, active bool, err e
 	return enabled, active, nil
 }
 
-// dockerAfterWG0 is the drop-in that orders Docker after the mesh interface,
-// named for the deployment that wrote it.
+// dockerAfterWireGuard is the drop-in that orders Docker after the
+// deployment's mesh interface, named for the deployment that wrote it. Each
+// deployment on a host writes its own, so Docker waits for every mesh whose
+// address a container binds.
+func dockerAfterWireGuard(d deployment.Deployment) string {
+	return "/etc/systemd/system/docker.service.d/" + d.Prefix() + "-after-wireguard.conf"
+}
+
+// dockerAfterWG0 is where this deployment's drop-in was written while the mesh
+// interface was wg0 on every deployment. It names a unit that no longer
+// carries the mesh, and its Wants= would still start that unit at boot, so
+// Services removes it.
 func dockerAfterWG0(d deployment.Deployment) string {
 	return "/etc/systemd/system/docker.service.d/" + d.Prefix() + "-after-wg0.conf"
 }
 
-// Services makes Docker start at boot and now, and after wg0 at boot. Docker's
+// Services makes Docker start at boot and now, and after the deployment's
+// mesh interface at boot. Docker's
 // packages enable it on install, so on a freshly installed host enabling it is
 // a no-op that is planned anyway: the probe runs before the install and cannot
 // know that.
@@ -214,9 +225,9 @@ func dockerAfterWG0(d deployment.Deployment) string {
 // effect at the next boot, which is the only moment it matters, so Docker and
 // every container on the host keep running.
 func (u ubuntu) Services(t Transport, d deployment.Deployment) (Section, error) {
-	dropInPath := dockerAfterWG0(d)
+	dropInPath := dockerAfterWireGuard(d)
 	var out Section
-	dropIn, err := snippet(u.tmpl("docker-after-wg0.conf.tmpl"), nil)
+	dropIn, err := snippet(u.tmpl("docker-after-wireguard.conf.tmpl"), map[string]string{"Interface": d.Interface(), "Unit": d.WireGuardUnit()})
 	if err != nil {
 		return out, err
 	}
@@ -225,12 +236,20 @@ func (u ubuntu) Services(t Transport, d deployment.Deployment) (Section, error) 
 		return out, err
 	}
 	if found && current == dropIn {
-		out.Present = append(out.Present, "service: docker starts after wg0 at boot")
+		out.Present = append(out.Present, "service: docker starts after "+d.Interface()+" at boot")
 	} else {
 		out.Steps = append(out.Steps, Step{
-			Describe: "service: start docker after wg0 at boot, so containers can bind the mesh address (" + dropInPath + ")",
+			Describe: "service: start docker after " + d.Interface() + " at boot, so containers can bind the mesh address (" + dropInPath + ")",
 			File:     &File{Path: dropInPath, Content: dropIn, Mode: 0o644},
 			Command:  "systemctl daemon-reload",
+		})
+	}
+	if _, stale, err := t.ReadFile(dockerAfterWG0(d)); err != nil {
+		return out, err
+	} else if stale {
+		out.Steps = append(out.Steps, Step{
+			Describe: "service: remove " + dockerAfterWG0(d) + ", which orders docker after wg0, an interface this deployment no longer uses",
+			Command:  "rm -f " + dockerAfterWG0(d) + " && systemctl daemon-reload",
 		})
 	}
 	enabled, active, err := u.unitState(t, "docker")

@@ -100,6 +100,33 @@ func (d Deployment) RelPath(elem ...string) string {
 	return strings.TrimPrefix(d.Path(elem...), "/")
 }
 
+// InterfacePrefix is what every deployment's WireGuard interface name starts
+// with.
+const InterfacePrefix = "psns-"
+
+// MaxInterfaceName is the longest interface name Linux accepts: IFNAMSIZ is
+// 16 bytes including the terminating NUL (Linux v6.8,
+// include/uapi/linux/if.h, `#define IFNAMSIZ 16`).
+const MaxInterfaceName = 15
+
+// Interface is this deployment's WireGuard interface, psns-<token>. Each
+// deployment on a host has its own, because one interface carries one
+// address, one key and one peer list, and a second deployment's peers in the
+// first one's file would be routed by the wrong mesh. It is nine characters,
+// under MaxInterfaceName with room to spare.
+func (d Deployment) Interface() string { return InterfacePrefix + d.Token() }
+
+// WireGuardConf is the interface's wg-quick file, as a rendered path
+// relative to the host's /: etc/wireguard/psns-<token>.conf. wg-quick names
+// the interface after the file.
+func (d Deployment) WireGuardConf() string {
+	return "etc/wireguard/" + d.Interface() + ".conf"
+}
+
+// WireGuardUnit is the systemd unit wireguard-tools ships to bring the
+// interface up from that file, wg-quick@psns-<token>.
+func (d Deployment) WireGuardUnit() string { return "wg-quick@" + d.Interface() }
+
 // Manifest is the toolkit's record of every file apply wrote for this
 // deployment on a host.
 func (d Deployment) Manifest() string { return d.Path(".paisans-manifest.json") }
@@ -111,7 +138,7 @@ func (d Deployment) LabelFilter() string { return "label=" + Label + "=" + d.ID 
 // SplitRel splits a rendered path into its stack and the remainder within
 // that stack, when it lies under some deployment's root:
 // srv/paisans/f2a9/talk/.env is ("f2a9", "talk", ".env", true). A path
-// outside every root, such as etc/wireguard/wg0.conf, is not.
+// outside every root, such as etc/wireguard/psns-f2a9.conf, is not.
 func SplitRel(rel string) (token, stack, rest string, ok bool) {
 	base := strings.TrimPrefix(Base, "/") + "/"
 	if !strings.HasPrefix(rel, base) {

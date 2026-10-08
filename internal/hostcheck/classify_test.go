@@ -59,7 +59,7 @@ func TestAnEmptyDockerInstallIsClean(t *testing.T) {
 // A host already running this deployment is clean: the host network
 // Postgres is ours through its cgroup, the published app port through
 // docker-proxy and the container's binding, and the process-less WireGuard
-// socket through the wg0.conf the manifest records.
+// socket through the psns-f2a9.conf the manifest records.
 func TestOurOwnDeploymentIsClean(t *testing.T) {
 	var appPort int
 	for _, l := range claims(t, "home-a").Listeners {
@@ -68,9 +68,9 @@ func TestOurOwnDeploymentIsClean(t *testing.T) {
 		}
 	}
 	h := cleanHost()
-	h.files["/srv/paisans/f2a9/.paisans-manifest.json"] = `{"version":1,"files":[{"path":"etc/wireguard/wg0.conf","sha256":"x","mode":"0600"}]}`
-	h.answers["ip -o link"] += "4: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/none\n"
-	h.answers["ip -j route"] = `[{"dst":"default","dev":"eth0"},{"dst":"10.44.0.0/24","dev":"wg0"},{"dst":"172.18.0.0/16","dev":"br-` + id("5")[:12] + `"}]`
+	h.files["/srv/paisans/f2a9/.paisans-manifest.json"] = `{"version":1,"files":[{"path":"etc/wireguard/psns-f2a9.conf","sha256":"x","mode":"0600"}]}`
+	h.answers["ip -o link"] += "4: psns-f2a9: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/none\n"
+	h.answers["ip -j route"] = `[{"dst":"default","dev":"eth0"},{"dst":"10.44.0.0/24","dev":"psns-f2a9"},{"dst":"172.18.0.0/16","dev":"br-` + id("5")[:12] + `"}]`
 	h.answers["docker inspect"] = fmt.Sprintf(`{"id":%q,"name":"/paisans-f2a9-infra-patroni-1","pid":1500,"labels":{"com.docker.compose.project":"paisans-f2a9-infra","community.paisans.deployment":"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},"ports":{}}
 {"id":%q,"name":"/paisans-f2a9-blog-app-1","pid":1700,"labels":{"com.docker.compose.project":"paisans-f2a9-blog","community.paisans.deployment":"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},"ports":{"8080/tcp":[{"HostIp":"10.44.0.1","HostPort":"%d"}]}}
 `, infraID, talkID, appPort)
@@ -190,15 +190,15 @@ func TestAForeignPublishedPortConflictsWithoutAListener(t *testing.T) {
 	wantLine(t, r, "CONFLICT  *:443/tcp (Caddy): claimed by sites.edge.roles (gateway), held by container proxy-nginx-1 (compose project proxy)")
 }
 
-// A wg0 the toolkit's manifest does not record is somebody else's VPN, and
+// A psns-f2a9 the toolkit's manifest does not record is somebody else's VPN, and
 // so is the udp socket on 51820 that comes with it.
 func TestAWireGuardTheToolkitDidNotWriteConflicts(t *testing.T) {
 	h := cleanHost()
-	h.answers["ip -o link"] += "4: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420\\    link/none\n"
+	h.answers["ip -o link"] += "4: psns-f2a9: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420\\    link/none\n"
 	h.answers["ss -Hltnup"] = baseSockets + "udp UNCONN 0 0 0.0.0.0:51820 0.0.0.0:*\n"
 	r := check(t, "home-a", h)
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  interface wg0: claimed by mesh, held by an interface this deployment did not write")
+	wantLine(t, r, "CONFLICT  interface psns-f2a9: claimed by mesh, held by an interface this deployment did not write")
 	wantLine(t, r, "CONFLICT  *:51820/udp (WireGuard): claimed by mesh, held by a kernel socket (no process)")
 }
 
@@ -253,7 +253,7 @@ func TestACleanHostNeedsNoFirewallYet(t *testing.T) {
 }
 
 // A route broader than the mesh, such as a provider's private network
-// (10.0.0.0/8 via its gateway), is less specific than the route wg0 adds,
+// (10.0.0.0/8 via its gateway), is less specific than the route psns-f2a9 adds,
 // so the mesh still wins and nothing is captured. It is noted, not refused.
 // A route equal to the mesh or inside it would capture mesh traffic, and
 // conflicts.

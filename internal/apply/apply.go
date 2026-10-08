@@ -146,7 +146,8 @@ type Plan struct {
 	// ACMEModule is the Caddy DNS module this deployment's gateway must have,
 	// as `caddy list-modules` prints it. Empty when this site runs no gateway.
 	ACMEModule string
-	// WireGuard is what wg0 needs before any stack moves. Every service binds
+	// WireGuard is what the deployment's mesh interface needs before any
+	// stack moves. Every service binds
 	// the site's mesh address, so a stack started before the interface exists
 	// fails to bind, and a container that cannot bind is restarted in a loop
 	// by Docker rather than reported to the apply.
@@ -206,7 +207,8 @@ func (p *Plan) say(format string, args ...any) {
 	}
 }
 
-// WireGuardStep is the one thing an apply does to wg0.
+// WireGuardStep is the one thing an apply does to the deployment's mesh
+// interface, psns-<token>.
 type WireGuardStep int
 
 const (
@@ -224,33 +226,36 @@ const (
 	WireGuardRestart
 )
 
-// Command is what the step runs on the host, empty for WireGuardNone.
-func (w WireGuardStep) Command() string {
+// Command is what the step runs on the host for d's interface, empty for
+// WireGuardNone.
+func (w WireGuardStep) Command(d deployment.Deployment) string {
+	iface := d.Interface()
 	switch w {
 	case WireGuardStart:
-		return "systemctl enable --now " + wireguardUnit
+		return "systemctl enable --now " + d.WireGuardUnit()
 	case WireGuardSync:
 		// Through a temporary file rather than a pipe. /bin/sh has no
 		// pipefail, so a `wg-quick strip` that failed would hand syncconf an
 		// empty configuration, and syncconf removes every peer it is not
 		// given: one failed command would cut this site off the mesh.
-		return "set -e; f=$(mktemp); trap 'rm -f \"$f\"' EXIT; wg-quick strip wg0 > \"$f\"; wg syncconf wg0 \"$f\""
+		return "set -e; f=$(mktemp); trap 'rm -f \"$f\"' EXIT; wg-quick strip " + iface + " > \"$f\"; wg syncconf " + iface + " \"$f\""
 	case WireGuardRestart:
-		return "systemctl restart " + wireguardUnit
+		return "systemctl restart " + d.WireGuardUnit()
 	default:
 		return ""
 	}
 }
 
-// Describe says what the step does, for a plan.
-func (w WireGuardStep) Describe() string {
+// Describe says what the step does to d's interface, for a plan.
+func (w WireGuardStep) Describe(d deployment.Deployment) string {
+	iface := d.Interface()
 	switch w {
 	case WireGuardStart:
-		return "start wg0 and enable it at boot, before any stack moves"
+		return "start " + iface + " and enable it at boot, before any stack moves"
 	case WireGuardSync:
-		return "give wg0 its new peers in place, without taking the mesh down"
+		return "give " + iface + " its new peers in place, without taking the mesh down"
 	case WireGuardRestart:
-		return "restart wg0, because a line only wg-quick applies changed"
+		return "restart " + iface + ", because a line only wg-quick applies changed"
 	default:
 		return ""
 	}
@@ -302,19 +307,16 @@ const (
 	gatewayCompose   = "infra/compose.yaml"
 )
 
-// wireguardConfig is the mesh interface's file, relative to a site's root, and
-// wireguardUnit the systemd unit wg-quick ships to bring it up from it.
-const (
-	wireguardConfig = "etc/wireguard/wg0.conf"
-	wireguardUnit   = "wg-quick@wg0"
-)
-
-// wireguardProbe asks whether wg0 exists. It reads the kernel rather than the
-// unit, because an interface somebody brought up with a bare `wg-quick up` is
-// up for every service binding to it, and `systemctl enable --now` on top of
-// it would fail on an interface that already exists. It prints rather than
-// exits non zero, so that "down" cannot be confused with ssh failing.
-const wireguardProbe = "if ip link show wg0 >/dev/null 2>&1; then echo up; else echo down; fi"
+// wireguardProbe asks whether d's interface exists. It reads the kernel
+// rather than the unit, because an interface somebody brought up with a bare
+// `wg-quick up` is up for every service binding to it, and `systemctl enable
+// --now` on top of it would fail on an interface that already exists. It
+// prints rather than exits non zero, so that "down" cannot be confused with
+// ssh failing. The file and the unit are deployment.WireGuardConf and
+// WireGuardUnit.
+func wireguardProbe(d deployment.Deployment) string {
+	return "if ip link show " + d.Interface() + " >/dev/null 2>&1; then echo up; else echo down; fi"
+}
 
 // Option adjusts what Build plans, on the operator's word.
 type Option func(*options)
@@ -410,9 +412,9 @@ func DatabaseApps(apps ...string) Option {
 }
 
 // Scope restricts an apply to the named files, as paths relative to the
-// site's root (Eg: etc/wireguard/wg0.conf). It is for a staged operation such
-// as `site add`, which has to move one file on every site and nothing else:
-// the new peer goes into wg0.conf on every site before etcd may change, and
+// site's root (Eg: etc/wireguard/psns-f2a9.conf). It is for a staged
+// operation such as `site add`, which has to move one file on every site and
+// nothing else: the new peer goes into the WireGuard file on every site before etcd may change, and
 // HAProxy's backend list changes on a site whose patroni.env changed too,
 // where a whole apply would recreate the primary.
 //
@@ -585,7 +587,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 			used[remote] = true
 		}
 
-		if rel == wireguardConfig {
+		if rel == d.WireGuardConf() {
 			copied := change
 			wireguard = &copied
 			wireguardBefore = current
@@ -650,7 +652,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		}
 		sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
 		if wireguard != nil {
-			step, err := wireguardStep(*wireguard, wireguardBefore, t)
+			step, err := wireguardStep(d, *wireguard, wireguardBefore, t)
 			if err != nil {
 				return nil, err
 			}
@@ -796,7 +798,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	}
 
 	if wireguard != nil {
-		step, err := wireguardStep(*wireguard, wireguardBefore, t)
+		step, err := wireguardStep(d, *wireguard, wireguardBefore, t)
 		if err != nil {
 			return nil, err
 		}
@@ -806,9 +808,9 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	return out, nil
 }
 
-// wireguardStep decides what wg0 needs. Reading the host here is a probe and
-// changes nothing, so a dry run can show it.
-func wireguardStep(change Change, before string, t Transport) (WireGuardStep, error) {
+// wireguardStep decides what d's interface needs. Reading the host here is a
+// probe and changes nothing, so a dry run can show it.
+func wireguardStep(d deployment.Deployment, change Change, before string, t Transport) (WireGuardStep, error) {
 	switch change.Kind {
 	case Create:
 		return WireGuardStart, nil
@@ -816,9 +818,9 @@ func wireguardStep(change Change, before string, t Transport) (WireGuardStep, er
 		// Execute refuses before any step runs.
 		return WireGuardNone, nil
 	}
-	out, err := t.Run(wireguardProbe)
+	out, err := t.Run(wireguardProbe(d))
 	if err != nil {
-		return WireGuardNone, fmt.Errorf("asking whether wg0 is up: %w", err)
+		return WireGuardNone, fmt.Errorf("asking whether %s is up: %w", d.Interface(), err)
 	}
 	if strings.TrimSpace(out) != "up" {
 		return WireGuardStart, nil
@@ -941,9 +943,9 @@ func execute(plan *Plan, t Transport) error {
 	// gateway gates as well, which need no mesh themselves, so that the one
 	// rule is simple: no container is started or checked on a site whose
 	// interface is down.
-	if command := plan.WireGuard.Command(); command != "" {
+	if command := plan.WireGuard.Command(plan.Deployment); command != "" {
 		if out, err := t.Run(command); err != nil {
-			return fmt.Errorf("%s: bringing up wg0, so nothing that binds the mesh address was started:\n%s", plan.Site, out)
+			return fmt.Errorf("%s: bringing up %s, so nothing that binds the mesh address was started:\n%s", plan.Site, plan.Deployment.Interface(), out)
 		}
 	}
 
@@ -1250,7 +1252,7 @@ func writeManifest(plan *Plan, t Transport) error {
 
 // stackOf returns the stack directory a rendered path belongs to, empty when it
 // belongs to none. `srv/paisans/f2a9/talk/.env` is talk;
-// `etc/wireguard/wg0.conf` is not a stack at all.
+// `etc/wireguard/psns-f2a9.conf` is not a stack at all.
 func stackOf(rel string) string {
 	_, stack, _, ok := deployment.SplitRel(rel)
 	if !ok {

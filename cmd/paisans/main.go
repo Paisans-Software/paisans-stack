@@ -1,7 +1,8 @@
 // Command paisans renders, checks and applies a paisans deployment
 // declaration.
 //
-// validate, init and render touch nothing outside the working directory.
+// validate and render touch nothing outside the working directory. init
+// reads every site to choose a mesh subnet, and writes only local files.
 // `host prepare`, `apply` and `storage init` reach a machine: each reads it to
 // show what it would do, and changes nothing unless told to with --execute.
 // `doctor` reaches every site to report what is stuck and changes nothing.
@@ -35,7 +36,7 @@ const usage = `paisans renders and checks a community stack declaration.
 
 Usage:
   paisans validate [--config paisans.yaml]
-  paisans init     [--config paisans.yaml] [--secrets secrets.enc.yaml]
+  paisans init     [--config paisans.yaml] [--secrets secrets.enc.yaml] [--sudo=false]
   paisans render   [--config paisans.yaml] [--secrets secrets.enc.yaml] --out ./out
   paisans host prepare --site <name> [--config paisans.yaml] [--ssh <destination>]
                [--execute]
@@ -69,9 +70,12 @@ Usage:
 
 Commands:
   validate   Load the configuration and report every problem found.
-  init       Give the configuration an id if it has none, then generate the
-             secrets it needs, filling in only what is missing, and say what
-             is still owed from elsewhere.
+  init       Give the configuration an id if it has none; until the
+             deployment is on any site, reach every site and keep
+             mesh.subnet only if it overlaps nothing there, else roll a
+             random /24 that overlaps nothing and move each site's address
+             into it; then generate the secrets it needs, filling in only
+             what is missing, and say what is still owed from elsewhere.
   render     Validate, then write per site artifacts to a local directory.
   host       Take a blank host to the state apply assumes: Docker, the
              WireGuard tools, a firewall, and a watchdog on a data site.
@@ -148,12 +152,14 @@ Commands:
              paisans), only the first two apply.
 
 host prepare, apply, prune, site add, storage init, storage add, storage
-rotate-key, app admin create, oidc client create, preflight, failover test and
-doctor are the only commands that reach a host.
-Each reads it to plan, and changes it only with --execute; preflight and doctor
-have no --execute and never change it. With --execute, a command first claims
-each host it writes to in /var/lib/paisans/registry.json, and refuses if
-another deployment there holds this one's token. dns init and dns
+rotate-key, app admin create, oidc client create, preflight, failover test,
+doctor and init are the only commands that reach a host.
+Each reads it to plan, and changes it only with --execute; preflight, doctor and
+init have no --execute and never change it. With --execute, a command first
+claims each host it writes to in /var/lib/paisans/registry.json, and refuses if
+another deployment there holds this one's token, WireGuard interface or listen
+port, or a mesh subnet overlapping this one's. apply and host prepare also
+refuse when anything else on the host overlaps the mesh subnet. dns init and dns
 prune reach no host, only the DNS provider's API, and change it only with
 --execute. ingress check reaches no host over ssh and changes nothing: it
 looks at a monitor's public hostname as any visitor could.
@@ -270,12 +276,15 @@ func runValidate(args []string) error {
 // database password locks an application out of a role that still holds the
 // old one.
 //
-// It touches no host. Standing a deployment up is `apply`, and that is a
-// separate decision from having credentials to stand it up with.
+// It changes no host. It reads every site, to settle the mesh subnet before
+// anything is deployed (see settleMesh), and that is all. Standing a
+// deployment up is `apply`, and that is a separate decision from having
+// credentials to stand it up with.
 func runInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
+	sudo := fs.Bool("sudo", true, "read each site through sudo, since the host registry is root's")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -289,7 +298,7 @@ func runInit(args []string) error {
 	if added {
 		fmt.Fprintf(os.Stdout, "%s: wrote deployment id %s. It never changes; every name and path this deployment holds on a host is derived from it.\n", *configPath, id)
 	}
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.LoadForInit(*configPath)
 	if err != nil {
 		return err
 	}
@@ -297,6 +306,18 @@ func runInit(args []string) error {
 	report(os.Stderr, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above. Secrets are not generated for a configuration that cannot be deployed", *configPath, len(result.Refusals()))
+	}
+	// The mesh subnet next, while nothing is deployed: it is the one value
+	// that has to be checked against every host before the first apply,
+	// and cannot change after it.
+	wrote, err := settleMesh(cfg, *configPath, initHosts(cfg, *sudo), meshRandom, initOut)
+	if err != nil {
+		return err
+	}
+	if wrote {
+		if cfg, err = config.Load(*configPath); err != nil {
+			return err
+		}
 	}
 
 	if *secretsPath == "" {
@@ -484,6 +505,9 @@ func runApply(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
+	if err := checkMeshLive(cfg, *site, transport); err != nil {
+		return err
+	}
 	host, err := hostGate(os.Stdout, cfg, *site, transport)
 	if err != nil {
 		return err
@@ -791,6 +815,9 @@ func runHostPrepare(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
+	if err := checkMeshLive(cfg, *site, transport); err != nil {
+		return err
+	}
 	host, err := hostGate(os.Stdout, cfg, *site, transport)
 	if err != nil {
 		return err
@@ -862,7 +889,7 @@ func printPlan(plan *apply.Plan) {
 		fmt.Fprintf(os.Stdout, "  %-9s %d file(s)\n", "unchanged", unchanged)
 	}
 	if plan.WireGuard != apply.WireGuardNone {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "mesh", plan.WireGuard.Describe())
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "mesh", plan.WireGuard.Describe(plan.Deployment))
 	}
 	bootstrapped := plan.Bootstrap == nil
 	for _, action := range plan.Actions {

@@ -2,8 +2,8 @@
   "version": 1,
   "files": [
     {
-      "path": "etc/wireguard/wg0.conf",
-      "sha256": "7a8aa9fe3081f4778a57464c9f4c1e551337b0cb7abdf2e0530c3fbe528ee5cb",
+      "path": "etc/wireguard/psns-f2a9.conf",
+      "sha256": "357b0a7f6d98e1623b9c1aa11dc94a212d8835318145ca4687bb211ff40c363e",
       "mode": "0600"
     },
     {
