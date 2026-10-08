@@ -14,6 +14,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
@@ -103,6 +104,14 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	where, err := pocketIDSite(cfg, *appName, *site, "app admin create")
 	if err != nil {
 		return err
+	}
+	// The calls need no root and a dry run reaches the host without sudo,
+	// so only a run that will change something claims it, through sudo,
+	// since the registry is root's.
+	if *execute {
+		if err := claimHosts(cfg, true, map[string]registry.Runner{where: registryHost(cfg.Sites[where], *destination, true)}); err != nil {
+			return err
+		}
 	}
 	key, err := pocketIDKey(cfg, *configPath, *secretsPath, *appName)
 	if err != nil {
@@ -230,7 +239,7 @@ func pocketIDBase(cfg *config.Config, site string) string {
 // of them will do, and the first in sorted order is chosen so that the same
 // command always reaches the same host. --site overrides it, but only to a
 // site the app actually runs on.
-func adminSite(cfg *config.Config, appName, override string) (string, error) {
+func adminSite(cfg *config.Config, appName, override, command string) (string, error) {
 	app := cfg.Apps[appName]
 	var candidates []string
 	switch app.Placement.Mode {
@@ -240,13 +249,13 @@ func adminSite(cfg *config.Config, appName, override string) (string, error) {
 		candidates = cfg.AppsSites()
 	}
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("app admin create: %s runs on no site", appName)
+		return "", fmt.Errorf("%s: %s runs on no site", command, appName)
 	}
 	if override == "" {
 		return candidates[0], nil
 	}
 	if !slices.Contains(candidates, override) {
-		return "", fmt.Errorf("app admin create: %s does not run on %s. It runs on %s", appName, override, strings.Join(candidates, ", "))
+		return "", fmt.Errorf("%s: %s does not run on %s. It runs on %s", command, appName, override, strings.Join(candidates, ", "))
 	}
 	return override, nil
 }
@@ -264,20 +273,36 @@ var standbyLook = func(t apply.SSHTransport) apply.Transport { return t }
 // used as given, through adminSite's own check.
 func pocketIDSite(cfg *config.Config, appName, override, command string) (string, error) {
 	if override != "" || !slices.Contains(apply.StandbyApps(cfg), appName) {
-		return adminSite(cfg, appName, override)
+		return adminSite(cfg, appName, override, command)
 	}
+	site, list, err := activeInstance(cfg, appName, "", "")
+	if err != nil {
+		return "", fmt.Errorf("%s: %w, so there is no one site to call:\n%sName one with --site once exactly one is active", command, err, apply.DescribeInstances(list))
+	}
+	return site, nil
+}
+
+// activeInstance is the site whose instance of a Pocket ID app running on
+// several sites is active, with what every site answered, or why there is no
+// one such site. site, when named, is reached through destination, as the
+// command running on it was told with --ssh.
+func activeInstance(cfg *config.Config, appName, site, destination string) (string, []apply.Instance, error) {
 	transports := map[string]apply.Transport{}
 	for _, name := range cfg.AppsSites() {
-		transports[name] = standbyLook(siteTransport(cfg.Sites[name], "", false))
+		override := ""
+		if name == site {
+			override = destination
+		}
+		transports[name] = standbyLook(siteTransport(cfg.Sites[name], override, false))
 	}
 	list := apply.LookAtInstances(cfg, appName, transports)
-	if _, err := apply.OneActive(appName, list); err != nil {
-		return "", fmt.Errorf("%s: %w, so there is no one site to call:\n%sName one with --site once exactly one is active", command, err, apply.DescribeInstances(list))
+	if _, err := apply.OneActive(cfg.Deployment(), appName, list); err != nil {
+		return "", list, err
 	}
 	for _, in := range list {
 		if in.State == apply.Active {
-			return in.Site, nil
+			return in.Site, list, nil
 		}
 	}
-	return "", fmt.Errorf("%s: no active instance of %s", command, appName)
+	return "", list, fmt.Errorf("no active instance of %s", appName)
 }

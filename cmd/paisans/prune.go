@@ -9,6 +9,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -50,7 +51,13 @@ func runPrune(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
-	plan, err := apply.BuildVolumePrune(*site, transport)
+	if _, err := hostGate(os.Stdout, cfg, *site, transport); err != nil {
+		return err
+	}
+	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+		return err
+	}
+	plan, err := apply.BuildVolumePrune(cfg.Deployment(), *site, transport)
 	if err != nil {
 		return err
 	}

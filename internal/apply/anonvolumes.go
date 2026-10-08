@@ -1,21 +1,22 @@
 package apply
 
 import (
-	"fmt"
 	"strings"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // stackVolumes lists the volumes a stack's current containers mount, run
 // just before a recreate replaces them.
-func stackVolumes(stack string) string {
-	return fmt.Sprintf(`docker compose -f /srv/%s/compose.yaml ps -aq | xargs -r docker inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}'`, stack)
+func stackVolumes(d deployment.Deployment, stack string) string {
+	return d.ComposeCmd(stack) + ` ps -aq | xargs -r docker inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}'`
 }
 
 // recordAnonymousVolumes returns the anonymous volumes a stack's containers
 // mount now, before its recreate. A failure to read them is a warning: it
 // costs the cleanup after the recreate, never the recreate itself.
 func recordAnonymousVolumes(plan *Plan, stack string, t Transport) []string {
-	out, err := t.Run(stackVolumes(stack))
+	out, err := t.Run(stackVolumes(plan.Deployment, stack))
 	if err != nil {
 		plan.say("  %-9s %s: the volumes its old containers used were not read, so none will be removed after it: %s\n", "warning", stack, firstLine(strings.TrimSpace(out)))
 		return nil

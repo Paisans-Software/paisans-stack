@@ -102,11 +102,11 @@ func TestAJoinCompletesAndLeavesNothingToDo(t *testing.T) {
 	if got := strings.Join(w.voters(), ","); got != "home-a,home-b,vm" {
 		t.Errorf("voters %s", got)
 	}
-	vm := w.hosts["vm"].files["/srv/infra/compose.yaml"]
+	vm := w.hosts["vm"].files["/srv/paisans/f2a9/infra/compose.yaml"]
 	if !strings.Contains(vm, "--initial-cluster-state=existing") || !strings.Contains(vm, "--initial-cluster=home-a=http://10.44.0.1:2380,vm=http://10.44.0.3:2380\n") {
 		t.Errorf("vm's etcd was not started as a joiner of two:\n%s", vm)
 	}
-	homeA := w.hosts["home-a"].files["/srv/infra/compose.yaml"]
+	homeA := w.hosts["home-a"].files["/srv/paisans/f2a9/infra/compose.yaml"]
 	if !strings.Contains(homeA, "--initial-cluster=home-a=http://10.44.0.1:2380\n") {
 		t.Errorf("the founder's compose file changed")
 	}
@@ -114,7 +114,7 @@ func TestAJoinCompletesAndLeavesNothingToDo(t *testing.T) {
 		t.Errorf("synchronous mode %v, HAProxy serves:\n%s", w.syncMode, w.served["home-a"])
 	}
 	for _, c := range w.hosts["home-a"].commands {
-		if strings.HasSuffix(c, "/srv/infra/compose.yaml restart") || strings.Contains(c, "/srv/infra/compose.yaml up -d") {
+		if strings.HasSuffix(c, "/srv/paisans/f2a9/infra/compose.yaml restart") || strings.Contains(c, "/srv/paisans/f2a9/infra/compose.yaml up -d") {
 			t.Errorf("the primary's whole stack was acted on: %s", c)
 		}
 	}
@@ -148,19 +148,19 @@ func TestAJoinCompletesAndLeavesNothingToDo(t *testing.T) {
 	}
 }
 
-// A failed mesh gate restores every existing site's wg0.conf and stops
+// A failed mesh gate restores every existing site's psns-f2a9.conf and stops
 // before etcd is touched.
 func TestAFailedMeshGateRollsBack(t *testing.T) {
 	defer siteadd.SetFast()()
 	w := newWorld(t)
 	w.noPing = true
-	before := w.hosts["home-a"].files["/etc/wireguard/wg0.conf"]
+	before := w.hosts["home-a"].files["/etc/wireguard/psns-f2a9.conf"]
 	err := siteadd.Execute(build(t, w))
 	if err == nil || !strings.Contains(err.Error(), "stage 2") {
 		t.Fatalf("want a stage 2 failure, got %v", err)
 	}
-	if w.hosts["home-a"].files["/etc/wireguard/wg0.conf"] != before {
-		t.Error("home-a's wg0.conf was not restored")
+	if w.hosts["home-a"].files["/etc/wireguard/psns-f2a9.conf"] != before {
+		t.Error("home-a's psns-f2a9.conf was not restored")
 	}
 	if w.hosts["home-a"].ran("member add") > 0 {
 		t.Error("etcd was touched after a failed mesh gate")
@@ -315,7 +315,7 @@ func TestHAProxyRestartsWithItsDatabaseAppsStopped(t *testing.T) {
 	for _, want := range []string{
 		"stop      home-a: auth, docs, talk: they reach the database through this HAProxy",
 		"restart   home-a: HAProxy alone",
-		"start     home-a: auth, docs, talk (docker compose -f /srv/auth/compose.yaml up -d;",
+		"start     home-a: auth, docs, talk (docker compose -f /srv/paisans/f2a9/auth/compose.yaml up -d;",
 		"check     home-a: auth, docs, talk: every container running",
 	} {
 		if !strings.Contains(plan, want) {
@@ -340,7 +340,7 @@ func TestHAProxyRestartsWithItsDatabaseAppsStopped(t *testing.T) {
 		t.Fatal("HAProxy was not restarted")
 	}
 	for _, app := range []string{"auth", "docs", "talk"} {
-		compose := "/srv/" + app + "/compose.yaml"
+		compose := "/srv/paisans/f2a9/" + app + "/compose.yaml"
 		stop, start, check := index(compose+" stop"), index(compose+" up -d"), index(compose+" ps --all")
 		if stop < 0 || stop > restart {
 			t.Errorf("%s was not stopped before HAProxy's restart (stop at %d, restart at %d)", app, stop, restart)
@@ -353,7 +353,7 @@ func TestHAProxyRestartsWithItsDatabaseAppsStopped(t *testing.T) {
 		}
 	}
 	for _, c := range cmds {
-		if strings.Contains(c, "/srv/blog/") || strings.Contains(c, "/srv/gate/") {
+		if strings.Contains(c, "/srv/paisans/f2a9/blog/") || strings.Contains(c, "/srv/paisans/f2a9/gate/") {
 			t.Errorf("an app that does not use the cluster's database was moved: %s", c)
 		}
 	}

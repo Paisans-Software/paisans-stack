@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -68,8 +69,8 @@ func StandbyApps(cfg *config.Config) []string {
 // state file first, through `docker compose exec`, which fails for a
 // container that is not running and so falls through; then /healthz on the
 // mesh address, the same address and port the gateway dials.
-func instanceCommand(app, address string, port int) string {
-	compose := fmt.Sprintf("/srv/%s/compose.yaml", app)
+func instanceCommand(d deployment.Deployment, app, address string, port int) string {
+	compose := d.Compose(app)
 	return fmt.Sprintf("if [ ! -f %[1]s ]; then echo absent; "+
 		"elif docker compose -f %[1]s exec -T app test -f /tmp/paisans-standby >/dev/null 2>&1; then echo standby; "+
 		"elif curl --silent --fail --max-time 5 --output /dev/null http://%[2]s:%[3]d/healthz; then echo active; "+
@@ -88,7 +89,7 @@ func LookAtInstances(cfg *config.Config, app string, transports map[string]Trans
 			out = append(out, Instance{Site: site, State: Unreachable, Detail: "no transport"})
 			continue
 		}
-		answer, err := t.Run(instanceCommand(app, address, port))
+		answer, err := t.Run(instanceCommand(cfg.Deployment(), app, address, port))
 		if err != nil {
 			out = append(out, Instance{Site: site, State: Unreachable, Detail: firstLine(strings.TrimSpace(err.Error()))})
 			continue
@@ -102,7 +103,7 @@ func LookAtInstances(cfg *config.Config, app string, transports map[string]Trans
 		case Down:
 			in.Detail = "running neither as active nor on standby"
 		case Absent:
-			in.Detail = fmt.Sprintf("no /srv/%s on this site yet", app)
+			in.Detail = fmt.Sprintf("no %s on this site yet", cfg.Deployment().Dir(app))
 		default:
 			in.State, in.Detail = Unreachable, fmt.Sprintf("unreadable answer %q", strings.TrimSpace(answer))
 		}
@@ -115,7 +116,7 @@ func LookAtInstances(cfg *config.Config, app string, transports map[string]Trans
 // waiting could fix what is wrong, and what is wrong, nil when nothing is. None active may be a takeover
 // in progress; two active is the condition the standby exists to prevent,
 // and waiting would only let both keep serving.
-func OneActive(app string, list []Instance) (wait bool, err error) {
+func OneActive(d deployment.Deployment, app string, list []Instance) (wait bool, err error) {
 	var active []string
 	for _, in := range list {
 		if in.State == Active {
@@ -128,7 +129,7 @@ func OneActive(app string, list []Instance) (wait bool, err error) {
 	case 0:
 		return true, fmt.Errorf("pocket-id %s: no site has an active instance", app)
 	default:
-		return false, fmt.Errorf("pocket-id %s: %d sites have an active instance (%s), and Pocket ID admits one per database. Stop all but one now, with `docker compose -f /srv/%s/compose.yaml stop app` on the others, and read their logs: two answering means they do not share one database, or one of them was not refused", app, len(active), strings.Join(active, ", "), app)
+		return false, fmt.Errorf("pocket-id %s: %d sites have an active instance (%s), and Pocket ID admits one per database. Stop all but one now, with `%s stop app` on the others, and read their logs: two answering means they do not share one database, or one of them was not refused", app, len(active), strings.Join(active, ", "), d.ComposeCmd(app))
 	}
 }
 
@@ -158,7 +159,7 @@ func CheckOneActive(cfg *config.Config, app string, transports map[string]Transp
 	wait := false
 	for i := 0; i < attempts; i++ {
 		list = LookAtInstances(cfg, app, transports)
-		wait, err = OneActive(app, list)
+		wait, err = OneActive(cfg.Deployment(), app, list)
 		if err == nil {
 			fmt.Fprintf(out, "pocket-id %s: one active instance\n%s", app, DescribeInstances(list))
 			return nil
@@ -172,7 +173,7 @@ func CheckOneActive(cfg *config.Config, app string, transports map[string]Transp
 	}
 	fmt.Fprintf(out, "pocket-id %s:\n%s", app, DescribeInstances(list))
 	if wait {
-		return fmt.Errorf("%w within %s. Sign in is down until one is. Read `docker compose -f /srv/%s/compose.yaml logs app` on each site above", err, standbyWait, app)
+		return fmt.Errorf("%w within %s. Sign in is down until one is. Read `%s logs app` on each site above", err, standbyWait, cfg.Deployment().ComposeCmd(app))
 	}
 	return err
 }

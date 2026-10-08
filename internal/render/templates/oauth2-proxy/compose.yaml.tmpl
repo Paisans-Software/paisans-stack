@@ -24,10 +24,12 @@
 # on the next port up, 4181 (internal/render/plan.go's gateMembersPort). Both
 # are declared here as literals, matching internal/kinds/kinds.go's service
 # list, rather than computed from one another.
-name: paisans-{{ .App.Name }}
+name: {{ .Project }}
 
 services:
   provisional:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "provisional" }}
     restart: unless-stopped
     env_file:
@@ -50,6 +52,8 @@ services:
       retries: 3
 
   members:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "members" }}
     restart: unless-stopped
     env_file:
@@ -72,3 +76,10 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+# Every network carries the deployment label too, so that what owns it is
+# read from the label rather than guessed from its name.
+networks:
+  default:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"

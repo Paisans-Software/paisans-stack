@@ -19,7 +19,7 @@ func seenInScope(changes []Change, rel string) bool {
 // as a host edit.
 //
 // Only a file the plan updated is restored. A created file had nothing
-// before it, and is left: removing wg0.conf from a new site would take down an
+// before it, and is left: removing the WireGuard file from a new site would take down an
 // interface no existing site is talking to any more, which gains nothing. The
 // mesh is handed the restored file the same way it was handed the new one, so
 // a peer added with `wg syncconf` is removed with `wg syncconf`, without
@@ -45,9 +45,9 @@ func Rollback(plan *Plan, t Transport) error {
 	if err := writeManifest(plan, t); err != nil {
 		return err
 	}
-	if command := plan.WireGuard.Command(); command != "" && plan.WireGuard != WireGuardStart {
+	if command := plan.WireGuard.Command(plan.Deployment); command != "" && plan.WireGuard != WireGuardStart {
 		if out, err := t.Run(command); err != nil {
-			return fmt.Errorf("%s: handing wg0 its restored configuration:\n%s", plan.Site, out)
+			return fmt.Errorf("%s: handing %s its restored configuration:\n%s", plan.Site, plan.Deployment.Interface(), out)
 		}
 	}
 	return nil

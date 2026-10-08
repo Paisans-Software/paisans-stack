@@ -15,8 +15,8 @@ import (
 // configuration file Spilo writes for it (zalando/spilo, postgres-appliance/
 // scripts/configure_spilo.py, which writes postgres.yml under PGHOME,
 // /home/postgres). The host needs nothing beyond Docker.
-func patronictl(args string) string {
-	return "docker compose -f /srv/infra/compose.yaml exec -T patroni patronictl -c /home/postgres/postgres.yml " + args
+func (p *Plan) patronictl(args string) string {
+	return p.dep().ComposeCmd("infra") + " exec -T patroni patronictl -c /home/postgres/postgres.yml " + args
 }
 
 // noPatroni is what the list probe prints where no Patroni runs.
@@ -25,7 +25,7 @@ const noPatroni = "__PAISANS_NO_PATRONI__"
 // startInfra starts whatever of the new site's infrastructure stack is not
 // running, which after stage 3 is Patroni alone: etcd is running with an
 // unchanged definition, and `up -d` leaves such a container be.
-const startInfra = "docker compose -f /srv/infra/compose.yaml up -d"
+func (p *Plan) startInfra() string { return p.dep().ComposeCmd("infra") + " up -d" }
 
 // patroniMember is one row of `patronictl list -f json`. The keys are the
 // column titles (Patroni v4.1.0, patroni/ctl.py, output_members): Role is
@@ -64,7 +64,7 @@ func parsePatroniList(out string) ([]patroniMember, error) {
 }
 
 func (p *Plan) patroniList() ([]patroniMember, error) {
-	out, err := p.transports[p.patroni].Run(patronictl("list -f json"))
+	out, err := p.transports[p.patroni].Run(p.patronictl("list -f json"))
 	if err != nil {
 		return nil, fmt.Errorf("%s: patronictl list: %s", p.patroni, lastLines(out, 3))
 	}
@@ -79,8 +79,8 @@ func (p *Plan) probePatroni() ([]patroniMember, error) {
 			continue
 		}
 		command := fmt.Sprintf(
-			"if docker compose -f /srv/infra/compose.yaml ps --status running --quiet patroni 2>/dev/null | grep -q .; then %s; else echo %s; fi",
-			patronictl("list -f json"), noPatroni)
+			"if %s ps --status running --quiet patroni 2>/dev/null | grep -q .; then %s; else echo %s; fi",
+			p.dep().ComposeCmd("infra"), p.patronictl("list -f json"), noPatroni)
 		out, err := p.transports[name].Run(command)
 		if err != nil {
 			return nil, fmt.Errorf("%s: asking Patroni for its members: %s", name, lastLines(out, 3))
@@ -122,7 +122,7 @@ func (p *Plan) buildReplica(members []patroniMember) *Stage {
 	}
 	st.Steps = append(st.Steps,
 		Step{Site: p.Site, Verb: "apply", Text: "any file of its own still missing, as `paisans apply --site " + p.Site + "` would"},
-		Step{Site: p.Site, Verb: "start", Text: "Patroni, which clones the leader with pg_basebackup: " + startInfra},
+		Step{Site: p.Site, Verb: "start", Text: "Patroni, which clones the leader with pg_basebackup: " + p.startInfra()},
 	)
 	st.run = func() error {
 		if _, ok := p.initial[p.Site]; !ok {
@@ -133,7 +133,11 @@ func (p *Plan) buildReplica(members []patroniMember) *Stage {
 			return err
 		}
 		t := p.transports[p.Site]
-		whole, err := apply.Build(p.Site, rendered, p.acmeModule(), t)
+		var opts []apply.Option
+		if p.KeepImages {
+			opts = append(opts, apply.KeepImages())
+		}
+		whole, err := apply.Build(p.Site, rendered, p.acmeModule(), t, opts...)
 		if err != nil {
 			return err
 		}
@@ -142,7 +146,7 @@ func (p *Plan) buildReplica(members []patroniMember) *Stage {
 			return err
 		}
 		p.say("  %-9s %s's Patroni\n", "start", p.Site)
-		if out, err := t.Run(startInfra); err != nil {
+		if out, err := t.Run(p.startInfra()); err != nil {
 			return fmt.Errorf("%s: starting Patroni: %s", p.Site, lastLines(out, 5))
 		}
 		return nil
@@ -172,7 +176,7 @@ func (p *Plan) replicaGate() error {
 		}
 	}
 	if !streaming {
-		return fmt.Errorf("%s is not streaming after %s: %s. A large database takes a while to clone, and Patroni carries on meanwhile; read `docker compose -f /srv/infra/compose.yaml logs patroni` on %s, and run site add again", p.Site, streamWait, last, p.Site)
+		return fmt.Errorf("%s is not streaming after %s: %s. A large database takes a while to clone, and Patroni carries on meanwhile; read `%s logs patroni` on %s, and run site add again", p.Site, streamWait, last, p.dep().ComposeCmd("infra"), p.Site)
 	}
 
 	var samples []float64
@@ -223,8 +227,8 @@ func lagConverging(samples []float64) bool {
 // applies without asking; -q skips printing the diff (Patroni v4.1.0,
 // patroni/ctl.py, edit_config). Spilo's own bootstrap.dcs values only seed a
 // new cluster, so a cluster already running needs this.
-func editSynchronous(strict bool) string {
-	return patronictl("edit-config --force -q -s synchronous_mode=true -s synchronous_mode_strict=" + strconv.FormatBool(strict))
+func (p *Plan) editSynchronous(strict bool) string {
+	return p.patronictl("edit-config --force -q -s synchronous_mode=true -s synchronous_mode_strict=" + strconv.FormatBool(strict))
 }
 
 // buildClusterConfig is stage 5: synchronous mode, when the configuration
@@ -236,7 +240,7 @@ func (p *Plan) buildClusterConfig() (*Stage, error) {
 		return st, nil
 	}
 	st.Gate = fmt.Sprintf("`patronictl list` on %s shows a Sync Standby", p.patroni)
-	out, err := p.transports[p.patroni].Run(patronictl("show-config"))
+	out, err := p.transports[p.patroni].Run(p.patronictl("show-config"))
 	if err != nil {
 		return nil, fmt.Errorf("%s: patronictl show-config: %s", p.patroni, lastLines(out, 3))
 	}
@@ -249,7 +253,7 @@ func (p *Plan) buildClusterConfig() (*Stage, error) {
 		st.Steps = append(st.Steps, Step{Site: p.patroni, Verb: "set", Text: fmt.Sprintf("synchronous_mode=true and synchronous_mode_strict=%s in Patroni's dynamic configuration (live: %s and %s)", wantStrict, boolString(live["synchronous_mode"]), boolString(live["synchronous_mode_strict"]))})
 	}
 	st.run = func() error {
-		if out, err := p.transports[p.patroni].Run(editSynchronous(p.cfg.Cluster.SynchronousStrict)); err != nil {
+		if out, err := p.transports[p.patroni].Run(p.editSynchronous(p.cfg.Cluster.SynchronousStrict)); err != nil {
 			return fmt.Errorf("%s: patronictl edit-config: %s", p.patroni, lastLines(out, 3))
 		}
 		return nil

@@ -79,6 +79,17 @@ func TestRulesFire(t *testing.T) {
 		{"uptime-needs-an-admin-group", "uptime-needs-an-admin-group", validate.Refuse},
 		{"smtp-on-a-kind-without-mail", "smtp-on-a-kind-without-mail", validate.Refuse},
 		{"uptime-without-smtp", "uptime-without-smtp", validate.Warn},
+		{"monitor-on-gateway", "monitor-on-gateway", validate.Refuse},
+		{"monitor-on-witness", "monitor-on-witness", validate.Refuse},
+		{"monitor-shares-a-site", "monitor-shares-a-site", validate.Warn},
+		{"monitor-without-uptime", "monitor-without-uptime", validate.Refuse},
+		{"uptime-needs-a-monitor-site", "uptime-needs-a-monitor-site", validate.Refuse},
+		{"monitor-without-public-address", "monitor-without-public-address", validate.Refuse},
+		{"ingress-outside-monitor", "ingress-outside-monitor", validate.Refuse},
+		{"ingress-listen-mode", "ingress-listen-mode", validate.Refuse},
+		{"ingress-listen-public", "ingress-listen-public", validate.Refuse},
+		{"ingress-listen-bypasses-firewall", "ingress-listen-bypasses-firewall", validate.Warn},
+		{"ingress-external-serves-one-app", "ingress-external-serves-one-app", validate.Refuse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
@@ -219,11 +230,10 @@ func TestPocketIDOnTwoAppsSitesIsAllowed(t *testing.T) {
 	}
 }
 
-// The shipped example must validate. It deliberately demonstrates three
-// warnings: its Synapse stack and its uptime monitor are both pinned to the
-// site that also holds the witness role (the monitor with VACUUM off, which is
-// what makes that a reasonable neighbour), and its two Garage sites at
-// replication 2 stop uploads while either is down.
+// The shipped example must validate. It deliberately demonstrates two
+// warnings: its Synapse stack is pinned to the site that also holds the
+// witness role, and its two Garage sites at replication 2 stop uploads while
+// either is down. The monitor has a site of its own and adds none.
 func TestExampleValidates(t *testing.T) {
 	cfg, err := config.Load(filepath.Join("..", "..", "examples", "paisans.example.yaml"))
 	if err != nil {
@@ -239,7 +249,7 @@ func TestExampleValidates(t *testing.T) {
 		rules = append(rules, w.Rule)
 	}
 	sort.Strings(rules)
-	if strings.Join(rules, ",") != "garage-two-sites-stop-uploads,pinned-app-on-witness,pinned-app-on-witness" {
+	if strings.Join(rules, ",") != "garage-two-sites-stop-uploads,pinned-app-on-witness" {
 		t.Fatalf("unexpected warnings on the example: %v", warnings)
 	}
 }
@@ -367,5 +377,120 @@ func TestAMediaHostnameCannotBeAnotherAppsHostname(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("a clash with a derived media hostname must say the name was derived, got %v", result.Findings)
+	}
+}
+
+// A site holding nothing but the monitor role, with the monitor pinned to it,
+// draws no finding of its own: it needs no other role.
+func TestAMonitorOnlySiteIsQuiet(t *testing.T) {
+	result := validate.Check(load(t, "uptime-without-smtp"))
+	for _, f := range result.Findings {
+		if f.Rule != "uptime-without-smtp" {
+			t.Errorf("unexpected finding: %s", f)
+		}
+	}
+}
+
+// A role-less site stays legal for any kind but uptime, which needs a site
+// holding the monitor role.
+func TestARolelessSiteStillHostsOtherKinds(t *testing.T) {
+	cfg := load(t, "uptime-without-smtp")
+	watch := cfg.Sites["watch"]
+	watch.Roles = nil
+	cfg.Sites["watch"] = watch
+	web := config.App{Kind: config.KindElement, Hostname: "web.example.org", Placement: config.Placement{Mode: config.PlacementPinned, Site: "watch"}}
+	cfg.Apps["web"] = web
+	result := validate.Check(cfg)
+	if !refusedFor(result, "uptime-needs-a-monitor-site", "apps.status.placement") {
+		t.Fatalf("uptime on a role-less site: %v", result.Findings)
+	}
+	delete(cfg.Apps, "status")
+	for _, f := range validate.Check(cfg).Refusals() {
+		t.Errorf("a role-less site hosting element was refused: %s", f)
+	}
+}
+
+// A listen address is where Docker publishes the app for the operator's web
+// server. Loopback is quiet; a LAN address or the site's own mesh address is
+// allowed with the firewall warning; anything the internet or another host
+// could be reached on is refused. 10.44.0.1 is RFC 1918 as well as inside the
+// mesh, but it is another site's address, which nothing on this host binds.
+func TestIngressListenAddresses(t *testing.T) {
+	for _, tc := range []struct {
+		listen         string
+		refused, warns bool
+	}{
+		{"127.0.0.1:8480", false, false},
+		{"192.168.1.20:8480", false, true},
+		{"10.44.0.4:8480", false, true},
+		{"10.44.0.1:8480", true, false},
+		{"203.0.113.20:8480", true, false},
+		{"0.0.0.0:8480", true, false},
+	} {
+		cfg := load(t, "uptime-without-smtp")
+		site := cfg.Sites["watch"]
+		site.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: tc.listen}
+		cfg.Sites["watch"] = site
+		result := validate.Check(cfg)
+		if result.Has("ingress-listen-public") != tc.refused || result.Has("ingress-listen-bypasses-firewall") != tc.warns {
+			t.Errorf("%s: %v", tc.listen, result.Findings)
+		}
+	}
+}
+
+// mode external without listen has nowhere to publish the app.
+func TestExternalIngressNeedsListen(t *testing.T) {
+	cfg := load(t, "uptime-without-smtp")
+	site := cfg.Sites["watch"]
+	site.Ingress = &config.Ingress{Mode: config.IngressExternal}
+	cfg.Sites["watch"] = site
+	if !refusedFor(validate.Check(cfg), "ingress-listen-mode", "sites.watch.ingress.listen") {
+		t.Fatal("external with no listen was not refused")
+	}
+}
+
+// acme.image's module check covers every site running the toolkit's Caddy,
+// a monitor serving its own hostname included, not only a gateway.
+func TestACMEProviderNeedsAnImageForAMonitorsCaddy(t *testing.T) {
+	cfg := load(t, "uptime-without-smtp")
+	vm := cfg.Sites["vm"]
+	vm.Roles = []config.Role{config.RoleWitness}
+	cfg.Sites["vm"] = vm
+	cfg.ACME = config.ACME{Provider: "route53"}
+	if !validate.Check(cfg).Has("acme-provider-needs-an-image") {
+		t.Fatal("a monitor's Caddy with an unpublished provider and no image was not refused")
+	}
+}
+
+// Carrier grade NAT space, which Tailscale uses, is as private to the site as
+// RFC 1918: allowed as a listen address, with the firewall warning.
+func TestACGNATListenIsWarnedNotRefused(t *testing.T) {
+	cfg := load(t, "uptime-without-smtp")
+	site := cfg.Sites["watch"]
+	site.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: "100.101.102.103:8480"}
+	cfg.Sites["watch"] = site
+	result := validate.Check(cfg)
+	if result.Has("ingress-listen-public") || !result.Has("ingress-listen-bypasses-firewall") {
+		t.Fatalf("%v", result.Findings)
+	}
+}
+
+// An external monitor's compose network is pinned at 10.255.255.0/29, so a
+// mesh over it would route the mesh into a Docker bridge.
+func TestTheIngressNetworkMustNotOverlapTheMesh(t *testing.T) {
+	cfg := load(t, "uptime-without-smtp")
+	site := cfg.Sites["watch"]
+	site.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}
+	cfg.Sites["watch"] = site
+	if validate.Check(cfg).Has("ingress-network-overlaps-mesh") {
+		t.Fatal("refused with the usual mesh")
+	}
+	cfg.Mesh.Subnet = "10.255.0.0/16"
+	for name, s := range cfg.Sites {
+		s.Address = strings.Replace(s.Address, "10.44.", "10.255.", 1)
+		cfg.Sites[name] = s
+	}
+	if !refusedFor(validate.Check(cfg), "ingress-network-overlaps-mesh", "sites.watch.ingress") {
+		t.Fatalf("%v", validate.Check(cfg).Findings)
 	}
 }

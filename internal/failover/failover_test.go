@@ -12,6 +12,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // world is the cluster every fake host shares: who leads, what each replica
@@ -95,15 +96,15 @@ func (h host) Run(command string) (string, error) {
 		}
 		return "Successfully switched over", nil
 	case strings.HasSuffix(command, "/compose.yaml restart"):
-		if w.failRestart != "" && strings.Contains(command, "/srv/"+w.failRestart+"/") {
+		if w.failRestart != "" && strings.Contains(command, "/srv/paisans/f2a9/"+w.failRestart+"/") {
 			return "Error response from daemon: no such container", errors.New("exit status 1")
 		}
-		if w.afterRestart != nil && strings.Contains(command, "/srv/auth/") {
+		if w.afterRestart != nil && strings.Contains(command, "/srv/paisans/f2a9/auth/") {
 			w.instance = w.afterRestart
 		}
 		return "", nil
 	case strings.Contains(command, " ps --all --format json"):
-		stack := strings.TrimPrefix(strings.Fields(command)[3], "/srv/")
+		stack := strings.TrimPrefix(strings.Fields(command)[3], "/srv/paisans/f2a9/")
 		stack = strings.TrimSuffix(stack, "/compose.yaml")
 		if w.unhealthy[stack] {
 			return `{"Service":"app","State":"restarting","ExitCode":1}`, nil
@@ -170,8 +171,8 @@ func TestDryRunChecksAndChangesNothing(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"on home-a: " + SwitchoverCommand("home-a", "home-b"),
-		"on home-b: " + SwitchoverCommand("home-b", "home-a"),
+		"on home-a: " + SwitchoverCommand(cfg.Deployment(), "home-a", "home-b"),
+		"on home-b: " + SwitchoverCommand(cfg.Deployment(), "home-b", "home-a"),
 		"expected interruption",
 		"Nothing was changed",
 		"auth on home-a healthy",
@@ -191,8 +192,8 @@ func TestDryRunChecksAndChangesNothing(t *testing.T) {
 }
 
 func TestSwitchoverCommandFlags(t *testing.T) {
-	got := SwitchoverCommand("home-a", "home-b")
-	want := "docker compose -f /srv/infra/compose.yaml exec -T patroni patronictl -c /home/postgres/postgres.yml switchover --leader home-a --candidate home-b --force"
+	got := SwitchoverCommand(deployment.Deployment{ID: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}, "home-a", "home-b")
+	want := "docker compose -f /srv/paisans/f2a9/infra/compose.yaml exec -T patroni patronictl -c /home/postgres/postgres.yml switchover --leader home-a --candidate home-b --force"
 	if got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
@@ -325,8 +326,8 @@ func TestEachSwitchRestartsTheDatabaseAppsOnEveryAppsSite(t *testing.T) {
 	}
 	for _, want := range []string{
 		"restart the apps that use the cluster database, on every apps site",
-		"on home-a: docker compose -f /srv/auth/compose.yaml restart",
-		"on home-b: docker compose -f /srv/auth/compose.yaml restart",
+		"on home-a: docker compose -f /srv/paisans/f2a9/auth/compose.yaml restart",
+		"on home-b: docker compose -f /srv/paisans/f2a9/auth/compose.yaml restart",
 		"restarted auth on home-b",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -365,7 +366,7 @@ func TestEachSwitchRestartsTheDatabaseAppsOnEveryAppsSite(t *testing.T) {
 				firstPs = i
 			}
 		}
-		if restarts["home-a: docker compose -f /srv/auth/compose.yaml restart"] != 1 || restarts["home-b: docker compose -f /srv/auth/compose.yaml restart"] != 1 || len(restarts) != 2 {
+		if restarts["home-a: docker compose -f /srv/paisans/f2a9/auth/compose.yaml restart"] != 1 || restarts["home-b: docker compose -f /srv/paisans/f2a9/auth/compose.yaml restart"] != 1 || len(restarts) != 2 {
 			t.Errorf("switch %d restarted %v", n+1, restarts)
 		}
 		cluster := -1

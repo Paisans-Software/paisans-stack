@@ -29,7 +29,7 @@ type fakeHost struct {
 	// host has none, which is the ordinary case on a first apply and the one
 	// that used to make apply impossible to complete.
 	running bool
-	// wgUp is whether wg0 exists. Starting or restarting the unit brings it
+	// wgUp is whether psns-f2a9 exists. Starting or restarting the unit brings it
 	// up, the way systemd would.
 	wgUp bool
 	// inputs is what each RunInput call sent on stdin, in order, beside its
@@ -91,7 +91,7 @@ func (h *fakeHost) Run(command string) (string, error) {
 		return "refused by the fake host", fmt.Errorf("exit status 1")
 	}
 	if strings.Contains(command, "ps -aq | xargs -r docker inspect") {
-		stack := strings.TrimSuffix(strings.TrimPrefix(command, "docker compose -f /srv/"), command[strings.Index(command, "/compose.yaml"):])
+		stack := strings.TrimSuffix(strings.TrimPrefix(command, "docker compose -f /srv/paisans/f2a9/"), command[strings.Index(command, "/compose.yaml"):])
 		return h.stackVolumes[stack], nil
 	}
 	if command == "docker volume ls -qf dangling=true" {
@@ -135,7 +135,7 @@ func (h *fakeHost) Run(command string) (string, error) {
 		return fmt.Sprintf(`{"members":[{"name":%q,"role":"leader","state":"running"},{"name":"other","role":"replica","state":"streaming"}],"scope":"fixture"}`, h.leader), nil
 	}
 	if strings.Contains(command, " ps --all --format json") {
-		stack := strings.TrimSuffix(strings.TrimPrefix(command, "docker compose -f /srv/"), "/compose.yaml ps --all --format json")
+		stack := strings.TrimSuffix(strings.TrimPrefix(command, "docker compose -f /srv/paisans/f2a9/"), "/compose.yaml ps --all --format json")
 		if out, ok := h.ps[stack]; ok {
 			return out, nil
 		}
@@ -153,13 +153,13 @@ func (h *fakeHost) Run(command string) (string, error) {
 		delete(h.files, strings.Trim(strings.TrimPrefix(command, "rm -f "), "'"))
 		return "", nil
 	}
-	if strings.Contains(command, "ip link show wg0") {
+	if strings.Contains(command, "ip link show psns-f2a9") {
 		if h.wgUp {
 			return "up\n", nil
 		}
 		return "down\n", nil
 	}
-	if strings.Contains(command, "enable --now wg-quick@wg0") || strings.Contains(command, "restart wg-quick@wg0") {
+	if strings.Contains(command, "enable --now wg-quick@psns-f2a9") || strings.Contains(command, "restart wg-quick@psns-f2a9") {
 		h.wgUp = true
 		return "", nil
 	}
@@ -303,10 +303,10 @@ func TestFirstApplyCreatesAndRecords(t *testing.T) {
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := host.files["/srv/talk/.env"]; !ok {
+	if _, ok := host.files["/srv/paisans/f2a9/talk/.env"]; !ok {
 		t.Error("an app's environment was not written")
 	}
-	if _, ok := host.files["/srv/.paisans-manifest.json"]; !ok {
+	if _, ok := host.files["/srv/paisans/f2a9/.paisans-manifest.json"]; !ok {
 		t.Fatal("no manifest was recorded, so the next apply cannot tell its own writes from an edit")
 	}
 
@@ -338,7 +338,7 @@ func TestAnEditOnTheHostIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	host.files["/srv/talk/.env"] += "\nSOMEONE_EDITED_THIS=1\n"
+	host.files["/srv/paisans/f2a9/talk/.env"] += "\nSOMEONE_EDITED_THIS=1\n"
 
 	p, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
@@ -348,7 +348,7 @@ func TestAnEditOnTheHostIsRefused(t *testing.T) {
 	// that a refused Execute runs nothing at all.
 	host.commands = nil
 	conflicts := p.Conflicts()
-	if len(conflicts) != 1 || conflicts[0].Path != "/srv/talk/.env" {
+	if len(conflicts) != 1 || conflicts[0].Path != "/srv/paisans/f2a9/talk/.env" {
 		t.Fatalf("expected one conflict on the edited file, got %v", conflicts)
 	}
 
@@ -356,10 +356,10 @@ func TestAnEditOnTheHostIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("an apply overwrote a file that was edited on the host")
 	}
-	if !strings.Contains(err.Error(), "/srv/talk/.env") {
+	if !strings.Contains(err.Error(), "/srv/paisans/f2a9/talk/.env") {
 		t.Errorf("the refusal does not name the file:\n%v", err)
 	}
-	if strings.Contains(host.files["/srv/talk/.env"], "SOMEONE_EDITED_THIS") == false {
+	if strings.Contains(host.files["/srv/paisans/f2a9/talk/.env"], "SOMEONE_EDITED_THIS") == false {
 		t.Error("the edited file was overwritten despite the refusal")
 	}
 	if len(host.commands) != 0 {
@@ -372,14 +372,14 @@ func TestAnEditOnTheHostIsRefused(t *testing.T) {
 // by hand before the toolkit existed, which is every early deployment.
 func TestAPreexistingFileIsNotAdopted(t *testing.T) {
 	host := newHost()
-	host.files["/srv/talk/.env"] = "HAND_WRITTEN=1\n"
+	host.files["/srv/paisans/f2a9/talk/.env"] = "HAND_WRITTEN=1\n"
 
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
 	conflicts := p.Conflicts()
-	if len(conflicts) != 1 || conflicts[0].Path != "/srv/talk/.env" {
+	if len(conflicts) != 1 || conflicts[0].Path != "/srv/paisans/f2a9/talk/.env" {
 		t.Fatalf("a hand written file was not treated as a conflict: %v", conflicts)
 	}
 }
@@ -403,12 +403,12 @@ func TestTheNarrowerActionIsChosen(t *testing.T) {
 	// now render a .env as well, but only for the Postgres container's own
 	// password, and that file is left alone here so that the action under
 	// test comes from the bind mount and nothing else.
-	host.files["/srv/blog/config.ini"] = "; drifted\n"
+	host.files["/srv/paisans/f2a9/blog/config.ini"] = "; drifted\n"
 	// Talk's environment changed, which a restart cannot pick up.
-	host.files["/srv/talk/.env"] = "DRIFTED=1\n"
+	host.files["/srv/paisans/f2a9/talk/.env"] = "DRIFTED=1\n"
 	// Pretend both drifts were ours, so this test is about the action rather
 	// than about the conflict gate, which has its own test.
-	adopt(t, host, "/srv/blog/config.ini", "/srv/talk/.env")
+	adopt(t, host, "/srv/paisans/f2a9/blog/config.ini", "/srv/paisans/f2a9/talk/.env")
 
 	p, err := apply.Build("home-a", rendered, acmeModule(t), host)
 	if err != nil {
@@ -561,7 +561,7 @@ func TestARunningGatewayIsReloaded(t *testing.T) {
 	}
 }
 
-// Bumping the gateway's image changes exactly one file, srv/infra/compose.yaml,
+// Bumping the gateway's image changes exactly one file, srv/paisans/f2a9/infra/compose.yaml,
 // and that is an environment path rather than a routing one: no routing file
 // changes, so nothing is reloaded and the container is replaced by the Actions
 // loop instead. `up -d` returns as soon as the container starts, so a Caddy
@@ -591,7 +591,7 @@ func TestAnImageOnlyChangeIsStillChecked(t *testing.T) {
 		t.Fatal(err)
 	}
 	writes := p.Writes()
-	if len(writes) != 1 || writes[0].Path != "/srv/infra/compose.yaml" {
+	if len(writes) != 1 || writes[0].Path != "/srv/paisans/f2a9/infra/compose.yaml" {
 		t.Fatalf("an image bump should move one file, got %v", writes)
 	}
 	if p.GatewayReload {
@@ -655,7 +655,7 @@ func TestAnUnknownProvidersModuleIsCheckedToo(t *testing.T) {
 func adopt(t *testing.T, host *fakeHost, paths ...string) {
 	t.Helper()
 	var manifest render.Manifest
-	if err := json.Unmarshal([]byte(host.files["/srv/.paisans-manifest.json"]), &manifest); err != nil {
+	if err := json.Unmarshal([]byte(host.files["/srv/paisans/f2a9/.paisans-manifest.json"]), &manifest); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range paths {
@@ -676,7 +676,7 @@ func adopt(t *testing.T, host *fakeHost, paths ...string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host.files["/srv/.paisans-manifest.json"] = string(data)
+	host.files["/srv/paisans/f2a9/.paisans-manifest.json"] = string(data)
 }
 
 // indexOf returns where the first command containing substring ran, or -1.
@@ -708,7 +708,7 @@ func applied(t *testing.T, site string) *fakeHost {
 	return host
 }
 
-// Every service binds the site's mesh address, so on a first apply wg0 has to
+// Every service binds the site's mesh address, so on a first apply psns-f2a9 has to
 // be up before anything is started or checked. It used to be written and
 // never started at all, which left every container failing to bind.
 func TestAFirstApplyBringsUpTheMeshFirst(t *testing.T) {
@@ -719,22 +719,22 @@ func TestAFirstApplyBringsUpTheMeshFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 		if p.WireGuard != apply.WireGuardStart {
-			t.Fatalf("%s: a first apply plans %v for wg0, want a start", site, p.WireGuard)
+			t.Fatalf("%s: a first apply plans %v for psns-f2a9, want a start", site, p.WireGuard)
 		}
 		if err := apply.Execute(p, host); err != nil {
 			t.Fatal(err)
 		}
-		start := host.indexOf("systemctl enable --now wg-quick@wg0")
+		start := host.indexOf("systemctl enable --now wg-quick@psns-f2a9")
 		if start < 0 {
-			t.Fatalf("%s: wg0 was written and never started", site)
+			t.Fatalf("%s: psns-f2a9 was written and never started", site)
 		}
 		if compose := host.firstCompose(); compose >= 0 && compose < start {
-			t.Errorf("%s: %q ran before wg0 was up", site, host.commands[compose])
+			t.Errorf("%s: %q ran before psns-f2a9 was up", site, host.commands[compose])
 		}
 	}
 }
 
-// A dry run may ask whether wg0 is up, and must do nothing else to it.
+// A dry run may ask whether psns-f2a9 is up, and must do nothing else to it.
 func TestPlanningOnlyProbesTheMesh(t *testing.T) {
 	host := applied(t, "home-a")
 	host.wgUp = false
@@ -743,10 +743,10 @@ func TestPlanningOnlyProbesTheMesh(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.WireGuard != apply.WireGuardStart {
-		t.Errorf("an unchanged wg0.conf on a host whose wg0 is down plans %v, want a start", p.WireGuard)
+		t.Errorf("an unchanged psns-f2a9.conf on a host whose psns-f2a9 is down plans %v, want a start", p.WireGuard)
 	}
 	for _, command := range host.commands {
-		if !strings.Contains(command, "ip link show wg0") {
+		if !strings.Contains(command, "ip link show psns-f2a9") {
 			t.Errorf("building a plan ran %q, which is more than a probe", command)
 		}
 	}
@@ -761,7 +761,7 @@ func TestAnUpMeshWithAnUnchangedFileIsLeftAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.WireGuard != apply.WireGuardNone {
-		t.Errorf("an up wg0 with an unchanged file plans %v", p.WireGuard)
+		t.Errorf("an up psns-f2a9 with an unchanged file plans %v", p.WireGuard)
 	}
 }
 
@@ -770,9 +770,9 @@ func TestAnUpMeshWithAnUnchangedFileIsLeftAlone(t *testing.T) {
 // enough to start an election.
 func TestAPeerChangeIsSyncedNotRestarted(t *testing.T) {
 	host := applied(t, "home-a")
-	host.files["/etc/wireguard/wg0.conf"] = strings.Replace(
-		host.files["/etc/wireguard/wg0.conf"], "PersistentKeepalive = 25", "PersistentKeepalive = 30", 1)
-	adopt(t, host, "/etc/wireguard/wg0.conf")
+	host.files["/etc/wireguard/psns-f2a9.conf"] = strings.Replace(
+		host.files["/etc/wireguard/psns-f2a9.conf"], "PersistentKeepalive = 25", "PersistentKeepalive = 30", 1)
+	adopt(t, host, "/etc/wireguard/psns-f2a9.conf")
 
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
@@ -784,10 +784,10 @@ func TestAPeerChangeIsSyncedNotRestarted(t *testing.T) {
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	if !host.ran("wg syncconf wg0") {
-		t.Error("the new peers were never handed to wg0")
+	if !host.ran("wg syncconf psns-f2a9") {
+		t.Error("the new peers were never handed to psns-f2a9")
 	}
-	if host.ran("restart wg-quick@wg0") {
+	if host.ran("restart wg-quick@psns-f2a9") {
 		t.Error("a peer change took the mesh down")
 	}
 }
@@ -796,9 +796,9 @@ func TestAPeerChangeIsSyncedNotRestarted(t *testing.T) {
 // leave the old one in place. That change needs a restart.
 func TestAnAddressChangeRestartsTheMesh(t *testing.T) {
 	host := applied(t, "home-a")
-	host.files["/etc/wireguard/wg0.conf"] = strings.Replace(
-		host.files["/etc/wireguard/wg0.conf"], "Address = 10.44.0.1/24", "Address = 10.44.0.9/24", 1)
-	adopt(t, host, "/etc/wireguard/wg0.conf")
+	host.files["/etc/wireguard/psns-f2a9.conf"] = strings.Replace(
+		host.files["/etc/wireguard/psns-f2a9.conf"], "Address = 10.44.0.1/24", "Address = 10.44.0.9/24", 1)
+	adopt(t, host, "/etc/wireguard/psns-f2a9.conf")
 
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
@@ -813,16 +813,16 @@ func TestAnAddressChangeRestartsTheMesh(t *testing.T) {
 // since every one of them would fail to bind.
 func TestAMeshThatWillNotStartStopsTheApply(t *testing.T) {
 	host := newHost()
-	host.fail = "wg-quick@wg0"
+	host.fail = "wg-quick@psns-f2a9"
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = apply.Execute(p, host)
 	if err == nil {
-		t.Fatal("an apply carried on with wg0 down")
+		t.Fatal("an apply carried on with psns-f2a9 down")
 	}
-	if !strings.Contains(err.Error(), "wg0") {
+	if !strings.Contains(err.Error(), "psns-f2a9") {
 		t.Errorf("the error does not name the interface:\n%v", err)
 	}
 	if host.firstCompose() >= 0 {
@@ -830,10 +830,10 @@ func TestAMeshThatWillNotStartStopsTheApply(t *testing.T) {
 	}
 	// The files are on the host and are this apply's, so they are recorded;
 	// what it still owes is in the pending record, so the next apply resumes.
-	if _, ok := host.files["/srv/.paisans-manifest.json"]; !ok {
+	if _, ok := host.files["/srv/paisans/f2a9/.paisans-manifest.json"]; !ok {
 		t.Error("the files a failed apply wrote were not recorded")
 	}
-	if _, ok := host.files["/srv/.paisans-pending.json"]; !ok {
+	if _, ok := host.files["/srv/paisans/f2a9/.paisans-pending.json"]; !ok {
 		t.Error("a failed apply left no record of the actions it owes")
 	}
 }
@@ -853,9 +853,9 @@ func TestInfrastructureMovesBeforeApps(t *testing.T) {
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	infra := host.indexOf("/srv/infra/compose.yaml up -d")
+	infra := host.indexOf("/srv/paisans/f2a9/infra/compose.yaml up -d")
 	for _, app := range []string{"blog", "docs", "talk"} {
-		if i := host.indexOf("/srv/" + app + "/compose.yaml up -d"); i < infra {
+		if i := host.indexOf("/srv/paisans/f2a9/" + app + "/compose.yaml up -d"); i < infra {
 			t.Errorf("%s was started before the infrastructure stack", app)
 		}
 	}
@@ -866,7 +866,7 @@ func TestInfrastructureMovesBeforeApps(t *testing.T) {
 // nothing to do, and a stack held back by a failed gate would stay down.
 func TestAStoppedApplyResumes(t *testing.T) {
 	host := newHost()
-	host.fail = "/srv/talk/compose.yaml up -d"
+	host.fail = "/srv/paisans/f2a9/talk/compose.yaml up -d"
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
@@ -899,7 +899,7 @@ func TestAStoppedApplyResumes(t *testing.T) {
 	if err := apply.Execute(again, host); err != nil {
 		t.Fatal(err)
 	}
-	if !host.ran("/srv/talk/compose.yaml up -d --force-recreate") {
+	if !host.ran("/srv/paisans/f2a9/talk/compose.yaml up -d --force-recreate") {
 		t.Error("the resumed apply did not force-recreate the stack the first one stopped at")
 	}
 
@@ -1003,7 +1003,7 @@ func TestDatabasesExistBeforeAnyAppStarts(t *testing.T) {
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	infra := host.indexOf("/srv/infra/compose.yaml up -d")
+	infra := host.indexOf("/srv/paisans/f2a9/infra/compose.yaml up -d")
 	wait := host.indexOf(":8008/cluster")
 	psql := host.indexOf("psql")
 	if infra < 0 || wait < 0 || psql < 0 {
@@ -1013,7 +1013,7 @@ func TestDatabasesExistBeforeAnyAppStarts(t *testing.T) {
 		t.Errorf("out of order: infra %d, wait %d, psql %d", infra, wait, psql)
 	}
 	for _, app := range []string{"auth", "blog", "docs", "talk"} {
-		if i := host.indexOf("/srv/" + app + "/compose.yaml up -d"); i < psql {
+		if i := host.indexOf("/srv/paisans/f2a9/" + app + "/compose.yaml up -d"); i < psql {
 			t.Errorf("%s was started before its database existed", app)
 		}
 	}
@@ -1099,7 +1099,7 @@ func TestNoPrimaryStopsTheApply(t *testing.T) {
 	if polls != 3 {
 		t.Errorf("polled %d times, want 3 in 9s at 3s", polls)
 	}
-	if host.ran("psql") || host.ran("/srv/talk/compose.yaml up -d") {
+	if host.ran("psql") || host.ran("/srv/paisans/f2a9/talk/compose.yaml up -d") {
 		t.Errorf("work went on past the gate: %v", host.commands)
 	}
 
@@ -1111,7 +1111,7 @@ func TestNoPrimaryStopsTheApply(t *testing.T) {
 	if err := apply.Execute(again, host); err != nil {
 		t.Fatal(err)
 	}
-	if !host.ran("psql") || !host.ran("/srv/talk/compose.yaml up -d") {
+	if !host.ran("psql") || !host.ran("/srv/paisans/f2a9/talk/compose.yaml up -d") {
 		t.Error("the resumed apply did not finish")
 	}
 }
@@ -1137,10 +1137,10 @@ func TestAFoundingApplyStopsWhileAMemberHasNotStarted(t *testing.T) {
 	if host.ran(":8008/cluster") {
 		t.Error("polled for a primary that cannot appear yet")
 	}
-	if !host.ran("/srv/infra/compose.yaml up -d") {
+	if !host.ran("/srv/paisans/f2a9/infra/compose.yaml up -d") {
 		t.Error("the infrastructure stack was not brought up, so this site's etcd never joins")
 	}
-	if host.ran("psql") || host.ran("/srv/talk/compose.yaml up -d") {
+	if host.ran("psql") || host.ran("/srv/paisans/f2a9/talk/compose.yaml up -d") {
 		t.Errorf("work went on past the gate: %v", host.commands)
 	}
 
@@ -1148,7 +1148,7 @@ func TestAFoundingApplyStopsWhileAMemberHasNotStarted(t *testing.T) {
 	if err := apply.Execute(again, host); err != nil {
 		t.Fatal(err)
 	}
-	if !host.ran("psql") || !host.ran("/srv/talk/compose.yaml up -d") {
+	if !host.ran("psql") || !host.ran("/srv/paisans/f2a9/talk/compose.yaml up -d") {
 		t.Error("the resumed apply did not finish")
 	}
 }
@@ -1172,7 +1172,7 @@ func TestAReplicaLeavesTheDatabasesToTheLeader(t *testing.T) {
 	if !strings.Contains(said.String(), "home-b") {
 		t.Errorf("the skip does not name the leader's site:\n%s", said.String())
 	}
-	if !host.ran("/srv/talk/compose.yaml up -d") {
+	if !host.ran("/srv/paisans/f2a9/talk/compose.yaml up -d") {
 		t.Error("a replica's apps were not started")
 	}
 }
@@ -1197,7 +1197,7 @@ func TestAnUnknownLeaderStopsTheApply(t *testing.T) {
 		t.Error("roles were created under an unknown leader")
 	}
 	for _, command := range host.commands {
-		if strings.Contains(command, "docker compose") && !strings.Contains(command, "/srv/infra/") {
+		if strings.Contains(command, "docker compose") && !strings.Contains(command, "/srv/paisans/f2a9/infra/") {
 			t.Errorf("an app stack was touched past the gate: %s", command)
 		}
 	}
@@ -1213,7 +1213,7 @@ func TestAFailedBootstrapStopsTheAppsAndHidesThePassword(t *testing.T) {
 	if err == nil {
 		t.Fatal("apps were started after the bootstrap failed")
 	}
-	if host.ran("/srv/talk/compose.yaml up -d") {
+	if host.ran("/srv/paisans/f2a9/talk/compose.yaml up -d") {
 		t.Error("an app was started after its database could not be created")
 	}
 	for app, password := range clusteredPasswords(t) {
@@ -1262,8 +1262,8 @@ func TestANoopApplyBootstrapsNothing(t *testing.T) {
 // routing and answered with a reload that cannot see a rotated DNS token.
 func TestAnEnvFileChangeRecreates(t *testing.T) {
 	for _, tc := range []struct{ site, path string }{
-		{"home-a", "/srv/infra/patroni.env"},
-		{"vm", "/srv/infra/caddy/caddy.env"},
+		{"home-a", "/srv/paisans/f2a9/infra/patroni.env"},
+		{"vm", "/srv/paisans/f2a9/infra/caddy/caddy.env"},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			host := applied(t, tc.site)
@@ -1293,7 +1293,7 @@ func TestAnEnvFileChangeRecreates(t *testing.T) {
 // that differed from the render and refused it as somebody's host edit.
 func TestAFailedApplyStillRecordsItsFiles(t *testing.T) {
 	host := newHost()
-	host.fail = "/srv/infra/compose.yaml up -d"
+	host.fail = "/srv/paisans/f2a9/infra/compose.yaml up -d"
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
@@ -1304,7 +1304,7 @@ func TestAFailedApplyStillRecordsItsFiles(t *testing.T) {
 
 	fixed := plan(t)
 	for i, file := range fixed.Files {
-		if file.Path == "home-a/srv/infra/patroni.env" {
+		if file.Path == "home-a/srv/paisans/f2a9/infra/patroni.env" {
 			fixed.Files[i].Content = file.Content + "# a fix carried by the next apply\n"
 		}
 	}
@@ -1317,7 +1317,7 @@ func TestAFailedApplyStillRecordsItsFiles(t *testing.T) {
 		t.Fatalf("files the failed apply wrote are treated as host edits: %v", conflicts)
 	}
 	for _, change := range again.Writes() {
-		if change.Path == "/srv/infra/patroni.env" && change.Kind == apply.Update {
+		if change.Path == "/srv/paisans/f2a9/infra/patroni.env" && change.Kind == apply.Update {
 			return
 		}
 	}
@@ -1327,20 +1327,20 @@ func TestAFailedApplyStillRecordsItsFiles(t *testing.T) {
 // --overwrite turns exactly the named conflict into a write, and nothing else.
 func TestOverwriteReplacesOnlyTheNamedConflict(t *testing.T) {
 	host := newHost()
-	host.files["/srv/infra/patroni.env"] = "edited on the host\n"
-	host.files["/srv/infra/haproxy/haproxy.cfg"] = "also edited\n"
+	host.files["/srv/paisans/f2a9/infra/patroni.env"] = "edited on the host\n"
+	host.files["/srv/paisans/f2a9/infra/haproxy/haproxy.cfg"] = "also edited\n"
 
-	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/infra/patroni.env"))
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/paisans/f2a9/infra/patroni.env"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	conflicts := p.Conflicts()
-	if len(conflicts) != 1 || conflicts[0].Path != "/srv/infra/haproxy/haproxy.cfg" {
+	if len(conflicts) != 1 || conflicts[0].Path != "/srv/paisans/f2a9/infra/haproxy/haproxy.cfg" {
 		t.Fatalf("only the unnamed file should still conflict: %v", conflicts)
 	}
 	var overwritten bool
 	for _, change := range p.Writes() {
-		if change.Path == "/srv/infra/patroni.env" {
+		if change.Path == "/srv/paisans/f2a9/infra/patroni.env" {
 			overwritten = change.Overwritten
 		}
 	}
@@ -1350,18 +1350,18 @@ func TestOverwriteReplacesOnlyTheNamedConflict(t *testing.T) {
 	if err := apply.Execute(p, host); err == nil {
 		t.Fatal("a remaining conflict did not stop the apply")
 	}
-	if host.files["/srv/infra/patroni.env"] != "edited on the host\n" {
+	if host.files["/srv/paisans/f2a9/infra/patroni.env"] != "edited on the host\n" {
 		t.Error("a refused apply still wrote the overwritten file")
 	}
 
-	p, err = apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/infra/patroni.env", "/srv/infra/haproxy/haproxy.cfg"))
+	p, err = apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/paisans/f2a9/infra/patroni.env", "/srv/paisans/f2a9/infra/haproxy/haproxy.cfg"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	if host.files["/srv/infra/patroni.env"] == "edited on the host\n" {
+	if host.files["/srv/paisans/f2a9/infra/patroni.env"] == "edited on the host\n" {
 		t.Error("the named file was not replaced")
 	}
 	next, err := apply.Build("home-a", plan(t), acmeModule(t), host)
@@ -1376,7 +1376,7 @@ func TestOverwriteReplacesOnlyTheNamedConflict(t *testing.T) {
 // A path that is not a conflict is refused, so a typo cannot pass for consent.
 func TestOverwriteRefusesAPathThatIsNoConflict(t *testing.T) {
 	host := newHost()
-	_, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/infra/patroni.evn"))
+	_, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/paisans/f2a9/infra/patroni.evn"))
 	if err == nil || !strings.Contains(err.Error(), "names no conflicting file") {
 		t.Fatalf("a mistyped --overwrite was accepted: %v", err)
 	}
@@ -1388,7 +1388,7 @@ func TestOverwriteRefusesAPathThatIsNoConflict(t *testing.T) {
 // and started that container as it was.
 func TestAResumedStackIsForceRecreated(t *testing.T) {
 	host := applied(t, "home-a")
-	host.files["/srv/.paisans-pending.json"] = `{"version":1,"actions":[{"stack":"talk","recreate":true}]}`
+	host.files["/srv/paisans/f2a9/.paisans-pending.json"] = `{"version":1,"actions":[{"stack":"talk","recreate":true}]}`
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
@@ -1399,7 +1399,7 @@ func TestAResumedStackIsForceRecreated(t *testing.T) {
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	if !host.ran("docker compose -f /srv/talk/compose.yaml up -d --force-recreate") {
+	if !host.ran("docker compose -f /srv/paisans/f2a9/talk/compose.yaml up -d --force-recreate") {
 		t.Errorf("the owed stack was not force-recreated: %v", host.commands)
 	}
 }
@@ -1445,13 +1445,13 @@ func TestRecreateForcesANamedStack(t *testing.T) {
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	infra := host.indexOf("/srv/infra/compose.yaml up -d --force-recreate")
+	infra := host.indexOf("/srv/paisans/f2a9/infra/compose.yaml up -d --force-recreate")
 	psql := host.indexOf("psql")
-	talk := host.indexOf("/srv/talk/compose.yaml up -d --force-recreate")
+	talk := host.indexOf("/srv/paisans/f2a9/talk/compose.yaml up -d --force-recreate")
 	if infra < 0 || psql < 0 || talk < 0 || !(infra < psql && psql < talk) {
 		t.Errorf("want infra, then the databases, then talk: %v", host.commands)
 	}
-	if host.ran("/srv/docs/compose.yaml") {
+	if host.ran("/srv/paisans/f2a9/docs/compose.yaml") {
 		t.Error("a stack nobody named was acted on")
 	}
 }
@@ -1491,11 +1491,11 @@ func TestAHealthyStackPasses(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, stack := range []string{"infra", "talk", "docs"} {
-		if !host.ran("/srv/" + stack + "/compose.yaml ps --all --format json") {
+		if !host.ran("/srv/paisans/f2a9/" + stack + "/compose.yaml ps --all --format json") {
 			t.Errorf("%s was never checked", stack)
 		}
 	}
-	if _, ok := host.files["/srv/.paisans-pending.json"]; ok {
+	if _, ok := host.files["/srv/paisans/f2a9/.paisans-pending.json"]; ok {
 		t.Error("a healthy apply left owed actions behind")
 	}
 }
@@ -1578,7 +1578,7 @@ func TestAnUnhealthyStackStopsTheApply(t *testing.T) {
 				t.Errorf("a failed container was waited on (%d sleeps)", *slept)
 			}
 			for _, stack := range []string{"blog", "docs", "talk"} {
-				if host.ran("/srv/" + stack + "/compose.yaml up -d") {
+				if host.ran("/srv/paisans/f2a9/" + stack + "/compose.yaml up -d") {
 					t.Errorf("%s was started after the infrastructure stack failed its check", stack)
 				}
 			}
@@ -1787,7 +1787,7 @@ func TestSupersededImagesArePrunedAfterHealth(t *testing.T) {
 	if len(removed) != 1 || !strings.Contains(removed[0], fakeID("old")) {
 		t.Fatalf("removed %v, want only the unused v1.9.0", removed)
 	}
-	if rm, gate := host.indexOf("docker image rm "), host.indexOf("/srv/talk/compose.yaml ps --all"); gate < 0 || rm < gate {
+	if rm, gate := host.indexOf("docker image rm "), host.indexOf("/srv/paisans/f2a9/talk/compose.yaml ps --all"); gate < 0 || rm < gate {
 		t.Error("an image was removed before its stack passed the health gate")
 	}
 	if !strings.Contains(progress.String(), "pruned    ghcr.io/example-org/mbin:v1.9.0") {
@@ -1830,7 +1830,7 @@ func TestAFailedPruneIsAWarning(t *testing.T) {
 	if !strings.Contains(progress.String(), "warning   talk: could not remove ghcr.io/example-org/mbin:v1.9.0") {
 		t.Errorf("the failed prune was not reported:\n%s", progress.String())
 	}
-	if _, owed := host.files["/srv/.paisans-pending.json"]; owed {
+	if _, owed := host.files["/srv/paisans/f2a9/.paisans-pending.json"]; owed {
 		t.Error("a failed prune left the apply owing work")
 	}
 }
@@ -1870,7 +1870,7 @@ func TestOnlyMovesTheNamedStackAndKeepsTheRestRecorded(t *testing.T) {
 
 	changed := plan(t)
 	for i, file := range changed.Files {
-		if file.Path == "home-a/srv/infra/patroni.env" {
+		if file.Path == "home-a/srv/paisans/f2a9/infra/patroni.env" {
 			changed.Files[i].Content = file.Content + "# a later change\n"
 		}
 	}
@@ -1890,7 +1890,7 @@ func TestOnlyMovesTheNamedStackAndKeepsTheRestRecorded(t *testing.T) {
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	if host.ran("/srv/infra/compose.yaml up -d") || host.ran("/srv/infra/compose.yaml restart") {
+	if host.ran("/srv/paisans/f2a9/infra/compose.yaml up -d") || host.ran("/srv/paisans/f2a9/infra/compose.yaml restart") {
 		t.Error("--only talk moved the infrastructure stack")
 	}
 
@@ -1903,7 +1903,7 @@ func TestOnlyMovesTheNamedStackAndKeepsTheRestRecorded(t *testing.T) {
 	}
 	var pending bool
 	for _, c := range whole.Writes() {
-		if c.Path == "/srv/infra/patroni.env" && c.Kind == apply.Update {
+		if c.Path == "/srv/paisans/f2a9/infra/patroni.env" && c.Kind == apply.Update {
 			pending = true
 		}
 	}
@@ -1913,5 +1913,33 @@ func TestOnlyMovesTheNamedStackAndKeepsTheRestRecorded(t *testing.T) {
 
 	if _, err := apply.Build("home-a", changed, acmeModule(t), host, apply.Only("nope")); err == nil {
 		t.Error("--only accepted a stack the site does not render")
+	}
+}
+
+// apply on a shared host runs as --keep-images does, because an image the
+// toolkit renders may be what a foreign project runs from: no image is
+// listed or removed. A dangling volume its own containers did not leave is
+// never a candidate either; only the anonymous volume the replaced paisans
+// container mounted goes.
+func TestASharedHostApplyRemovesNoImageAndNoForeignVolume(t *testing.T) {
+	const (
+		ours    = "3a37a98261c4f658850d43b3d0ddc746ae25d9ec6bb58e83132662b7ea646191"
+		foreign = "8cce176c65a4f3a4a255ca46dc4588b38d917bffc8f0c13fd4d5335d4fc8f830"
+	)
+	host := supersededHost()
+	host.stackVolumes = map[string]string{"talk": ours + "\n"}
+	host.dangling = ours + "\n" + foreign + "\nshop_data\n"
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.KeepImages())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if host.ran("docker image rm") || host.ran("docker image ls") {
+		t.Error("a shared host's apply listed or removed images")
+	}
+	if len(host.removedVolumes) != 1 || host.removedVolumes[0] != ours {
+		t.Errorf("removed %v, want only %s, which the replaced paisans container mounted", host.removedVolumes, ours)
 	}
 }

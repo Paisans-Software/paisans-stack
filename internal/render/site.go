@@ -17,6 +17,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
@@ -159,7 +160,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	if err != nil {
 		return nil, err
 	}
-	files = append(files, File{Path: base + "etc/wireguard/wg0.conf", Content: wg, Mode: 0o600})
+	files = append(files, File{Path: base + p.cfg.Deployment().WireGuardConf(), Content: wg, Mode: 0o600})
 
 	spilo, ok := spiloTag[p.postgresVersion()]
 	if !ok {
@@ -167,14 +168,14 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 			"cluster.postgres_version: %q has no Spilo image known to this toolkit. Spilo publishes one repository per major version with its own tags, so there is nothing to fall back to. Use one of %s, or add the tag",
 			p.postgresVersion(), strings.Join(sortedKeys(spiloTag), ", "))
 	}
-	// Resolved only for a gateway site: a site holding no gateway role needs no
-	// Caddy image, and acme.provider is not even required in a deployment with
-	// no gateway anywhere, so demanding one here would refuse a legitimate
-	// configuration over an image nothing will use. The template gates the
-	// caddy service on Site.IsGateway, so an empty string here never reaches
-	// a compose file.
+	// Resolved only where Caddy runs, a gateway or a monitor serving its own
+	// apps: any other site needs no Caddy image, and acme.provider is not
+	// even required in a deployment where Caddy runs nowhere, so demanding one
+	// here would refuse a legitimate configuration over an image nothing will
+	// use. The template gates the caddy service on Site.RunsCaddy, so an
+	// empty string here never reaches a compose file.
 	var caddy string
-	if site.IsGateway {
+	if site.RunsCaddy {
 		caddy, err = p.caddyImage()
 		if err != nil {
 			return nil, err
@@ -183,6 +184,10 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	initial := p.etcdInitialFor(site.Name)
 	infra, err := p.renderTemplate("infra-compose.yaml.tmpl", map[string]any{
 		"Site":                    site,
+		"Project":                 p.dep().Project("infra"),
+		"DeploymentLabel":         deployment.Label,
+		"DeploymentID":            p.dep().ID,
+		"Dir":                     p.dep().Dir("infra"),
 		"Scope":                   p.scope(),
 		"EtcdInitialCluster":      initial.Cluster,
 		"EtcdInitialState":        initial.State,
@@ -202,11 +207,11 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	// A site with no roles exists only to host what is pinned to it and runs
 	// no infrastructure, so it gets no infra stack: a compose project with an
 	// empty services map is nothing apply could start or recreate.
-	if site.IsEtcd || site.IsData || site.NeedsProxy || site.IsGarage || site.IsGateway {
-		files = append(files, File{Path: base + "srv/infra/compose.yaml", Content: infra, Mode: 0o644})
+	if site.IsEtcd || site.IsData || site.NeedsProxy || site.IsGarage || site.RunsCaddy {
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "compose.yaml"), Content: infra, Mode: 0o644})
 	}
 	if site.IsEtcd {
-		files = append(files, File{Path: base + EtcdInitialPath, Content: FormatEtcdInitial(initial), Mode: 0o644})
+		files = append(files, File{Path: base + EtcdInitialPath(p.dep()), Content: FormatEtcdInitial(initial), Mode: 0o644})
 	}
 
 	if site.IsData {
@@ -226,7 +231,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/infra/patroni.env", Content: env, Mode: 0o600})
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "patroni.env"), Content: env, Mode: 0o600})
 	}
 
 	if site.NeedsProxy {
@@ -241,7 +246,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/infra/haproxy/haproxy.cfg", Content: cfg, Mode: 0o644})
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "haproxy", "haproxy.cfg"), Content: cfg, Mode: 0o644})
 	}
 
 	if site.IsGarage {
@@ -270,33 +275,45 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/infra/garage/garage.toml", Content: toml, Mode: 0o600})
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "garage", "garage.toml"), Content: toml, Mode: 0o600})
 	}
 
-	if site.IsGateway {
+	if site.RunsCaddy {
+		// A gateway routes every app but a monitor's; a monitor serves only
+		// the apps pinned to it. Both are the same Caddyfile, image and
+		// certificate story, so a monitor's edge is the gateway's minus the
+		// other hostnames.
+		routes := p.routesFor(site)
+		gates := site.IsGateway || gated(routes)
+		var mounts []string
+		if gates {
+			mounts = p.gateSnippetMounts()
+		}
 		caddyfile, err := p.renderTemplate("Caddyfile.tmpl", map[string]any{
 			"Domain":         p.cfg.Community.Domain,
-			"Routes":         p.routes(),
-			"GateSnippets":   p.gateSnippetMounts(),
+			"Routes":         routes,
+			"GateSnippets":   mounts,
 			"TrustedProxies": p.mesh,
 			"ACMEDirective":  acme.Directive(p.cfg.ACME.Provider),
 		})
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/infra/caddy/Caddyfile", Content: caddyfile, Mode: 0o644})
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "caddy", "Caddyfile"), Content: caddyfile, Mode: 0o644})
 
-		snippets, err := p.renderSnippets(base)
+		snippets, err := p.renderSnippets(base, routes)
 		if err != nil {
 			return nil, err
 		}
 		files = append(files, snippets...)
 
-		gateSnippets, err := p.renderGateSnippets(base)
-		if err != nil {
-			return nil, err
+		if gates {
+			gateSnippets, err := p.renderGateSnippets(base)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, gateSnippets...)
 		}
-		files = append(files, gateSnippets...)
 
 		env, err := p.renderTemplate("caddy.env.tmpl", map[string]any{
 			"ACMEDNSToken": p.secrets.External["acme_dns_token"],
@@ -304,7 +321,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + "srv/infra/caddy/caddy.env", Content: env, Mode: 0o600})
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "caddy", "caddy.env"), Content: env, Mode: 0o600})
 	}
 
 	for _, app := range site.Apps {
@@ -330,23 +347,27 @@ const (
 	snippetPrefix   = "caddy.snippet."
 )
 
-// snippetDir is where snippets land on the gateway, and snippetMount is the
-// same directory as the Caddy container sees it. The Caddyfile imports by the
-// second, because Caddy reads it from inside the container.
-const (
-	snippetDir   = "srv/infra/caddy/snippets/"
-	snippetMount = "/etc/caddy/snippets/"
-)
+// snippetMount is the directory snippets land in, as the Caddy container sees
+// it. The Caddyfile imports by it, because Caddy reads it from inside the
+// container.
+const snippetMount = "/etc/caddy/snippets/"
 
-// renderSnippets renders every hostname's routing onto a gateway.
+// snippetDir is the same directory on the gateway, in the rendered tree.
+func (p *planner) snippetDir() string { return p.dep().RelPath("infra", "caddy", "snippets") + "/" }
+
+// dep is the deployment every rendered path and name derives from.
+func (p *planner) dep() deployment.Deployment { return p.cfg.Deployment() }
+
+// renderSnippets renders every hostname's routing onto a site running Caddy.
 //
-// It walks the whole configuration rather than the gateway's own apps: a
-// gateway routes to applications that run elsewhere, which is the usual case.
-// One route renders one snippet, from the template its role selects, because
-// two hostnames on the same app can serve entirely different things.
-func (p *planner) renderSnippets(base string) ([]File, error) {
+// On a gateway the routes come from the whole configuration rather than the
+// gateway's own apps: a gateway routes to applications that run elsewhere,
+// which is the usual case. One route renders one snippet, from the template
+// its role selects, because two hostnames on the same app can serve entirely
+// different things.
+func (p *planner) renderSnippets(base string, routes []route) ([]File, error) {
 	var files []File
-	for _, r := range p.routes() {
+	for _, r := range routes {
 		app := p.cfg.Apps[r.App]
 		planned, err := p.plannedFor(r.App, app)
 		if err != nil {
@@ -371,7 +392,7 @@ func (p *planner) renderSnippets(base string) ([]File, error) {
 		if r.Role != kinds.PrimaryRole {
 			name = r.App + "-" + r.Role
 		}
-		files = append(files, File{Path: base + snippetDir + name + ".caddy", Content: content, Mode: 0o644})
+		files = append(files, File{Path: base + p.snippetDir() + name + ".caddy", Content: content, Mode: 0o644})
 	}
 	return files, nil
 }
@@ -407,7 +428,7 @@ func (p *planner) renderGateSnippets(base string) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + snippetDir + name + "-gates.caddy", Content: content, Mode: 0o644})
+		files = append(files, File{Path: base + p.snippetDir() + name + "-gates.caddy", Content: content, Mode: 0o644})
 	}
 	return files, nil
 }
@@ -431,6 +452,7 @@ func (p *planner) gateSnippetMounts() []string {
 func (p *planner) plannedFor(name string, app config.App) (plannedApp, error) {
 	return plannedApp{
 		Name:     name,
+		Dir:      p.dep().Dir(name),
 		Kind:     app.Kind,
 		Hostname: app.Hostname,
 		Pinned:   app.Placement.Mode == config.PlacementPinned,
@@ -466,7 +488,7 @@ func TemplateSet(kind config.Kind) ([]string, error) {
 // renderTemplateSet renders every file in a kind's template directory.
 //
 // A template's path is its destination: templates/<kind>/config/packages/x.yaml
-// lands at /srv/<stack>/config/packages/x.yaml, so nothing holds a separate
+// lands at /srv/paisans/<token>/<stack>/config/packages/x.yaml, so nothing holds a separate
 // mapping of template to location and a new file in a set needs no code.
 func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error) {
 	dir := "templates/" + string(app.Kind)
@@ -508,7 +530,7 @@ func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error)
 		if err != nil {
 			return err
 		}
-		dest := base + "srv/" + app.Name + "/" + rel
+		dest := base + p.dep().RelPath(app.Name, rel)
 		files = append(files, File{Path: dest, Content: content, Mode: mode})
 		sources[dest] = path
 		return nil
@@ -520,7 +542,7 @@ func (p *planner) renderTemplateSet(base string, app plannedApp) ([]File, error)
 	// Only when the app declares keys: an app without them renders exactly
 	// what its templates wrote, with no merge in the way.
 	if keys := p.cfg.Apps[app.Name].Config; len(keys) > 0 {
-		if err := mergeConfig(app, keys, base+"srv/"+app.Name+"/", files, sources); err != nil {
+		if err := mergeConfig(app, keys, base+p.dep().RelPath(app.Name)+"/", files, sources); err != nil {
 			return nil, err
 		}
 	}
@@ -605,13 +627,13 @@ func (p *planner) renderWireGuard(site *siteView) (string, error) {
 		}
 	}
 
-	return p.renderTemplate("wg0.conf.tmpl", map[string]any{
+	return p.renderTemplate("wireguard.conf.tmpl", map[string]any{
 		"Site":       site,
 		"PrivateKey": private,
 		"MeshPrefix": p.cfg.Mesh.Prefix(),
 		"IsRelay":    isRelay,
 		"Peers":      peers,
-		"ListenPort": wireguardPort,
+		"ListenPort": p.cfg.Sites[site.Name].ListenPort(),
 	})
 }
 
@@ -654,12 +676,20 @@ func (p *planner) relays() []string {
 	return out
 }
 
-// routes is the gateway's inventory: one host block per hostname, each
-// importing the snippet for that hostname's role.
-func (p *planner) routes() []route {
+// routesFor is a Caddy site's inventory: one host block per hostname, each
+// importing the snippet for that hostname's role. A gateway routes every app
+// that no monitor serves; a monitor routes only the apps pinned to it.
+func (p *planner) routesFor(site *siteView) []route {
 	var out []route
 	for _, name := range p.cfg.AppNames() {
 		app := p.cfg.Apps[name]
+		monitor, onMonitor := ServedBy(p.cfg, name)
+		switch {
+		case site.IsGateway && onMonitor:
+			continue
+		case !site.IsGateway && (!onMonitor || monitor != site.Name):
+			continue
+		}
 		gate := app.Gate
 		if gate == "none" {
 			// Carried to the template as empty rather than as the literal
@@ -705,6 +735,18 @@ func (p *planner) routes() []route {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })
 	return out
+}
+
+// gated reports whether any route sits behind a gate, so a monitor's Caddy
+// carries the gate's named snippets only when one of its own routes imports
+// them.
+func gated(routes []route) bool {
+	for _, r := range routes {
+		if r.Gate != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // upstreams is where an app's traffic goes: its own location when pinned, and

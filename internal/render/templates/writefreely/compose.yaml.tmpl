@@ -12,10 +12,12 @@
 # {{ .App.Name }} has cluster placement: no Postgres service of its own, and a
 # connection to the local HAProxy on {{ .DBHost }}:{{ .DBPort }}.
 {{- end }}
-name: paisans-{{ .App.Name }}
+name: {{ .Project }}
 
 services:
   app:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "app" }}
     restart: unless-stopped
     # The mesh address only. Docker's own iptables rules bypass a host
@@ -36,6 +38,8 @@ services:
       - postgres
 
   postgres:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "postgres" }}
     restart: unless-stopped
     environment:
@@ -45,3 +49,10 @@ services:
     volumes:
       - {{ .DataPath }}/postgres:{{ .PostgresDataMount }}
 {{- end }}
+
+# Every network carries the deployment label too, so that what owns it is
+# read from the label rather than guessed from its name.
+networks:
+  default:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"

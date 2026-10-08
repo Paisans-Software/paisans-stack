@@ -38,6 +38,21 @@ const (
 	seedThreshold = 2
 )
 
+// The seed's monitor names. The fork reconciles monitors by name, so a format
+// that changed would replace every deployed monitor and drop the channels
+// admins attached to it; these are the formats the first release shipped.
+// Names come from app and site keys, never hostnames, so a renamed hostname
+// updates a monitor in place.
+
+// PublicCheckName is the name of an app's check at its public hostname.
+func PublicCheckName(app string) string { return app + " — public" }
+
+func directCheckName(app, site string) string {
+	return fmt.Sprintf("%s — direct (%s)", app, site)
+}
+
+func pingName(site string) string { return site + " — ping" }
+
 func (p *planner) uptimeSeed(self string) (string, error) {
 	monitorSite := p.cfg.Apps[self].Placement.Site
 	placed := AppSites(p.cfg)
@@ -47,8 +62,9 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 	for _, name := range p.cfg.AppNames() {
 		app := p.cfg.Apps[name]
 		if app.Kind == config.KindUptime {
-			// A monitor cannot report its own death, and a check that can
-			// only ever pass is noise.
+			// A monitor cannot report its own death, and a direct check of
+			// its own container can only ever pass. Its public URL is
+			// checked below, after every other app.
 			continue
 		}
 		health, ok := kinds.HealthFor(app.Kind)
@@ -65,7 +81,7 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 			public = "401"
 		}
 		monitors = append(monitors, seedMonitor{
-			Name: name + " — public", MonitorType: "active", Method: "GET", CheckType: "status",
+			Name: PublicCheckName(name), MonitorType: "active", Method: "GET", CheckType: "status",
 			URL: "https://" + app.Hostname + health.Path, ExpectedStatus: public,
 			FollowRedirects: &noRedirects,
 			IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
@@ -74,7 +90,7 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 		sort.Strings(sites)
 		for _, site := range sites {
 			monitors = append(monitors, seedMonitor{
-				Name: fmt.Sprintf("%s — direct (%s)", name, site), MonitorType: "active", Method: "GET", CheckType: "status",
+				Name: directCheckName(name, site), MonitorType: "active", Method: "GET", CheckType: "status",
 				URL:            fmt.Sprintf("http://%s:%d%s", p.sites[site].Address, appPort[app.Kind], health.Path),
 				ExpectedStatus: health.Expect, FollowRedirects: &noRedirects,
 				// What the gateway would send, minus the gateway.
@@ -94,12 +110,25 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 			}
 		}
 	}
+	// The monitor's own public URL. The process is alive whenever it can run
+	// this, so what it proves is the path in front of it: DNS, the web
+	// server and the certificate, whose expiry the fork warns about 14 days
+	// ahead. Behind an operator's own web server it is the only thing that
+	// notices a renewal that silently stopped.
+	if health, ok := kinds.HealthFor(config.KindUptime); ok {
+		monitors = append(monitors, seedMonitor{
+			Name: PublicCheckName(self), MonitorType: "active", Method: "GET", CheckType: "status",
+			URL: "https://" + p.cfg.Apps[self].Hostname + health.Path, ExpectedStatus: health.Expect,
+			FollowRedirects: &noRedirects,
+			IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
+		})
+	}
 	for _, site := range p.order {
 		if site == monitorSite {
 			continue
 		}
 		monitors = append(monitors, seedMonitor{
-			Name: site + " — ping", MonitorType: "ping", PingHost: p.sites[site].Address,
+			Name: pingName(site), MonitorType: "ping", PingHost: p.sites[site].Address,
 			IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
 		})
 	}

@@ -10,7 +10,9 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/doctor"
+	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -96,6 +98,25 @@ func gatherDoctor(cfg *config.Config, sites []string, transports map[string]appl
 		in.Reach = append(in.Reach, r)
 	}
 
+	for _, name := range sites {
+		if !reached[name] {
+			continue
+		}
+		t := transports[name]
+		p := doctor.MeshProbe{Site: name}
+		if out, err := t.Run(mesh.LinkCommand(cfg.Deployment().Interface())); err != nil {
+			p.LinkErr = errText(out, err)
+		} else {
+			p.Link = out
+		}
+		if probed, err := mesh.Probe(t); err != nil {
+			p.ProbeErr = err.Error()
+		} else {
+			p.Probed = probed
+		}
+		in.Mesh = append(in.Mesh, p)
+	}
+
 	// etcd, from the first member that answers it, which also reads /sync.
 	var etcdSite string
 	for _, name := range cfg.Etcd.Members {
@@ -123,7 +144,7 @@ func gatherDoctor(cfg *config.Config, sites []string, transports map[string]appl
 
 	in.Patroni = doctor.PatroniProbe{Cluster: map[string]string{}, ClusterErr: map[string]string{}, Logs: map[string]string{}}
 	if etcdSite != "" && len(cfg.Cluster.Sites) > 0 {
-		if out, err := transports[etcdSite].Run(doctor.SyncCommand); err != nil {
+		if out, err := transports[etcdSite].Run(doctor.SyncCommand(cfg.Deployment())); err != nil {
 			in.Patroni.SyncErr = errText(out, err)
 		} else {
 			in.Patroni.Sync = out
@@ -136,7 +157,7 @@ func gatherDoctor(cfg *config.Config, sites []string, transports map[string]appl
 			continue
 		}
 		api := fmt.Sprintf("%s:%d", cfg.Sites[name].Address, render.PatroniAPIPort)
-		if out, err := transports[name].Run(patroni.ClusterCommand(api)); err != nil {
+		if out, err := transports[name].Run(patroni.ClusterCommand(cfg.Deployment(), api)); err != nil {
 			in.Patroni.ClusterErr[name] = errText(out, err)
 		} else {
 			in.Patroni.Cluster[name] = out
@@ -145,7 +166,7 @@ func gatherDoctor(cfg *config.Config, sites []string, transports map[string]appl
 	if !doctor.HasLeader(in.Patroni.Cluster) {
 		for _, name := range cfg.Cluster.Sites {
 			if reached[name] {
-				out, _ := transports[name].Run(doctor.PatroniLogCommand)
+				out, _ := transports[name].Run(doctor.PatroniLogCommand(cfg.Deployment()))
 				in.Patroni.Logs[name] = out
 			}
 		}
@@ -155,7 +176,7 @@ func gatherDoctor(cfg *config.Config, sites []string, transports map[string]appl
 		if !reached[name] {
 			continue
 		}
-		in.Containers = append(in.Containers, gatherContainers(name, transports[name]))
+		in.Containers = append(in.Containers, gatherContainers(cfg.Deployment(), name, transports[name]))
 	}
 
 	// Pocket ID, asked only of the sites that answered: a site that did not
@@ -196,9 +217,9 @@ func gatherDoctor(cfg *config.Config, sites []string, transports map[string]appl
 
 // gatherContainers lists one site's containers and looks closer at each one
 // that is not running.
-func gatherContainers(site string, t apply.Transport) doctor.SiteContainers {
+func gatherContainers(d deployment.Deployment, site string, t apply.Transport) doctor.SiteContainers {
 	s := doctor.SiteContainers{Site: site}
-	out, err := t.Run(doctor.ContainersCommand)
+	out, err := t.Run(doctor.ContainersCommand(d))
 	if err != nil {
 		s.PSErr = errText(out, err)
 		return s

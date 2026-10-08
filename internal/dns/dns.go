@@ -32,7 +32,9 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // Record is one DNS record as a provider reports it.
@@ -114,13 +116,15 @@ func Desired(cfg *config.Config) ([]Want, error) {
 		}
 	}
 
-	// Every public hostname is served by the gateway.
-	type claim struct{ key, name string }
+	// Every public hostname is served by the gateway, except a monitor's,
+	// which the monitor serves from its own address so that it does not go
+	// dark with the gateway it reports on.
+	type claim struct{ key, name, app string }
 	var hostnames []claim
 	for _, appName := range cfg.AppNames() {
 		app := cfg.Apps[appName]
 		if app.Hostname != "" {
-			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostname", appName), app.Hostname})
+			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostname", appName), app.Hostname, appName})
 		}
 		roles := make([]string, 0, len(app.Hostnames))
 		for role := range app.Hostnames {
@@ -128,7 +132,7 @@ func Desired(cfg *config.Config) ([]Want, error) {
 		}
 		sort.Strings(roles)
 		for _, role := range roles {
-			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostnames.%s", appName, role), app.Hostnames[role]})
+			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostnames.%s", appName, role), app.Hostnames[role], appName})
 		}
 	}
 	// Each app that stores objects serves them on a media hostname of its
@@ -140,10 +144,30 @@ func Desired(cfg *config.Config) ([]Want, error) {
 			continue
 		}
 		if media := kinds.MediaHostname(app, cfg.Community.Domain); media != "" {
-			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostnames.media (derived)", appName), media})
+			hostnames = append(hostnames, claim{fmt.Sprintf("apps.%s.hostnames.media (derived)", appName), media, appName})
 		}
 	}
-	if len(hostnames) > 0 {
+	var viaGateway []claim
+	refusedMonitor := map[string]bool{}
+	for _, h := range hostnames {
+		monitor, ok := render.ServedBy(cfg, h.app)
+		if !ok {
+			viaGateway = append(viaGateway, h)
+			continue
+		}
+		site := cfg.Sites[monitor]
+		if site.PublicAddress == "" {
+			if !refusedMonitor[monitor] {
+				refusedMonitor[monitor] = true
+				problems = append(problems, fmt.Sprintf(
+					"sites.%s.public_address is not set. %s holds the monitor role and serves its own hostnames, so they point at it, and the address the internet reaches it on cannot be guessed from here. Declare it, for example public_address: 203.0.113.20.",
+					monitor, monitor))
+			}
+			continue
+		}
+		addSite(site, normalise(h.name), h.key)
+	}
+	if len(viaGateway) > 0 {
 		gateways := cfg.GatewaySites()
 		switch {
 		case len(gateways) == 0:
@@ -159,7 +183,7 @@ func Desired(cfg *config.Config) ([]Want, error) {
 					"sites.%s.public_address is not set. %s holds the gateway role, so every hostname points at it, and the address the internet reaches it on cannot be guessed from here. Declare it, for example public_address: 203.0.113.10.",
 					gateways[0], gateways[0]))
 			} else {
-				for _, h := range hostnames {
+				for _, h := range viaGateway {
 					addSite(gateway, normalise(h.name), h.key)
 				}
 			}
@@ -255,6 +279,21 @@ type Entry struct {
 type Plan struct {
 	Provider string
 	Entries  []Entry
+	// comment is what every record this plan creates carries.
+	comment string
+}
+
+// RecordComment is written on every record dns init creates for deployment
+// d, paisans-<token>: created by paisans dns init, so that a person looking
+// at the zone can tell which records the toolkit made and for which
+// deployment. Prune reads it back, but as a necessary condition and never a
+// sufficient one: a comment anyone can edit is not a claim anyone can trust,
+// so a record also has to sit at one of this deployment's names and point at
+// one of its sites' addresses before prune will remove it. A record carrying
+// another deployment's token is that deployment's, and is never this one's
+// to consider.
+func RecordComment(d deployment.Deployment) string {
+	return d.Prefix() + ": created by paisans dns init"
 }
 
 // Conflicts returns the entries that stop an execute.
@@ -273,10 +312,10 @@ func (p *Plan) only(a Action) []Entry {
 	return out
 }
 
-// Build compares the wanted records with what the provider holds. It reads
-// and never writes.
-func Build(ctx context.Context, provider Provider, wants []Want) (*Plan, error) {
-	plan := &Plan{Provider: provider.Name()}
+// Build compares the wanted records with what the provider holds, for
+// deployment d. It reads and never writes.
+func Build(ctx context.Context, provider Provider, d deployment.Deployment, wants []Want) (*Plan, error) {
+	plan := &Plan{Provider: provider.Name(), comment: RecordComment(d)}
 	zones := map[string]zone{}
 	wantedTypes := map[string]map[string]bool{}
 	for _, w := range wants {
@@ -358,7 +397,7 @@ func Execute(ctx context.Context, provider Provider, plan *Plan) error {
 		return fmt.Errorf("dns: %d conflicting record(s), listed above. Nothing was created: a partial set of records is a deployment some names reach and others do not", len(conflicts))
 	}
 	for _, e := range plan.Creates() {
-		record := Record{Type: e.Type, Name: e.Name, Content: e.Content}
+		record := Record{Type: e.Type, Name: e.Name, Content: e.Content, Comment: plan.comment}
 		if err := provider.Create(ctx, e.zoneID, record); err != nil {
 			return fmt.Errorf("dns: creating %s %s: %w", e.Type, e.Name, err)
 		}

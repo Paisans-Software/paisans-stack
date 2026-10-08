@@ -48,8 +48,8 @@ type UncoveredVolume struct {
 
 // Describe is the refusal's line for it, with the fix.
 func (u UncoveredVolume) Describe() string {
-	return fmt.Sprintf("%s/%s runs %s, which declares VOLUME %s, and the compose file mounts nothing at that path. Docker would give every new container an anonymous volume there and abandon it on the next recreate. Mount it in the kind's compose template: a bind under /srv/%s/ for state, a tmpfs for throwaway",
-		u.Stack, u.Service, u.Image, u.Path, u.Stack)
+	return fmt.Sprintf("%s/%s runs %s, which declares VOLUME %s, and the compose file mounts nothing at that path. Docker would give every new container an anonymous volume there and abandon it on the next recreate. Mount it in the kind's compose template: a bind under the stack's own directory for state, a tmpfs for throwaway",
+		u.Stack, u.Service, u.Image, u.Path)
 }
 
 // volumeProbe asks the host what each image declares, one line per image. It
@@ -141,7 +141,7 @@ func sortedStacks(m map[string]map[string]kinds.ServiceMounts) []string {
 func stackServices(changes []Change, stacks map[string]bool) (map[string]map[string]kinds.ServiceMounts, error) {
 	out := map[string]map[string]kinds.ServiceMounts{}
 	for _, c := range changes {
-		if !stacks[c.Stack] || c.Path != "/srv/"+c.Stack+"/compose.yaml" {
+		if !stacks[c.Stack] || !isStackCompose(c) {
 			continue
 		}
 		services, err := kinds.ComposeMounts(c.content)

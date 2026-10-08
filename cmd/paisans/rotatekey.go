@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/hostcheck"
+	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/rotatekey"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/validate"
@@ -71,12 +74,27 @@ func runStorageRotateKey(args []string) error {
 	for _, name := range cfg.SiteNames() {
 		transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
 	}
+	// The switch is an apply of the app on every site it runs on, so each
+	// of those is host checked first, as apply checks it.
+	sites := append([]string(nil), render.AppSites(cfg)[*appName]...)
+	sort.Strings(sites)
+	shared, err := gateSites(os.Stdout, cfg, sites, func(site string) hostcheck.Transport { return transports[site] })
+	if err != nil {
+		return err
+	}
+	// Garage's first site, where the key is imported and deleted, and every
+	// site the app runs on, where the switch applies it.
+	if len(cfg.Storage.Garage.Sites) > 0 {
+		if err := claimSites(cfg, *execute, *sudo, union(cfg.Storage.Garage.Sites[:1], render.AppSites(cfg)[*appName])...); err != nil {
+			return err
+		}
+	}
 	plan, err := rotatekey.Build(rotatekey.Options{
 		App:        *appName,
 		Config:     cfg,
 		Secrets:    secrets,
 		Transports: transports,
-		Switch:     applySwitch{cfg: cfg, app: *appName, transports: transports},
+		Switch:     applySwitch{cfg: cfg, app: *appName, transports: transports, shared: shared},
 		Save: func(s *config.Secrets) error {
 			return config.WriteSecrets(*secretsPath, s, recipients)
 		},
@@ -106,10 +124,17 @@ type applySwitch struct {
 	cfg        *config.Config
 	app        string
 	transports map[string]apply.Transport
+	// shared is the host check's finding per site: a shared site keeps its
+	// images, as apply does there.
+	shared map[string]bool
 }
 
 func (a applySwitch) plan(site string, secrets *config.Secrets) (*apply.Plan, error) {
-	plan, err := planSiteApply(a.cfg, secrets, site, a.transports[site], apply.Only(a.app))
+	options := []apply.Option{apply.Only(a.app)}
+	if a.shared[site] {
+		options = append(options, apply.KeepImages())
+	}
+	plan, err := planSiteApply(a.cfg, secrets, site, a.transports[site], options...)
 	if err != nil {
 		return nil, err
 	}

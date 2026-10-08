@@ -19,6 +19,7 @@ func write(t *testing.T, body string) string {
 }
 
 const minimal = `version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 community:
   name: "Fixture"
   domain: example.org
@@ -46,6 +47,7 @@ apps:
 // data, apps and gateway, an address inside the mesh subnet, an ssh address,
 // and the acme block a gateway requires.
 const validConfig = `version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 community:
   name: "Fixture"
   domain: example.org
@@ -429,5 +431,76 @@ func TestARolelessSiteIsAcceptedOnlyWhenSomethingIsPinnedToIt(t *testing.T) {
 	}
 	if _, err := config.Load(write(t, withSite+statusApp("mon", ""))); err != nil {
 		t.Fatalf("a role-less site hosting a pinned app was refused: %v", err)
+	}
+}
+
+// monitorSite is validConfig with a watch site holding the monitor role and
+// extra appended to its entry, before the uptime app is pinned there.
+func monitorSite(extra string) string {
+	site := "  watch:\n    roles: [monitor]\n    address: 10.44.0.9\n    public_address: 203.0.113.20\n    ssh:\n      host: watch.local\n      user: ubuntu\n      public_key: |\n        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org\n" + extra
+	return strings.Replace(validConfig, "etcd:\n", site+"etcd:\n", 1) + statusApp("watch", "")
+}
+
+func TestAMonitorSiteLoadsWithIngress(t *testing.T) {
+	cfg, err := config.Load(write(t, monitorSite("    ingress:\n      mode: external\n      listen: 127.0.0.1:8480\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch := cfg.Sites["watch"]
+	if !watch.Has(config.RoleMonitor) || watch.IngressMode() != config.IngressExternal {
+		t.Fatalf("watch: %+v", watch)
+	}
+	host, port, ok := watch.Ingress.ListenHostPort()
+	if !ok || host != "127.0.0.1" || port != 8480 {
+		t.Fatalf("listen: %s %d %v", host, port, ok)
+	}
+	if watch.RunsCaddy() {
+		t.Fatal("an external monitor runs no Caddy")
+	}
+	if got := cfg.MonitorSites(); len(got) != 1 || got[0] != "watch" {
+		t.Fatalf("monitor sites: %v", got)
+	}
+}
+
+func TestIngressModeDefaultsToPaisansAndRunsCaddy(t *testing.T) {
+	cfg, err := config.Load(write(t, monitorSite("")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Sites["watch"].IngressMode(); got != config.IngressPaisans || !cfg.Sites["watch"].RunsCaddy() {
+		t.Fatalf("mode %s, caddy %v", got, cfg.Sites["watch"].RunsCaddy())
+	}
+	if !cfg.Sites["home-a"].RunsCaddy() {
+		t.Fatal("the gateway runs no Caddy")
+	}
+}
+
+func TestIngressShapeIsChecked(t *testing.T) {
+	for _, tc := range []struct{ ingress, want string }{
+		{"    ingress:\n      mode: nginx\n", "sites.watch.ingress.mode: unknown mode"},
+		{"    ingress:\n      mode: external\n      listen: localhost:8480\n", "sites.watch.ingress.listen"},
+		{"    ingress:\n      mode: external\n      listen: 127.0.0.1:0\n", "sites.watch.ingress.listen"},
+		{"    ingress:\n      mode: external\n      listen: 127.0.0.1\n", "sites.watch.ingress.listen"},
+		{"    ingress:\n      proxy: nginx\n", "field proxy not found"},
+	} {
+		if msg := loadErr(t, monitorSite(tc.ingress)); !strings.Contains(msg, tc.want) {
+			t.Errorf("%q: %s", tc.ingress, msg)
+		}
+	}
+}
+
+// acme.provider names the module the toolkit's Caddy answers DNS-01 with, so
+// it is required wherever that Caddy runs: a gateway, or a monitor serving
+// its own apps. A monitor behind the operator's web server runs none.
+func TestACMEProviderIsRequiredForAMonitorsOwnCaddy(t *testing.T) {
+	strip := func(body string) string {
+		body = strings.Replace(body, "acme:\n  provider: desec\n", "", 1)
+		return strings.Replace(body, "roles: [data, apps, gateway]", "roles: [data, apps]", 1)
+	}
+	if msg := loadErr(t, strip(monitorSite(""))); !strings.Contains(msg, "acme.provider: required") {
+		t.Fatalf("paisans mode: %s", msg)
+	}
+	if _, err := config.Load(write(t, strip(monitorSite("    ingress:\n      mode: external\n      listen: 127.0.0.1:8480\n")))); err != nil {
+		t.Fatalf("external mode needs no provider: %v", err)
 	}
 }

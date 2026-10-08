@@ -169,6 +169,10 @@ func TestRenderRefusesAGatewayWithoutItsACMEToken(t *testing.T) {
 	if err := requireACMEToken(mustLoad(t, configPath), mustSecrets(t, secretsPath), []string{"vm"}); err == nil {
 		t.Error("apply of the gateway site was not refused")
 	}
+	// The monitor runs the same Caddy for its own hostname.
+	if err := requireACMEToken(mustLoad(t, configPath), mustSecrets(t, secretsPath), []string{"watch"}); err == nil || !strings.Contains(err.Error(), "watch runs the toolkit's Caddy") {
+		t.Errorf("apply of a monitor in ingress mode paisans was not refused: %v", err)
+	}
 }
 
 func mustLoad(t *testing.T, path string) *config.Config {

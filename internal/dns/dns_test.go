@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // testToken is a placeholder, not a credential. It is distinctive so that the
@@ -174,11 +175,12 @@ func (f *fakeCloudflare) listPage(w http.ResponseWriter, r *http.Request, zoneID
 	})
 }
 
-// deployment is a gateway with a public address, two apps that each serve
+// declared is a gateway with a public address, two apps that each serve
 // their objects on a derived media hostname, and a site endpoint given as a
 // name.
-func deployment() *config.Config {
+func declared() *config.Config {
 	return &config.Config{
+		ID:   fixtureID,
 		Mesh: config.Mesh{Subnet: "10.44.0.0/24"},
 		Sites: map[string]config.Site{
 			"home-a": {Roles: []config.Role{config.RoleData, config.RoleApps}, Address: "10.44.0.1"},
@@ -201,7 +203,7 @@ func plan(t *testing.T, c *cloudflare, cfg *config.Config) *Plan {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := Build(context.Background(), c, wants)
+	p, err := Build(context.Background(), c, cfg.Deployment(), wants)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +214,7 @@ func TestFreshZonePlansCreatesAndExecuteReadsBack(t *testing.T) {
 	fake := newFake()
 	fake.zones["example.org"] = "zone-1"
 	c := fake.serve(t)
-	p := plan(t, c, deployment())
+	p := plan(t, c, declared())
 
 	var out bytes.Buffer
 	p.Write(&out)
@@ -231,7 +233,7 @@ func TestFreshZonePlansCreatesAndExecuteReadsBack(t *testing.T) {
 		t.Fatalf("want 5 POSTs, got %d", len(fake.posts))
 	}
 	for _, rec := range fake.posts {
-		if rec.Type != "A" || rec.Content != "203.0.113.10" || rec.Proxied || rec.TTL != 1 || rec.Comment == "" {
+		if rec.Type != "A" || rec.Content != "203.0.113.10" || rec.Proxied || rec.TTL != 1 || rec.Comment != "paisans-f2a9: created by paisans dns init" {
 			t.Errorf("unexpected record body %+v", rec)
 		}
 	}
@@ -242,7 +244,7 @@ func TestFreshZonePlansCreatesAndExecuteReadsBack(t *testing.T) {
 	}
 
 	// A second run finds everything present and writes nothing.
-	again := plan(t, c, deployment())
+	again := plan(t, c, declared())
 	if len(again.Creates()) != 0 || len(again.Conflicts()) != 0 {
 		t.Fatalf("second run should be all present: %+v", again.Entries)
 	}
@@ -252,7 +254,7 @@ func TestExistingMatchingRecordIsPresent(t *testing.T) {
 	fake := newFake()
 	fake.zones["example.org"] = "zone-1"
 	fake.records["zone-1"] = []cfRecord{{Type: "A", Name: "talk.example.org", Content: "203.0.113.10"}}
-	p := plan(t, fake.serve(t), deployment())
+	p := plan(t, fake.serve(t), declared())
 	for _, e := range p.Entries {
 		want := Create
 		if e.Name == "talk.example.org" {
@@ -277,7 +279,7 @@ func TestConflictRefusesBeforeAnyWrite(t *testing.T) {
 			fake.zones["example.org"] = "zone-1"
 			fake.records["zone-1"] = []cfRecord{existing}
 			c := fake.serve(t)
-			p := plan(t, c, deployment())
+			p := plan(t, c, declared())
 			if len(p.Conflicts()) != 1 || p.Conflicts()[0].Name != "talk.example.org" {
 				t.Fatalf("want one conflict on talk.example.org, got %+v", p.Entries)
 			}
@@ -339,7 +341,7 @@ func TestReadBackCatchesARecordThatDidNotLand(t *testing.T) {
 	fake.zones["example.org"] = "zone-1"
 	fake.dropWrites = true
 	c := fake.serve(t)
-	err := Execute(context.Background(), c, plan(t, c, deployment()))
+	err := Execute(context.Background(), c, plan(t, c, declared()))
 	if err == nil || !strings.Contains(err.Error(), "does not read back") {
 		t.Fatalf("want a read-back failure, got %v", err)
 	}
@@ -377,7 +379,7 @@ func TestTokenNeverAppearsInAnError(t *testing.T) {
 		fake := newFake()
 		fake.echoToken = true
 		c := fake.serve(t)
-		_, err := Build(context.Background(), c, []Want{{Type: "A", Name: "talk.example.org", Content: "203.0.113.10"}})
+		_, err := Build(context.Background(), c, deployment.Deployment{ID: fixtureID}, []Want{{Type: "A", Name: "talk.example.org", Content: "203.0.113.10"}})
 		check(t, err)
 		if !strings.Contains(err.Error(), "redacted") {
 			t.Errorf("expected the echoed token to be redacted: %v", err)
@@ -430,7 +432,7 @@ func TestDesiredRefusals(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			cfg := deployment()
+			cfg := declared()
 			tc.mutate(cfg)
 			_, err := Desired(cfg)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -441,7 +443,7 @@ func TestDesiredRefusals(t *testing.T) {
 }
 
 func TestDesiredDerivesAndDedupes(t *testing.T) {
-	cfg := deployment()
+	cfg := declared()
 	// An endpoint given as an address needs no record.
 	cfg.Sites["home-a"] = config.Site{Roles: []config.Role{config.RoleData}, Address: "10.44.0.1", Endpoint: "198.51.100.20:51820"}
 	// A role hostname is a public name too, and the same name twice is one record.
@@ -472,5 +474,47 @@ func TestDesiredDerivesAndDedupes(t *testing.T) {
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("got  %v\nwant %v", got, want)
+	}
+}
+
+// A monitor serves its own hostname, so its records point at the monitor's
+// public address, IPv6 too, while every other app's stay on the gateway.
+func TestMonitorAppsPointAtTheMonitor(t *testing.T) {
+	cfg := declared()
+	cfg.Sites["watch"] = config.Site{Roles: []config.Role{config.RoleMonitor}, Address: "10.44.0.4", PublicAddress: "203.0.113.20", PublicAddress6: "2001:db8::20"}
+	cfg.Apps["status"] = config.App{Kind: config.KindUptime, Hostname: "status.example.org", Placement: config.Placement{Mode: config.PlacementPinned, Site: "watch"}}
+	wants, err := Desired(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, w := range wants {
+		got[w.Type+" "+w.Name] = w.Content
+	}
+	if got["A status.example.org"] != "203.0.113.20" || got["AAAA status.example.org"] != "2001:db8::20" {
+		t.Errorf("the monitor: %v", got)
+	}
+	if got["A talk.example.org"] != "203.0.113.10" {
+		t.Errorf("an ordinary app moved off the gateway: %v", got)
+	}
+	if _, ok := got["AAAA talk.example.org"]; ok {
+		t.Errorf("the gateway has no IPv6 address, yet talk got AAAA: %v", got)
+	}
+
+	// The monitor's hostnames need no gateway, and its own address is
+	// required.
+	delete(cfg.Apps, "talk")
+	delete(cfg.Apps, "docs")
+	vm := cfg.Sites["vm"]
+	vm.Roles = []config.Role{config.RoleWitness}
+	cfg.Sites["vm"] = vm
+	if _, err := Desired(cfg); err != nil {
+		t.Fatalf("a deployment whose only hostname is the monitor's: %v", err)
+	}
+	watch := cfg.Sites["watch"]
+	watch.PublicAddress = ""
+	cfg.Sites["watch"] = watch
+	if _, err := Desired(cfg); err == nil || !strings.Contains(err.Error(), "sites.watch.public_address is not set") {
+		t.Fatalf("a monitor with no address: %v", err)
 	}
 }

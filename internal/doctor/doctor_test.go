@@ -25,11 +25,11 @@ const (
 	// that /sync no longer names.
 	stuckCluster = `{"members": [{"name": "home-a", "role": "replica", "state": "running", "api_url": "http://10.44.0.1:8008/patroni", "host": "10.44.0.1", "port": 5432, "timeline": 2, "lag": 1048576}], "scope": "paisans"}`
 	stuckSync    = `{"leader":"home-b","quorum":0,"sync_standby":null}`
-	stuckLog     = `paisans-infra-patroni-1  | 2026-10-07 21:14:03,512 INFO: following a different leader because i am not the healthiest node
-paisans-infra-patroni-1  | 2026-10-07 21:14:13,498 INFO: following a different leader because i am not the healthiest node`
+	stuckLog     = `paisans-f2a9-infra-patroni-1  | 2026-10-07 21:14:03,512 INFO: following a different leader because i am not the healthiest node
+paisans-f2a9-infra-patroni-1  | 2026-10-07 21:14:13,498 INFO: following a different leader because i am not the healthiest node`
 
 	// docker inspect on a container Docker could not start at boot, seen live.
-	wg0Inspect = `{"State":{"Status":"exited","Running":false,"Paused":false,"Restarting":false,"OOMKilled":false,"Dead":false,"Pid":0,"ExitCode":128,"Error":"failed to set up container networking: driver failed programming external connectivity on endpoint paisans-talk-app-1 (2238d4...): failed to bind host port 10.44.0.2:8080/tcp: cannot assign requested address","StartedAt":"2026-10-07T20:01:12Z","FinishedAt":"2026-10-07T20:01:12Z"},"RestartCount":0}`
+	wg0Inspect = `{"State":{"Status":"exited","Running":false,"Paused":false,"Restarting":false,"OOMKilled":false,"Dead":false,"Pid":0,"ExitCode":128,"Error":"failed to set up container networking: driver failed programming external connectivity on endpoint paisans-f2a9-talk-app-1 (2238d4...): failed to bind host port 10.44.0.2:8080/tcp: cannot assign requested address","StartedAt":"2026-10-07T20:01:12Z","FinishedAt":"2026-10-07T20:01:12Z"},"RestartCount":0}`
 )
 
 func fixture(t *testing.T) *config.Config {
@@ -59,7 +59,7 @@ func healthyInput() Input {
 			Cluster: map[string]string{"home-a": healthyCluster, "home-b": healthyCluster},
 			Sync:    healthySync,
 		},
-		Containers: []SiteContainers{{Site: "home-a", PS: `{"Names":"paisans-infra-etcd-1","State":"running","Status":"Up 2 hours"}`}},
+		Containers: []SiteContainers{{Site: "home-a", PS: `{"Names":"paisans-f2a9-infra-etcd-1","State":"running","Status":"Up 2 hours","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}`}},
 		Standby: []StandbyProbe{{App: "auth", Instances: []apply.Instance{
 			{Site: "home-a", State: apply.Active}, {Site: "home-b", State: apply.Standby}}}},
 		Clocks: []ClockSample{{Site: "home-a", Before: now, After: now.Add(200 * time.Millisecond), Out: "1760000000.150000000\n"}},
@@ -132,13 +132,27 @@ func TestUnreachableSiteSaysWhatIsLost(t *testing.T) {
 		}
 	}
 	vm := strings.Join(find(t, findings, SectionReach, "vm:").More, "\n")
-	for _, want := range []string{"its gateway, which every public hostname goes through", "one of 3 etcd votes", "chat, status, pinned here"} {
+	for _, want := range []string{"its gateway, which every public hostname but the monitor's goes through", "one of 3 etcd votes", "chat, pinned here"} {
 		if !strings.Contains(vm, want) {
 			t.Errorf("vm's loss lacks %q:\n%s", want, vm)
 		}
 	}
 	if find(t, findings, SectionReach, "home-a:").Level != OK {
 		t.Error("home-a answered")
+	}
+}
+
+// A monitor's absence is the one loss nothing else reports.
+func TestAnUnreachableMonitorSaysNothingReportsFailures(t *testing.T) {
+	cfg := fixture(t)
+	findings := Reach(cfg, []SiteReach{
+		{Site: "watch", Destination: "ubuntu@watch.example.org", Err: "ssh: connect to host watch.example.org port 22: Connection refused"},
+	})
+	text := strings.Join(find(t, findings, SectionReach, "watch:").More, "\n")
+	for _, want := range []string{"the uptime monitor, so nothing reports the other sites' failures while it is gone", "status, pinned here"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("watch's loss lacks %q:\n%s", want, text)
+		}
 	}
 }
 
@@ -227,7 +241,7 @@ func TestStuckReplicaIsDiagnosedAndStartingTheLeaderComesFirst(t *testing.T) {
 		t.Fatalf("level %v", f.Level)
 	}
 	text := strings.Join(f.More, "\n")
-	command := "docker compose -f /srv/infra/compose.yaml exec patroni patronictl -c /home/postgres/postgres.yml failover --candidate home-a --force"
+	command := "docker compose -f /srv/paisans/f2a9/infra/compose.yaml exec patroni patronictl -c /home/postgres/postgres.yml failover --candidate home-a --force"
 	start := strings.Index(text, "  1. Start home-b (ssh ubuntu@home-b.local). When it returns it takes the leader lock again, and home-a catches up from it. No data is lost.")
 	force := strings.Index(text, "  2. Only if home-b is lost for good: promote home-a by hand. On home-a (ssh ubuntu@home-a.local):")
 	cmd := strings.Index(text, "       "+command)
@@ -324,19 +338,19 @@ func TestParseSync(t *testing.T) {
 func TestContainerThatStartedBeforeWg0(t *testing.T) {
 	sites := []SiteContainers{{
 		Site: "home-b",
-		PS: `{"Names":"paisans-infra-etcd-1","State":"running","Status":"Up 3 minutes","Labels":"com.docker.compose.project=paisans-infra"}
-{"Names":"paisans-talk-app-1","State":"exited","Status":"Exited (128) 3 minutes ago","Labels":"com.docker.compose.service=app,com.docker.compose.project=paisans-talk"}`,
+		PS: `{"Names":"paisans-f2a9-infra-etcd-1","State":"running","Status":"Up 3 minutes","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01,com.docker.compose.project=paisans-f2a9-infra"}
+{"Names":"paisans-f2a9-talk-app-1","State":"exited","Status":"Exited (128) 3 minutes ago","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01,com.docker.compose.service=app,com.docker.compose.project=paisans-f2a9-talk"}`,
 		Down: []ContainerProbe{{
-			Entry:   PSEntry{Names: "paisans-talk-app-1", State: "exited", Status: "Exited (128) 3 minutes ago", Labels: "com.docker.compose.service=app,com.docker.compose.project=paisans-talk"},
+			Entry:   PSEntry{Names: "paisans-f2a9-talk-app-1", State: "exited", Status: "Exited (128) 3 minutes ago", Labels: "community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01,com.docker.compose.service=app,com.docker.compose.project=paisans-f2a9-talk"},
 			Inspect: wg0Inspect,
 		}},
 	}}
-	f := find(t, Containers(sites, ""), SectionContainers, "home-b: paisans-talk-app-1 exited (exit 128, restarted 0 time(s)): failed to set up container networking")
+	f := find(t, Containers(fixture(t).Deployment(), sites, ""), SectionContainers, "home-b: paisans-f2a9-talk-app-1 exited (exit 128, restarted 0 time(s)): failed to set up container networking")
 	if f.Level != Fail {
 		t.Fatalf("level %v", f.Level)
 	}
 	text := strings.Join(f.More, "\n")
-	for _, want := range []string{"Docker started before wg0 at boot", "`paisans host prepare --site home-b --execute`", "`docker start paisans-talk-app-1` on home-b", "`paisans apply --site home-b --recreate talk --execute`"} {
+	for _, want := range []string{"Docker started before psns-f2a9 at boot", "`paisans host prepare --site home-b --execute`", "`docker start paisans-f2a9-talk-app-1` on home-b", "`paisans apply --site home-b --recreate talk --execute`"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q:\n%s", want, text)
 		}
@@ -346,14 +360,14 @@ func TestContainerThatStartedBeforeWg0(t *testing.T) {
 func TestRestartingContainerThatCannotReachItsDatabase(t *testing.T) {
 	sites := []SiteContainers{{
 		Site: "home-a",
-		PS:   `{"Names":"paisans-docs-app-1","State":"restarting","Status":"Restarting (1) 5 seconds ago"}`,
+		PS:   `{"Names":"paisans-f2a9-docs-app-1","State":"restarting","Status":"Restarting (1) 5 seconds ago","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}`,
 		Down: []ContainerProbe{{
-			Entry:   PSEntry{Names: "paisans-docs-app-1", State: "restarting"},
+			Entry:   PSEntry{Names: "paisans-f2a9-docs-app-1", State: "restarting", Labels: "community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},
 			Inspect: `{"State":{"Status":"restarting","Restarting":true,"ExitCode":1,"Error":""},"RestartCount":14}`,
 			Logs:    "starting\nError: connect ECONNREFUSED 127.0.0.1:5000\nSequelizeConnectionRefusedError: connection refused\n",
 		}},
 	}}
-	f := find(t, Containers(sites, ""), SectionContainers, "paisans-docs-app-1 restarting (exit 1, restarted 14 time(s))")
+	f := find(t, Containers(fixture(t).Deployment(), sites, ""), SectionContainers, "paisans-f2a9-docs-app-1 restarting (exit 1, restarted 14 time(s))")
 	if !strings.Contains(strings.Join(f.More, "\n"), "cannot reach its database") {
 		t.Fatalf("%v", f.More)
 	}
@@ -362,26 +376,26 @@ func TestRestartingContainerThatCannotReachItsDatabase(t *testing.T) {
 func TestOtherDownContainerShowsItsLastLines(t *testing.T) {
 	sites := []SiteContainers{{
 		Site: "vm",
-		PS:   `{"Names":"paisans-chat-app-1","State":"exited","Status":"Exited (1)"}`,
+		PS:   `{"Names":"paisans-f2a9-chat-app-1","State":"exited","Status":"Exited (1)","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}`,
 		Down: []ContainerProbe{{
-			Entry:   PSEntry{Names: "paisans-chat-app-1", State: "exited"},
+			Entry:   PSEntry{Names: "paisans-f2a9-chat-app-1", State: "exited", Labels: "community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},
 			Inspect: `{"State":{"Status":"exited","ExitCode":1,"Error":""},"RestartCount":0}`,
 			Logs:    "one\ntwo\nthree\nfour\n",
 		}},
 	}}
-	f := find(t, Containers(sites, ""), SectionContainers, "paisans-chat-app-1 exited (exit 1")
+	f := find(t, Containers(fixture(t).Deployment(), sites, ""), SectionContainers, "paisans-f2a9-chat-app-1 exited (exit 1")
 	if got := strings.Join(f.More, "|"); got != "last log lines:|  two|  three|  four" {
 		t.Fatalf("got %q", got)
 	}
 }
 
 func TestPocketIDActiveCount(t *testing.T) {
-	none := Standby([]StandbyProbe{{App: "auth", Instances: []apply.Instance{{Site: "home-a", State: apply.Standby}, {Site: "home-b", State: apply.Unreachable, Detail: "did not answer ssh"}}}}, true)
+	none := Standby(fixture(t).Deployment(), []StandbyProbe{{App: "auth", Instances: []apply.Instance{{Site: "home-a", State: apply.Standby}, {Site: "home-b", State: apply.Unreachable, Detail: "did not answer ssh"}}}}, true)
 	f := find(t, none, SectionPocketID, "auth: no active instance, so sign in is down")
 	if f.Level != Fail || !strings.Contains(strings.Join(f.More, "\n"), "logs app") || !strings.Contains(strings.Join(f.More, "\n"), "no database primary") {
 		t.Fatalf("%+v", f)
 	}
-	two := Standby([]StandbyProbe{{App: "auth", Instances: []apply.Instance{{Site: "home-a", State: apply.Active}, {Site: "home-b", State: apply.Active}}}}, false)
+	two := Standby(fixture(t).Deployment(), []StandbyProbe{{App: "auth", Instances: []apply.Instance{{Site: "home-a", State: apply.Active}, {Site: "home-b", State: apply.Active}}}}, false)
 	if f := find(t, two, SectionPocketID, "2 sites have an active instance"); f.Level != Fail {
 		t.Fatalf("%+v", f)
 	}
@@ -414,26 +428,51 @@ func TestContainerDatabaseAdviceKnowsWhetherThereIsAPrimary(t *testing.T) {
 	probe := func(logs string) []SiteContainers {
 		return []SiteContainers{{
 			Site: "home-a",
-			PS:   `{"Names":"paisans-auth-app-1","State":"restarting","Status":"Restarting (1) 5 seconds ago"}`,
+			PS:   `{"Names":"paisans-f2a9-auth-app-1","State":"restarting","Status":"Restarting (1) 5 seconds ago","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}`,
 			Down: []ContainerProbe{{
-				Entry:   PSEntry{Names: "paisans-auth-app-1", State: "restarting", Labels: "com.docker.compose.project=paisans-auth,com.docker.compose.service=app"},
+				Entry:   PSEntry{Names: "paisans-f2a9-auth-app-1", State: "restarting", Labels: "community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01,com.docker.compose.project=paisans-f2a9-auth,com.docker.compose.service=app"},
 				Inspect: `{"State":{"Status":"restarting","Restarting":true,"ExitCode":1,"Error":""},"RestartCount":34}`,
 				Logs:    logs,
 			}},
 		}}
 	}
 	refused := "ERR Failed to run pocket-id error=\"failed to ping Postgres database: dial tcp 10.44.0.1:5000: connect: connection refused\"\n"
-	f := find(t, Containers(probe(refused), "home-b"), SectionContainers, "paisans-auth-app-1 restarting")
+	f := find(t, Containers(fixture(t).Deployment(), probe(refused), "home-b"), SectionContainers, "paisans-f2a9-auth-app-1 restarting")
 	more := strings.Join(f.More, "\n")
 	if !strings.Contains(more, "although home-b is the primary") || !strings.Contains(more, "--only auth --recreate auth") {
 		t.Errorf("with a primary up:\n%s", more)
 	}
 	unreachable := "ERR Failed to run pocket-id error=\"failed to ping Postgres database: dial tcp 10.44.0.1:5000: connect: network is unreachable\"\n"
 	for _, primary := range []string{"", "home-b"} {
-		f := find(t, Containers(probe(unreachable), primary), SectionContainers, "paisans-auth-app-1 restarting")
+		f := find(t, Containers(fixture(t).Deployment(), probe(unreachable), primary), SectionContainers, "paisans-f2a9-auth-app-1 restarting")
 		more := strings.Join(f.More, "\n")
 		if !strings.Contains(more, "no route to the mesh address") || !strings.Contains(more, "--only auth --recreate auth") {
 			t.Errorf("network unreachable, primary %q:\n%s", primary, more)
 		}
+	}
+}
+
+// Doctor asks Docker for this deployment's containers by label, and a
+// container labelled with another deployment's id, or with none, is not
+// reported even when the output carries it.
+func TestContainersAreThisDeploymentsByLabel(t *testing.T) {
+	d := fixture(t).Deployment()
+	if cmd := ContainersCommand(d); !strings.Contains(cmd, "--filter 'label=community.paisans.deployment="+d.ID+"'") || strings.Contains(cmd, "name=") {
+		t.Errorf("the listing does not filter on the deployment label: %s", cmd)
+	}
+	other := "community.paisans.deployment=0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5"
+	sites := []SiteContainers{{
+		Site: "home-a",
+		PS: `{"Names":"paisans-f2a9-talk-app-1","State":"running","Status":"Up","Labels":"community.paisans.deployment=` + d.ID + `"}
+{"Names":"paisans-0c1d-talk-app-1","State":"exited","Status":"Exited (1)","Labels":"` + other + `"}
+{"Names":"paisans-f2a9-docs-app-1","State":"exited","Status":"Exited (1)","Labels":"com.docker.compose.project=paisans-f2a9-docs"}`,
+		Down: []ContainerProbe{
+			{Entry: PSEntry{Names: "paisans-0c1d-talk-app-1", State: "exited", Labels: other}},
+			{Entry: PSEntry{Names: "paisans-f2a9-docs-app-1", State: "exited", Labels: "com.docker.compose.project=paisans-f2a9-docs"}},
+		},
+	}}
+	got := Containers(d, sites, "")
+	if len(got) != 1 || got[0].Level != OK || got[0].Line != "home-a: 1 paisans container(s), all running" {
+		t.Fatalf("got %+v, want one OK line counting only this deployment's container", got)
 	}
 }

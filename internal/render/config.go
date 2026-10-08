@@ -156,8 +156,8 @@ func mergeConfig(app plannedApp, keys map[string]any, stack string, files []File
 
 	for _, key := range sortedKeys(keys) {
 		if o, ok := omittedOnPurpose(app.Kind, key); ok {
-			return fmt.Errorf("config-key-already-rendered: apps.%s.config.%s: the template %s leaves %s out of /srv/%s/%s on purpose: %s. A key a template omits by decision is owned by the template as surely as one it writes, so a passthrough key may not put it back; that is a template change, and it is reviewable.",
-				app.Name, key, strings.TrimPrefix(sources[files[target].Path], "templates/"), o.Key, app.Name, name, o.Why)
+			return fmt.Errorf("config-key-already-rendered: apps.%s.config.%s: the template %s leaves %s out of %s/%s on purpose: %s. A key a template omits by decision is owned by the template as surely as one it writes, so a passthrough key may not put it back; that is a template change, and it is reviewable.",
+				app.Name, key, strings.TrimPrefix(sources[files[target].Path], "templates/"), o.Key, app.Dir, name, o.Why)
 		}
 	}
 
@@ -201,7 +201,7 @@ func mergeConfig(app plannedApp, keys map[string]any, stack string, files []File
 // a setting nobody can locate, and how the toolkit's own decisions get
 // quietly undone, so it stops the build rather than overwriting.
 func alreadyRendered(app plannedApp, key, file, template, why string) error {
-	where := fmt.Sprintf("/srv/%s/%s", app.Name, file)
+	where := app.Dir + "/" + file
 	if setting, ok := owningSetting(app.Kind, key); ok {
 		return fmt.Errorf("config-key-already-rendered: apps.%s.config.%s: %s already sets this key, and apps.%s.settings.%s is the sanctioned input for it. Set that instead and remove the key from config.%s",
 			app.Name, key, where, app.Name, setting, why)

@@ -55,6 +55,7 @@ func (l Level) String() string {
 // ones after it.
 const (
 	SectionReach      = "reach"
+	SectionMesh       = "mesh"
 	SectionEtcd       = "etcd"
 	SectionPatroni    = "patroni"
 	SectionContainers = "containers"
@@ -62,7 +63,7 @@ const (
 	SectionClocks     = "clocks"
 )
 
-var sections = []string{SectionReach, SectionEtcd, SectionPatroni, SectionContainers, SectionPocketID, SectionClocks}
+var sections = []string{SectionReach, SectionMesh, SectionEtcd, SectionPatroni, SectionContainers, SectionPocketID, SectionClocks}
 
 // Finding is one line of the report, with any explanation, recovery advice or
 // evidence under it.
@@ -123,6 +124,7 @@ type Input struct {
 	// --site named.
 	Sites      []string
 	Reach      []SiteReach
+	Mesh       []MeshProbe
 	Etcd       EtcdProbe
 	Patroni    PatroniProbe
 	Containers []SiteContainers
@@ -165,12 +167,13 @@ func Diagnose(cfg *config.Config, in Input) Report {
 	reached := in.Reached()
 	var findings []Finding
 	findings = append(findings, Reach(cfg, in.Reach)...)
+	findings = append(findings, Mesh(cfg, in.Mesh)...)
 	findings = append(findings, Etcd(cfg, in)...)
 	findings = append(findings, Patroni(cfg, in)...)
-	findings = append(findings, Containers(in.Containers, LeaderName(in.Patroni.Cluster))...)
+	findings = append(findings, Containers(cfg.Deployment(), in.Containers, LeaderName(in.Patroni.Cluster))...)
 	// Only a cluster that answered can be said to have no primary.
 	noPrimary := len(in.Patroni.Cluster) > 0 && !HasLeader(in.Patroni.Cluster)
-	findings = append(findings, Standby(in.Standby, noPrimary)...)
+	findings = append(findings, Standby(cfg.Deployment(), in.Standby, noPrimary)...)
 	findings = append(findings, Clocks(in.Clocks)...)
 	return Report{Sites: len(in.Sites), Reached: len(reached), Findings: findings}
 }

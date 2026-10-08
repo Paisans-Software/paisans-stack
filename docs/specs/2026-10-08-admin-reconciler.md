@@ -88,7 +88,7 @@ result. That log is the audit trail the approval below depends on.
 The standby wrapper (`paisans-standby.sh`) marks a standby with
 `/tmp/paisans-standby` inside the app container, which the reconciler cannot see.
 It now also writes the same marker to `/paisans/run/standby`, a directory bind
-mounted from `/srv/<app>/run` into both containers (read only in the reconciler),
+mounted from `/srv/paisans/<token>/<app>/run` into both containers (read only in the reconciler),
 and removes both at the top of every attempt. A reconciler that finds the marker is
 on a standby. One that does not find it expects Pocket ID to answer, and
 reports its silence as unhealthy.

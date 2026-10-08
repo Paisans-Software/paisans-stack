@@ -10,6 +10,7 @@
 # runtime state drifts, and someone trusts a stale value during an incident.
 
 version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 
 community:
   name: "Example Community"
@@ -22,8 +23,11 @@ mesh:
   # are rendered to trust this subnet for forwarded client addresses, so it has
   # to be a value that never changes. Deriving the tightest network around
   # today's addresses would widen it the moment a site was added, silently
-  # rewriting TRUSTED_PROXIES in every app. Pick a range your hosts do not
-  # already route.
+  # rewriting TRUSTED_PROXIES in every app. `paisans init` checks it against
+  # every site before the first apply, and rolls a random 10.x.y.0/24 (moving
+  # each site's address with it) when it overlaps another deployment's mesh,
+  # a route, an address or a Docker network on any of them. Once deployed it
+  # never changes.
   subnet: 10.44.0.0/24
 
 # Certificates are issued over DNS-01, always. A gateway has to be able to hold
@@ -83,6 +87,31 @@ sites:
     # public_address6: 2001:db8::10    # optional, adds AAAA records
     ssh:
       host: vm.example.org      # could be left out with public_address set
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB bob@example.org
+
+  # The uptime monitor's own machine. Never the gateway or the witness: its job
+  # is to report their failures, so it must not fail with them. It serves its
+  # own hostname from its own address instead of through the gateway, so
+  # public_address is required here, and its hostname's record points at it.
+  watch:
+    roles: [monitor]
+    address: 10.44.0.4
+    endpoint: watch.example.org:51820
+    public_address: 203.0.113.20
+    # What is in front of the monitor. Left out, it is mode paisans: the
+    # toolkit's own Caddy, the gateway's image, with certificates over DNS-01.
+    # On a machine that already runs a web server on 80 and 443, hand the app
+    # to that server instead; `paisans ingress show --app status` prints what
+    # to put in it, and docs/guides/behind-your-own-web-server.md walks
+    # through it.
+    # ingress:
+    #   mode: external
+    #   listen: 127.0.0.1:8480
+    ssh:
+      host: watch.example.org
       user: ubuntu
       public_key: |
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
@@ -267,13 +296,12 @@ apps:
   status:
     kind: uptime
     hostname: status.example.org
-    # The uptime monitor. Pinned only: it keeps SQLite on local disk. The
-    # gateway VM is the usual place in a multi-site deployment, because a
-    # home going dark does not take the monitor with it; on a single site it
-    # runs beside everything else and watches the apps rather than the host.
-    # Its monitors are not declared here: every app gets a public and a
-    # direct check and every other site a ping, generated from this file.
-    placement: { pinned: vm }
+    # The uptime monitor. Pinned only, and only to a site holding the monitor
+    # role: it keeps SQLite on local disk, and it must not go dark with the
+    # gateway it reports on. Its monitors are not declared here: every app
+    # gets a public and a direct check, every other site a ping, and the
+    # monitor one check of its own public URL, generated from this file.
+    placement: { pinned: watch }
     settings:
       # Required. Only members of this identity provider group may sign in.
       admin_group: admins

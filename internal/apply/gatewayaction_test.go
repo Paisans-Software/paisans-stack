@@ -44,13 +44,13 @@ func (h *fakeHost) count(substring string) int {
 func TestARoutingChangeIsOneReloadAndNoRestart(t *testing.T) {
 	host := applied(t, "vm")
 	host.running = true
-	p, err := apply.Build("vm", planChangingOn(t, "vm", "srv/infra/caddy/Caddyfile", "srv/infra/caddy/snippets/blog.caddy"), acmeModule(t), host)
+	p, err := apply.Build("vm", planChangingOn(t, "vm", "srv/paisans/f2a9/infra/caddy/Caddyfile", "srv/paisans/f2a9/infra/caddy/snippets/blog.caddy"), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, a := range p.Actions {
 		if a.Stack == "infra" {
-			t.Errorf("a routing change plans %q as well as the reload", a.Command())
+			t.Errorf("a routing change plans %q as well as the reload", a.Command(apply.Fixture))
 		}
 	}
 	if err := apply.Execute(p, host); err != nil {
@@ -69,7 +69,7 @@ func TestARoutingChangeIsOneReloadAndNoRestart(t *testing.T) {
 func TestARoutingChangeStartsAStoppedGateway(t *testing.T) {
 	host := applied(t, "vm")
 	host.running = false
-	p, err := apply.Build("vm", planChangingOn(t, "vm", "srv/infra/caddy/Caddyfile"), acmeModule(t), host)
+	p, err := apply.Build("vm", planChangingOn(t, "vm", "srv/paisans/f2a9/infra/caddy/Caddyfile"), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,9 +93,9 @@ func TestARoutingChangeBesideARecreateIsOneAction(t *testing.T) {
 		recreates []string
 		reloads   int
 	}{
-		{"caddy replaced", []string{"srv/infra/caddy/Caddyfile", "srv/infra/caddy/caddy.env"}, []string{"caddy"}, 0},
-		{"caddy left in place", []string{"srv/infra/caddy/Caddyfile", "srv/infra/compose.yaml"}, []string{"etcd"}, 1},
-		{"no routing change", []string{"srv/infra/compose.yaml"}, []string{"caddy"}, 0},
+		{"caddy replaced", []string{"srv/paisans/f2a9/infra/caddy/Caddyfile", "srv/paisans/f2a9/infra/caddy/caddy.env"}, []string{"caddy"}, 0},
+		{"caddy left in place", []string{"srv/paisans/f2a9/infra/caddy/Caddyfile", "srv/paisans/f2a9/infra/compose.yaml"}, []string{"etcd"}, 1},
+		{"no routing change", []string{"srv/paisans/f2a9/infra/compose.yaml"}, []string{"caddy"}, 0},
 	} {
 		base := applied(t, "vm")
 		base.running = true

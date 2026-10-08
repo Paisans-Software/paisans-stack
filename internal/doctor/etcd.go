@@ -8,6 +8,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -25,7 +26,7 @@ func EtcdHealthCommand(cfg *config.Config) string {
 	for _, name := range cfg.Etcd.Members {
 		endpoints = append(endpoints, fmt.Sprintf("http://%s:%d", cfg.Sites[name].Address, render.EtcdClientPort))
 	}
-	return "docker compose -f /srv/infra/compose.yaml exec -T etcd etcdctl --endpoints=" + strings.Join(endpoints, ",") + " endpoint health -w json"
+	return cfg.Deployment().ComposeCmd("infra") + " exec -T etcd etcdctl --endpoints=" + strings.Join(endpoints, ",") + " endpoint health -w json"
 }
 
 // noCurl is what EtcdVersionCommand prints on a host without curl.
@@ -186,4 +187,6 @@ func etcdVersion(p EtcdProbe, down []string) []Finding {
 // read, answered from the local member's own copy, so it works without
 // quorum, which is when it is needed; the value may be a moment stale, and
 // /sync changes only when the leader changes who it waits for.
-var SyncCommand = apply.Etcdctl("get /service/" + render.PatroniScope + "/sync --print-value-only --consistency=s")
+func SyncCommand(d deployment.Deployment) string {
+	return apply.Etcdctl(d, "get /service/"+render.PatroniScope+"/sync --print-value-only --consistency=s")
+}

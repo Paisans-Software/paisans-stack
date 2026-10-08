@@ -52,7 +52,7 @@ func TestTheClusterDatabaseAppsAreClusterPlacedAndUsePostgres(t *testing.T) {
 // stack, its gate and the bootstrap, and checked.
 func TestAHAProxyChangeRestartsTheDatabaseApps(t *testing.T) {
 	host := appliedHost(t)
-	p, err := apply.Build("home-a", planChanging(t, "srv/infra/haproxy/haproxy.cfg"), acmeModule(t), host, databaseApps(t))
+	p, err := apply.Build("home-a", planChanging(t, "srv/paisans/f2a9/infra/haproxy/haproxy.cfg"), acmeModule(t), host, databaseApps(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestAHAProxyChangeRestartsTheDatabaseApps(t *testing.T) {
 	for _, app := range []string{"auth", "docs", "talk"} {
 		a, _ := actionOn(p, app)
 		if a.Recreate || !strings.HasPrefix(a.Reason, "its database path changed (HAProxy/Patroni moved)") {
-			t.Errorf("%s: %s, %s", app, a.Command(), a.Reason)
+			t.Errorf("%s: %s, %s", app, a.Command(apply.Fixture), a.Reason)
 		}
 	}
 	cfg := fixtureConfig(t)
@@ -79,20 +79,20 @@ func TestAHAProxyChangeRestartsTheDatabaseApps(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmds := host.commands
-	infra := indexOf(cmds, "/srv/infra/compose.yaml restart haproxy")
-	infraGate := indexOf(cmds, "/srv/infra/compose.yaml ps --all")
+	infra := indexOf(cmds, "/srv/paisans/f2a9/infra/compose.yaml restart haproxy")
+	infraGate := indexOf(cmds, "/srv/paisans/f2a9/infra/compose.yaml ps --all")
 	bootstrap := indexOf(cmds, ":8008/cluster")
 	if infra < 0 || infraGate < infra || bootstrap < infraGate {
 		t.Fatalf("infra %d, its gate %d, bootstrap %d:\n%s", infra, infraGate, bootstrap, strings.Join(cmds, "\n"))
 	}
 	for _, app := range []string{"auth", "docs", "talk"} {
-		restart := indexOf(cmds, "/srv/"+app+"/compose.yaml restart")
-		gate := indexOf(cmds, "/srv/"+app+"/compose.yaml ps --all")
+		restart := indexOf(cmds, "/srv/paisans/f2a9/"+app+"/compose.yaml restart")
+		gate := indexOf(cmds, "/srv/paisans/f2a9/"+app+"/compose.yaml ps --all")
 		if restart < bootstrap || gate < restart {
 			t.Errorf("%s: restart %d, gate %d, bootstrap %d", app, restart, gate, bootstrap)
 		}
 	}
-	if host.ran("/srv/blog/compose.yaml restart") {
+	if host.ran("/srv/paisans/f2a9/blog/compose.yaml restart") {
 		t.Error("blog has its own Postgres and was restarted")
 	}
 }
@@ -100,7 +100,7 @@ func TestAHAProxyChangeRestartsTheDatabaseApps(t *testing.T) {
 // A new patroni.env recreates Patroni, which on the primary moves it.
 func TestAPatroniChangeRestartsTheDatabaseApps(t *testing.T) {
 	host := appliedHost(t)
-	p, err := apply.Build("home-a", planChanging(t, "srv/infra/patroni.env"), acmeModule(t), host, databaseApps(t))
+	p, err := apply.Build("home-a", planChanging(t, "srv/paisans/f2a9/infra/patroni.env"), acmeModule(t), host, databaseApps(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestAPatroniChangeRestartsTheDatabaseApps(t *testing.T) {
 func TestAChangeOffTheDatabasePathRestartsNoApp(t *testing.T) {
 	host := appliedHost(t)
 
-	garage, err := apply.Build("home-a", planChanging(t, "srv/infra/garage/garage.toml"), acmeModule(t), host, databaseApps(t))
+	garage, err := apply.Build("home-a", planChanging(t, "srv/paisans/f2a9/infra/garage/garage.toml"), acmeModule(t), host, databaseApps(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestAChangeOffTheDatabasePathRestartsNoApp(t *testing.T) {
 		t.Errorf("an etcd only compose change acts on %s", got)
 	}
 	if a, _ := actionOn(p, "infra"); !a.Recreate {
-		t.Errorf("the etcd change was expected to recreate, and plans %s", a.Command())
+		t.Errorf("the etcd change was expected to recreate, and plans %s", a.Command(apply.Fixture))
 	}
 }
 
@@ -168,7 +168,7 @@ func TestACaddyChangeRestartsNoApp(t *testing.T) {
 	}
 	// The routing change is the gateway's reload, and no infra action.
 	if a, ok := actionOn(p, "infra"); ok {
-		t.Errorf("infra plans %q as well as the reload", a.Command())
+		t.Errorf("infra plans %q as well as the reload", a.Command(apply.Fixture))
 	}
 	if !p.GatewayReload {
 		t.Error("a routing change planned no reload")
@@ -179,7 +179,7 @@ func TestACaddyChangeRestartsNoApp(t *testing.T) {
 // added, rather than being restarted twice.
 func TestAnAppWithItsOwnActionIsNotActedOnTwice(t *testing.T) {
 	host := appliedHost(t)
-	rendered := planChanging(t, "srv/infra/haproxy/haproxy.cfg", "srv/talk/.env")
+	rendered := planChanging(t, "srv/paisans/f2a9/infra/haproxy/haproxy.cfg", "srv/paisans/f2a9/talk/.env")
 	p, err := apply.Build("home-a", rendered, acmeModule(t), host, databaseApps(t))
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestAnAppWithItsOwnActionIsNotActedOnTwice(t *testing.T) {
 		if a.Stack == "talk" {
 			n++
 			if !a.Recreate || !strings.Contains(a.Reason, "database path changed") {
-				t.Errorf("talk: %s, %s", a.Command(), a.Reason)
+				t.Errorf("talk: %s, %s", a.Command(apply.Fixture), a.Reason)
 			}
 		}
 	}
@@ -202,7 +202,7 @@ func TestAnAppWithItsOwnActionIsNotActedOnTwice(t *testing.T) {
 // HAProxy, so the apps are restarted with it.
 func TestOnlyAndTheDatabasePath(t *testing.T) {
 	host := appliedHost(t)
-	rendered := planChanging(t, "srv/infra/haproxy/haproxy.cfg")
+	rendered := planChanging(t, "srv/paisans/f2a9/infra/haproxy/haproxy.cfg")
 	talk, err := apply.Build("home-a", rendered, acmeModule(t), host, databaseApps(t), apply.Only("talk"), apply.Recreate("talk"))
 	if err != nil {
 		t.Fatal(err)

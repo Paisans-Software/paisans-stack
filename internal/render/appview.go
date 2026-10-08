@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
@@ -58,6 +59,21 @@ type appValues struct {
 	// role can move without rewriting every application's configuration.
 	TrustedProxies string
 
+	// TrustProxy is the proxy an app on a monitor site trusts for the
+	// client's address: the site's own mesh address behind the monitor's own
+	// Caddy, and where the operator's web server connects from in ingress
+	// mode external. See trustProxy.
+	TrustProxy string
+
+	// IngressListen is where an app on a monitor in ingress mode external is
+	// published for the operator's web server, as host:port, instead of its
+	// mesh address. Empty for every other app. IngressNetwork and
+	// IngressGateway pin its compose network, so the address that web
+	// server's connections arrive from is known (see trustProxy).
+	IngressListen  string
+	IngressNetwork string
+	IngressGateway string
+
 	// MeshAddress is the mesh address of the site this instance runs on. A
 	// published port binds it and nothing else, and a clustered app reaches
 	// its local HAProxy at it. Empty when the gateway rebuilds the app for
@@ -89,6 +105,13 @@ type appValues struct {
 	// DataPath is the app's bind mounted directory on the host. Templates that
 	// mount a rendered file need it to say where the file lives.
 	DataPath string
+
+	// Project is the app's compose project name, paisans-<token>-<app>, and
+	// DeploymentLabel and DeploymentID are the label every service and network
+	// in it carries. See internal/deployment.
+	Project         string
+	DeploymentLabel string
+	DeploymentID    string
 
 	// Upstreams is where the gateway sends this app's traffic: one address for
 	// a pinned app, every apps site for a clustered one. A snippet never
@@ -281,10 +304,18 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		DBPassword:      password,
 		DSN:             dsn(planned, password, dbHost, dbPort),
 		PostgresVersion: p.postgresVersion(),
-		DataPath:        "/srv/" + planned.Name,
+		DataPath:        planned.Dir,
+		Project:         p.dep().Project(planned.Name),
+		DeploymentLabel: deployment.Label,
+		DeploymentID:    p.dep().ID,
 		MeshAddress:     p.meshAddress(planned.Site),
 		secrets:         p.secrets.Apps[planned.Name],
 		set:             app.Settings,
+	}
+	v.TrustProxy = trustProxy(p.cfg, planned.Name)
+	v.IngressListen = ingressListen(p.cfg, planned.Name)
+	if v.IngressListen != "" {
+		v.IngressNetwork, v.IngressGateway = IngressNetwork, IngressGateway
 	}
 	v.ServerName = planned.Hostname
 	if delegated := app.Hostnames[kinds.WellknownRole]; delegated != "" {
@@ -323,6 +354,11 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	v.OIDC = p.oidcFor(planned)
 	v.Upstreams = p.upstreams(planned.Name)
 	v.UpstreamElsewhere = p.elsewhere(v.Upstreams)
+	if _, onMonitor := ServedBy(p.cfg, planned.Name); onMonitor {
+		// The Caddy in front of a monitor's app is on the monitor itself, so
+		// the app cannot die while its edge stays up.
+		v.UpstreamElsewhere = false
+	}
 	if planned.Kind == config.KindOAuth2Proxy {
 		v.GateMembersPort = gateMembersPort
 		v.GateMembersUpstreams = p.upstreamsOnPort(planned.Name, gateMembersPort)

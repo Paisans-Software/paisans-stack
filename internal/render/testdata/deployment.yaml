@@ -1,8 +1,9 @@
 # The fixture deployment. It exercises both placements: three clustered apps
-# and four pinned, on three sites with one stable endpoint. It is validated
+# and five pinned, on four sites with two stable endpoints. It is validated
 # before it is rendered (see fixture() in render_test.go), so it is a
 # configuration an operator could actually have written.
 version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 
 community:
   name: "Fixture Community"
@@ -37,6 +38,18 @@ sites:
     endpoint: vm.example.org:51820
     ssh:
       host: vm.example.org
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+  # The monitor's own machine, in ingress mode paisans: it runs the
+  # gateway's Caddy image and serves the monitor's hostname itself.
+  watch:
+    roles: [monitor]
+    address: 10.44.0.4
+    endpoint: watch.example.org:51820
+    public_address: 203.0.113.20
+    ssh:
+      host: watch.example.org
       user: ubuntu
       public_key: |
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
@@ -130,9 +143,9 @@ apps:
   status:
     kind: uptime
     hostname: status.example.org
-    # The monitor on the gateway VM, the usual multi-site placement: it is a
-    # site that the homes' failures do not take down with them.
-    placement: { pinned: vm }
+    # The monitor on a site of its own, which neither the homes' failures nor
+    # the gateway's take down with them.
+    placement: { pinned: watch }
     settings:
       admin_group: admins
     # One field overridden, so the golden seed shows the merge.

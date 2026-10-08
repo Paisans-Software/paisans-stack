@@ -48,9 +48,9 @@ func TestABindMountedInfraFileRestartsOnlyItsService(t *testing.T) {
 		rels []string
 		want string
 	}{
-		{[]string{"srv/infra/garage/garage.toml"}, "docker compose -f /srv/infra/compose.yaml restart garage"},
-		{[]string{"srv/infra/haproxy/haproxy.cfg"}, "docker compose -f /srv/infra/compose.yaml restart haproxy"},
-		{[]string{"srv/infra/garage/garage.toml", "srv/infra/haproxy/haproxy.cfg"}, "docker compose -f /srv/infra/compose.yaml restart garage haproxy"},
+		{[]string{"srv/paisans/f2a9/infra/garage/garage.toml"}, "docker compose -f /srv/paisans/f2a9/infra/compose.yaml restart garage"},
+		{[]string{"srv/paisans/f2a9/infra/haproxy/haproxy.cfg"}, "docker compose -f /srv/paisans/f2a9/infra/compose.yaml restart haproxy"},
+		{[]string{"srv/paisans/f2a9/infra/garage/garage.toml", "srv/paisans/f2a9/infra/haproxy/haproxy.cfg"}, "docker compose -f /srv/paisans/f2a9/infra/compose.yaml restart garage haproxy"},
 	} {
 		host := appliedHost(t)
 		p, err := apply.Build("home-a", planChanging(t, tc.rels...), acmeModule(t), host)
@@ -58,8 +58,8 @@ func TestABindMountedInfraFileRestartsOnlyItsService(t *testing.T) {
 			t.Fatal(err)
 		}
 		a := infraAction(t, p)
-		if a.Recreate || a.Command() != tc.want {
-			t.Errorf("%v: infra runs %q, want %q", tc.rels, a.Command(), tc.want)
+		if a.Recreate || a.Command(apply.Fixture) != tc.want {
+			t.Errorf("%v: infra runs %q, want %q", tc.rels, a.Command(apply.Fixture), tc.want)
 		}
 		if !strings.Contains(a.Reason, "only") {
 			t.Errorf("%v: the reason does not say the restart is narrowed: %s", tc.rels, a.Reason)
@@ -77,12 +77,12 @@ func TestABindMountedInfraFileRestartsOnlyItsService(t *testing.T) {
 // services whose configuration changed.
 func TestAnInfraEnvironmentChangeStillRecreates(t *testing.T) {
 	host := appliedHost(t)
-	p, err := apply.Build("home-a", planChanging(t, "srv/infra/patroni.env", "srv/infra/garage/garage.toml"), acmeModule(t), host)
+	p, err := apply.Build("home-a", planChanging(t, "srv/paisans/f2a9/infra/patroni.env", "srv/paisans/f2a9/infra/garage/garage.toml"), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a := infraAction(t, p); !a.Recreate || len(a.Services) != 0 {
-		t.Errorf("patroni.env changed and infra plans %q", a.Command())
+		t.Errorf("patroni.env changed and infra plans %q", a.Command(apply.Fixture))
 	}
 }
 
@@ -109,7 +109,7 @@ func newContainerHost(h *fakeHost, recreates ...string) *containerHost {
 }
 
 func (c *containerHost) Run(command string) (string, error) {
-	const compose = "docker compose -f /srv/infra/compose.yaml "
+	const compose = "docker compose -f /srv/paisans/f2a9/infra/compose.yaml "
 	switch command {
 	case compose + "ps --all --format json":
 		c.commands = append(c.commands, command)
@@ -134,13 +134,13 @@ func (c *containerHost) Run(command string) (string, error) {
 // service `up -d` replaced is not restarted again.
 func TestABindMountChangedBesideAnUpIsRestartedAfterIt(t *testing.T) {
 	host := newContainerHost(appliedHost(t), "patroni", "garage")
-	p, err := apply.Build("home-a", planChanging(t, "srv/infra/patroni.env", "srv/infra/haproxy/haproxy.cfg", "srv/infra/garage/garage.toml"), acmeModule(t), host)
+	p, err := apply.Build("home-a", planChanging(t, "srv/paisans/f2a9/infra/patroni.env", "srv/paisans/f2a9/infra/haproxy/haproxy.cfg", "srv/paisans/f2a9/infra/garage/garage.toml"), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := infraAction(t, p)
 	if !a.Recreate || strings.Join(a.Refresh, ",") != "garage,haproxy" {
-		t.Fatalf("infra plans %q refreshing %v", a.Command(), a.Refresh)
+		t.Fatalf("infra plans %q refreshing %v", a.Command(apply.Fixture), a.Refresh)
 	}
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestABindMountChangedBesideAnUpIsRestartedAfterIt(t *testing.T) {
 // restarted after it.
 func TestNothingIsRestartedWhenUpReplacedIt(t *testing.T) {
 	host := newContainerHost(appliedHost(t), "haproxy", "patroni")
-	p, err := apply.Build("home-a", planChanging(t, "srv/infra/patroni.env", "srv/infra/haproxy/haproxy.cfg"), acmeModule(t), host)
+	p, err := apply.Build("home-a", planChanging(t, "srv/paisans/f2a9/infra/patroni.env", "srv/paisans/f2a9/infra/haproxy/haproxy.cfg"), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}

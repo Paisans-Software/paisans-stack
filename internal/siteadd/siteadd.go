@@ -21,6 +21,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/preflight"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -57,6 +58,11 @@ type Plan struct {
 	// Progress receives each stage as it starts and each gate as it passes.
 	// Nil discards it.
 	Progress io.Writer
+	// KeepImages leaves superseded images on the new site, as apply's
+	// --keep-images does. It is set for a host the host check found shared,
+	// where an image the toolkit renders may be what something else runs
+	// from.
+	KeepImages bool
 
 	cfg        *config.Config
 	secrets    *config.Secrets
@@ -148,7 +154,7 @@ func Build(cfg *config.Config, secrets *config.Secrets, newSite string, transpor
 	}
 
 	for _, name := range cfg.Etcd.Members {
-		in, found, err := apply.ReadEtcdInitial(transports[name])
+		in, found, err := apply.ReadEtcdInitial(transports[name], cfg.Deployment())
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
@@ -163,7 +169,8 @@ func Build(cfg *config.Config, secrets *config.Secrets, newSite string, transpor
 	}
 
 	// Preflight checks a blank host, and once stage 2 has run the new site is
-	// not one: its own wg0 holds 51820/udp, which the ports check refuses.
+	// not one: its own mesh interface holds its endpoint's port, which the
+	// ports check refuses.
 	// So a join that has started is recognised from live state and stage 1
 	// is not run again; it passed on the run that started the join, which
 	// could not have got further otherwise.
@@ -269,10 +276,11 @@ func renderedFile(rendered *render.Plan, site, rel string) string {
 }
 
 // joinStarted reports whether an earlier run got past stage 1, from what
-// only stage 2 or later leaves behind: a wg0.conf on the new site, which host
+// only stage 2 or later leaves behind: a WireGuard file on the new site, which host
 // prepare does not write and stage 2 does, or the new site in etcd's
 // membership.
 func (p *Plan) joinStarted(live []apply.EtcdMember) (bool, string, error) {
+	wireguardFile := p.cfg.Deployment().WireGuardConf()
 	_, found, err := p.transports[p.Site].ReadFile("/" + wireguardFile)
 	if err != nil {
 		return false, "", fmt.Errorf("%s: %w", p.Site, err)
@@ -292,7 +300,7 @@ func (p *Plan) buildPreflight() *Stage {
 	st := &Stage{Number: 1, Name: "preflight", Gate: "every check passes"}
 	if p.preflightSkipped != "" {
 		st.Gate = "passed on the run that started this join"
-		st.Steps = append(st.Steps, Step{Site: p.Site, Verb: "skip", Text: "preflight is not run again: " + p.preflightSkipped + ", and preflight's checks are for a host the join has not touched (its own wg0 now holds 51820/udp)"})
+		st.Steps = append(st.Steps, Step{Site: p.Site, Verb: "skip", Text: "preflight is not run again: " + p.preflightSkipped + ", and preflight's checks are for a host the join has not touched (its own mesh interface now holds its port)"})
 		return st
 	}
 	for _, c := range p.Preflight.Checks {
@@ -330,8 +338,8 @@ func (p *Plan) noteOwed(rendered *render.Plan) error {
 		if name == p.Site {
 			continue
 		}
-		want := renderedFile(rendered, name, "srv/infra/patroni.env")
-		have, found, err := p.transports[name].ReadFile("/srv/infra/patroni.env")
+		want := renderedFile(rendered, name, p.dep().RelPath("infra", "patroni.env"))
+		have, found, err := p.transports[name].ReadFile(p.dep().Path("infra", "patroni.env"))
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -416,6 +424,9 @@ func (p *Plan) Pending() bool {
 
 // acmeModule is what a whole apply of the new site is handed. It runs no
 // gateway, so the module is never asked for.
+// dep is the deployment every path and command here belongs to.
+func (p *Plan) dep() deployment.Deployment { return p.cfg.Deployment() }
+
 func (p *Plan) acmeModule() string { return acme.Module(p.cfg.ACME.Provider) }
 
 func contains(list []string, s string) bool {

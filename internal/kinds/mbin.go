@@ -25,8 +25,8 @@ func MbinRedirectURI(hostname string) string {
 const MbinDashboardPath = "/oauth/oidc/connect"
 
 // OIDCClientSpec is what an app's client at the identity provider has to look
-// like for the app to sign anyone in. `paisans oidc client create` creates a
-// client to it and refuses an existing one that differs.
+// like for the app to sign anyone in. `paisans apply` and `paisans oidc client
+// create` create a client to it and refuse an existing one that differs.
 type OIDCClientSpec struct {
 	// CallbackURL is the one redirect URI the client must allow.
 	CallbackURL string

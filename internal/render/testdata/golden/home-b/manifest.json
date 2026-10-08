@@ -2,92 +2,92 @@
   "version": 1,
   "files": [
     {
-      "path": "etc/wireguard/wg0.conf",
-      "sha256": "b69d4095c543fbfe4bc0192d77e5956848a8739c13ebe74c307553cb8eefd3ce",
+      "path": "etc/wireguard/psns-f2a9.conf",
+      "sha256": "847c972badb0e2769f48a2c238e228c0dcc0bed1656b394f579b863973dbcb91",
       "mode": "0600"
     },
     {
-      "path": "srv/auth/.env",
+      "path": "srv/paisans/f2a9/auth/.env",
       "sha256": "8b4fd5bd2b6e04ed55d9e69903d768ed374fc8e6316293019ad5a207b4deb30a",
       "mode": "0600"
     },
     {
-      "path": "srv/auth/compose.yaml",
-      "sha256": "72e05746e5cd97dbabd294f585dc6e49d59ea56874a78a61d2e5f8a0dc01a819",
+      "path": "srv/paisans/f2a9/auth/compose.yaml",
+      "sha256": "d954c1c736a2bdd1b21f69ee7feba3abcede082860514b04de4b5d9a431ac7b5",
       "mode": "0644"
     },
     {
-      "path": "srv/auth/paisans-standby.sh",
+      "path": "srv/paisans/f2a9/auth/paisans-standby.sh",
       "sha256": "86b93c28bdd086d31b02928dd5e5e5f2a12836573141f00d00e1b44fefc0c0c5",
       "mode": "0644"
     },
     {
-      "path": "srv/docs/.env",
+      "path": "srv/paisans/f2a9/docs/.env",
       "sha256": "a4bf56bd7bf8bdbad05f7c1db04eb386c5f9005e574d47d96a803dc7df330c1e",
       "mode": "0600"
     },
     {
-      "path": "srv/docs/compose.yaml",
-      "sha256": "ed10d663b223ba63c3c55794707a35eeaf8a6508eeef4a161ef1dcb358c83f74",
+      "path": "srv/paisans/f2a9/docs/compose.yaml",
+      "sha256": "7193ef16b5e7a72d07b563c6018b44f5e8604c979c358e117cbfd28eaf0b941d",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/compose.yaml",
-      "sha256": "057414e2fa2ffcec08a5e65d97ee0cd71a8d2793a8803fc8ae0fa3bf36ca32d4",
+      "path": "srv/paisans/f2a9/infra/compose.yaml",
+      "sha256": "967a1fbf3b0d43af01faaf927a1dc2b9308bfb4da9256364b9367cc0368ab31d",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/etcd-initial",
+      "path": "srv/paisans/f2a9/infra/etcd-initial",
       "sha256": "ba76b866cca9d84f06ab7bf484b87c06e2ccc96cbbbe83e063dd4ce73971b009",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/garage/garage.toml",
+      "path": "srv/paisans/f2a9/infra/garage/garage.toml",
       "sha256": "f0f4bea80230d829afd822932d5281b1fbf0f150fdb228aedf8c6b2648fa3b7e",
       "mode": "0600"
     },
     {
-      "path": "srv/infra/haproxy/haproxy.cfg",
+      "path": "srv/paisans/f2a9/infra/haproxy/haproxy.cfg",
       "sha256": "45a6bf3c0a8d188b3c65e8d5cfe33a244435ce2a33c7f8c1f638c210c3c139e0",
       "mode": "0644"
     },
     {
-      "path": "srv/infra/patroni.env",
+      "path": "srv/paisans/f2a9/infra/patroni.env",
       "sha256": "8a7bf5a399549846ead0821deb319c1e8d2add34e2611f417b6968dcd03bb733",
       "mode": "0600"
     },
     {
-      "path": "srv/talk/.env",
+      "path": "srv/paisans/f2a9/talk/.env",
       "sha256": "a55d8d94ec8fe2deaa999cd56a7785aa5aee975b26b8ee22f82d5e8db2eab18b",
       "mode": "0600"
     },
     {
-      "path": "srv/talk/compose.yaml",
-      "sha256": "207ddb8a0ff6958502e2aa52b53727e53315d0f23a6aa567bb9e9dd76b4d570e",
+      "path": "srv/paisans/f2a9/talk/compose.yaml",
+      "sha256": "b030cbf033e0adb6f0eb4dc20a7e21bc01aefb3d775f246a16feb241f31b63fe",
       "mode": "0644"
     },
     {
-      "path": "srv/talk/oauth/private.pem",
+      "path": "srv/paisans/f2a9/talk/oauth/private.pem",
       "sha256": "411b0aaba0a0e761d2de5af24c296ea49e3955c64c03880ccb2199de1c2ca751",
       "mode": "0644"
     },
     {
-      "path": "srv/talk/oauth/public.pem",
+      "path": "srv/paisans/f2a9/talk/oauth/public.pem",
       "sha256": "03d2b40509c8d0c7b462e0ed95feefd687a9075145fa35f66c03bbc9015bb6c9",
       "mode": "0644"
     },
     {
-      "path": "srv/talk/valkey.conf",
+      "path": "srv/paisans/f2a9/talk/valkey.conf",
       "sha256": "b297524a011668e3be21f50075ada0b5bcc7229ba49dfed6cd13abf420045094",
       "mode": "0644"
     },
     {
-      "path": "srv/web/compose.yaml",
-      "sha256": "58668f868e322850cf11f158610073ce845611457d867b9185ce7048fa8de24d",
+      "path": "srv/paisans/f2a9/web/compose.yaml",
+      "sha256": "bf35270301178a1bec73e0c98729378c928b72ac8188f0a3f58baa5ad6593f42",
       "mode": "0644"
     },
     {
-      "path": "srv/web/config.json",
+      "path": "srv/paisans/f2a9/web/config.json",
       "sha256": "94f6dc0349cd44b21a57afa907ed2d8f31fbb2af13a0dbee5c17001d595611c2",
       "mode": "0644"
     }

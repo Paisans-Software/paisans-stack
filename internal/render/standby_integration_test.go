@@ -89,7 +89,7 @@ func startStandbyBox(t *testing.T, label string, env ...string) *standbyBox {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker is not on PATH")
 	}
-	wrapper, ok := planFiles(build(t))["home-a/srv/auth/paisans-standby.sh"]
+	wrapper, ok := planFiles(build(t))["home-a/srv/paisans/f2a9/auth/paisans-standby.sh"]
 	if !ok {
 		t.Fatal("the fixture renders no wrapper for auth on home-a")
 	}
@@ -270,7 +270,7 @@ func TestStandbyWrapperWithTwoRealInstances(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker is not on PATH")
 	}
-	wrapper := planFiles(build(t))["home-a/srv/auth/paisans-standby.sh"]
+	wrapper := planFiles(build(t))["home-a/srv/paisans/f2a9/auth/paisans-standby.sh"]
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "paisans-standby.sh"), []byte(wrapper), 0o644); err != nil {
 		t.Fatal(err)

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // StandbyProbe is every site's answer for one Pocket ID app that runs on more
@@ -22,7 +23,7 @@ type StandbyProbe struct {
 // noPrimary is the patroni section's verdict that there is no primary, in
 // which case no instance can become active, since each one needs the
 // database to take over.
-func Standby(list []StandbyProbe, noPrimary bool) []Finding {
+func Standby(d deployment.Deployment, list []StandbyProbe, noPrimary bool) []Finding {
 	var out []Finding
 	for _, p := range list {
 		var parts []string
@@ -34,7 +35,7 @@ func Standby(list []StandbyProbe, noPrimary bool) []Finding {
 			}
 		}
 		summary := strings.Join(parts, ", ")
-		_, err := apply.OneActive(p.App, p.Instances)
+		_, err := apply.OneActive(d, p.App, p.Instances)
 		switch {
 		case err == nil:
 			out = append(out, Finding{Section: SectionPocketID, Level: OK, Line: fmt.Sprintf("%s: one active instance (%s)", p.App, summary)})
@@ -51,7 +52,7 @@ func Standby(list []StandbyProbe, noPrimary bool) []Finding {
 			}
 			more = append(more,
 				"A standing by instance takes over at its next retry, every 15 s (PAISANS_STANDBY_RETRY in the rendered paisans-standby.sh). After an unclean stop the old instance's registration ages for about 90 s first, so allow up to about two minutes.",
-				fmt.Sprintf("If none has taken over after that, read `docker compose -f /srv/%s/compose.yaml logs app` on each site above.", p.App))
+				fmt.Sprintf("If none has taken over after that, read `%s logs app` on each site above.", d.ComposeCmd(p.App)))
 			out = append(out, Finding{Section: SectionPocketID, Level: Fail, Line: fmt.Sprintf("%s: no active instance, so sign in is down (%s)", p.App, summary), More: more})
 		default:
 			out = append(out, Finding{Section: SectionPocketID, Level: Fail, Line: err.Error()})

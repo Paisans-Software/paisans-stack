@@ -109,7 +109,7 @@ func TestPlacementShapesTheStack(t *testing.T) {
 		files[f.Path] = f.Content
 	}
 
-	clustered, ok := files["home-a/srv/talk/compose.yaml"]
+	clustered, ok := files["home-a/srv/paisans/f2a9/talk/compose.yaml"]
 	if !ok {
 		t.Fatal("the clustered app was not rendered onto an apps site")
 	}
@@ -120,30 +120,30 @@ func TestPlacementShapesTheStack(t *testing.T) {
 	// mesh address. Not 127.0.0.1: inside the app's bridge networked
 	// container, loopback is the container itself.
 	for site, address := range map[string]string{"home-a": "10.44.0.1", "home-b": "10.44.0.2"} {
-		env := files[site+"/srv/talk/.env"]
+		env := files[site+"/srv/paisans/f2a9/talk/.env"]
 		if !strings.Contains(env, "@"+address+":5000/") {
 			t.Errorf("the clustered app on %s does not connect to its own site's proxy at %s:\n%s", site, address, env)
 		}
 		if strings.Contains(env, "127.0.0.1") {
 			t.Errorf("the clustered app on %s names a loopback address, which inside its container is the container itself:\n%s", site, env)
 		}
-		proxy := files[site+"/srv/infra/haproxy/haproxy.cfg"]
+		proxy := files[site+"/srv/paisans/f2a9/infra/haproxy/haproxy.cfg"]
 		if !strings.Contains(proxy, "bind "+address+":5000") {
 			t.Errorf("the HAProxy on %s does not listen on the mesh address its apps are given:\n%s", site, proxy)
 		}
 	}
 
-	pinned, ok := files["vm/srv/chat/compose.yaml"]
+	pinned, ok := files["vm/srv/paisans/f2a9/chat/compose.yaml"]
 	if !ok {
 		t.Fatal("the pinned app was not rendered at its site")
 	}
 	if !strings.Contains(pinned, "postgres:") {
 		t.Error("a pinned app was not given its own Postgres")
 	}
-	if _, ok := files["home-a/srv/chat/compose.yaml"]; ok {
+	if _, ok := files["home-a/srv/paisans/f2a9/chat/compose.yaml"]; ok {
 		t.Error("a pinned app was rendered somewhere other than its site")
 	}
-	if !strings.Contains(pinned, "/srv/chat/postgres:/var/lib/postgresql/data") {
+	if !strings.Contains(pinned, "/srv/paisans/f2a9/chat/postgres:/var/lib/postgresql/data") {
 		t.Error("a pinned stack does not use bind mounts under /srv")
 	}
 }
@@ -229,12 +229,12 @@ func TestDeclaredImagesWinAndDefaultsFillIn(t *testing.T) {
 		files[f.Path] = f.Content
 	}
 
-	talk := files["home-a/srv/talk/compose.yaml"]
+	talk := files["home-a/srv/paisans/f2a9/talk/compose.yaml"]
 	if !strings.Contains(talk, "image: ghcr.io/example-org/mbin:v1.10.1-fork") {
 		t.Errorf("the declared image did not reach the compose file:\n%s", talk)
 	}
 
-	docs := files["home-a/srv/docs/compose.yaml"]
+	docs := files["home-a/srv/paisans/f2a9/docs/compose.yaml"]
 	fallback, ok := kinds.DefaultImage(config.KindOutline, "app")
 	if !ok {
 		t.Fatal("outline ships no default image")
@@ -245,7 +245,7 @@ func TestDeclaredImagesWinAndDefaultsFillIn(t *testing.T) {
 
 	// A pinned app may choose its own database image; a clustered one has no
 	// database service to choose for.
-	chat := files["vm/srv/chat/compose.yaml"]
+	chat := files["vm/srv/paisans/f2a9/chat/compose.yaml"]
 	if !strings.Contains(chat, "image: postgres:17-alpine") {
 		t.Errorf("a pinned app's declared database image was not used:\n%s", chat)
 	}
@@ -290,12 +290,12 @@ func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
 		mode    uint32
 		carries string
 	}{
-		{"home-a/srv/blog/config.ini", 0o600, "type = postgres"},
-		{"vm/srv/chat/homeserver.yaml", 0o600, "name: psycopg2"},
-		{"home-a/srv/talk/.env", 0o600, "DATABASE_URL="},
-		{"home-a/srv/talk/compose.yaml", 0o644, "name: paisans-talk"},
+		{"home-a/srv/paisans/f2a9/blog/config.ini", 0o600, "type = postgres"},
+		{"vm/srv/paisans/f2a9/chat/homeserver.yaml", 0o600, "name: psycopg2"},
+		{"home-a/srv/paisans/f2a9/talk/.env", 0o600, "DATABASE_URL="},
+		{"home-a/srv/paisans/f2a9/talk/compose.yaml", 0o644, "name: paisans-f2a9-talk"},
 		// A template's path is its destination, nested directories included.
-		{"vm/srv/chat/initdb.d/01-mas-database.sql", 0o644, "CREATE DATABASE"},
+		{"vm/srv/paisans/f2a9/chat/initdb.d/01-mas-database.sql", 0o644, "CREATE DATABASE"},
 	}
 	for _, tc := range cases {
 		f, ok := files[tc.path]
@@ -316,19 +316,19 @@ func TestTemplateSetsRenderEachKindsOwnFiles(t *testing.T) {
 	// own sidecar on. The property worth asserting is that the two agree,
 	// not merely that a connection exists: a wrong host would still start the
 	// container and only fail at the first query.
-	configIni, ok := files["home-a/srv/blog/config.ini"]
+	configIni, ok := files["home-a/srv/paisans/f2a9/blog/config.ini"]
 	if !ok {
 		t.Fatal("the blog's config.ini was not rendered")
 	}
 	if !strings.Contains(configIni.Content, "host = postgres") {
-		t.Errorf("home-a/srv/blog/config.ini does not point at the postgres container beside it:\n%s", configIni.Content)
+		t.Errorf("home-a/srv/paisans/f2a9/blog/config.ini does not point at the postgres container beside it:\n%s", configIni.Content)
 	}
-	composeYaml, ok := files["home-a/srv/blog/compose.yaml"]
+	composeYaml, ok := files["home-a/srv/paisans/f2a9/blog/compose.yaml"]
 	if !ok {
 		t.Fatal("the blog's compose.yaml was not rendered")
 	}
 	if !strings.Contains(composeYaml.Content, "postgres:") {
-		t.Error("home-a/srv/blog/compose.yaml does not declare the postgres service config.ini connects to")
+		t.Error("home-a/srv/paisans/f2a9/blog/compose.yaml does not declare the postgres service config.ini connects to")
 	}
 }
 
@@ -341,7 +341,7 @@ func TestTheBlogReadsPostgresAndS3(t *testing.T) {
 	for _, f := range build(t).Files {
 		files[f.Path] = f
 	}
-	conf, ok := files["home-a/srv/blog/config.ini"]
+	conf, ok := files["home-a/srv/paisans/f2a9/blog/config.ini"]
 	if !ok {
 		t.Fatal("the blog's config.ini was not rendered")
 	}
@@ -350,7 +350,7 @@ func TestTheBlogReadsPostgresAndS3(t *testing.T) {
 	// first Garage site by sorted name), not of this change, so it is read
 	// from the committed golden tree rather than guessed, the same way
 	// TestEachAppPublishesItsOwnMediaHostname reads Mbin's.
-	golden, err := os.ReadFile(filepath.Join("testdata", "golden", "home-a", "srv", "talk", ".env"))
+	golden, err := os.ReadFile(filepath.Join("testdata", "golden", "home-a", "srv", "paisans", "f2a9", "talk", ".env"))
 	if err != nil {
 		t.Fatalf("reading the golden talk .env: %v", err)
 	}
@@ -435,12 +435,12 @@ func TestTheGatewayImportsEachAppsOwnSnippet(t *testing.T) {
 		files[f.Path] = f
 	}
 
-	caddyfile, ok := files["vm/srv/infra/caddy/Caddyfile"]
+	caddyfile, ok := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	if !ok {
 		t.Fatal("the gateway rendered no Caddyfile")
 	}
 	for _, app := range []string{"talk", "docs", "auth", "blog", "chat"} {
-		snippet := "vm/srv/infra/caddy/snippets/" + app + ".caddy"
+		snippet := "vm/srv/paisans/f2a9/infra/caddy/snippets/" + app + ".caddy"
 		if _, ok := files[snippet]; !ok {
 			t.Errorf("%s was not rendered onto the gateway", snippet)
 		}
@@ -459,18 +459,18 @@ func TestTheGatewayImportsEachAppsOwnSnippet(t *testing.T) {
 	// A snippet is rendered onto the gateway, never into the app's own
 	// directory, because that is not where it is read.
 	for path := range files {
-		if strings.HasSuffix(path, "caddy.snippet") || strings.Contains(path, "/srv/talk/caddy") {
+		if strings.HasSuffix(path, "caddy.snippet") || strings.Contains(path, "/srv/paisans/f2a9/talk/caddy") {
 			t.Errorf("%s put an app's routing beside the app", path)
 		}
 	}
 
 	// A snippet never hardcodes where its app runs: a pinned app gets one
 	// upstream and a clustered one gets every apps site, both from inventory.
-	pinned := files["vm/srv/infra/caddy/snippets/chat.caddy"].Content
+	pinned := files["vm/srv/paisans/f2a9/infra/caddy/snippets/chat.caddy"].Content
 	if !strings.Contains(pinned, "10.44.0.3:8008") {
 		t.Errorf("a pinned app's snippet does not point at its site:\n%s", pinned)
 	}
-	clustered := files["vm/srv/infra/caddy/snippets/talk.caddy"].Content
+	clustered := files["vm/srv/paisans/f2a9/infra/caddy/snippets/talk.caddy"].Content
 	if !strings.Contains(clustered, "10.44.0.1:8080 10.44.0.2:8080") {
 		t.Errorf("a clustered app's snippet does not point at both apps sites:\n%s", clustered)
 	}
@@ -509,7 +509,7 @@ func TestPocketIDTrustsTheMeshSubnetOnly(t *testing.T) {
 	env := build(t).Files
 	var saw int
 	for _, f := range env {
-		if !strings.HasSuffix(f.Path, "srv/auth/.env") {
+		if !strings.HasSuffix(f.Path, "srv/paisans/f2a9/auth/.env") {
 			continue
 		}
 		saw++
@@ -543,6 +543,53 @@ func TestPocketIDWithoutAnEncryptionKeyIsRefused(t *testing.T) {
 	}
 }
 
+// Each deployment has its own interface, named from its token, and each site
+// listens on its endpoint's port: a site with no endpoint has no ListenPort
+// and lets WireGuard pick one. Two deployments on one host then differ in
+// both, and the listeners other commands check agree with the file.
+func TestWireGuardInterfaceAndListenPort(t *testing.T) {
+	cfg := fixture(t)
+	vm := cfg.Sites["vm"]
+	vm.Endpoint = "vm.example.org:51999"
+	cfg.Sites["vm"] = vm
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{}
+	for _, f := range plan.Files {
+		files[f.Path] = f.Content
+		if strings.Contains(f.Path, "wg0") {
+			t.Errorf("%s is still named for wg0", f.Path)
+		}
+	}
+	vmConf, ok := files["vm/etc/wireguard/psns-f2a9.conf"]
+	if !ok {
+		t.Fatal("no vm/etc/wireguard/psns-f2a9.conf was rendered")
+	}
+	if !strings.Contains(vmConf, "\nListenPort = 51999\n") {
+		t.Errorf("vm does not listen on its endpoint's port:\n%s", vmConf)
+	}
+	home := files["home-a/etc/wireguard/psns-f2a9.conf"]
+	if home == "" || strings.Contains(home, "ListenPort") {
+		t.Errorf("home-a, which has no endpoint, has a ListenPort:\n%s", home)
+	}
+	var udp []string
+	for _, l := range render.SiteListeners(cfg, "vm") {
+		if l.Proto == "udp" {
+			udp = append(udp, l.String())
+		}
+	}
+	if strings.Join(udp, ",") != "*:51999/udp" {
+		t.Errorf("vm's UDP listeners = %v, want *:51999/udp", udp)
+	}
+	for _, l := range render.SiteListeners(cfg, "home-a") {
+		if l.Proto == "udp" {
+			t.Errorf("home-a, with no endpoint, lists %s", l)
+		}
+	}
+}
+
 // The mesh subnet is whatever the file declares, not a constant in the code.
 // It reaches both the trusted proxy list and the WireGuard interface address.
 func TestMeshSubnetComesFromTheConfiguration(t *testing.T) {
@@ -568,7 +615,7 @@ func TestMeshSubnetComesFromTheConfiguration(t *testing.T) {
 				t.Errorf("%s did not follow the declared mesh:\n%s", f.Path, f.Content)
 			}
 		}
-		if strings.HasSuffix(f.Path, "wg0.conf") {
+		if strings.HasSuffix(f.Path, "psns-f2a9.conf") {
 			sawInterface = true
 			if !strings.Contains(f.Content, "/16\n") {
 				t.Errorf("%s did not use the declared prefix length:\n%s", f.Path, f.Content)
@@ -604,7 +651,7 @@ func TestNoNamedVolumes(t *testing.T) {
 				continue
 			}
 			mount := strings.TrimPrefix(trimmed, "- ")
-			if !strings.HasPrefix(mount, "/srv/") && !strings.HasPrefix(mount, "/dev/") {
+			if !strings.HasPrefix(mount, "/srv/paisans/f2a9/") && !strings.HasPrefix(mount, "/dev/") {
 				t.Errorf("%s mounts something that is not a bind mount under /srv: %s", f.Path, mount)
 			}
 		}
@@ -674,19 +721,21 @@ func TestGatewayUsesDNSChallenge(t *testing.T) {
 	for _, f := range build(t).Files {
 		files[f.Path] = f.Content
 	}
-	caddyfile, ok := files["vm/srv/infra/caddy/Caddyfile"]
+	caddyfile, ok := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	if !ok {
 		t.Fatal("no Caddyfile was rendered for the gateway")
 	}
 	if !strings.Contains(caddyfile, "acme_dns desec") {
 		t.Errorf("the gateway does not use DNS-01:\n%s", caddyfile)
 	}
-	if _, ok := files["vm/srv/infra/caddy/caddy.env"]; !ok {
+	if _, ok := files["vm/srv/paisans/f2a9/infra/caddy/caddy.env"]; !ok {
 		t.Error("the DNS provider token was not rendered for the gateway")
 	}
+	// The token goes where Caddy runs and nowhere else: the gateway, and the
+	// monitor serving its own hostname.
 	for path := range files {
-		if strings.HasSuffix(path, "caddy.env") && !strings.HasPrefix(path, "vm/") {
-			t.Errorf("%s holds the zone token on a site that is not the gateway", path)
+		if strings.HasSuffix(path, "caddy.env") && !strings.HasPrefix(path, "vm/") && !strings.HasPrefix(path, "watch/") {
+			t.Errorf("%s holds the zone token on a site that runs no Caddy", path)
 		}
 	}
 }
@@ -849,7 +898,7 @@ func TestTheDeclaredProviderIsRendered(t *testing.T) {
 		files[f.Path] = f.Content
 	}
 
-	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	caddyfile := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	if !strings.Contains(caddyfile, "acme_dns desec {") {
 		t.Errorf("the gateway does not use the declared provider:\n%s", caddyfile)
 	}
@@ -860,7 +909,7 @@ func TestTheDeclaredProviderIsRendered(t *testing.T) {
 		t.Errorf("a provider nobody declared appears in the gateway config:\n%s", caddyfile)
 	}
 
-	env := files["vm/srv/infra/caddy/caddy.env"]
+	env := files["vm/srv/paisans/f2a9/infra/caddy/caddy.env"]
 	if !strings.Contains(env, "ACME_DNS_TOKEN=") {
 		t.Errorf("the credential is not rendered under a provider neutral name:\n%s", env)
 	}
@@ -876,7 +925,7 @@ func TestTheGatewayRunsAnImageWithTheModule(t *testing.T) {
 	for _, f := range build(t).Files {
 		files[f.Path] = f.Content
 	}
-	infra := files["vm/srv/infra/compose.yaml"]
+	infra := files["vm/srv/paisans/f2a9/infra/compose.yaml"]
 	want, ok := acme.Image("desec")
 	if !ok {
 		t.Fatal("desec has no published image")
@@ -914,7 +963,7 @@ func TestADeclaredImageReachesTheGateway(t *testing.T) {
 		files[f.Path] = f.Content
 	}
 
-	infra := files["vm/srv/infra/compose.yaml"]
+	infra := files["vm/srv/paisans/f2a9/infra/compose.yaml"]
 	if !strings.Contains(infra, "image: "+cfg.ACME.Image) {
 		t.Errorf("the gateway does not run the declared image:\n%s", infra)
 	}
@@ -922,15 +971,16 @@ func TestADeclaredImageReachesTheGateway(t *testing.T) {
 	if strings.Contains(infra, published) {
 		t.Errorf("the published image survived a declared one:\n%s", infra)
 	}
-	if caddyfile := files["vm/srv/infra/caddy/Caddyfile"]; !strings.Contains(caddyfile, "acme_dns route53") {
+	if caddyfile := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]; !strings.Contains(caddyfile, "acme_dns route53") {
 		t.Errorf("an unpublished provider does not reach the directive:\n%s", caddyfile)
 	}
 }
 
-// A deployment with no gateway site is legitimate: internal/config requires
-// acme.provider only when a site holds the gateway role. The renderer must not
-// demand a Caddy image for a site that will never run Caddy, or a config that
-// validation accepts fails to render anyway, over an image nothing needs.
+// A deployment where Caddy runs nowhere is legitimate: internal/config
+// requires acme.provider only when a site runs it, a gateway or a monitor in
+// ingress mode paisans. The renderer must not demand a Caddy image for a site
+// that will never run Caddy, or a config that validation accepts fails to
+// render anyway, over an image nothing needs.
 func TestNoGatewayNeedsNoACMEProvider(t *testing.T) {
 	cfg := fixture(t)
 	secrets, err := config.LoadSecrets(filepath.Join("testdata", "secrets.fixture.yaml"))
@@ -941,6 +991,9 @@ func TestNoGatewayNeedsNoACMEProvider(t *testing.T) {
 	vm := cfg.Sites["vm"]
 	vm.Roles = []config.Role{config.RoleWitness}
 	cfg.Sites["vm"] = vm
+	watch := cfg.Sites["watch"]
+	watch.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}
+	cfg.Sites["watch"] = watch
 
 	plan, err := render.Build(cfg, secrets)
 	if err != nil {
@@ -961,7 +1014,7 @@ func TestElementRendersAClientConfig(t *testing.T) {
 		files[f.Path] = f
 	}
 
-	compose, ok := files["home-b/srv/web/compose.yaml"]
+	compose, ok := files["home-b/srv/paisans/f2a9/web/compose.yaml"]
 	if !ok {
 		t.Fatal("the element app was not rendered")
 	}
@@ -969,7 +1022,7 @@ func TestElementRendersAClientConfig(t *testing.T) {
 		t.Error("element was given a database, and it has no state at all")
 	}
 
-	config, ok := files["home-b/srv/web/config.json"]
+	config, ok := files["home-b/srv/paisans/f2a9/web/config.json"]
 	if !ok {
 		t.Fatal("element rendered no runtime configuration")
 	}
@@ -980,7 +1033,7 @@ func TestElementRendersAClientConfig(t *testing.T) {
 	// a user identifier. They are different names whenever delegation is in
 	// use, and a client that offers the wrong one offers accounts that do not
 	// exist. It must be the same value the homeserver was given.
-	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	homeserver := files["vm/srv/paisans/f2a9/chat/homeserver.yaml"].Content
 	if !strings.Contains(homeserver, `server_name: "example.org"`) {
 		t.Fatalf("the fixture homeserver's server_name is not what this test assumes:\n%s", homeserver)
 	}
@@ -1001,7 +1054,7 @@ func TestAnAppCanHoldSeveralHostnames(t *testing.T) {
 		files[f.Path] = f
 	}
 
-	caddyfile, ok := files["vm/srv/infra/caddy/Caddyfile"]
+	caddyfile, ok := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	if !ok {
 		t.Fatal("no gateway configuration was rendered")
 	}
@@ -1013,10 +1066,10 @@ func TestAnAppCanHoldSeveralHostnames(t *testing.T) {
 
 	// Each hostname imports its own snippet, because the apex serves only the
 	// delegation documents while the primary serves the whole API.
-	if _, ok := files["vm/srv/infra/caddy/snippets/chat.caddy"]; !ok {
+	if _, ok := files["vm/srv/paisans/f2a9/infra/caddy/snippets/chat.caddy"]; !ok {
 		t.Error("the primary hostname has no snippet")
 	}
-	if _, ok := files["vm/srv/infra/caddy/snippets/chat-wellknown.caddy"]; !ok {
+	if _, ok := files["vm/srv/paisans/f2a9/infra/caddy/snippets/chat-wellknown.caddy"]; !ok {
 		t.Error("the extra hostname has no snippet of its own")
 	}
 }
@@ -1029,7 +1082,7 @@ func TestTheAuthGateRendersBothInstances(t *testing.T) {
 		files[f.Path] = f
 	}
 
-	compose, ok := files["home-a/srv/gate/compose.yaml"]
+	compose, ok := files["home-a/srv/paisans/f2a9/gate/compose.yaml"]
 	if !ok {
 		t.Fatal("the gate was not rendered")
 	}
@@ -1039,7 +1092,7 @@ func TestTheAuthGateRendersBothInstances(t *testing.T) {
 		}
 	}
 
-	env, ok := files["home-a/srv/gate/.env"]
+	env, ok := files["home-a/srv/paisans/f2a9/gate/.env"]
 	if !ok {
 		t.Fatal("the gate rendered no environment")
 	}
@@ -1060,7 +1113,7 @@ func TestTheAuthGateShipsNamedSnippets(t *testing.T) {
 		files[f.Path] = f
 	}
 
-	gates, ok := files["vm/srv/infra/caddy/snippets/gate-gates.caddy"]
+	gates, ok := files["vm/srv/paisans/f2a9/infra/caddy/snippets/gate-gates.caddy"]
 	if !ok {
 		t.Fatal("the gate's named snippets were not rendered onto the gateway")
 	}
@@ -1070,7 +1123,7 @@ func TestTheAuthGateShipsNamedSnippets(t *testing.T) {
 		}
 	}
 
-	caddyfile, ok := files["vm/srv/infra/caddy/Caddyfile"]
+	caddyfile, ok := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	if !ok {
 		t.Fatal("no gateway configuration was rendered")
 	}
@@ -1086,7 +1139,7 @@ func TestTheGateIsDeclaredPerApp(t *testing.T) {
 	for _, f := range build(t).Files {
 		files[f.Path] = f
 	}
-	caddyfile := files["vm/srv/infra/caddy/Caddyfile"].Content
+	caddyfile := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"].Content
 
 	// talk sits behind the members gate in the fixture.
 	if !strings.Contains(caddyfile, "import gate_members") {
@@ -1121,7 +1174,7 @@ func TestSynapseDelegatesAuthenticationToMAS(t *testing.T) {
 		files[f.Path] = f
 	}
 
-	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	homeserver := files["vm/srv/paisans/f2a9/chat/homeserver.yaml"].Content
 	if strings.Contains(homeserver, "oidc_providers") {
 		t.Error("homeserver.yaml still configures its own OIDC, which is a second way in")
 	}
@@ -1132,7 +1185,7 @@ func TestSynapseDelegatesAuthenticationToMAS(t *testing.T) {
 		t.Errorf("homeserver.yaml does not delegate to MAS:\n%s", homeserver)
 	}
 
-	mas, ok := files["vm/srv/chat/mas.yaml"]
+	mas, ok := files["vm/srv/paisans/f2a9/chat/mas.yaml"]
 	if !ok {
 		t.Fatal("no MAS configuration was rendered")
 	}
@@ -1140,7 +1193,7 @@ func TestSynapseDelegatesAuthenticationToMAS(t *testing.T) {
 		t.Error("the MAS configuration carries secrets and must be 0600")
 	}
 
-	compose := files["vm/srv/chat/compose.yaml"].Content
+	compose := files["vm/srv/paisans/f2a9/chat/compose.yaml"].Content
 	if !strings.Contains(compose, "mas:") {
 		t.Error("the stack renders no MAS service")
 	}
@@ -1154,7 +1207,7 @@ func TestSynapseAndMASShareOneSecret(t *testing.T) {
 		files[f.Path] = f
 	}
 	secret := "fixture-not-a-secret-chat-mas-matrix"
-	for _, path := range []string{"vm/srv/chat/homeserver.yaml", "vm/srv/chat/mas.yaml"} {
+	for _, path := range []string{"vm/srv/paisans/f2a9/chat/homeserver.yaml", "vm/srv/paisans/f2a9/chat/mas.yaml"} {
 		if !strings.Contains(files[path].Content, secret) {
 			t.Errorf("%s does not carry the shared secret both sides need:\n%s", path, files[path].Content)
 		}
@@ -1183,7 +1236,7 @@ func TestTheLoginSplitOutranksTheCatchAllByMatcherLength(t *testing.T) {
 	for _, f := range build(t).Files {
 		files[f.Path] = f
 	}
-	snippet, ok := files["vm/srv/infra/caddy/snippets/chat.caddy"]
+	snippet, ok := files["vm/srv/paisans/f2a9/infra/caddy/snippets/chat.caddy"]
 	if !ok {
 		t.Fatal("the homeserver has no snippet")
 	}
@@ -1219,7 +1272,7 @@ func TestTheApexServesOnlyDelegation(t *testing.T) {
 	for _, f := range build(t).Files {
 		files[f.Path] = f
 	}
-	snippet, ok := files["vm/srv/infra/caddy/snippets/chat-wellknown.caddy"]
+	snippet, ok := files["vm/srv/paisans/f2a9/infra/caddy/snippets/chat-wellknown.caddy"]
 	if !ok {
 		t.Fatal("the apex has no snippet")
 	}
@@ -1232,7 +1285,7 @@ func TestTheApexServesOnlyDelegation(t *testing.T) {
 	// The name in every user identifier is the name the delegation is served
 	// on, so that is what server_name has to be. If they disagree, the two
 	// documents below point nowhere and federation resolves to the wrong host.
-	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	homeserver := files["vm/srv/paisans/f2a9/chat/homeserver.yaml"].Content
 	if !strings.Contains(homeserver, `server_name: "example.org"`) {
 		t.Errorf("server_name is not the name the delegation is served on:\n%s", homeserver)
 	}
@@ -1269,11 +1322,11 @@ func TestAHomeserverWithNoDelegationServesItsOwnWellKnown(t *testing.T) {
 		files[f.Path] = f
 	}
 
-	if _, ok := files["vm/srv/infra/caddy/snippets/chat-wellknown.caddy"]; ok {
+	if _, ok := files["vm/srv/paisans/f2a9/infra/caddy/snippets/chat-wellknown.caddy"]; ok {
 		t.Error("a snippet was rendered for a hostname role nobody declared")
 	}
 
-	homeserver := files["vm/srv/chat/homeserver.yaml"].Content
+	homeserver := files["vm/srv/paisans/f2a9/chat/homeserver.yaml"].Content
 	if !strings.Contains(homeserver, "serve_server_wellknown: true") {
 		t.Errorf("the homeserver was not told to serve its own delegation:\n%s", homeserver)
 	}
@@ -1281,7 +1334,7 @@ func TestAHomeserverWithNoDelegationServesItsOwnWellKnown(t *testing.T) {
 		t.Errorf("server_name is not the only hostname this app has:\n%s", homeserver)
 	}
 
-	snippet := files["vm/srv/infra/caddy/snippets/chat.caddy"].Content
+	snippet := files["vm/srv/paisans/f2a9/infra/caddy/snippets/chat.caddy"].Content
 	at := strings.Index(snippet, "handle /.well-known/matrix/* {")
 	if at < 0 {
 		t.Fatalf("the gateway does not route the delegation documents anywhere:\n%s", snippet)
@@ -1335,7 +1388,7 @@ func TestEachAppPublishesItsOwnMediaHostname(t *testing.T) {
 	// from the committed golden tree rather than guessed. This proves the
 	// endpoint an app writes through is unchanged, without this test owning
 	// that address.
-	golden, err := os.ReadFile(filepath.Join("testdata", "golden", "home-a", "srv", "talk", ".env"))
+	golden, err := os.ReadFile(filepath.Join("testdata", "golden", "home-a", "srv", "paisans", "f2a9", "talk", ".env"))
 	if err != nil {
 		t.Fatalf("reading the golden talk .env: %v", err)
 	}
@@ -1349,7 +1402,7 @@ func TestEachAppPublishesItsOwnMediaHostname(t *testing.T) {
 		t.Fatal("the golden tree has no S3_ENDPOINT to compare against")
 	}
 
-	env := files["home-a/srv/talk/.env"]
+	env := files["home-a/srv/paisans/f2a9/talk/.env"]
 	if !strings.Contains(env, "\nKBIN_STORAGE_URL=https://talk-media.example.org\n") {
 		t.Errorf("Mbin builds every media URL from KBIN_STORAGE_URL, which must be its own media hostname with no bucket segment, got:\n%s", env)
 	}
@@ -1357,7 +1410,7 @@ func TestEachAppPublishesItsOwnMediaHostname(t *testing.T) {
 		t.Errorf("Mbin writes to Garage itself, server side, over the mesh, so its endpoint must still be the internal one, want %q in:\n%s", endpointLine, env)
 	}
 
-	outline := files["home-a/srv/docs/.env"]
+	outline := files["home-a/srv/paisans/f2a9/docs/.env"]
 	if !strings.Contains(outline, "\nAWS_S3_UPLOAD_BUCKET_URL=https://docs-media.example.org\n") {
 		t.Errorf("Outline signs and publishes attachment URLs on its bucket URL, which must be its own media hostname, got:\n%s", outline)
 	}
@@ -1369,12 +1422,12 @@ func TestEachAppPublishesItsOwnMediaHostname(t *testing.T) {
 		t.Errorf("Outline must address its media hostname path style, got:\n%s", outline)
 	}
 
-	blog := files["home-a/srv/blog/config.ini"]
+	blog := files["home-a/srv/paisans/f2a9/blog/config.ini"]
 	if !strings.Contains(blog, "\nimage_url_base = https://blog-media.example.org\n") {
 		t.Errorf("the fork serves every image from image_url_base, which must be the blog's own media hostname, got:\n%s", blog)
 	}
 
-	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	caddyfile := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	for app, host := range map[string]string{
 		"talk": "talk-media.example.org",
 		"docs": "docs-media.example.org",
@@ -1389,7 +1442,7 @@ func TestEachAppPublishesItsOwnMediaHostname(t *testing.T) {
 		if !strings.Contains(block, "import /etc/caddy/snippets/"+app+"-media.caddy") {
 			t.Errorf("%s should import %s's own media snippet:\n%s", host, app, block)
 		}
-		if _, ok := files["vm/srv/infra/caddy/snippets/"+app+"-media.caddy"]; !ok {
+		if _, ok := files["vm/srv/paisans/f2a9/infra/caddy/snippets/"+app+"-media.caddy"]; !ok {
 			t.Errorf("no media snippet rendered for %s", app)
 		}
 	}
@@ -1401,12 +1454,12 @@ func TestEachAppPublishesItsOwnMediaHostname(t *testing.T) {
 	if strings.Contains(caddyfile, "\nmedia.example.org {") {
 		t.Errorf("there is no deployment wide media hostname any more:\n%s", caddyfile)
 	}
-	if _, ok := files["vm/srv/infra/caddy/snippets/media.caddy"]; ok {
+	if _, ok := files["vm/srv/paisans/f2a9/infra/caddy/snippets/media.caddy"]; ok {
 		t.Error("the deployment wide media snippet should no longer be rendered")
 	}
 	// Only kinds that store objects get one.
 	for _, app := range []string{"auth", "chat", "web", "gate"} {
-		if _, ok := files["vm/srv/infra/caddy/snippets/"+app+"-media.caddy"]; ok {
+		if _, ok := files["vm/srv/paisans/f2a9/infra/caddy/snippets/"+app+"-media.caddy"]; ok {
 			t.Errorf("%s stores no objects, so it has no media hostname", app)
 		}
 	}
@@ -1428,7 +1481,7 @@ func TestADeclaredMediaHostnameReplacesTheDerivedOne(t *testing.T) {
 	}
 	files := planFiles(plan)
 
-	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	caddyfile := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	block := hostBlock(t, caddyfile, "attachments.example.org")
 	if !strings.Contains(block, "import /etc/caddy/snippets/docs-media.caddy") {
 		t.Errorf("the declared name should import docs's media snippet:\n%s", block)
@@ -1436,7 +1489,7 @@ func TestADeclaredMediaHostnameReplacesTheDerivedOne(t *testing.T) {
 	if strings.Contains(caddyfile, "docs-media.example.org {") {
 		t.Errorf("the derived name must not be served beside a declared one:\n%s", caddyfile)
 	}
-	if env := files["home-a/srv/docs/.env"]; !strings.Contains(env, "\nAWS_S3_UPLOAD_BUCKET_URL=https://attachments.example.org\n") {
+	if env := files["home-a/srv/paisans/f2a9/docs/.env"]; !strings.Contains(env, "\nAWS_S3_UPLOAD_BUCKET_URL=https://attachments.example.org\n") {
 		t.Errorf("Outline must sign for the declared name, got:\n%s", env)
 	}
 }
@@ -1454,7 +1507,7 @@ const publicMediaPolicy = `Content-Security-Policy "default-src 'none'; style-sr
 func TestAPublicMediaHostnameGoesToTheWebEndpoint(t *testing.T) {
 	files := planFiles(build(t))
 	for app, bucket := range map[string]string{"talk": "talk-uploads", "blog": "blog-uploads"} {
-		snippet := files["vm/srv/infra/caddy/snippets/"+app+"-media.caddy"]
+		snippet := files["vm/srv/paisans/f2a9/infra/caddy/snippets/"+app+"-media.caddy"]
 		for _, want := range []string{
 			// Every Garage node, in storage.garage.sites order, the first
 			// serving while it is up.
@@ -1484,7 +1537,7 @@ func TestAPublicMediaHostnameGoesToTheWebEndpoint(t *testing.T) {
 // verifies. It carries nosniff but not the sandboxing policy, which would stop
 // a browser running its PDF viewer on the attachments Outline embeds.
 func TestOutlinesMediaHostnameGoesToTheS3APIWithHostUnchanged(t *testing.T) {
-	snippet := planFiles(build(t))["vm/srv/infra/caddy/snippets/docs-media.caddy"]
+	snippet := planFiles(build(t))["vm/srv/paisans/f2a9/infra/caddy/snippets/docs-media.caddy"]
 	if !strings.Contains(snippet, "reverse_proxy 10.44.0.1:3900 10.44.0.2:3900 {\n") || !strings.Contains(snippet, "lb_policy first") {
 		t.Errorf("Outline's media hostname must reach the S3 API on 3900, on every Garage node in order:\n%s", snippet)
 	}
@@ -1513,7 +1566,7 @@ func TestGarageServesAWebEndpointOnAnInternalSuffix(t *testing.T) {
 	for _, f := range build(t).Files {
 		files[f.Path] = f.Content
 	}
-	conf := files["home-a/srv/infra/garage/garage.toml"]
+	conf := files["home-a/srv/paisans/f2a9/infra/garage/garage.toml"]
 	if !strings.Contains(conf, "[s3_web]") {
 		t.Errorf("no s3_web section, so nothing can read an object anonymously:\n%s", conf)
 	}
@@ -1654,12 +1707,12 @@ func withConfig(t *testing.T, app string, keys map[string]any) *config.Config {
 func TestAPassthroughKeyReachesTheRenderedFile(t *testing.T) {
 	files := planFiles(build(t))
 
-	env := files["home-a/srv/talk/.env"]
+	env := files["home-a/srv/paisans/f2a9/talk/.env"]
 	if !strings.Contains(env, "\nKBIN_META_TITLE=A place to talk\n") {
 		t.Errorf("mbin reads an environment:\n%s", env)
 	}
 
-	ini := files["home-a/srv/blog/config.ini"]
+	ini := files["home-a/srv/paisans/f2a9/blog/config.ini"]
 	app := strings.Index(ini, "\n[app]\n")
 	if app < 0 {
 		t.Fatalf("the blog's config.ini has no [app] section:\n%s", ini)
@@ -1672,12 +1725,12 @@ func TestAPassthroughKeyReachesTheRenderedFile(t *testing.T) {
 		t.Errorf("the blog's key belongs inside [app]:\n%s", ini)
 	}
 
-	home := files["vm/srv/chat/homeserver.yaml"]
+	home := files["vm/srv/paisans/f2a9/chat/homeserver.yaml"]
 	if !strings.Contains(home, "\nrequire_auth_for_profile_requests: true\n") {
 		t.Errorf("synapse reads yaml:\n%s", home)
 	}
 
-	elem := files["home-b/srv/web/config.json"]
+	elem := files["home-b/srv/paisans/f2a9/web/config.json"]
 	if !strings.Contains(elem, "\n  \"default_theme\": \"dark\"") {
 		t.Errorf("element reads json:\n%s", elem)
 	}
@@ -1714,10 +1767,10 @@ func TestAPassthroughKeyReachesNoOtherFile(t *testing.T) {
 		}
 		var want []string
 		if cfg.Apps[k.app].Placement.Mode == config.PlacementPinned {
-			want = []string{cfg.Apps[k.app].Placement.Site + "/srv/" + k.app + "/" + k.file}
+			want = []string{cfg.Apps[k.app].Placement.Site + "/srv/paisans/f2a9/" + k.app + "/" + k.file}
 		} else {
 			for _, site := range cfg.AppsSites() {
-				want = append(want, site+"/srv/"+k.app+"/"+k.file)
+				want = append(want, site+"/srv/paisans/f2a9/"+k.app+"/"+k.file)
 			}
 		}
 		var got []string
@@ -1826,7 +1879,7 @@ func TestACollisionNamesTheSettingThatOwnsTheValue(t *testing.T) {
 // shadowed. The gate's members instance sets its group under environment:,
 // which is exactly where an operator reaching for this would collide.
 func TestAnEnvKeyComposeAlreadySetsIsRefused(t *testing.T) {
-	gate := planFiles(build(t))["home-a/srv/gate/compose.yaml"]
+	gate := planFiles(build(t))["home-a/srv/paisans/f2a9/gate/compose.yaml"]
 	if !strings.Contains(gate, "OAUTH2_PROXY_ALLOWED_GROUPS:") {
 		t.Fatalf("the gate's compose.yaml no longer sets the group under environment:, so this test would check nothing:\n%s", gate)
 	}
@@ -1891,7 +1944,7 @@ func TestEverySettingThatOwnsAKeyReallyControlsIt(t *testing.T) {
 				t.Fatalf("building with %s set: %v", o.Setting, err)
 			}
 			for _, f := range plan.Files {
-				if !strings.HasSuffix(f.Path, "/srv/"+app+"/"+o.File) {
+				if !strings.HasSuffix(f.Path, "/srv/paisans/f2a9/"+app+"/"+o.File) {
 					continue
 				}
 				leaf := o.Key[strings.LastIndex(o.Key, ".")+1:]
@@ -1960,8 +2013,8 @@ services:
 // the paisans fork at tag v1.13.3+paisans.
 func TestMbinRendersItsWholeStack(t *testing.T) {
 	files := planFiles(build(t))
-	compose := files["home-a/srv/talk/compose.yaml"]
-	env := files["home-a/srv/talk/.env"]
+	compose := files["home-a/srv/paisans/f2a9/talk/compose.yaml"]
+	env := files["home-a/srv/paisans/f2a9/talk/.env"]
 
 	for _, service := range []string{"  app:", "  messenger:", "  valkey:"} {
 		if !strings.Contains(compose, "\n"+service+"\n") {
@@ -1982,7 +2035,7 @@ func TestMbinRendersItsWholeStack(t *testing.T) {
 	if strings.Contains(env, "SERVER_NAME=") {
 		t.Errorf("SERVER_NAME belongs to compose.yaml, where a hostname cannot replace the plain listener:\n%s", env)
 	}
-	snippet := files["vm/srv/infra/caddy/snippets/talk.caddy"]
+	snippet := files["vm/srv/paisans/f2a9/infra/caddy/snippets/talk.caddy"]
 	if !strings.Contains(snippet, "10.44.0.1:8080") || !strings.Contains(snippet, "10.44.0.2:8080") {
 		t.Errorf("the gateway does not route to the port the app publishes:\n%s", snippet)
 	}
@@ -2007,7 +2060,7 @@ func TestMbinRendersItsWholeStack(t *testing.T) {
 		}
 	}
 
-	if _, ok := files["home-a/srv/talk/valkey.conf"]; !ok {
+	if _, ok := files["home-a/srv/paisans/f2a9/talk/valkey.conf"]; !ok {
 		t.Error("valkey.conf was not rendered, so the cache would run without upstream's memory limit and with snapshots on")
 	}
 	// The fork's docker/docker-entrypoint.sh (tag v1.13.3+paisans) runs
@@ -2020,7 +2073,7 @@ func TestMbinRendersItsWholeStack(t *testing.T) {
 			t.Errorf("compose.yaml mounts over config/packages/%s, which the image's entrypoint edits in place:\n%s", edited, compose)
 		}
 	}
-	if _, ok := files["home-a/srv/talk/config/packages/oneup_flysystem.yaml"]; ok {
+	if _, ok := files["home-a/srv/paisans/f2a9/talk/config/packages/oneup_flysystem.yaml"]; ok {
 		t.Error("the oneup_flysystem.yaml shim is rendered again; the image's entrypoint switches the adapter itself")
 	}
 	if !strings.Contains(env, "\nS3_KEY=") {
@@ -2042,8 +2095,8 @@ func TestMbinQueuesInPostgresByDefault(t *testing.T) {
 	}
 	clustered, pinned := planFiles(build(t)), planFiles(pinnedPlan)
 	for _, c := range []struct{ name, env, compose string }{
-		{"clustered", clustered["home-a/srv/talk/.env"], clustered["home-a/srv/talk/compose.yaml"]},
-		{"pinned", pinned["home-b/srv/talk/.env"], pinned["home-b/srv/talk/compose.yaml"]},
+		{"clustered", clustered["home-a/srv/paisans/f2a9/talk/.env"], clustered["home-a/srv/paisans/f2a9/talk/compose.yaml"]},
+		{"pinned", pinned["home-b/srv/paisans/f2a9/talk/.env"], pinned["home-b/srv/paisans/f2a9/talk/compose.yaml"]},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got, want := envValue(c.env, "MESSENGER_TRANSPORT_DSN"), "doctrine://default?check_delayed_interval=1000&redeliver_timeout=900"; got != want {
@@ -2073,7 +2126,7 @@ func TestMbinRabbitMQIsAnOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := planFiles(plan)
-	env, compose := files["home-a/srv/talk/.env"], files["home-a/srv/talk/compose.yaml"]
+	env, compose := files["home-a/srv/paisans/f2a9/talk/.env"], files["home-a/srv/paisans/f2a9/talk/compose.yaml"]
 	for _, want := range []string{
 		"\nRABBITMQ_DEFAULT_USER=mbin\n",
 		"\nRABBITMQ_DEFAULT_PASS=fixture-not-a-secret-rabbitmq\n",
@@ -2105,8 +2158,8 @@ func TestPinnedMbinRunsItsOwnDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := planFiles(plan)
-	compose := files["home-b/srv/talk/compose.yaml"]
-	env := files["home-b/srv/talk/.env"]
+	compose := files["home-b/srv/paisans/f2a9/talk/compose.yaml"]
+	env := files["home-b/srv/paisans/f2a9/talk/.env"]
 	if !strings.Contains(compose, "\n  postgres:\n") {
 		t.Errorf("a pinned Mbin has no postgres service:\n%s", compose)
 	}
@@ -2128,7 +2181,7 @@ func TestPinnedMbinRunsItsOwnDatabase(t *testing.T) {
 // the delivery for good. Every host block imports the same handler, so no app,
 // media hostname included, is left out.
 func TestEveryHostBlockAnswers503WhenNoSiteCan(t *testing.T) {
-	caddyfile := planFiles(build(t))["vm/srv/infra/caddy/Caddyfile"]
+	caddyfile := planFiles(build(t))["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	for _, want := range []string{
 		"(upstream_unavailable) {",
 		"handle_errors 502 503 504 {",
@@ -2154,14 +2207,14 @@ func TestEveryHostBlockAnswers503WhenNoSiteCan(t *testing.T) {
 // a refused dial is retried on the next site inside the same request.
 func TestMultiSiteAppsShareOneFailoverSetting(t *testing.T) {
 	files := planFiles(build(t))
-	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	caddyfile := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	for _, want := range []string{"(upstream_failover) {", "lb_policy first", "lb_try_duration 5s", "fail_duration 30s", "dial_timeout 2s"} {
 		if !strings.Contains(caddyfile, want) {
 			t.Errorf("the gateway Caddyfile's upstream_failover does not carry %q:\n%s", want, caddyfile)
 		}
 	}
 	for _, app := range []string{"talk", "docs", "auth"} {
-		snippet := files["vm/srv/infra/caddy/snippets/"+app+".caddy"]
+		snippet := files["vm/srv/paisans/f2a9/infra/caddy/snippets/"+app+".caddy"]
 		if !strings.Contains(snippet, "10.44.0.1:") || !strings.Contains(snippet, "10.44.0.2:") {
 			t.Fatalf("%s is not on both apps sites in the fixture, so it proves nothing:\n%s", app, snippet)
 		}
@@ -2173,7 +2226,7 @@ func TestMultiSiteAppsShareOneFailoverSetting(t *testing.T) {
 		}
 	}
 	for _, app := range []string{"blog", "chat", "web", "gate"} {
-		if snippet := files["vm/srv/infra/caddy/snippets/"+app+".caddy"]; strings.Contains(snippet, "upstream_failover") {
+		if snippet := files["vm/srv/paisans/f2a9/infra/caddy/snippets/"+app+".caddy"]; strings.Contains(snippet, "upstream_failover") {
 			t.Errorf("pinned %s imports upstream_failover with one upstream:\n%s", app, snippet)
 		}
 	}
@@ -2199,9 +2252,9 @@ func TestMbinSplitsItsLocks(t *testing.T) {
 
 	clustered := planFiles(build(t))
 	for _, c := range []struct{ name, env, host string }{
-		{"clustered on home-a", clustered["home-a/srv/talk/.env"], "@10.44.0.1:5000/talk?"},
-		{"clustered on home-b", clustered["home-b/srv/talk/.env"], "@10.44.0.2:5000/talk?"},
-		{"pinned", planFiles(pinnedPlan)["home-b/srv/talk/.env"], "@postgres:5432/talk?"},
+		{"clustered on home-a", clustered["home-a/srv/paisans/f2a9/talk/.env"], "@10.44.0.1:5000/talk?"},
+		{"clustered on home-b", clustered["home-b/srv/paisans/f2a9/talk/.env"], "@10.44.0.2:5000/talk?"},
+		{"pinned", planFiles(pinnedPlan)["home-b/srv/paisans/f2a9/talk/.env"], "@postgres:5432/talk?"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := envValue(c.env, "LOCK_DSN"); got != "flock" {
@@ -2244,7 +2297,7 @@ func envValue(env, key string) string {
 // used to say /oauth/oidc/verify while the value it was built from said
 // /oauth/callback, which no route in the fork serves.
 func TestMbinNamesTheCallbackItServes(t *testing.T) {
-	env := planFiles(build(t))["home-a/srv/talk/.env"]
+	env := planFiles(build(t))["home-a/srv/paisans/f2a9/talk/.env"]
 	want := kinds.MbinRedirectURI("talk.example.org")
 	if !strings.Contains(env, want) {
 		t.Errorf("the Mbin .env does not name %s as the callback to register:\n%s", want, env)
@@ -2271,16 +2324,16 @@ func TestWatchdogOffRendersPatroniWithoutTheDevice(t *testing.T) {
 	}
 	files := planFiles(plan)
 
-	if env := files["home-b/srv/infra/patroni.env"]; !strings.Contains(env, "watchdog: {mode: 'off'}") {
+	if env := files["home-b/srv/paisans/f2a9/infra/patroni.env"]; !strings.Contains(env, "watchdog: {mode: 'off'}") {
 		t.Errorf("home-b declared watchdog off and its patroni.env says otherwise:\n%s", env)
 	}
-	if compose := files["home-b/srv/infra/compose.yaml"]; strings.Contains(compose, "/dev/watchdog:") || strings.Contains(compose, "chown postgres") {
+	if compose := files["home-b/srv/paisans/f2a9/infra/compose.yaml"]; strings.Contains(compose, "/dev/watchdog:") || strings.Contains(compose, "chown postgres") {
 		t.Errorf("home-b declared watchdog off and its compose still maps the device:\n%s", compose)
 	}
-	if env := files["home-a/srv/infra/patroni.env"]; !strings.Contains(env, "watchdog: {mode: required}") {
+	if env := files["home-a/srv/paisans/f2a9/infra/patroni.env"]; !strings.Contains(env, "watchdog: {mode: required}") {
 		t.Errorf("home-a did not declare off and lost its watchdog:\n%s", env)
 	}
-	if compose := files["home-a/srv/infra/compose.yaml"]; !strings.Contains(compose, "- /dev/watchdog:/dev/watchdog") {
+	if compose := files["home-a/srv/paisans/f2a9/infra/compose.yaml"]; !strings.Contains(compose, "- /dev/watchdog:/dev/watchdog") {
 		t.Errorf("home-a did not declare off and lost its device mapping:\n%s", compose)
 	}
 }
@@ -2304,7 +2357,7 @@ func TestMbinOAuthKeypairIsRenderedForEveryAppsSite(t *testing.T) {
 
 	var privates []string
 	for path := range files {
-		if !strings.HasSuffix(path, "/srv/talk/compose.yaml") {
+		if !strings.HasSuffix(path, "/srv/paisans/f2a9/talk/compose.yaml") {
 			continue
 		}
 		dir := strings.TrimSuffix(path, "compose.yaml")
@@ -2315,7 +2368,7 @@ func TestMbinOAuthKeypairIsRenderedForEveryAppsSite(t *testing.T) {
 			if service == "app" {
 				block = block[:strings.Index(block, "\n  messenger:\n")]
 			}
-			if !strings.Contains(block, "/srv/talk/oauth:/app/config/oauth2:ro") {
+			if !strings.Contains(block, "/srv/paisans/f2a9/talk/oauth:/app/config/oauth2:ro") {
 				t.Errorf("%s: %s does not mount the keypair read only at /app/config/oauth2", path, service)
 			}
 		}
@@ -2378,7 +2431,7 @@ func TestMbinOAuthKeypairIsRenderedForEveryAppsSite(t *testing.T) {
 // every listener on every interface and no watchdog, all because of that. What
 // must arrive goes in Spilo's variables or in SPILO_CONFIGURATION.
 func TestPatroniEnvSpeaksSpilosVocabulary(t *testing.T) {
-	env := planFiles(build(t))["home-a/srv/infra/patroni.env"]
+	env := planFiles(build(t))["home-a/srv/paisans/f2a9/infra/patroni.env"]
 	if strings.Contains(env, "\nPATRONI_") {
 		t.Errorf("patroni.env carries PATRONI_* variables, which Spilo unsets before Patroni starts:\n%s", env)
 	}
@@ -2434,7 +2487,7 @@ func TestPatroniEnvSpeaksSpilosVocabulary(t *testing.T) {
 // permission could have used. On the first real host Patroni reported the
 // device "not usable" and, in required mode, never became leader.
 func TestPatroniOwnsItsWatchdogNode(t *testing.T) {
-	compose := planFiles(build(t))["home-a/srv/infra/compose.yaml"]
+	compose := planFiles(build(t))["home-a/srv/paisans/f2a9/infra/compose.yaml"]
 	if !strings.Contains(compose, `chown postgres /dev/watchdog && exec /bin/sh /launch.sh init`) {
 		t.Errorf("Patroni's container does not take ownership of its watchdog node:\n%s", compose)
 	}
@@ -2444,7 +2497,7 @@ func TestPatroniOwnsItsWatchdogNode(t *testing.T) {
 // 1.13.3 image's Caddyfile uses directives its Mercure module accepts only in
 // compatibility mode, and on the first real host the app restarted forever.
 func TestMbinOptsMercureIntoCompatibilityMode(t *testing.T) {
-	compose := planFiles(build(t))["home-a/srv/talk/compose.yaml"]
+	compose := planFiles(build(t))["home-a/srv/paisans/f2a9/talk/compose.yaml"]
 	if !strings.Contains(compose, `MERCURE_EXTRA_DIRECTIVES: "protocol_version_compatibility 8"`) {
 		t.Errorf("Mbin's app does not opt Mercure into compatibility mode:\n%s", compose)
 	}
@@ -2465,17 +2518,17 @@ func TestEtcdRendersTheFlagsItWasBornWith(t *testing.T) {
 	for _, f := range plan.Files {
 		files[f.Path] = f.Content
 	}
-	if c := files["home-a/srv/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster=home-a=http://10.44.0.1:2380\n") || !strings.Contains(c, "--initial-cluster-state=new") {
+	if c := files["home-a/srv/paisans/f2a9/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster=home-a=http://10.44.0.1:2380\n") || !strings.Contains(c, "--initial-cluster-state=new") {
 		t.Errorf("a founder lost its founding flags:\n%s", c)
 	}
-	if c := files["vm/srv/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster-state=existing") || !strings.Contains(c, joined.Cluster+"\n") {
+	if c := files["vm/srv/paisans/f2a9/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster-state=existing") || !strings.Contains(c, joined.Cluster+"\n") {
 		t.Errorf("a joined member does not render existing:\n%s", c)
 	}
-	if got, ok := render.ParseEtcdInitial(files["vm/"+render.EtcdInitialPath]); !ok || got != joined {
+	if got, ok := render.ParseEtcdInitial(files["vm/"+"srv/paisans/f2a9/infra/etcd-initial"]); !ok || got != joined {
 		t.Errorf("the record does not round trip: %+v", got)
 	}
 	// Without the option, the fresh deployment's flags, as before the record.
-	if c := files["home-b/srv/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster-state=new") || !strings.Contains(c, "home-b=http://10.44.0.2:2380,vm=") {
+	if c := files["home-b/srv/paisans/f2a9/infra/compose.yaml"]; !strings.Contains(c, "--initial-cluster-state=new") || !strings.Contains(c, "home-b=http://10.44.0.2:2380,vm=") {
 		t.Errorf("an unrecorded member does not render as a founder:\n%s", c)
 	}
 }
@@ -2494,7 +2547,7 @@ func TestEtcdCompactsAndStatesItsQuota(t *testing.T) {
 	}
 	files := planFiles(plan)
 	for _, site := range cfg.Etcd.Members {
-		compose := files[site+"/srv/infra/compose.yaml"]
+		compose := files[site+"/srv/paisans/f2a9/infra/compose.yaml"]
 		for _, flag := range []string{
 			"- --auto-compaction-mode=periodic\n",
 			"- --auto-compaction-retention=1h\n",
@@ -2505,10 +2558,10 @@ func TestEtcdCompactsAndStatesItsQuota(t *testing.T) {
 			}
 		}
 	}
-	if got, ok := render.ParseEtcdFlags(files["home-a/srv/infra/compose.yaml"]); !ok || got != born {
+	if got, ok := render.ParseEtcdFlags(files["home-a/srv/paisans/f2a9/infra/compose.yaml"]); !ok || got != born {
 		t.Errorf("the compose file's initial flags read back as %+v, want %+v", got, born)
 	}
-	if got, ok := render.ParseEtcdInitial(files["home-a/"+render.EtcdInitialPath]); !ok || got != born {
+	if got, ok := render.ParseEtcdInitial(files["home-a/"+"srv/paisans/f2a9/infra/etcd-initial"]); !ok || got != born {
 		t.Errorf("the record changed: %+v", got)
 	}
 }
@@ -2537,7 +2590,7 @@ func TestAMediaURLCannotBeOverriddenThroughConfig(t *testing.T) {
 // what stops Docker creating one: a mount at a parent or a child path does
 // not. The log bind mounts stay, inside the tmpfs.
 func TestMbinKeepsItsVarDirectoryInMemory(t *testing.T) {
-	compose := planFiles(build(t))["home-a/srv/talk/compose.yaml"]
+	compose := planFiles(build(t))["home-a/srv/paisans/f2a9/talk/compose.yaml"]
 	var doc struct {
 		Services map[string]struct {
 			Tmpfs   []string `yaml:"tmpfs"`
@@ -2547,7 +2600,7 @@ func TestMbinKeepsItsVarDirectoryInMemory(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(compose), &doc); err != nil {
 		t.Fatal(err)
 	}
-	for service, log := range map[string]string{"app": "/srv/talk/php_logs:/app/var/log", "messenger": "/srv/talk/messenger_logs:/app/var/log"} {
+	for service, log := range map[string]string{"app": "/srv/paisans/f2a9/talk/php_logs:/app/var/log", "messenger": "/srv/paisans/f2a9/talk/messenger_logs:/app/var/log"} {
 		s := doc.Services[service]
 		if len(s.Tmpfs) != 1 || s.Tmpfs[0] != "/app/var:size=256m,mode=0755,uid=1000,gid=1000" {
 			t.Errorf("%s does not mount /app/var as tmpfs, so every recreate leaves an anonymous volume behind: %v", service, s.Tmpfs)
@@ -2629,11 +2682,11 @@ func TestAStorageSiteRendersGarageAlone(t *testing.T) {
 		}
 	}
 	sort.Strings(mine)
-	want := "etc/wireguard/wg0.conf,srv/infra/compose.yaml,srv/infra/garage/garage.toml"
+	want := "etc/wireguard/psns-f2a9.conf,srv/paisans/f2a9/infra/compose.yaml,srv/paisans/f2a9/infra/garage/garage.toml"
 	if got := strings.Join(mine, ","); got != want {
 		t.Fatalf("a storage site renders %s, want %s", got, want)
 	}
-	compose := files["store/srv/infra/compose.yaml"]
+	compose := files["store/srv/paisans/f2a9/infra/compose.yaml"]
 	if !strings.Contains(compose, "\n  garage:\n") {
 		t.Errorf("a storage site's infrastructure stack has no Garage:\n%s", compose)
 	}
@@ -2644,8 +2697,8 @@ func TestAStorageSiteRendersGarageAlone(t *testing.T) {
 	}
 	// It is a peer on the mesh like any other site; which sites dial it
 	// directly is the mesh's rule, not this role's.
-	if !strings.Contains(files["vm/etc/wireguard/wg0.conf"], "# store\n") {
-		t.Errorf("the gateway's mesh has no peer for the storage site:\n%s", files["vm/etc/wireguard/wg0.conf"])
+	if !strings.Contains(files["vm/etc/wireguard/psns-f2a9.conf"], "# store\n") {
+		t.Errorf("the gateway's mesh has no peer for the storage site:\n%s", files["vm/etc/wireguard/psns-f2a9.conf"])
 	}
 }
 
@@ -2670,15 +2723,15 @@ func TestARolelessSiteRendersItsPinnedAppAndNoInfraStack(t *testing.T) {
 	for _, f := range plan.Files {
 		have[f.Path] = true
 	}
-	for _, want := range []string{"mon/etc/wireguard/wg0.conf", "mon/srv/status/compose.yaml", "mon/srv/status/monitors.json"} {
+	for _, want := range []string{"mon/etc/wireguard/psns-f2a9.conf", "mon/srv/paisans/f2a9/status/compose.yaml", "mon/srv/paisans/f2a9/status/monitors.json"} {
 		if !have[want] {
 			t.Errorf("%s was not rendered", want)
 		}
 	}
-	if have["mon/srv/infra/compose.yaml"] {
+	if have["mon/srv/paisans/f2a9/infra/compose.yaml"] {
 		t.Error("a role-less site was given an infra stack with no services in it")
 	}
-	if !have["vm/srv/infra/compose.yaml"] {
+	if !have["vm/srv/paisans/f2a9/infra/compose.yaml"] {
 		t.Error("the gateway lost its infra stack")
 	}
 }
@@ -2694,7 +2747,7 @@ func TestRoutesBoundTheWaitOnAnotherMachine(t *testing.T) {
 		files[f.Path] = f.Content
 	}
 	snippet := func(app string) string {
-		path := "vm/srv/infra/caddy/snippets/" + app + ".caddy"
+		path := "vm/srv/paisans/f2a9/infra/caddy/snippets/" + app + ".caddy"
 		content, ok := files[path]
 		if !ok {
 			t.Fatalf("no %s", path)
@@ -2709,10 +2762,19 @@ func TestRoutesBoundTheWaitOnAnotherMachine(t *testing.T) {
 	if s := snippet("talk"); !strings.Contains(s, "import upstream_failover") || strings.Contains(s, "upstream_single") {
 		t.Errorf("talk, on two apps sites, should import upstream_failover only:\n%s", s)
 	}
-	if strings.Contains(snippet("status"), "upstream_single") { // pinned to vm, the gateway
-		t.Error("status, on the gateway itself, imports upstream_single")
+	// web moved onto vm, the gateway's own machine.
+	cfg := fixture(t)
+	web := cfg.Apps["web"]
+	web.Placement = config.Placement{Mode: config.PlacementPinned, Site: "vm"}
+	cfg.Apps["web"] = web
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
 	}
-	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	if strings.Contains(planFiles(plan)["vm/srv/paisans/f2a9/infra/caddy/snippets/web.caddy"], "upstream_single") {
+		t.Error("web, on the gateway itself, imports upstream_single")
+	}
+	caddyfile := files["vm/srv/paisans/f2a9/infra/caddy/Caddyfile"]
 	for _, name := range []string{"(upstream_failover) {", "(upstream_single) {"} {
 		i := strings.Index(caddyfile, name)
 		if i < 0 {

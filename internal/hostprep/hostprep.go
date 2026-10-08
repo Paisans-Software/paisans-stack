@@ -25,6 +25,7 @@ import (
 	"text/template"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 //go:embed profiles snippets
@@ -141,16 +142,22 @@ type Profile interface {
 	// tools, and whatever the profile's own firewall needs.
 	Packages(t Transport, host OSRelease) (Section, error)
 	// Services plans enabling and starting what Packages installed.
-	Services(t Transport) (Section, error)
+	// Its own files carry the deployment's token, so that two deployments on
+	// one host each keep their own.
+	Services(t Transport, d deployment.Deployment) (Section, error)
 	// WatchdogModule plans loading a kernel module now, unless loaded says
 	// it already is, and loading it at every boot.
-	WatchdogModule(t Transport, module string, loaded bool) (Section, error)
-	// Firewall plans the given inbound rules, a default deny for everything
-	// else, and enabling the firewall. The SSH rule must be in place before
-	// the firewall is enabled, and enabling must not prompt. Rules it added
-	// earlier that are no longer given are removed, last; rules it did not
-	// add are never removed or changed.
-	Firewall(t Transport, rules []Rule) (Section, error)
+	WatchdogModule(t Transport, d deployment.Deployment, module string, loaded bool) (Section, error)
+	// Firewall plans the given inbound rules and, when hostWide, a default
+	// deny for everything else and enabling the firewall. The SSH rule must
+	// be in place before the firewall is enabled, and enabling must not
+	// prompt. Rules it added earlier that are no longer given are removed,
+	// last; rules it did not add are never removed or changed. What it added
+	// is told apart by the owner tag of deployment d in each rule's comment,
+	// so a rule another deployment added is as foreign as an operator's.
+	// hostWide is false on a shared host, where the default policy and
+	// whether the firewall is on decide other people's traffic too.
+	Firewall(t Transport, d deployment.Deployment, rules []Rule, hostWide bool) (Section, error)
 }
 
 var registry []Profile
@@ -186,13 +193,32 @@ func UnsupportedMessage(host OSRelease) string {
 		host.ID, host.VersionID, strings.Join(Supported(), "\n"))
 }
 
+// Option adjusts what Build plans.
+type Option func(*options)
+
+type options struct {
+	shared bool
+}
+
+// Shared plans for a host the host check found shared: something besides
+// the deployment runs there. The firewall's default policy and enabled state
+// are left alone, since they govern that other thing's traffic as well, and
+// only the rules host prepare marks as its own are added and removed. The
+// host check has already refused a shared host whose ufw is not active and
+// denying incoming by default.
+func Shared() Option { return func(o *options) { o.shared = true } }
+
 // Build probes the site's host and returns only what is missing, in the order
 // it must run: packages, then services, then the watchdog, then the login
 // user's authorized keys, then the firewall, then removing authorized keys
 // no longer listed. The firewall follows the packages because the package
 // step may be what installs it; key removals are last so that nothing is
 // taken away before every listed key is in place.
-func Build(site string, cfg *config.Config, t Transport) (*Plan, error) {
+func Build(site string, cfg *config.Config, t Transport, opts ...Option) (*Plan, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	declared, ok := cfg.Sites[site]
 	if !ok {
 		return nil, fmt.Errorf("host prepare: no site %q is declared", site)
@@ -219,25 +245,26 @@ func Build(site string, cfg *config.Config, t Transport) (*Plan, error) {
 	}
 	plan.add(packages)
 
-	services, err := profile.Services(t)
+	d := cfg.Deployment()
+	services, err := profile.Services(t, d)
 	if err != nil {
 		return nil, fmt.Errorf("services on %s: %w", t.Describe(), err)
 	}
 	plan.add(services)
 
-	watchdog, err := planWatchdog(t, profile, declared)
+	watchdog, err := planWatchdog(t, d, profile, declared)
 	if err != nil {
 		return nil, err
 	}
 	plan.add(watchdog)
 
-	keys, keyRemovals, err := planAuthorizedKeys(t, declared.SSH)
+	keys, keyRemovals, err := planAuthorizedKeys(t, d, declared.SSH)
 	if err != nil {
 		return nil, fmt.Errorf("authorized keys on %s: %w", t.Describe(), err)
 	}
 	plan.add(keys)
 
-	firewall, err := profile.Firewall(t, append(Rules(declared), ContainerRules(cfg, site)...))
+	firewall, err := profile.Firewall(t, d, append(Rules(d, declared), ContainerRules(cfg, site)...), !o.shared)
 	if err != nil {
 		return nil, fmt.Errorf("firewall on %s: %w", t.Describe(), err)
 	}

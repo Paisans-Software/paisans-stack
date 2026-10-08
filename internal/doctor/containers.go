@@ -5,15 +5,22 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
-// ContainersCommand lists every paisans container on a host, running or not.
-// Every rendered compose project is named paisans-<stack> (the `name:` line
-// of each compose template), so its containers carry the prefix. The keys of
-// `{{json .}}` are the methods of docker/cli's ContainerContext (docker/cli
-// v27.3.1, cli/command/formatter/container.go): Names, State, Status, Labels
-// among them.
-const ContainersCommand = "docker ps -a --filter name=paisans- --format '{{json .}}'"
+// ContainersCommand lists every container of deployment d on a host, running
+// or not. Every rendered service carries the deployment label with the
+// deployment's id (the `labels:` of each compose template), so the filter is
+// that label, never a name: another deployment on the same host has
+// containers named paisans-<its token>-..., and something that is no
+// deployment's may be named anything. The keys of `{{json .}}` are the
+// methods of docker/cli's ContainerContext (docker/cli v27.3.1,
+// cli/command/formatter/container.go): Names, State, Status, Labels among
+// them.
+func ContainersCommand(d deployment.Deployment) string {
+	return "docker ps -a --filter " + shellQuote(d.LabelFilter()) + " --format '{{json .}}'"
+}
 
 // InspectCommand reads the state Docker recorded for one container: its
 // status, exit code, the error Docker itself hit starting it, and how often
@@ -57,12 +64,30 @@ func ParsePS(out string) ([]PSEntry, error) {
 // one Docker keeps restarting.
 func (e PSEntry) Down() bool { return e.State != "running" }
 
-// Stack is the paisans stack a container belongs to, from its compose
-// project label, paisans-<stack>.
-func (e PSEntry) Stack() string {
+// label is the value of one label in the entry's comma separated Labels.
+func (e PSEntry) label(key string) (string, bool) {
 	for _, label := range strings.Split(e.Labels, ",") {
-		if v, ok := strings.CutPrefix(label, "com.docker.compose.project="); ok {
-			return strings.TrimPrefix(v, "paisans-")
+		if v, ok := strings.CutPrefix(label, key+"="); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// Owned reports whether the container carries deployment d's label. The
+// command already filters on it; this holds the same line for output that
+// came from anywhere else.
+func (e PSEntry) Owned(d deployment.Deployment) bool {
+	id, ok := e.label(deployment.Label)
+	return ok && id == d.ID
+}
+
+// Stack is the stack a container of deployment d belongs to, from its compose
+// project label, paisans-<token>-<stack>.
+func (e PSEntry) Stack(d deployment.Deployment) string {
+	if v, ok := e.label("com.docker.compose.project"); ok {
+		if stack, ok := strings.CutPrefix(v, d.Prefix()+"-"); ok {
+			return stack
 		}
 	}
 	return ""
@@ -121,17 +146,23 @@ var networkUnreachable = regexp.MustCompile(`(?i)network is unreachable`)
 // primary is the Patroni leader doctor found, empty when there is none or the
 // cluster did not answer: an app that cannot reach its database is waiting on
 // Patroni only when there is no primary.
-func Containers(sites []SiteContainers, primary string) []Finding {
+func Containers(d deployment.Deployment, sites []SiteContainers, primary string) []Finding {
 	var out []Finding
 	for _, s := range sites {
 		if s.PSErr != "" {
 			out = append(out, Finding{Section: SectionContainers, Level: Warn, Line: fmt.Sprintf("%s: could not list containers (%s)", s.Site, firstLine(s.PSErr))})
 			continue
 		}
-		list, err := ParsePS(s.PS)
+		all, err := ParsePS(s.PS)
 		if err != nil {
 			out = append(out, Finding{Section: SectionContainers, Level: Warn, Line: fmt.Sprintf("%s: %v", s.Site, err)})
 			continue
+		}
+		var list []PSEntry
+		for _, e := range all {
+			if e.Owned(d) {
+				list = append(list, e)
+			}
 		}
 		running := 0
 		for _, e := range list {
@@ -139,8 +170,14 @@ func Containers(sites []SiteContainers, primary string) []Finding {
 				running++
 			}
 		}
+		var down []ContainerProbe
+		for _, probe := range s.Down {
+			if probe.Entry.Owned(d) {
+				down = append(down, probe)
+			}
+		}
 		level := OK
-		if len(s.Down) > 0 {
+		if len(down) > 0 {
 			level = Fail
 		}
 		if len(list) == 0 {
@@ -150,14 +187,14 @@ func Containers(sites []SiteContainers, primary string) []Finding {
 		if level == OK {
 			out = append(out, Finding{Section: SectionContainers, Level: OK, Line: fmt.Sprintf("%s: %d paisans container(s), all running", s.Site, running)})
 		}
-		for _, d := range s.Down {
-			out = append(out, containerFinding(s.Site, d, primary))
+		for _, probe := range down {
+			out = append(out, containerFinding(d, s.Site, probe, primary))
 		}
 	}
 	return out
 }
 
-func containerFinding(site string, d ContainerProbe, primary string) Finding {
+func containerFinding(dep deployment.Deployment, site string, d ContainerProbe, primary string) Finding {
 	name := d.Entry.Names
 	line := fmt.Sprintf("%s: %s %s", site, name, d.Entry.Status)
 	var in Inspected
@@ -180,27 +217,27 @@ func containerFinding(site string, d ContainerProbe, primary string) Finding {
 	switch {
 	case strings.Contains(in.State.Error, "cannot assign requested address"):
 		recreate := "`paisans apply --site " + site + " --execute`"
-		if stack := d.Entry.Stack(); stack != "" {
+		if stack := d.Entry.Stack(dep); stack != "" {
 			recreate = "`paisans apply --site " + site + " --recreate " + stack + " --execute`"
 		}
 		f.More = []string{
-			"Docker started before wg0 at boot. The container publishes its port on the site's mesh address, which exists only once wg-quick@wg0 has brought wg0 up, and Docker does not retry a container whose network setup failed.",
+			fmt.Sprintf("Docker started before %s at boot. The container publishes its port on the site's mesh address, which exists only once %s has brought %s up, and Docker does not retry a container whose network setup failed.", dep.Interface(), dep.WireGuardUnit(), dep.Interface()),
 			"recover:",
-			fmt.Sprintf("  1. `paisans host prepare --site %s --execute`, which orders Docker after wg-quick@wg0 from the next boot on.", site),
+			fmt.Sprintf("  1. `paisans host prepare --site %s --execute`, which orders Docker after %s from the next boot on.", site, dep.WireGuardUnit()),
 			fmt.Sprintf("  2. `docker start %s` on %s, or %s.", name, site, recreate),
 		}
 	case restarting && anyMatch(logs, networkUnreachable):
 		f.More = []string{
 			"Its own network has no route to the mesh address it connects to, so it cannot reach its database however healthy that is. A container whose network setup failed at boot and was then started again can be left this way, and restarting it does not rebuild its network.",
 			"recover:",
-			"  " + recreateCommand(site, d.Entry.Stack()) + ", which replaces the stack's containers and builds their network afresh.",
+			"  " + recreateCommand(site, d.Entry.Stack(dep)) + ", which replaces the stack's containers and builds their network afresh.",
 		}
 		f.More = append(f.More, indent(lastMatching(logs, networkUnreachable, 3))...)
 	case restarting && anyMatch(logs, databaseTrouble) && primary != "":
 		f.More = []string{
 			fmt.Sprintf("It cannot reach its database although %s is the primary, so it is not waiting on Patroni. Check this site's HAProxy (the infra stack) and the container's own network.", primary),
 			"recover:",
-			"  " + recreateCommand(site, d.Entry.Stack()) + ", which replaces the stack's containers and builds their network afresh.",
+			"  " + recreateCommand(site, d.Entry.Stack(dep)) + ", which replaces the stack's containers and builds their network afresh.",
 		}
 		f.More = append(f.More, indent(lastMatching(logs, databaseTrouble, 3))...)
 	case restarting && anyMatch(logs, databaseTrouble):

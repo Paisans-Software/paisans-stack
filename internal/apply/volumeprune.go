@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // VolumePrune is what `paisans prune` would do on one site: every dangling
@@ -50,7 +52,7 @@ func (p *VolumePrune) Removals() []DanglingVolume {
 // PruneHeader is printed above the plan. It says what the verdicts rest on,
 // because "anonymous and unused means ours" is an assumption about the host,
 // and an operator should read it before agreeing to it.
-const PruneHeader = "This host is taken to be dedicated to the deployment, as `host prepare` assumes, so an anonymous volume no container uses is one a paisans container left behind and is removed. A volume labelled by a compose project not named paisans-*, or one somebody named, belongs to something else and is kept."
+const PruneHeader = "A host may carry several deployments and things that are no deployment's at all, so a volume is removed only when it carries this deployment's label, community.paisans.deployment with this deployment's id. Every other volume is kept: one labelled with another id is that deployment's, and one with no such label, anonymous ones included, cannot be attributed to any deployment. apply removes the anonymous volumes its own recreates abandon, read from its own containers before they are replaced."
 
 // danglingProbe lists every dangling volume with its size, labels and top
 // level entries, one tab separated line each, and ends with a marker so a
@@ -62,16 +64,12 @@ const danglingProbe = `set -e; vs=$(docker volume ls -qf dangling=true); for v i
 // composeProject is the label Compose puts on every volume it creates.
 const composeProject = "com.docker.compose.project"
 
-// anonymousLabel is the label Docker itself puts on an anonymous volume
-// (observed on 29.7.2). Older engines put none, which is why a 64 hex name
-// counts too.
-const anonymousLabel = "com.docker.volume.anonymous"
-
+// anonymousName is the name Docker gives an anonymous volume.
 var anonymousName = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// BuildVolumePrune reads a site's dangling volumes and decides each one. It
-// changes nothing.
-func BuildVolumePrune(site string, t Transport) (*VolumePrune, error) {
+// BuildVolumePrune reads a site's dangling volumes and decides each one for
+// deployment d. It changes nothing.
+func BuildVolumePrune(d deployment.Deployment, site string, t Transport) (*VolumePrune, error) {
 	out, err := t.Run(danglingProbe)
 	if err != nil {
 		return nil, fmt.Errorf("%s: listing dangling volumes: %w\n%s", site, err, out)
@@ -94,24 +92,27 @@ func BuildVolumePrune(site string, t Transport) (*VolumePrune, error) {
 		if len(fields) > 4 && strings.TrimSpace(fields[4]) != "" {
 			v.Entries = strings.Fields(fields[4])
 		}
-		v.Remove, v.Reason = pruneVerdict(v.Name, labels)
+		v.Remove, v.Reason = pruneVerdict(d, labels)
 		p.Volumes = append(p.Volumes, v)
 	}
 	return p, nil
 }
 
-// pruneVerdict decides one dangling volume from its name and labels.
-func pruneVerdict(name string, labels map[string]string) (bool, string) {
+// pruneVerdict decides one dangling volume from its labels. Ownership is the
+// deployment label and nothing else: a name or a compose project name is
+// chosen by whoever created the volume, and two deployments on one host
+// share every naming convention.
+func pruneVerdict(d deployment.Deployment, labels map[string]string) (bool, string) {
+	switch owner, ok := labels[deployment.Label]; {
+	case ok && owner == d.ID:
+		return true, "labelled with this deployment's id"
+	case ok:
+		return false, "labelled with deployment " + owner + ", which is not this one"
+	}
 	if project, ok := labels[composeProject]; ok {
-		if strings.HasPrefix(project, "paisans-") {
-			return true, "left by compose project " + project + ", which is this deployment's"
-		}
-		return false, "labelled by compose project " + project + ", which is not this deployment's"
+		return false, "labelled by compose project " + project + " but with no deployment id, so it is not this deployment's"
 	}
-	if _, ok := labels[anonymousLabel]; ok || anonymousName.MatchString(name) {
-		return true, "anonymous and labelled by no compose project: a replaced container's leftover"
-	}
-	return false, "a named volume no compose project of this deployment created"
+	return false, "carries no deployment label, so no deployment can be shown to own it"
 }
 
 // ExecuteVolumePrune removes every volume the prune decided to. `docker

@@ -127,16 +127,16 @@ func (h *host) Run(command string) (string, error) {
 		return "/var/lib/docker\n", nil
 	case strings.HasPrefix(command, "df -B1"):
 		return "Avail\n999999999999\n", nil
-	case w.unhealthy != "" && strings.Contains(command, "/srv/"+w.unhealthy+"/compose.yaml ps --all --format json"):
+	case w.unhealthy != "" && strings.Contains(command, "/srv/paisans/f2a9/"+w.unhealthy+"/compose.yaml ps --all --format json"):
 		return `{"Service":"app","Name":"x","State":"exited","ExitCode":1}` + "\n", nil
 	case strings.Contains(command, " ps --all --format json"):
 		return `{"Service":"x","Name":"x","State":"running","Health":""}` + "\n", nil
-	case strings.Contains(command, "ip link show wg0"):
+	case strings.Contains(command, "ip link show psns-f2a9"):
 		if h.wgUp {
 			return "up\n", nil
 		}
 		return "down\n", nil
-	case strings.Contains(command, "enable --now wg-quick@wg0"), strings.Contains(command, "restart wg-quick@wg0"):
+	case strings.Contains(command, "enable --now wg-quick@psns-f2a9"), strings.Contains(command, "restart wg-quick@psns-f2a9"):
 		h.wgUp = true
 		return "", nil
 	case strings.HasPrefix(command, "ping "):
@@ -215,7 +215,7 @@ func (h *host) Run(command string) (string, error) {
 		}
 		return "", nil
 	case strings.HasSuffix(command, "restart haproxy"):
-		w.served[h.name] = h.files["/srv/infra/haproxy/haproxy.cfg"]
+		w.served[h.name] = h.files["/srv/paisans/f2a9/infra/haproxy/haproxy.cfg"]
 		return "", nil
 	case strings.Contains(command, "/stats;csv"):
 		return w.stats(h.name)
@@ -260,12 +260,12 @@ func (w *world) stats(site string) (string, error) {
 	return b.String(), nil
 }
 
-// handshakes answers `wg show wg0 latest-handshakes` from the files: two
+// handshakes answers `wg show psns-f2a9 latest-handshakes` from the files: two
 // sites have a fresh handshake when each lists the other's key and both
 // interfaces are up.
 func (w *world) handshakes(h *host) string {
 	var b strings.Builder
-	mine := h.files["/etc/wireguard/wg0.conf"]
+	mine := h.files["/etc/wireguard/psns-f2a9.conf"]
 	for _, name := range w.cfg.SiteNames() {
 		if name == h.name {
 			continue
@@ -279,7 +279,7 @@ func (w *world) handshakes(h *host) string {
 			continue
 		}
 		stamp := 0
-		if h.wgUp && other.wgUp && strings.Contains(other.files["/etc/wireguard/wg0.conf"], w.key(h.name)) {
+		if h.wgUp && other.wgUp && strings.Contains(other.files["/etc/wireguard/psns-f2a9.conf"], w.key(h.name)) {
 			stamp = 990
 		}
 		fmt.Fprintf(&b, "%s\t%d\n", key, stamp)
@@ -376,7 +376,7 @@ func newWorld(t *testing.T) *world {
 		w.hosts[name].commands = nil
 		w.hosts[name].writes = 0
 	}
-	w.served["home-a"] = w.hosts["home-a"].files["/srv/infra/haproxy/haproxy.cfg"]
+	w.served["home-a"] = w.hosts["home-a"].files["/srv/paisans/f2a9/infra/haproxy/haproxy.cfg"]
 	w.etcd = []apply.EtcdMember{{ID: 1, Name: "home-a", PeerURLs: []string{"http://10.44.0.1:2380"}, ClientURLs: []string{"http://10.44.0.1:2379"}}}
 	w.members = []map[string]any{{"Member": "home-a", "Role": "Leader", "State": "running", "Replay Lag": ""}}
 	return w
@@ -398,7 +398,7 @@ func mustRender(t *testing.T, w *world) *render.Plan {
 	t.Helper()
 	var opts []render.Option
 	for name, h := range w.hosts {
-		if in, ok := render.ParseEtcdInitial(h.files["/"+render.EtcdInitialPath]); ok {
+		if in, ok := render.ParseEtcdInitial(h.files["/"+"srv/paisans/f2a9/infra/etcd-initial"]); ok {
 			opts = append(opts, render.WithEtcdInitial(name, in))
 		}
 	}
