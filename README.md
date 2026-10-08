@@ -483,10 +483,21 @@ sites:
   and certificates over DNS-01 through `acme.provider`, with a host block for
   each app pinned there and nothing else. It claims tcp 80 and 443, and
   `host prepare` opens both. `acme.provider` and `external.acme_dns_token` are
-  required wherever this Caddy runs, as they are on a gateway.
+  required wherever this Caddy runs, as they are on a gateway, which puts the
+  DNS token on the monitor too: a second machine holding a credential that
+  can edit the whole zone. To narrow it, CNAME every `_acme-challenge` record
+  into a challenge only zone and scope the token to that zone, as the header
+  of the rendered `caddy.env` describes (and *Certificates use DNS-01,
+  everywhere* in `docs/development.md`); then the token on either machine can
+  write challenges and nothing else.
 * **`mode: external`** runs the app and nothing in front of it, for a machine
   that already runs a web server on 80 and 443. The app is published on
-  `listen` as well as on the mesh address, where the direct checks reach it.
+  `listen` alone: nothing dials its mesh address, since the gateway does not
+  route it and the monitor does not check its own container. Its compose
+  network is pinned at `10.255.255.0/29`, outside Docker's default pools, so
+  the address the web server's connections arrive from is known; `validate`
+  refuses a mesh over it (`ingress-network-overlaps-mesh`), and the host
+  check refuses a host where a foreign network or route already holds it.
   The certificate and its renewal belong to whoever runs that web server: the
   toolkit cannot know how an unfamiliar server obtains one, and must not edit
   a configuration it does not own. `docs/guides/behind-your-own-web-server.md`
@@ -496,19 +507,23 @@ sites:
 (`ingress-listen-mode`). Docker publishes a port with its own iptables rules,
 in front of ufw, so a `listen` the internet can reach would expose the app
 around the web server whatever the firewall says: only loopback, a private LAN
-address or the site's own mesh address are accepted (`ingress-listen-public`),
-and the last two warn that ufw does not cover them
-(`ingress-listen-bypasses-firewall`). One `listen` publishes one app, so an
+address (RFC 1918, or `100.64.0.0/10` as Tailscale uses) or the site's own
+mesh address are accepted (`ingress-listen-public`), and all but loopback warn
+that ufw does not cover them (`ingress-listen-bypasses-firewall`). One `listen` publishes one app, so an
 external monitor hosts the monitor alone (`ingress-external-serves-one-app`).
 
 Either way the app is rendered for a proxy in front of it:
 `PUBLIC_BASE_URL=https://<hostname>`, from which the fork builds its sign in
-callback, and `TRUST_PROXY` set to where that proxy connects from, because the
-login rate limiter is keyed on the client address. That is the mesh subnet
-behind the monitor's own Caddy; the private block holding a LAN `listen`; and
-for a loopback `listen`, `loopback,uniquelocal`, because Docker hands a
-connection to a loopback published port to the container from the compose
-network's gateway, a private address, never from 127.0.0.1.
+callback, and `TRUST_PROXY` set to exactly where that proxy connects from,
+because the login rate limiter is keyed on the client address and whatever is
+trusted may claim any client address. Behind the monitor's own Caddy that is
+the site's own mesh address, `/32`, since that Caddy runs on the host and dials
+the app there. For a loopback `listen` it is the pinned network's gateway,
+`10.255.255.1/32`, because Docker hands a connection on a loopback publish to
+the container from that gateway, never from 127.0.0.1. A LAN or mesh `listen`
+is reached by the web server's own address, which Docker's forwarding keeps
+and which the toolkit knows only by its network, so it is that private block
+or the mesh subnet.
 
 **Helping an operator behind their own web server.** Two commands, neither of
 which reaches a host or changes anything:
@@ -524,11 +539,21 @@ the web server must do (terminate TLS for the hostname, pass `Host`, set
 refuses, below); a filled in snippet for Caddy, nginx and Apache, each marked
 where the operator's certificate lines go; and the ufw warning when `listen`
 is not loopback. `check` reports pass or fail, with the fix, for: the hostname
-resolving to the monitor's `public_address`; `https://<hostname>/healthz`
-answering with a certificate valid for the hostname, and its days to expiry;
-the sign in redirect naming a callback under `https://<hostname>/`; and the
-published port refusing a connection on the public address. In `mode:
-paisans` there is nothing to hand off, and `check` runs only the first two.
+resolving to the monitor's `public_address` (and `public_address6`) and to
+nothing else, so a stale record still on the gateway fails;
+`https://<hostname>/healthz` answering with a certificate valid for the
+hostname, and its days to expiry; the sign in redirect naming a callback under
+`https://<hostname>/`; and the published port refusing the connection, or not
+answering, on the public addresses. Any other dial failure, such as no route
+from where the check runs, says nothing about the port and fails as
+inconclusive. In `mode: paisans` there is nothing to hand off, and `check`
+runs only the first two.
+
+**Moving an existing monitor.** A deployment whose uptime hostname already has
+an A record pointing at the gateway gets a `conflict` from `dns init` once the
+app moves to a monitor site, because `dns init` never updates a record, and
+`dns prune` keeps it too, since the name is still wanted. Change that record
+by hand at the provider, then run `dns init` again.
 
 **What it checks is generated, never typed.** `apply` renders `monitors.json`
 from this configuration and the fork reconciles it at every start:
@@ -571,7 +596,9 @@ member, which `monitor-shares-a-site` warns about on a data site.
 **At the edge** the monitor's Caddy refuses `/status*`, `/badge/*`, `/metrics`
 and the token API `/api/v1/*` with 404 whatever the app's own settings say,
 and `ingress show` carries the same refusal into each snippet for an
-operator's own web server. The
+operator's own web server. The app is Express with its default routing, which
+ignores case and a trailing slash, so every refusal does too: `/metrics/` and
+`/STATUS` are refused as well. The
 UI's own session authenticated JSON under `/api/sites` passes, because the
 dashboard's live refresh and the response time chart fetch it. The status page would
 list every monitor, mesh addresses included, and `/metrics` is public whenever

@@ -8,7 +8,11 @@ the monitor on already runs a web server on 80 and 443, and that web server is
 going to stay in front of it.
 
 In this mode the toolkit runs the monitor's container and nothing in front of
-it. Your web server terminates TLS and proxies to the container. The
+it, published on `listen` alone. Your web server terminates TLS and proxies to
+the container. No DNS token goes on this machine, since the toolkit obtains
+no certificate here; in mode `paisans` the monitor's Caddy holds the same
+zone token the gateway does, which a challenge only zone can narrow (see the
+header of the rendered `caddy.env`). The
 certificate, and renewing it, are yours: the toolkit cannot know how your
 server obtains one, and it does not edit a configuration it does not own.
 
@@ -40,10 +44,17 @@ apps:
 rules, which sit in front of ufw, so the firewall does not protect a published
 port. Use `127.0.0.1` whenever the web server runs on the same machine: then
 only that machine can reach the app. `paisans validate` refuses a public
-address, and warns about a private LAN address or the site's mesh address,
-because anything that can reach those reaches the app around your web server.
+address, and warns about a private LAN address (RFC 1918, or `100.64.0.0/10`
+as Tailscale uses) or the site's mesh address, because anything that can
+reach those reaches the app around your web server.
 Pick a port nothing else on the machine uses; `validate` refuses one the
 toolkit already binds there.
+
+The app's compose network is pinned at `10.255.255.0/29`, so that the address
+your web server's connections arrive from through Docker's publish is known
+and is all the app trusts to report a client's address. The host check
+refuses a machine where another network or a route already uses that range,
+and `validate` refuses a mesh over it.
 
 The site needs no other role, and should have none of `gateway` or `witness`,
 which are refused: the monitor exists to report their failures.
@@ -83,8 +94,10 @@ It prints, from `paisans.yaml` alone:
     `https`, because the monitor's sign in rate limit is keyed on the client's
     address;
   * refuse `/status*`, `/badge/*`, `/metrics` and `/api/v1/*`, as the
-    toolkit's own edge does: the status page lists every monitor, mesh
-    addresses included, and `/metrics` is public whenever no API token exists;
+    toolkit's own edge does, in any case and with or without a trailing
+    slash, because the app's routing ignores both: the status page lists
+    every monitor, mesh addresses included, and `/metrics` is public whenever
+    no API token exists;
 * a filled in snippet for Caddy, nginx and Apache. Each has a line marked
   `YOUR CERTIFICATE` where your own certificate lines go;
 * a warning when `listen` is not loopback.
@@ -106,6 +119,12 @@ paisans dns init --execute
 site's `public_address`, and at `public_address6` too when it is set. If you
 manage DNS by hand, create the same records.
 
+If the monitor's hostname already has a record pointing at the gateway, from
+before the monitor had a site of its own, `dns init` stops with a conflict:
+it never updates a record, and `dns prune` keeps one whose name is still
+wanted. Change that record by hand at the provider, then run `dns init`
+again.
+
 ## 5. Check it from your machine
 
 ```sh
@@ -117,10 +136,10 @@ visitor would, and reports each item as `PASS` or `FAIL` with what fixes it.
 
 | Check | Passes when | When it fails |
 |---|---|---|
-| `dns` | the hostname resolves to `public_address` (and `public_address6`) | create the records, step 4 |
+| `dns` | the hostname resolves to `public_address` (and `public_address6`), and to nothing else | create the records, step 4; delete any other record for the name by hand |
 | `certificate` | `https://<hostname>/healthz` answers 200 with a certificate valid for the hostname; prints the days left | the certificate lines, step 3, or the proxy if the answer is not 200 |
 | `sign in` | `/login/oidc` redirects to the identity provider with a callback under `https://<hostname>/` | a redirect back to `/login` means the app's client at Pocket ID is missing (`paisans oidc client create --app status`) or the identity provider is down; a wrong callback means apply has not reached the app, or the web server rewrites `Host` or `Location` |
-| `upstream` | a connection to `public_address` on the `listen` port fails | the app is reachable around your web server: use a loopback `listen`, or drop the port in Docker's `DOCKER-USER` chain |
+| `upstream` | a connection to `public_address` (and `public_address6`) on the `listen` port is refused or not answered | the app is reachable around your web server: use a loopback `listen`, or drop the port in Docker's `DOCKER-USER` chain. Any other failure, such as no route from where you run it, is inconclusive: run it from a machine that can reach the site |
 
 Run it again after every change until every line says `PASS`.
 

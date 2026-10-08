@@ -565,8 +565,9 @@ session, changes five things here:
   but it gains one check of its own public URL, `https://<hostname>/healthz`
   expecting 200, which proves the path in front of it: DNS, the web server
   and the certificate.
-* **`TRUST_PROXY`** is where the proxy in front of the monitor connects from,
-  rather than the mesh subnet alone: the mesh subnet behind the monitor's own
-  Caddy, and in mode external the network the operator's web server reaches
-  the published port from.
+* **`TRUST_PROXY`** is exactly where the proxy in front of the monitor
+  connects from, rather than the mesh subnet: the site's own mesh address
+  behind the monitor's own Caddy, and in mode external the pinned compose
+  network's gateway for a loopback `listen`, or the network a LAN or mesh
+  `listen` lies in.
 
