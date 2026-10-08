@@ -27,7 +27,7 @@ paisans validate --config examples/paisans.example.yaml
 paisans init     --config examples/paisans.example.yaml
 paisans render   --config examples/paisans.example.yaml \
                  --secrets secrets.enc.yaml --out ./out
-paisans host prepare --site home-a        # shows what a blank host lacks
+paisans host prepare --site home-a        # the host check, then what a blank host lacks
 paisans apply    --site home-a            # shows what would change
 paisans apply    --site home-a --execute  # does it
 paisans prune    --site home-a            # lists dangling volumes, and which go
@@ -148,6 +148,49 @@ The example validates with exactly one warning, and that warning is
 deliberate. Its Synapse stack is pinned to the site that also holds the witness
 role, which the design warns about rather than refuses.
 
+## The host check, before anything changes
+
+`host prepare`, `apply`, `site add` (on the site being added) and `prune` each
+run `internal/hostcheck` first, in a dry run as well as with `--execute`, and
+print its report above their own plan. `cmd/paisans/hostcheck.go` holds the
+one gate they share, `hostGate`. README.md *The host check: what is already on
+a host decides how much is touched* has the reasoning; what the code does:
+
+* **Claims** (`hostcheck.ClaimsFor`) are `render.SiteListeners`, each
+  listener carrying the `paisans.yaml` key behind it (`render.Listener.Key`),
+  plus `wg0` and the mesh subnet. A new listener is added to
+  `render.SiteListeners` with its key, and the host check, preflight's ports
+  check and validate's collision check all see it.
+* **Inventory** (`hostcheck.Inspect`) runs one probe per fact and changes
+  nothing. A failed probe is an error, and Docker installed but not answering
+  is an error rather than an empty list. Each probe is told apart in tests by a
+  substring only it contains (`docker version`, `dpkg-query`,
+  `docker inspect`, `docker volume inspect`, `docker network inspect`,
+  `ss -Hltnup`, `/proc/`, `ip -o link`, `ip -j route`, `ufw status verbose`,
+  `is-active firewalld`); a fake transport elsewhere that reaches one of
+  these commands has to answer it.
+* **Classification** (`hostcheck.Classify`) is a pure function of the
+  claims and the inventory, tested with recorded output: a clean host with
+  an empty Docker, the toolkit's own running stack, a foreign host network
+  Caddy against a site that claims 80 and 443 and one that does not, a
+  foreign Postgres, a published port with no listener, a foreign `wg0`, a
+  network over the mesh, and the three ways a shared host's firewall is
+  refused.
+
+What "shared" changes, and where:
+
+| Command | On a shared host |
+|---|---|
+| `host prepare` | `hostprep.Shared()`: the profile's `Firewall` gets `hostWide` false and plans only `paisans:` rules, never `ufw default` or `ufw --force enable` |
+| `apply` | `apply.KeepImages()`, as `--keep-images` |
+| `site add` | `siteadd.Plan.KeepImages`, passed to the replica stage's whole apply |
+| `prune` | `apply.BuildVolumePrune(site, t, true)`: only `paisans-*` labelled volumes go, and `SharedPruneHeader` says so |
+| `preflight` | a `host` check line; the `prepared` check asks for the shared plan |
+
+A conflict, and a shared host whose ufw is not active with incoming denied by
+default (or whose firewalld is active), is refused by `Report.Refusal` before
+anything else is asked of the host. There is no flag to skip the check.
+
 ## `apply`, and the gates in it
 
 `apply` is one site at a time, and a dry run unless `--execute` is given. Both
@@ -257,7 +300,8 @@ plus `docker container inspect` IDs), and runs `docker image rm <id>` for each
 image from that stack's repositories that no stack of the site renders and no
 container uses. A failed removal goes to `Progress` as a warning. `Build` lists
 the same candidates, without the container filter, as `Plan.Prunes`, printed
-as `prune` lines. `apply --keep-images` skips both. IDs are compared by
+as `prune` lines. `apply --keep-images` skips both, and so does a host the host
+check found shared. IDs are compared by
 prefix with `sha256:` stripped, since Docker prints them full or 12
 characters short. README.md "`apply` prunes the images it superseded" has the
 reasoning.
@@ -290,7 +334,8 @@ under Mbin's `/app/var/`. Three pieces, each easy to undo by accident:
 `prune --site <s>` (`internal/apply/volumeprune.go`) lists every dangling
 volume with size and top level entries and removes, with `--execute`, the
 anonymous ones and those of a `paisans-*` compose project; another project's,
-or a named one, is kept. The listing ends with an `end` marker, so a cut
+or a named one, is kept. On a host the host check found shared, an anonymous
+volume is kept as well, since it may be another project's. The listing ends with an `end` marker, so a cut
 short answer is an error rather than a shorter list. README.md "Every volume
 an image declares is mounted, and `apply` checks it" has the audit table and
 the reasoning.
@@ -660,6 +705,7 @@ installed, on a workstation or anywhere else.
 | `internal/appadmin` | an app's first administrator: probe, plan, and the per kind API calls |
 | `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin |
 | `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
+| `internal/hostcheck` | what a site claims on its host, what the host already runs, and whether that is clean, shared or a conflict |
 | `internal/preflight` | `site add`'s first stage: read only checks on the new site and every running one, as a report |
 | `internal/failover` | `failover test`: its checks, the switchover and its gates |
 | `internal/doctor` | `doctor`: the read commands it sends, and the findings and recovery advice made from their answers |

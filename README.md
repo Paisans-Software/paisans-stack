@@ -1793,6 +1793,81 @@ exactly what the operator typed, never a blend. `host prepare` still manages
 the section's user's authorized keys under `--ssh`, because those come from the
 file, not from the connection.
 
+### The host check: what is already on a host decides how much is touched
+
+`host prepare`, `apply`, `site add` and `prune` each assumed the host was the
+deployment's alone: prepare set ufw's default policy and enabled it, apply
+removed the images it superseded, and prune removed every anonymous volume
+nothing mounted. Each is right on a dedicated host and wrong on one where
+somebody else runs a web server or a database. So before any of the four
+changes anything, in a dry run as well as with `--execute`, it runs the
+**host check** on the site it is about to change and prints what it found.
+
+The check has three parts, in `internal/hostcheck`:
+
+* **Claims**, from `paisans.yaml` alone: every port the site will bind, with
+  its protocol, its address and the key that makes the site bind it
+  (`render.SiteListeners`, the list the renderer itself uses, so the check
+  cannot drift from what is deployed), the `wg0` interface, and the mesh
+  subnet as a route.
+* **Inventory**, read only, one command per fact and through sudo so that
+  `ss -p` can name another user's process: Docker's version and package,
+  every container with its compose project, PID and published ports,
+  volumes, networks and their subnets, `ss -Hltnup`, `ip -o link`,
+  `ip -j route`, `ufw status verbose`, whether firewalld is active, and
+  whether `/srv/.paisans-manifest.json` exists and records `wg0.conf`.
+* **Classification.** A container is the toolkit's when its compose project
+  starts `paisans-`. A listener is the toolkit's when its process is in one of
+  those containers' cgroups (a host network container), or it is the
+  `docker-proxy` publishing one of their ports, or it is the kernel's
+  WireGuard socket for a `wg0` the manifest records. A loopback listener, and
+  `sshd`, `systemd-resolved`, `systemd-networkd`, `chronyd` and `tailscaled`,
+  are the base system and count as neither. Everything else is foreign.
+
+| Class | When | What the command does |
+|---|---|---|
+| clean | nothing foreign; an empty Docker install is clean | what it always did, including enabling ufw with incoming denied by default |
+| shared | something foreign, holding nothing the site claims | proceeds, touching only what is the toolkit's (below) |
+| conflict | something foreign holds a claim | refuses, changes nothing, one line per conflict |
+
+A listener conflicts when the ports and protocols match and either side binds
+every address or both bind the same one, which is exactly when the second
+bind fails. That holds for a base system listener too: a loopback Postgres
+does not make a host shared, but the toolkit's own loopback bind on 5432
+would fail on it. A foreign container's published ports count whether or not
+anything listens, because Docker without its userland proxy publishes with no
+listener, and a stopped container binds again when it starts. A foreign
+Docker network or route over the mesh subnet conflicts, because it would
+capture mesh traffic, and so does a `wg0` the toolkit did not write.
+
+A conflict line names the resource, the `paisans.yaml` key that claims it, and
+what holds it (a container and its compose project, or a process and its PID).
+**There is no override.** The operator moves the other service or changes the
+configuration, because the claim cannot be taken while something else holds
+it: the bind fails all the same, only later and halfway through a change.
+
+On a **shared** host:
+
+* **The firewall must already be up.** ufw active with `Default: deny
+  (incoming)`, and firewalld not active, or the command refuses and says
+  which. The toolkit never runs `ufw default` or `ufw --force enable` there:
+  both decide the other services' traffic as well, and enabling a deny
+  default under a web server the toolkit knows nothing about takes it off
+  the network. It still adds and removes its own `paisans:` rules.
+* **No image is removed**, as with `apply --keep-images`, because an image the
+  toolkit renders (`caddy`, `postgres`) may be what a foreign project runs.
+* **`prune` removes only volumes a `paisans-*` compose project labelled.** An
+  anonymous one may be a foreign project's as easily as a replaced paisans
+  container's, so it is listed and kept.
+* **Docker is left alone**, as it already is whenever `docker compose` works,
+  and Ubuntu's `docker.io` is still refused rather than removed.
+
+The class is computed on every run and never stored: a host becomes shared
+the day someone installs something beside the deployment. `apply`'s manifest
+gate is unchanged and still refuses to overwrite a file it has no record of;
+the host check runs before it and covers what a manifest cannot see: ports,
+interfaces, firewall policy and other people's containers.
+
 ### `host prepare` takes a blank host to an apply-able state
 
 `apply` assumes a host that already has Docker with the compose plugin, the
@@ -1863,7 +1938,7 @@ which a package upgrade replaces, untouched.
 
 | Rule | Sites |
 |------|-------|
-| deny incoming, allow outgoing by default | every site |
+| deny incoming, allow outgoing by default | every clean site; a shared site must have it already (see *The host check*) |
 | the site's `ssh.port`, 22 unless declared | every site |
 | 51820/udp, WireGuard | every site |
 | everything arriving on `wg0` | every site |
@@ -2726,9 +2801,10 @@ For what accumulated before any of this, `paisans prune --site <site>` lists
 every dangling volume with its size and top level entries, and `--execute`
 removes the ones that are this deployment's: anonymous volumes, and any a
 `paisans-*` compose project labelled. One labelled by another compose project,
-or one somebody named, is kept. That verdict rests on the host being dedicated
-to the deployment, which `host prepare` already assumes, and the plan says so
-at the top.
+or one somebody named, is kept. Removing anonymous volumes rests on the host
+being the deployment's alone, so it happens only where the host check found
+it clean; on a shared host an anonymous volume is listed and kept, and the
+plan says which reading it used at the top.
 
 **`prune` lists first and removes only this deployment's volumes**, the same
 rule `apply` follows for images. **Every declared
@@ -3214,11 +3290,12 @@ at, and "could not look" is not "looked and it was fine".
 |---|---|---|---|
 | SSH and sudo | every site | `sudo -n true` | the host does not answer, or sudo wants a password |
 | Clock | every site | `timedatectl show -p NTPSynchronized --value` | not `yes` |
-| Prepared | new site | `host prepare`'s own plan | it has any step left |
+| Host | new site | the host check (see *The host check*) | something foreign holds a claim, or the host is shared and its firewall is not already up and denying by default |
+| Prepared | new site | `host prepare`'s own plan, without the firewall's defaults on a shared host | it has any step left |
 | Platform | new data site, against each existing data site | `/etc/os-release` `ID` and `VERSION_ID`, and the release at the end of `ldd --version`'s first line | any of the three differs |
 | WireGuard | new site | `/sys/module/wireguard`, else `modprobe -n wireguard` | neither |
 | Watchdog | new data site, unless its mode is `off` | `/dev/watchdog` exists | it does not |
-| Ports | new site | `ss -Hltnu` | anything listens on 51820/udp; on 2379 or 2380 for an etcd member; on 5432, 8008 or 8009 for a data site; on the cluster port where the site runs HAProxy |
+| Ports | new site | the host check's `ss -Hltnup` against its claims | anything listens where the site will bind: 51820/udp; 2379 or 2380 for an etcd member; 5432, 8008 or 8009 for a data site; the cluster port where the site runs HAProxy; 80 and 443 for a gateway; each app's published port |
 | Routes | new site | `ip -j route` | a route overlaps `mesh.subnet`, other than one through `wg0` |
 | Disk | new data site | the leader's `sum(pg_database_size(...))`, through its Patroni container's `psql`; `df` on the deepest existing directory towards `/srv/infra/postgres` | free space is under that plus 2 GiB |
 | Storage | new site | `docker info --format '{{.DockerRootDir}}'`, then `findmnt -no FSTYPE,SOURCE --target` on Docker's root and on `/srv` (or the deepest directory towards it that exists) | either is a network filesystem (`nfs`, `nfs4`, `cifs`, `smb3`, `glusterfs`, `ceph`, `fuse.sshfs` and the others preflight lists); a type that is neither that nor a local block filesystem (`ext4`, `xfs`, `btrfs`, `zfs`, `f2fs`) warns |
