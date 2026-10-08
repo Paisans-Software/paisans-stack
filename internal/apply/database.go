@@ -30,6 +30,11 @@ type Bootstrap struct {
 	// ClusterSites is cluster.sites. A leader is one of these or it is not a
 	// member this deployment declared.
 	ClusterSites []string
+	// EtcdUnstarted names the other founding etcd members not running yet,
+	// set only when this site's own member is being founded. While it is not
+	// empty no primary can appear, so apply stops after the infrastructure
+	// stack instead of waiting out primaryWait. See WitnessFirstRefusal.
+	EtcdUnstarted []string
 }
 
 // identifier is what this package will put into SQL as a role or database
@@ -169,7 +174,7 @@ func waitForPrimary(plan *Plan, t Transport) error {
 		}
 	}
 	return fmt.Errorf(
-		"%s: no Patroni primary after %s, so no app database was created and no app stack was started. Last answer from %s:\n%s\nRead `docker compose -f /srv/infra/compose.yaml logs patroni` on the host, then apply again: it resumes here",
+		"%s: no Patroni primary after %s, so no app database was created and no app stack was started. Last answer from %s:\n%s\nRead `docker compose -f /srv/infra/compose.yaml logs patroni` on the host; \"waiting on etcd\" on a new deployment means a member of etcd.members has not been applied yet. Then apply again: it resumes here",
 		plan.Site, primaryWait, plan.Bootstrap.Patroni, last)
 }
 
@@ -256,6 +261,11 @@ func quoteLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''
 // skips, saying which site does the work; anything else that goes wrong stops
 // the apply before any app stack is started.
 func runBootstrap(plan *Plan, t Transport) error {
+	if waiting := plan.Bootstrap.EtcdUnstarted; len(waiting) > 0 {
+		return fmt.Errorf(
+			"%s: the infrastructure stack is up, and etcd is waiting on %s: a new etcd cluster settles its version only once every founding member runs, and Patroni takes no leader key before that. No app database was created and no app stack was started. Apply %s, then apply this site again: it resumes here",
+			plan.Site, strings.Join(waiting, ", "), strings.Join(waiting, ", then "))
+	}
 	if err := waitForPrimary(plan, t); err != nil {
 		if replica, ok := err.(errReplica); ok {
 			plan.say("  %-9s skipped: Patroni here is a replica, and %s holds the leader. Apply %s to create app roles and databases\n",

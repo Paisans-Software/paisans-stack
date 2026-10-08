@@ -1116,6 +1116,43 @@ func TestNoPrimaryStopsTheApply(t *testing.T) {
 	}
 }
 
+// A founding apply while another founding etcd member has not started stops
+// after the infrastructure stack, at once, rather than polling for a primary
+// that cannot appear, and names the site to apply next. The next apply, once
+// that site is up, resumes and finishes.
+func TestAFoundingApplyStopsWhileAMemberHasNotStarted(t *testing.T) {
+	noWait(t)
+	host := newHost()
+	p := bootstrapPlan(t, host)
+	p.Bootstrap.EtcdUnstarted = []string{"home-b"}
+	err := apply.Execute(p, host)
+	if err == nil {
+		t.Fatal("apps were started while a founding etcd member had not started")
+	}
+	for _, want := range []string{"waiting on home-b", "Apply home-b, then apply this site again"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not say %q:\n%v", want, err)
+		}
+	}
+	if host.ran(":8008/cluster") {
+		t.Error("polled for a primary that cannot appear yet")
+	}
+	if !host.ran("/srv/infra/compose.yaml up -d") {
+		t.Error("the infrastructure stack was not brought up, so this site's etcd never joins")
+	}
+	if host.ran("psql") || host.ran("/srv/talk/compose.yaml up -d") {
+		t.Errorf("work went on past the gate: %v", host.commands)
+	}
+
+	again := bootstrapPlan(t, host)
+	if err := apply.Execute(again, host); err != nil {
+		t.Fatal(err)
+	}
+	if !host.ran("psql") || !host.ran("/srv/talk/compose.yaml up -d") {
+		t.Error("the resumed apply did not finish")
+	}
+}
+
 // A replica leaves the work to the leader's site and says so. Its apps still
 // start: they reach the leader through HAProxy, and creating roles there from
 // a replica is not something Postgres allows.

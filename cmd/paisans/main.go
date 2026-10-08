@@ -454,7 +454,6 @@ func runApply(args []string) error {
 		return err
 	}
 	plan.Progress = os.Stdout
-	printPlan(plan)
 
 	// A site running etcd, or configured to, is checked against the live
 	// membership. Only this site is asked unless it is a configured member,
@@ -467,6 +466,29 @@ func runApply(args []string) error {
 			}
 		}
 	}
+
+	// A member being founded is the one case where the order sites are
+	// applied in matters: the witness first, and no wait for a primary while
+	// another founding member has not started. See apply.WitnessFirstRefusal.
+	founding := false
+	var running map[string]bool
+	if contains(cfg.Etcd.Members, *site) {
+		_, recorded, err := apply.ReadEtcdInitial(transport)
+		if err != nil {
+			return err
+		}
+		founding = !recorded
+	}
+	if founding {
+		if running, err = apply.EtcdRunning(cfg, transports); err != nil {
+			return err
+		}
+		if plan.Bootstrap != nil {
+			plan.Bootstrap.EtcdUnstarted = apply.FoundingUnstarted(cfg, *site, running)
+		}
+	}
+	printPlan(plan)
+
 	members, found, err := apply.ProbeEtcdMembers(cfg, *site, transports)
 	if err != nil {
 		return err
@@ -475,6 +497,9 @@ func runApply(args []string) error {
 		if err := apply.EtcdRefusal(cfg, plan, members); err != nil {
 			return err
 		}
+	}
+	if err := apply.WitnessFirstRefusal(cfg, plan, founding, running); err != nil {
+		return err
 	}
 
 	if !*execute {
@@ -893,6 +918,11 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 // printBootstrap shows the database work where it happens: after the
 // infrastructure stack and before any app stack.
 func printBootstrap(b *apply.Bootstrap) {
+	if len(b.EtcdUnstarted) > 0 {
+		fmt.Fprintf(os.Stdout, "  %-9s after the infrastructure stack: etcd is being founded and %s runs no etcd yet, so no primary can appear. Apply %s, then this site again\n",
+			"stop", strings.Join(b.EtcdUnstarted, ", "), strings.Join(b.EtcdUnstarted, ", then "))
+		return
+	}
 	fmt.Fprintf(os.Stdout, "  %-9s for a Patroni primary at %s, up to 3 minutes; a replica leaves the rest to the leader's site\n", "wait", b.Patroni)
 	for _, db := range b.Databases {
 		fmt.Fprintf(os.Stdout, "  %-9s database %s: role %s with its password, database owned by it, creating only what is missing\n", "bootstrap", db.App, db.Role)
