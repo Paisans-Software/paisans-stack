@@ -130,6 +130,8 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 			add(owner+" members instance", "tcp", addr, gateMembersPort)
 		case config.KindSynapse:
 			add(owner+" MAS", "tcp", addr, masPort)
+		case config.KindPocketID:
+			add(owner+" admin guard", "tcp", addr, guardPort)
 		}
 	}
 	return out

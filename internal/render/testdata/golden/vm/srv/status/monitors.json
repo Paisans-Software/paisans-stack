@@ -29,6 +29,18 @@
       "failure_threshold": 2
     },
     {
+      "name": "auth — admin guard (home-a)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.1:1412/healthz",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200",
+      "follow_redirects": false,
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
       "name": "auth — direct (home-b)",
       "monitor_type": "active",
       "url": "http://10.44.0.2:1411/healthz",
@@ -40,6 +52,18 @@
         "Host": "id.example.org",
         "X-Forwarded-Proto": "https"
       },
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "auth — admin guard (home-b)",
+      "monitor_type": "active",
+      "url": "http://10.44.0.2:1412/healthz",
+      "method": "GET",
+      "check_type": "status",
+      "expected_status": "200",
+      "follow_redirects": false,
       "interval_seconds": 60,
       "timeout_ms": 10000,
       "failure_threshold": 2

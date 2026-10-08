@@ -44,6 +44,9 @@ var ImageVolumes = map[string][]string{
 	"ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea": nil,
 	"quay.io/oauth2-proxy/oauth2-proxy:v7.15.4":    nil,
 	"ghcr.io/paisans-software/uptime:1.1.0-oidc.3": {"/data"},
+	// Declares none: cmd/admin-guard/Dockerfile has no VOLUME, checked with
+	// `docker image inspect` on a local build on 2026-10-08.
+	"ghcr.io/paisans-software/admin-guard:0.1.0": nil,
 	// A pinned app's own database, one per postgres_version the toolkit
 	// knows. The path moved in 18; see PostgresDataMount.
 	"postgres:16-alpine": {"/var/lib/postgresql/data"},

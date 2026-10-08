@@ -234,3 +234,32 @@ func TestTheEdgeRefusesTheTokenAPIButNotTheUIsOwnJSON(t *testing.T) {
 		t.Errorf("the edge refuses the UI's own /api/sites JSON: %q", matcher)
 	}
 }
+
+// Every site Pocket ID runs on gets a check on its admin guard, straight to
+// the guard's port on the mesh, and nothing public: the gateway does not
+// route the guard.
+func TestEveryPocketIDSiteHasAnAdminGuardCheck(t *testing.T) {
+	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+	monitors := byName(renderSeed(t, cfg, secrets))
+	sites := render.AppSites(cfg)["auth"]
+	if len(sites) == 0 {
+		t.Fatal("the fixture runs Pocket ID nowhere")
+	}
+	for _, site := range sites {
+		m := monitors["auth — admin guard ("+site+")"]
+		if m == nil {
+			t.Fatalf("no admin guard check on %s", site)
+		}
+		if want := "http://" + cfg.Sites[site].Address + ":1412/healthz"; m["url"] != want || m["expected_status"] != "200" {
+			t.Errorf("%s: url %v expects %v, want %s expecting 200", site, m["url"], m["expected_status"], want)
+		}
+		if _, ok := m["request_headers"]; ok {
+			t.Errorf("%s: the guard needs no Host header: %v", site, m["request_headers"])
+		}
+	}
+	for name := range monitors {
+		if strings.Contains(name, "admin guard") && !strings.HasPrefix(name, "auth — admin guard (") {
+			t.Errorf("an admin guard check for something other than Pocket ID: %s", name)
+		}
+	}
+}

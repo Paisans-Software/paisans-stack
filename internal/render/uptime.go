@@ -81,6 +81,17 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 				RequestHeaders:  map[string]string{"Host": app.Hostname, "X-Forwarded-Proto": "https"},
 				IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
 			})
+			if app.Kind == config.KindPocketID {
+				// The admin guard beside each instance: 503 while admins
+				// has fewer than two members (docs/specs/2026-10-08-admin-guard.md).
+				// The gateway does not route it, so there is no public check.
+				monitors = append(monitors, seedMonitor{
+					Name: fmt.Sprintf("%s — admin guard (%s)", name, site), MonitorType: "active", Method: "GET", CheckType: "status",
+					URL:            fmt.Sprintf("http://%s:%d/healthz", p.sites[site].Address, guardPort),
+					ExpectedStatus: "200", FollowRedirects: &noRedirects,
+					IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
+				})
+			}
 		}
 	}
 	for _, site := range p.order {

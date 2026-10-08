@@ -104,12 +104,17 @@ func startStandbyBox(t *testing.T, label string, env ...string) *standbyBox {
 		t.Fatal(err)
 	}
 	os.Chmod(fake, 0o777)
+	// The directory the wrapper mirrors its marker into for the admin guard.
+	if err := os.Mkdir(filepath.Join(dir, "run"), 0o777); err != nil {
+		t.Fatal(err)
+	}
 
 	box := &standbyBox{t: t, name: fmt.Sprintf("paisans-standby-%s-%d", label, time.Now().UnixNano()), dir: dir}
 	args := []string{"run", "-d", "--name", box.name, "--platform", "linux/amd64",
 		"-v", dir + "/paisans-standby.sh:/paisans/pocket-id-standby.sh:ro",
 		"-v", dir + "/pocket-id:/app/pocket-id:ro",
 		"-v", fake + ":/fake",
+		"-v", dir + "/run:/paisans/run",
 		"--entrypoint", "/bin/sh",
 		"--health-cmd", "[ -f /tmp/paisans-standby ] || /app/pocket-id healthcheck",
 		"--health-interval", "1s", "--health-retries", "3", "--health-timeout", "5s",
@@ -209,7 +214,14 @@ func TestStandbyWrapperIsHealthyOnStandbyAndStopsPromptly(t *testing.T) {
 	b := startStandbyBox(t, "standby", "FAKE_MODE=refuse", "FAKE_REFUSALS=100000", "PAISANS_STANDBY_RETRY=600")
 	b.waitFor("in standby", 60*time.Second, b.inStandby)
 	b.waitFor("healthy in standby", 30*time.Second, func() bool { return b.inspect("{{.State.Health.Status}}") == "healthy" })
+	shared := filepath.Join(b.dir, "run", "standby")
+	if _, err := os.Stat(shared); err != nil {
+		t.Errorf("in standby, but the marker the admin guard reads is missing: %v", err)
+	}
 	took := b.stop()
+	if _, err := os.Stat(shared); err == nil {
+		t.Errorf("the guard's marker outlived the stop")
+	}
 	if took > 10*time.Second {
 		t.Errorf("docker stop took %s; the retry wait was not interrupted", took)
 	}
@@ -295,6 +307,7 @@ func TestStandbyWrapperWithTwoRealInstances(t *testing.T) {
 			"-e", "FILE_BACKEND=database",
 			"-e", "PAISANS_STANDBY_RETRY=3",
 			"-v", dir+"/paisans-standby.sh:/paisans/pocket-id-standby.sh:ro",
+			"-v", runDir(t, dir, name)+":/paisans/run",
 			"--entrypoint", "/bin/sh",
 			"--health-cmd", "[ -f /tmp/paisans-standby ] || /app/pocket-id healthcheck",
 			"--health-interval", "2s", "--health-retries", "3", "--health-timeout", "5s",
@@ -324,4 +337,16 @@ func TestStandbyWrapperWithTwoRealInstances(t *testing.T) {
 	handover := time.Now()
 	b.waitFor("the standby taking over", time.Minute, serving(b))
 	t.Logf("stop of the active instance took %s; the standby served %s later", took, time.Since(handover).Round(time.Second))
+}
+
+// runDir is one instance's own directory for the guard's marker: two
+// instances in this test stand in for two sites, which never share one.
+func runDir(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, "run-"+name)
+	if err := os.MkdirAll(path, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(path, 0o777)
+	return path
 }

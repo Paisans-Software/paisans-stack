@@ -15,6 +15,11 @@
 # waits $PAISANS_STANDBY_RETRY seconds and tries again. Any other exit is
 # passed on, so Docker's restart policy and apply's gate see it as before.
 #
+# The same marker is written to /paisans/run/standby, a directory the admin
+# guard beside this container mounts read only, so the guard can tell a
+# standby from a Pocket ID that is down. It is removed whenever an attempt
+# starts and whenever this script exits.
+#
 # A stop is forwarded to the child as SIGTERM, so an active instance shuts
 # down cleanly and deregisters, and a standby elsewhere takes over within one
 # retry instead of after the 90 s an unclean stop leaves its registration to
@@ -26,6 +31,7 @@
 set -u
 
 state=/tmp/paisans-standby
+shared=/paisans/run/standby
 fifo=/tmp/paisans-standby.fifo
 kept=/tmp/paisans-standby.tail
 marker='already one instance of Pocket ID running'
@@ -33,6 +39,13 @@ retry="${PAISANS_STANDBY_RETRY:-15}"
 
 child=
 stopping=
+
+# finish removes the shared marker, which outlives the container on the host,
+# and exits.
+finish() {
+	rm -f "$shared"
+	exit "$1"
+}
 
 stop() {
 	stopping=1
@@ -57,8 +70,8 @@ reap() {
 }
 
 while :; do
-	rm -f "$state" "$fifo" "$kept"
-	mkfifo "$fifo" || exit 1
+	rm -f "$state" "$shared" "$fifo" "$kept"
+	mkfifo "$fifo" || finish 1
 	# Every line goes straight to the container's log; only the last 50 are
 	# held, in a ring, and written to $kept when the child closes its output.
 	awk -v kept="$kept" '
@@ -82,19 +95,20 @@ while :; do
 	rm -f "$fifo"
 
 	if [ "$status" -eq 0 ] || [ -n "$stopping" ]; then
-		exit "$status"
+		finish "$status"
 	fi
 	if ! grep -qF -e "$marker" "$kept" 2>/dev/null; then
-		exit "$status"
+		finish "$status"
 	fi
 
 	: > "$state"
+	: > "$shared"
 	echo "paisans-standby: another Pocket ID instance is active on this database; standing by, next attempt in ${retry}s"
 	sleep "$retry" &
 	child=$!
 	reap "$child"
 	child=
 	if [ -n "$stopping" ]; then
-		exit 0
+		finish 0
 	fi
 done

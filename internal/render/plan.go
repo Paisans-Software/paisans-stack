@@ -59,6 +59,12 @@ func AppPort(kind config.Kind) int { return appPort[kind] }
 // name.
 const gateMembersPort = 4181
 
+// guardPort is the pocket-id kind's admin guard, which publishes /healthz on
+// the mesh address for the uptime monitor. A literal, like gateMembersPort:
+// the guard's own binary and the kind's compose template name the same
+// number.
+const guardPort = 1412
+
 // masPort is where Matrix Authentication Service listens, one port above the
 // homeserver's 8008. MAS's own documented example binds 8080, and that is not
 // used here: 8080 is already the port two other kinds in this toolkit publish,
