@@ -248,8 +248,8 @@ func TestDoctorSiteNarrowsTheHostsReached(t *testing.T) {
 
 // The leftovers check: on the gateway, a stack of this deployment the
 // configuration no longer renders is a warning, a site block in the host's
-// own directory and a foreign container on Caddy's network are info, and
-// every command it sent is a read.
+// own directory is info, a foreign container is not reported, and every
+// command it sent is a read.
 func TestDoctorReportsLeftoversAndForeignCaddyUsers(t *testing.T) {
 	cfg, err := config.Load(fixtureConfig())
 	if err != nil {
@@ -294,13 +294,15 @@ func TestDoctorReportsLeftoversAndForeignCaddyUsers(t *testing.T) {
 		"stack old (compose project paisans-f2a9-old, 1 of 1 running): paisans-f2a9-old-app-1",
 		"apply leaves them in place.",
 		"`paisans app remove old` takes old's off every site, once a whole apply has run on each; it keeps its data unless given --delete-data.",
-		"info  vm: 2 foreign thing(s) rely on this deployment's Caddy",
+		"info  vm: 1 foreign thing(s) rely on this deployment's Caddy",
 		"site block /srv/caddy.d/blog.caddy, served by this deployment's Caddy",
-		"container blog-ghost-1, on network web with this deployment's Caddy",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "blog-ghost-1") {
+		t.Errorf("a foreign container is reported:\n%s", out)
 	}
 	exact, prefixes := readOnly(cfg)
 	for _, s := range sent {

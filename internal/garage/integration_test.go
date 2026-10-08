@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -46,12 +47,25 @@ type dockerTransport struct {
 	container string
 }
 
+// fixtureID is the fixture deployment's id. Every plan in this file is
+// built for it, so garageCommand, Command for that deployment, is the
+// prefix Run strips.
+var fixtureID = func() string {
+	cfg, err := config.Load(filepath.Join("..", "render", "testdata", "deployment.yaml"))
+	if err != nil {
+		panic(fmt.Sprintf("loading the fixture configuration: %v", err))
+	}
+	return cfg.ID
+}()
+
+var garageCommand = Command(deployment.Deployment{ID: fixtureID})
+
 func (d dockerTransport) Describe() string { return "container " + d.container }
 
 func (d dockerTransport) Run(command string) (string, error) {
-	rest := strings.TrimPrefix(command, Command)
+	rest := strings.TrimPrefix(command, garageCommand)
 	if rest == command {
-		return "", fmt.Errorf("command %q does not start with the expected prefix %q", command, Command)
+		return "", fmt.Errorf("command %q does not start with the expected prefix %q", command, garageCommand)
 	}
 	args := append([]string{"exec", d.container, "/garage"}, strings.Fields(rest)...)
 	out, err := exec.Command("docker", args...).CombinedOutput()
@@ -176,6 +190,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 	docsSecret := hexString(t, 64)
 
 	cfg := &config.Config{
+		ID: fixtureID,
 		Storage: config.Storage{
 			Garage: config.Garage{
 				Sites:    []string{site},
@@ -226,7 +241,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 	// ID Garage actually holds, read back from Garage rather than compared
 	// against the toolkit's own record of what it sent.
 	for name, keyID := range map[string]string{"talk": talkKeyID, "docs": docsKeyID} {
-		out, err := transport.Run(Command + " key info " + keyID)
+		out, err := transport.Run(garageCommand + " key info " + keyID)
 		if err != nil {
 			t.Fatalf("reading back %s's key %s from Garage: %v\n%s", name, keyID, err, out)
 		}
@@ -240,7 +255,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 
 	// Both buckets exist.
 	for _, bucket := range []string{"talk-uploads", "docs-uploads"} {
-		out, err := transport.Run(Command + " bucket info " + bucket)
+		out, err := transport.Run(garageCommand + " bucket info " + bucket)
 		if err != nil {
 			t.Fatalf("reading back bucket %s from Garage: %v\n%s", bucket, err, out)
 		}
@@ -251,7 +266,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 
 	// One key per app is the whole point of this design: a key is allowed on
 	// its own bucket and not on the other app's. Prove both directions.
-	talkBucket, err := transport.Run(Command + " bucket info talk-uploads")
+	talkBucket, err := transport.Run(garageCommand + " bucket info talk-uploads")
 	if err != nil {
 		t.Fatalf("reading talk-uploads: %v", err)
 	}
@@ -262,7 +277,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 		t.Errorf("docs's key %s must not be allowed on talk-uploads, got:\n%s", docsKeyID, talkBucket)
 	}
 
-	docsBucket, err := transport.Run(Command + " bucket info docs-uploads")
+	docsBucket, err := transport.Run(garageCommand + " bucket info docs-uploads")
 	if err != nil {
 		t.Fatalf("reading docs-uploads: %v", err)
 	}
@@ -276,7 +291,7 @@ func TestRealGarageIsProvisionedAndIsIdempotent(t *testing.T) {
 	// The same cross check from the key's own point of view: `key info`
 	// lists the buckets a key is authorized on, and it should be exactly the
 	// one bucket that belongs to it.
-	talkKeyInfo, err := transport.Run(Command + " key info " + talkKeyID)
+	talkKeyInfo, err := transport.Run(garageCommand + " key info " + talkKeyID)
 	if err != nil {
 		t.Fatalf("reading talk's key info: %v", err)
 	}
@@ -639,17 +654,17 @@ func startMediaCluster(t *testing.T) *mediaCluster {
 	// routing, not the join.
 	first := cluster.Nodes[garageNodes[0].Site]
 	for _, node := range garageNodes[1:] {
-		idOut, err := cluster.Nodes[node.Site].Run(Command + " node id -q")
+		idOut, err := cluster.Nodes[node.Site].Run(garageCommand + " node id -q")
 		if err != nil {
 			t.Fatalf("reading %s's node ID: %v\n%s", node.Site, err, idOut)
 		}
-		if out, err := first.Run(Command + " node connect " + strings.TrimSpace(idOut)); err != nil {
+		if out, err := first.Run(garageCommand + " node connect " + strings.TrimSpace(idOut)); err != nil {
 			t.Fatalf("joining %s to the cluster: %v\n%s", node.Site, err, out)
 		}
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		out, err := first.Run(Command + " status")
+		out, err := first.Run(garageCommand + " status")
 		if err == nil && strings.Count(out, ":3901") >= len(garageNodes) {
 			break
 		}
@@ -720,7 +735,7 @@ func (c *mediaCluster) provision(t *testing.T, cfg *config.Config, secrets *conf
 	t.Helper()
 	first := c.Nodes[garageNodes[0].Site]
 	for _, node := range garageNodes {
-		idOut, err := c.Nodes[node.Site].Run(Command + " node id -q")
+		idOut, err := c.Nodes[node.Site].Run(garageCommand + " node id -q")
 		if err != nil {
 			t.Fatalf("reading %s's node ID: %v\n%s", node.Site, err, idOut)
 		}
@@ -728,11 +743,11 @@ func (c *mediaCluster) provision(t *testing.T, cfg *config.Config, secrets *conf
 		if at := strings.Index(id, "@"); at >= 0 {
 			id = id[:at]
 		}
-		if out, err := first.Run(Command + " layout assign -z " + node.Site + " -c 1G " + id); err != nil {
+		if out, err := first.Run(garageCommand + " layout assign -z " + node.Site + " -c 1G " + id); err != nil {
 			t.Fatalf("assigning %s a role: %v\n%s", node.Site, err, out)
 		}
 	}
-	if out, err := first.Run(Command + " layout apply --version 1"); err != nil {
+	if out, err := first.Run(garageCommand + " layout apply --version 1"); err != nil {
 		t.Fatalf("applying the layout: %v\n%s", err, out)
 	}
 	plan, err := Build(garageNodes[0].Site, cfg, secrets, first)
@@ -927,7 +942,7 @@ func throughGateway(t *testing.T, cluster *mediaCluster, host, path, rawQuery st
 // bucketWebsiteAccess reads one bucket's website flag back out of Garage.
 func bucketWebsiteAccess(t *testing.T, node dockerTransport, bucket string) string {
 	t.Helper()
-	out, err := node.Run(Command + " bucket info " + bucket)
+	out, err := node.Run(garageCommand + " bucket info " + bucket)
 	if err != nil {
 		t.Fatalf("reading bucket %s: %v\n%s", bucket, err, out)
 	}

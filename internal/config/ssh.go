@@ -34,11 +34,6 @@ type SSH struct {
 	// declared records that the key was present at all, so a missing
 	// section and an empty one get different messages.
 	declared bool
-	// legacy is the retired `ssh: <destination>` string, kept only so the
-	// refusal can show it beside the section that replaces it.
-	legacy string
-	// legacyLine is where the string was, for the same message.
-	legacyLine int
 }
 
 // DefaultSSHPort is the port used when a site's ssh section names none.
@@ -46,25 +41,17 @@ const DefaultSSHPort = 22
 
 var sshKeys = map[string]bool{"host": true, "user": true, "port": true, "public_key": true}
 
-// UnmarshalYAML reads the section, and reads the old string form only in order
-// to refuse it. Founder decision: the string form is dropped, not kept as a
-// shorthand, so there is one way to write a site's access.
+// UnmarshalYAML reads the section. There is one way to write a site's
+// access, so anything other than a section is refused.
 //
 // yaml.v3 does not carry KnownFields into a custom unmarshaller, so unknown
 // keys are checked here by hand: a misspelt `public_keys` that silently
 // authorised nobody would be found out only when the toolkit removed a key.
 func (s *SSH) UnmarshalYAML(node *yaml.Node) error {
-	switch node.Kind {
-	case yaml.ScalarNode:
-		if node.Tag == "!!null" {
-			return nil
-		}
-		s.declared = true
-		s.legacy = node.Value
-		s.legacyLine = node.Line
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
 		return nil
-	case yaml.MappingNode:
-	default:
+	}
+	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("line %d: ssh must be a section with host, user, port and public_key", node.Line)
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
@@ -201,17 +188,6 @@ func sshProblems(name string, site Site) []string {
 	add := func(format string, args ...any) {
 		problems = append(problems, fmt.Sprintf(format, args...))
 	}
-	if s.legacy != "" {
-		add("sites.%s.ssh: %q is the old destination form (line %d), which is no longer read. Declare a section instead:\n"+
-			"      ssh:\n"+
-			"        host: %s   # optional when public_address is set\n"+
-			"        user: <login user>\n"+
-			"        port: 22   # optional\n"+
-			"        public_key: |\n"+
-			"          ssh-ed25519 AAAA... you@example.org",
-			name, s.legacy, s.legacyLine, legacyHost(s.legacy))
-		return problems
-	}
 	if !s.declared {
 		add("sites.%s.ssh: required. Give the section with at least user and public_key: it is how the toolkit reaches the site and who may log in to it.", name)
 		return problems
@@ -239,12 +215,4 @@ func sshProblems(name string, site Site) []string {
 		add("sites.%s.ssh.public_key: required. List at least one public key, one per line; host prepare makes these the user's authorized keys.", name)
 	}
 	return problems
-}
-
-// legacyHost is the host part of an old destination, for the example.
-func legacyHost(destination string) string {
-	if _, host, ok := strings.Cut(destination, "@"); ok {
-		return host
-	}
-	return destination
 }
