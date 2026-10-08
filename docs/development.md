@@ -17,8 +17,8 @@ validate, init and render touch nothing outside the working directory.
 `host prepare`, `apply`, `prune`, `site add`, `storage init`, `storage add`,
 `storage rotate-key`, `app admin create` and `oidc client create` reach a
 machine, and each changes
-it only with `--execute`. `preflight`
-reaches every site and never changes one; `failover test` changes which site
+it only with `--execute`. `preflight` and `doctor`
+reach every site and never change one; `failover test` changes which site
 is primary, only with `--execute`. `dns init` and `dns prune` reach no
 machine, only the DNS provider's API, and change it only with `--execute`.
 
@@ -35,6 +35,7 @@ paisans preflight --site home-b           # site add's read only checks
 paisans storage add                       # every Garage stage, from live state
 paisans storage rotate-key --app talk     # replaces one app's S3 key, staged
 paisans failover test                     # checks, and prints the plan
+paisans doctor                            # what is stuck, and how to recover
 paisans dns init                          # shows which records it would create
 paisans dns prune                         # shows which records it would delete
 security find-generic-password -s acme -w \
@@ -120,6 +121,16 @@ prints both switchover commands and the expected write interruption. Each
 switch is gated on the new leader, the old one streaming, and every app stack
 healthy and answering through the gateway, polled for three minutes. See
 *`failover test`: a switchover on purpose* in `README.md`.
+
+`doctor` reaches every site, or the ones `--site` names, and reports what is
+stuck with how to recover: sites that do not answer and what is lost while
+they are gone, etcd quorum and cluster version, the Patroni leader or why no
+replica promotes, containers that are down, Pocket ID's active instance, and
+clock drift. It has no `--execute` and sends only reads, which its command
+level test checks against an allow list. The judgements are pure functions in
+`internal/doctor`, tested with what live hosts answered; `cmd/paisans` runs the
+commands. It exits 1 on any `FAIL`. See *`paisans doctor` reports what is
+stuck and how to recover* in `README.md`.
 
 `render` and `apply` refuse a gateway site when `external.acme_dns_token` is
 empty. `init` lists it as owed, but rendering without it produced a Caddy that
@@ -651,6 +662,7 @@ installed, on a workstation or anywhere else.
 | `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
 | `internal/preflight` | `site add`'s first stage: read only checks on the new site and every running one, as a report |
 | `internal/failover` | `failover test`: its checks, the switchover and its gates |
+| `internal/doctor` | `doctor`: the read commands it sends, and the findings and recovery advice made from their answers |
 | `internal/patroni` | reading a Patroni cluster through the Spilo container: `/cluster`, the leader, lag, database size |
 | `internal/hostprep` | taking a blank host to what `apply` assumes; one profile per operating system, its shell under `profiles/<id>-<version>/` |
 | `internal/render/templates` | the infrastructure templates, plus one directory per kind |

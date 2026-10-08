@@ -31,12 +31,14 @@ func ClusterCommand(api string) string {
 // replication state for a member that is not the leader (streaming) and
 // Postgres's state otherwise (running); lag is a byte count, or the string
 // "unknown" when the member reported no position, and is absent for the
-// leader.
+// leader. timeline is the member's Postgres timeline, which a promotion
+// increments.
 type Member struct {
-	Name  string          `json:"name"`
-	Role  string          `json:"role"`
-	State string          `json:"state"`
-	Lag   json.RawMessage `json:"lag"`
+	Name     string          `json:"name"`
+	Role     string          `json:"role"`
+	State    string          `json:"state"`
+	Lag      json.RawMessage `json:"lag"`
+	Timeline int             `json:"timeline"`
 }
 
 // LagBytes is the member's replication lag in bytes, and false when Patroni

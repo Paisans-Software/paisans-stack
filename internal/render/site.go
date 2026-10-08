@@ -783,7 +783,7 @@ func (p *planner) etcdClientHosts() string {
 }
 
 func (p *planner) scope() string {
-	return "paisans"
+	return PatroniScope
 }
 
 func (p *planner) postgresVersion() string {

@@ -3289,6 +3289,133 @@ to the primary. The plan lists each app restart after each switch, a further
 few seconds per app. The apps are restarted because some never reconnect on
 their own, and their healthchecks do not notice.
 
+### `paisans doctor` reports what is stuck and how to recover
+
+An outage is the worst time to remember which container to look at, which etcd
+key holds the answer, or which Patroni log line means what.
+`paisans doctor` reaches every declared site, or only those named with
+`--site` (repeatable), reads its state, and prints one line per finding,
+`ok`, `skip`, `WARN` or `FAIL`, with what happened and how to recover under
+each one that is not `ok`. It exits 1 when any finding is `FAIL`, so a script
+or a monitor can tell a healthy deployment from one that needs a human.
+
+It **changes nothing**, and it has no `--execute`. Every command it sends is a
+read: a list, a status, a key, a log tail. The recoveries it describes are
+printed for a human to run, because doctor is run in the middle of an outage
+and the one recovery that touches member data, a forced failover, loses
+commits. Which commits a community keeps is a human's decision.
+
+A site that does not answer is itself a finding, never a crash: every other
+check runs with the sites that did. Each ssh attempt gives up after ten
+seconds (`ConnectTimeout`), so a host that is switched off costs seconds
+rather than the operating system's connect timeout three times over. Like
+`preflight` it takes no `--ssh`, since one override cannot name several hosts,
+and it runs its commands through sudo unless told `--sudo=false`.
+
+The checks, in the order they are printed, from the bottom of the stack up so
+that the first `FAIL` is usually the cause of those after it:
+
+| Check | How | FAIL when |
+|---|---|---|
+| Reach | `true` over ssh, on every site asked | the site does not answer, or sudo cannot be used. The finding says what the deployment is without while it is gone: the gateway, an etcd vote, a Patroni member, a Garage node, its copy of each clustered app, the apps pinned to it |
+| etcd quorum | `etcdctl endpoint health -w json` in the etcd container of the first member that answers, naming every member of `etcd.members` by its mesh address | fewer than half the members plus one are healthy. One member down with quorum intact is a `WARN` |
+| etcd version | `curl` on the host to `http://127.0.0.1:2379/version`; skipped, and said so, where the host has no `curl` | the cluster version is `3.0.0` under a 3.5 server |
+| Patroni | `/cluster` from every database site's Patroni, through `curl` in its container as `apply` asks it, and Patroni's `/sync` key from etcd | there is no running leader. A replica that is not `streaming`, or more than 16 MiB behind, is a `WARN`, and so is a leader with no Sync Standby while `cluster.synchronous` is true |
+| Containers | `docker ps -a --filter name=paisans-` on every site, then `docker inspect` and the end of `docker logs` for each container not running | any container is not running |
+| Pocket ID | the same question `apply` asks after acting on a Pocket ID stack on more than one site, asked once | no site, or more than one, has an active instance |
+| Clocks | `date +%s.%N` on each site, against the workstation's clock taken on either side of the call, less half the round trip | never; more than 1 s off is a `WARN` |
+
+The health check names each member rather than using `--cluster`, because
+`--cluster` first asks the cluster for its member list (etcd v3.5.16,
+`etcdctl/ctlv3/command/ep_command.go`, `endpointsFromCluster`), and that call
+fails without quorum, which is when the check matters. Without quorum Patroni
+cannot renew its leader key and the primary demotes itself (Patroni v4.1.0,
+`patroni/ha.py`, `_handle_dcs_error`), so the advice is to start the members
+that are not healthy. `/sync` is read with `--consistency=s`, from the
+answering member's own copy, for the same reason.
+
+The version check catches a founding member that never ran. A new etcd
+cluster decides its version only from every member's version
+(`decideClusterVersion` in `server/etcdserver/cluster_util.go`, etcd v3.5.16,
+returns nothing while any is unknown), and until then reports the minimum,
+`3.0.0`. Patroni reads that and falls back to the `/v3alpha` API
+(`patroni/dcs/etcd3.py`), which etcd 3.5 does not serve, so it waits on etcd
+forever and no primary appears. The advice is to apply the members not
+running; see *A new deployment is applied witness first*.
+
+A container that failed with `cannot assign requested address` started before
+`wg0` at boot: it publishes its port on the mesh address, which exists only
+once `wg-quick@wg0` is up, and Docker does not retry a container whose network
+setup failed. The advice is `paisans host prepare --site <site> --execute`,
+which orders Docker after `wg-quick@wg0` from the next boot on, then `docker
+start <container>` on the host or `paisans apply --site <site> --recreate
+<stack> --execute`. A container Docker keeps restarting while its log says it
+cannot reach the database points at the Patroni finding when there is no
+primary: it comes back on its own once there is one. When there is a primary,
+it is not waiting on Patroni, and the advice is to check the site's HAProxy and
+to recreate the stack with `paisans apply --site <site> --only <stack>
+--recreate <stack> --execute`. A log saying `network is unreachable` gets the
+same recreate whatever Patroni says: the container's own network has no route
+to the mesh address, which a container whose network setup failed at boot and
+was then started again was left with on a staging host, and restarting it does
+not rebuild that network. Any other shows its last three log lines.
+
+The clock threshold is etcd's: its peer prober logs "prober found high clock
+drift" past one second (etcd v3.5.16,
+`server/etcdserver/api/rafthttp/probing_status.go`), and etcd's leases and
+Patroni's leader key expire by time. The advice is to check time sync with
+`timedatectl`, and that a suspended VM's clock stops while it is paused. If
+every site is off by the same amount, the workstation is the one to check.
+
+#### A replica that will not promote
+
+The case doctor was written for: two data sites with `synchronous: true` and
+`synchronous_strict: false`. `home-b` leads with `home-a` as its Sync Standby.
+`home-a` goes down; `home-b` goes on committing alone, which is what
+`synchronous_strict: false` permits, and takes `home-a` out of `/sync`. Then
+`home-b` goes down too. `home-a` comes back, stays a replica, and logs
+"following a different leader because i am not the healthiest node".
+
+That is Patroni refusing to lose data. While synchronous mode is active, only
+a member `/sync` names may race for the leader lock (Patroni v4.1.0,
+`patroni/ha.py`, `is_healthiest_node`: `if not self.is_quorum_commit_mode()
+and not self.cluster.sync.matches(self.state_handler.name, True): return
+False`), because `home-a` may be missing every commit `home-b` made after
+`home-a` stopped being its standby.
+
+doctor reports it when `/sync` names a leader that is not in the cluster and
+none of the replicas left, with the replica's own log lines matching
+`healthiest`, `lag`, `timeline` or `lock` as evidence, and two recoveries in
+this order:
+
+1. **Start `home-b`.** When it returns it takes the leader lock again and
+   `home-a` catches up from it. No data is lost. This is the recovery to
+   choose whenever `home-b` can come back.
+2. **Only if `home-b` is lost for good**, promote `home-a` by hand, on
+   `home-a`:
+
+   ```
+   docker compose -f /srv/infra/compose.yaml exec patroni patronictl -c /home/postgres/postgres.yml failover --candidate home-a --force
+   ```
+
+   Patroni promotes the candidate a failover names even when `/sync` does not
+   name it (`manual_failover_process_no_leader` returns true for it), and
+   `--force` skips patronictl's "Are you sure you want to failover to the
+   asynchronous node" (`patroni/ctl.py`). It is printed with three warnings:
+   every commit `home-b` made after `home-a` stopped being its synchronous
+   standby is lost (sign ins, posts, the metadata of uploads); if `home-b`
+   returns later its data has diverged, and Patroni must rewind or
+   reinitialise it, which discards those commits for good; and it changes
+   member data, so it is a human's decision and never something to run
+   unattended.
+
+A cluster with no leader whose replica `/sync` does name, or with no `/sync`
+at all, gets the general diagnosis instead: a replica also holds back when it
+is further behind than `maximum_lag_on_failover` (`patroni/ha.py`,
+`is_lagging`), when its watchdog is unusable, or when etcd has no quorum. The
+advice is to start the members missing from the cluster, and any forced
+failover it mentions carries the same warnings.
+
 ## Moving the gateway
 
 A single site runs `roles: [data, apps, gateway]` — the same machine serving the

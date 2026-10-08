@@ -290,3 +290,12 @@ func DBIdentifier(name string) string { return dbIdentifier(name) }
 // PatroniAPIPort is where the rendered Patroni serves its REST API, on the
 // site's mesh address.
 const PatroniAPIPort = patroniAPIPort
+
+// PatroniScope is the Patroni cluster name every site renders as SCOPE.
+// Patroni keeps its state in etcd under /service/<scope>/ (Patroni v4.1.0,
+// patroni/dcs/__init__.py: the namespace defaults to "service"), and Spilo
+// passes Patroni a namespace only when NAMESPACE is set to something other
+// than "default" (zalando/spilo 4.1-p2, postgres-appliance/scripts/
+// configure_spilo.py), which the rendered patroni.env never sets. A command
+// that reads a key such as /sync names it with this.
+const PatroniScope = "paisans"

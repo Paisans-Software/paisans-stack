@@ -4,6 +4,7 @@
 // validate, init and render touch nothing outside the working directory.
 // `host prepare`, `apply` and `storage init` reach a machine: each reads it to
 // show what it would do, and changes nothing unless told to with --execute.
+// `doctor` reaches every site to report what is stuck and changes nothing.
 package main
 
 import (
@@ -50,6 +51,7 @@ Usage:
   paisans prune    --site <name> [--config paisans.yaml] [--ssh <destination>] [--execute]
   paisans preflight --site <new site> [--config paisans.yaml]
   paisans failover test [--config paisans.yaml] [--execute]
+  paisans doctor   [--config paisans.yaml] [--site <name>]... [--sudo]
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
   paisans dns prune [--config paisans.yaml] [--secrets secrets.enc.yaml] [--name <fqdn>]... [--execute]
   paisans secrets set <dotted.key> [--config paisans.yaml] [--secrets secrets.enc.yaml] < value
@@ -102,6 +104,11 @@ Commands:
              back, checking the cluster and every app before and after
              each switch. Interrupts writes briefly, twice. Changes
              nothing without --execute.
+  doctor     Reach every site, or the ones --site names, and report what is
+             stuck: unreachable sites, etcd quorum and version, the Patroni
+             leader and why a replica will not promote, containers that are
+             down, Pocket ID's active instance, and clocks. Prints how to
+             recover. Reaches hosts, changes nothing; exits 1 on any FAIL.
   dns        init: create the public DNS records the configuration implies,
              at the provider named by acme.provider. Creates only what is
              missing, never updates or deletes, and refuses if any record
@@ -127,9 +134,10 @@ Commands:
              Writes nothing without --execute. Mbin only, so far.
 
 host prepare, apply, prune, site add, storage init, storage add, storage
-rotate-key, app admin create, oidc client create, preflight and failover test
-are the only commands that reach a host.
-Each reads it to plan, and changes it only with --execute. dns init and dns
+rotate-key, app admin create, oidc client create, preflight, failover test and
+doctor are the only commands that reach a host.
+Each reads it to plan, and changes it only with --execute; preflight and doctor
+have no --execute and never change it. dns init and dns
 prune reach no host, only the DNS provider's API, and change it only with
 --execute.
 Everything else writes files locally and stops.
@@ -186,6 +194,8 @@ func main() {
 		err = runPreflight(os.Args[2:])
 	case "failover":
 		err = runFailover(os.Args[2:])
+	case "doctor":
+		err = runDoctor(os.Args[2:])
 	case "dns":
 		switch {
 		case len(os.Args) >= 3 && os.Args[2] == "init":
