@@ -20,7 +20,10 @@ import (
 type VolumePrune struct {
 	Site      string
 	Transport string
-	Volumes   []DanglingVolume
+	// Shared is the host check's finding that something besides the
+	// deployment runs on the host, which keeps every unlabelled volume.
+	Shared  bool
+	Volumes []DanglingVolume
 }
 
 // DanglingVolume is one volume no container uses.
@@ -50,7 +53,11 @@ func (p *VolumePrune) Removals() []DanglingVolume {
 // PruneHeader is printed above the plan. It says what the verdicts rest on,
 // because "anonymous and unused means ours" is an assumption about the host,
 // and an operator should read it before agreeing to it.
-const PruneHeader = "This host is taken to be dedicated to the deployment, as `host prepare` assumes, so an anonymous volume no container uses is one a paisans container left behind and is removed. A volume labelled by a compose project not named paisans-*, or one somebody named, belongs to something else and is kept."
+const PruneHeader = "The host check found nothing on this host but the deployment, so an anonymous volume no container uses is one a paisans container left behind and is removed. A volume labelled by a compose project not named paisans-*, or one somebody named, belongs to something else and is kept."
+
+// SharedPruneHeader is printed above the plan on a host the host check
+// found shared.
+const SharedPruneHeader = "The host check found services beside the deployment on this host, so only a volume a paisans-* compose project labelled is removed. An anonymous volume may be theirs as easily as a paisans container's leftover, so it is listed and kept; remove one yourself once you know whose it is."
 
 // danglingProbe lists every dangling volume with its size, labels and top
 // level entries, one tab separated line each, and ends with a marker so a
@@ -70,8 +77,9 @@ const anonymousLabel = "com.docker.volume.anonymous"
 var anonymousName = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // BuildVolumePrune reads a site's dangling volumes and decides each one. It
-// changes nothing.
-func BuildVolumePrune(site string, t Transport) (*VolumePrune, error) {
+// changes nothing. shared is the host check's finding, and keeps every
+// volume no paisans-* compose project labelled.
+func BuildVolumePrune(site string, t Transport, shared bool) (*VolumePrune, error) {
 	out, err := t.Run(danglingProbe)
 	if err != nil {
 		return nil, fmt.Errorf("%s: listing dangling volumes: %w\n%s", site, err, out)
@@ -79,7 +87,7 @@ func BuildVolumePrune(site string, t Transport) (*VolumePrune, error) {
 	if !strings.HasSuffix(strings.TrimSpace(out), "end") {
 		return nil, fmt.Errorf("%s: listing dangling volumes: the answer was cut short:\n%s", site, out)
 	}
-	p := &VolumePrune{Site: site, Transport: t.Describe()}
+	p := &VolumePrune{Site: site, Transport: t.Describe(), Shared: shared}
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Split(strings.TrimRight(line, "\r"), "\t")
 		if len(fields) < 4 || fields[0] != "volume" {
@@ -94,14 +102,15 @@ func BuildVolumePrune(site string, t Transport) (*VolumePrune, error) {
 		if len(fields) > 4 && strings.TrimSpace(fields[4]) != "" {
 			v.Entries = strings.Fields(fields[4])
 		}
-		v.Remove, v.Reason = pruneVerdict(v.Name, labels)
+		v.Remove, v.Reason = pruneVerdict(v.Name, labels, shared)
 		p.Volumes = append(p.Volumes, v)
 	}
 	return p, nil
 }
 
-// pruneVerdict decides one dangling volume from its name and labels.
-func pruneVerdict(name string, labels map[string]string) (bool, string) {
+// pruneVerdict decides one dangling volume from its name and labels, and
+// whether the host is shared.
+func pruneVerdict(name string, labels map[string]string, shared bool) (bool, string) {
 	if project, ok := labels[composeProject]; ok {
 		if strings.HasPrefix(project, "paisans-") {
 			return true, "left by compose project " + project + ", which is this deployment's"
@@ -109,6 +118,9 @@ func pruneVerdict(name string, labels map[string]string) (bool, string) {
 		return false, "labelled by compose project " + project + ", which is not this deployment's"
 	}
 	if _, ok := labels[anonymousLabel]; ok || anonymousName.MatchString(name) {
+		if shared {
+			return false, "anonymous and labelled by no compose project, on a shared host, where it may belong to something else"
+		}
 		return true, "anonymous and labelled by no compose project: a replaced container's leftover"
 	}
 	return false, "a named volume no compose project of this deployment created"

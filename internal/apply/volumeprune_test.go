@@ -58,7 +58,7 @@ func TestPruneDecidesEachDanglingVolume(t *testing.T) {
 		"volume\tother_db\t9999\t{\"com.docker.compose.project\":\"other\",\"com.docker.compose.volume\":\"db\"}\tpgdata",
 		"volume\tbackups\t1\t{}\tdump.sql",
 	)}
-	p, err := apply.BuildVolumePrune("home-a", host)
+	p, err := apply.BuildVolumePrune("home-a", host, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestPruneReportsAVolumeDockerWouldNotRemove(t *testing.T) {
 		listing: listing("volume\t"+leaked1+"\t1\tnull\t", "volume\t"+leaked2+"\t1\tnull\t"),
 		inUse:   map[string]bool{leaked1: true},
 	}
-	p, err := apply.BuildVolumePrune("home-a", host)
+	p, err := apply.BuildVolumePrune("home-a", host, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,45 @@ func TestPruneReportsAVolumeDockerWouldNotRemove(t *testing.T) {
 // shorter list.
 func TestPruneRefusesACutShortListing(t *testing.T) {
 	host := &volumeHost{listing: "volume\t" + leaked1 + "\t1\tnull\t\n"}
-	if _, err := apply.BuildVolumePrune("home-a", host); err == nil {
+	if _, err := apply.BuildVolumePrune("home-a", host, false); err == nil {
 		t.Error("a listing with no end marker was accepted")
+	}
+}
+
+// On a shared host only a volume a paisans-* compose project labelled is
+// removed. An anonymous one may be another project's leftover as easily as
+// a paisans container's, so it is listed and kept.
+func TestASharedHostPrunesOnlyLabelledVolumes(t *testing.T) {
+	host := &volumeHost{listing: listing(
+		"volume\t"+leaked1+"\t48234496\t{\"com.docker.volume.anonymous\":\"\"}\tcache log",
+		"volume\t"+oldName+"\t1024\tnull\t",
+		"volume\tpaisans-talk_data\t4096\t{\"com.docker.compose.project\":\"paisans-talk\",\"com.docker.compose.volume\":\"data\"}\tx",
+		"volume\tother_db\t9999\t{\"com.docker.compose.project\":\"other\"}\tpgdata",
+	)}
+	p, err := apply.BuildVolumePrune("home-a", host, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Shared {
+		t.Error("the plan does not say the host is shared")
+	}
+	if len(p.Volumes) != 4 {
+		t.Fatalf("listed %d volumes, want every dangling one: %+v", len(p.Volumes), p.Volumes)
+	}
+	for _, v := range p.Volumes {
+		if v.Remove != (v.Name == "paisans-talk_data") {
+			t.Errorf("%s: remove %v (%s)", v.Name, v.Remove, v.Reason)
+		}
+		if v.Name == leaked1 && !strings.Contains(v.Reason, "shared") {
+			t.Errorf("an anonymous volume kept without saying why: %s", v.Reason)
+		}
+	}
+	if err := apply.ExecuteVolumePrune(p, host); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range host.commands {
+		if strings.HasPrefix(c, "docker volume rm ") && c != "docker volume rm 'paisans-talk_data'" {
+			t.Errorf("a shared host's prune ran %s", c)
+		}
 	}
 }

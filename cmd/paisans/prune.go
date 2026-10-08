@@ -50,7 +50,7 @@ func runPrune(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
-	plan, err := apply.BuildVolumePrune(*site, transport)
+	plan, err := apply.BuildVolumePrune(*site, transport, false)
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,11 @@ func runPrune(args []string) error {
 
 func printVolumePrune(w io.Writer, plan *apply.VolumePrune) {
 	fmt.Fprintf(w, "%s (%s)\n", plan.Site, plan.Transport)
-	fmt.Fprintf(w, "  %s\n", apply.PruneHeader)
+	header := apply.PruneHeader
+	if plan.Shared {
+		header = apply.SharedPruneHeader
+	}
+	fmt.Fprintf(w, "  %s\n", header)
 	if len(plan.Volumes) == 0 {
 		fmt.Fprintf(w, "  no dangling volumes\n")
 		return
