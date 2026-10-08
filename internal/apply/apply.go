@@ -180,6 +180,10 @@ type Plan struct {
 	// holds back with Except. Execute keeps it there, so the apply that
 	// releases a held stack still force-recreates it.
 	heldOwed []pendingAction
+	// renderedChanges is every file this site renders, held back or not,
+	// for the prune keep set: an image a held stack renders is still the
+	// site's.
+	renderedChanges []Change
 	// Progress receives what Execute decided along the way that is not an
 	// error, such as a replica leaving the database work to the leader. Nil
 	// discards it.
@@ -313,6 +317,7 @@ type options struct {
 	keepImages bool
 	only       []string
 	except     []string
+	after      []*Plan
 	dbApps     []string
 	// replicationChange lets a garage.toml with a different
 	// replication_factor replace the deployed one. Only `storage add
@@ -375,6 +380,16 @@ func Except(stacks ...string) Option {
 	return func(o *options) { o.except = append(o.except, stacks...) }
 }
 
+// After tells a later pass of the same apply what the earlier passes did, so
+// that the operator's word is carried out once: an --overwrite path an earlier
+// pass replaced is no longer a conflict and is not named again, and a
+// --recreate stack an earlier pass acted on is not recreated twice. Those an
+// earlier pass held back with Except still apply. apply's identity step runs a
+// site in passes and passes each later one this.
+func After(done ...*Plan) Option {
+	return func(o *options) { o.after = append(o.after, done...) }
+}
+
 // DatabaseApps names the apps that reach the cluster's database through the
 // site's HAProxy, as ClusterDatabaseApps returns them. When the plan moves
 // HAProxy or Patroni on this site, each of them this site runs is restarted
@@ -412,7 +427,29 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	for _, opt := range opts {
 		opt(&o)
 	}
-	overwrite := o.overwrite
+	// An earlier pass of the same apply already carried out these. See After.
+	doneOverwrite, doneStacks := map[string]bool{}, map[string]bool{}
+	for _, p := range o.after {
+		for _, c := range p.Changes {
+			if c.Overwritten {
+				doneOverwrite[c.Path] = true
+			}
+		}
+		for _, a := range p.Actions {
+			doneStacks[a.Stack] = true
+		}
+	}
+	var overwrite, recreate []string
+	for _, path := range o.overwrite {
+		if !doneOverwrite[path] {
+			overwrite = append(overwrite, path)
+		}
+	}
+	for _, stack := range o.recreate {
+		if !doneStacks[stack] {
+			recreate = append(recreate, stack)
+		}
+	}
 
 	// Paths the operator has said may be replaced although they conflict.
 	// Each must name a file that really is a conflict: a path that is not one
@@ -545,6 +582,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		if change.Stack != "" {
 			rendered[change.Stack] = true
 		}
+		out.renderedChanges = append(out.renderedChanges, change)
 		if onlySet != nil && !onlySet[change.Stack] {
 			continue
 		}
@@ -615,14 +653,25 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	// finish, and an `up -d` that stopped part way can leave a container
 	// created and never attached to its network; a plain `up -d` or a restart
 	// would start that container as it is.
+	changedStacks := map[string]bool{}
+	for stack := range stacks {
+		changedStacks[stack] = true
+	}
 	owed := map[string]bool{}
+	// A restart an earlier pass held back while the database path moved is
+	// owed as a restart, not as a half built stack. See heldOwed.
+	dbOwed := map[string]bool{}
 	for _, action := range resumed.Actions {
-		owed[action.Stack] = true
+		if action.DatabasePath {
+			dbOwed[action.Stack] = true
+		} else {
+			owed[action.Stack] = true
+		}
 		stacks[action.Stack] = true
 	}
 
 	forced := map[string]bool{}
-	for _, stack := range o.recreate {
+	for _, stack := range recreate {
 		if !rendered[stack] {
 			return nil, fmt.Errorf("%s: --recreate %s names no stack this site renders. Its stacks are %s", site, stack, strings.Join(sortedKeys(rendered), ", "))
 		}
@@ -667,6 +716,8 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 				action.Refresh = sortedKeys(refresh)
 				action.Reason += "; " + strings.Join(action.Refresh, ", ") + " is restarted after it if `up -d` leaves its container in place, since a changed bind mounted file is not a reason Compose recreates one"
 			}
+		} else if dbOwed[stack] && !changedStacks[stack] {
+			action.Reason = databasePathReason + ", and it was held back from the pass that moved them"
 		} else {
 			action.Reason = "only bind mounted configuration changed, so the container keeps its identity"
 			if stack == infraStack && !infraWhole && len(infraServices) > 0 {
@@ -683,6 +734,16 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		}
 	}
 	out.restartDatabaseApps(dbApps, rendered)
+	// A held app is not restarted, but it still loses its connections when
+	// HAProxy or Patroni moves, so its restart is owed to the pass that
+	// releases it.
+	if out.databasePathMoves() {
+		for _, app := range o.dbApps {
+			if exceptSet[app] && rendered[app] && !out.owesHeld(app) {
+				out.heldOwed = append(out.heldOwed, pendingAction{Stack: app, DatabasePath: true})
+			}
+		}
+	}
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
 
@@ -1021,6 +1082,21 @@ type pending struct {
 type pendingAction struct {
 	Stack    string `json:"stack"`
 	Recreate bool   `json:"recreate,omitempty"`
+	// DatabasePath marks a restart a held stack owes because HAProxy or
+	// Patroni moved while it was held, rather than an action that stopped
+	// part way. It is a restart when released, not a forced recreate.
+	DatabasePath bool `json:"database_path,omitempty"`
+}
+
+// owesHeld reports whether this plan already carries an owed action for a
+// held stack.
+func (p *Plan) owesHeld(stack string) bool {
+	for _, a := range p.heldOwed {
+		if a.Stack == stack {
+			return true
+		}
+	}
+	return false
 }
 
 func readPending(t Transport) (pending, error) {

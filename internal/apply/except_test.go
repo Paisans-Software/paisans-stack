@@ -75,3 +75,146 @@ func TestExceptKeepsAHeldStackOwed(t *testing.T) {
 		t.Errorf("releasing talk plans %+v, want talk force-recreated", next.Actions)
 	}
 }
+
+// A later pass of the same apply, told what the earlier one did with After,
+// does not repeat an --overwrite or a --recreate the earlier pass already
+// carried out, and still carries out those it held back.
+func TestAfterDoesNotRepeatAnOverwriteOrARecreate(t *testing.T) {
+	host := applied(t, "home-a")
+	host.files["/srv/infra/compose.yaml"] += "# edited on the host\n"
+	host.files["/srv/talk/.env"] += "# edited on the host\n"
+	options := []apply.Option{
+		apply.Overwrite("/srv/infra/compose.yaml", "/srv/talk/.env"),
+		apply.Recreate("infra", "talk"),
+	}
+	first, err := apply.Build("home-a", plan(t), acmeModule(t), host, append(options, apply.Except("talk"))...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+	host.commands = nil
+	second, err := apply.Build("home-a", plan(t), acmeModule(t), host, append(options, apply.After(first))...)
+	if err != nil {
+		t.Fatalf("the second pass refused what the first one did: %v", err)
+	}
+	if got := strings.Join(stacks(second), ","); got != "talk" {
+		t.Errorf("the second pass acts on %s, want talk alone", got)
+	}
+	if a, ok := actionOn(second, "talk"); !ok || !a.Force {
+		t.Errorf("talk, named with --recreate and held back, is planned as %+v", a)
+	}
+	overwritten := false
+	for _, c := range second.Changes {
+		if c.Path == "/srv/talk/.env" && c.Overwritten {
+			overwritten = true
+		}
+		if c.Path == "/srv/infra/compose.yaml" && c.Kind != apply.Unchanged {
+			t.Errorf("the second pass plans infra's compose file again: %v", c.Kind)
+		}
+	}
+	if !overwritten {
+		t.Error("talk's held back --overwrite was dropped")
+	}
+}
+
+// An app held back while HAProxy or Patroni moves under it still owes the
+// restart that gives it fresh database connections, and gets it exactly once
+// when it is released.
+func TestADatabasePathMoveRestartsAHeldAppOnceItIsReleased(t *testing.T) {
+	host := applied(t, "home-a")
+	changed := planChanging(t, "srv/infra/haproxy/haproxy.cfg")
+	first, err := apply.Build("home-a", changed, acmeModule(t), host, databaseApps(t), apply.Except("talk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := actionOn(first, "talk"); ok {
+		t.Fatal("a held app is restarted")
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+	if host.ran("/srv/talk/compose.yaml") {
+		t.Error("a held app was acted on")
+	}
+	if record := host.files["/srv/.paisans-pending.json"]; !strings.Contains(record, `"talk"`) {
+		t.Fatalf("the held restart is not owed: %q", record)
+	}
+
+	host.commands = nil
+	second, err := apply.Build("home-a", changed, acmeModule(t), host, databaseApps(t), apply.After(first))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(stacks(second), ","); got != "talk" {
+		t.Fatalf("releasing talk acts on %s, want talk alone", got)
+	}
+	if a, _ := actionOn(second, "talk"); a.Recreate || a.Force || !strings.Contains(a.Reason, "database path") {
+		t.Errorf("talk is planned as %+v, want a restart for its database path", a)
+	}
+	if err := apply.Execute(second, host); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRan(host, "/srv/talk/compose.yaml restart"); n != 1 {
+		t.Errorf("talk was restarted %d time(s)", n)
+	}
+	if _, owed := host.files["/srv/.paisans-pending.json"]; owed {
+		t.Error("the restart is still owed after it ran")
+	}
+}
+
+// An app held back stays held back through a database path move in a later
+// pass, and its restart stays owed until it is released.
+func TestAHeldAppKeepsItsOwedRestartWhileHeld(t *testing.T) {
+	host := applied(t, "home-a")
+	changed := planChanging(t, "srv/infra/haproxy/haproxy.cfg")
+	first, err := apply.Build("home-a", changed, acmeModule(t), host, databaseApps(t), apply.Except("talk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+	second, err := apply.Build("home-a", changed, acmeModule(t), host, databaseApps(t), apply.After(first), apply.Except("talk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(second, host); err != nil {
+		t.Fatal(err)
+	}
+	if record := host.files["/srv/.paisans-pending.json"]; !strings.Contains(record, `"talk"`) {
+		t.Fatalf("a still held app lost its owed restart: %q", record)
+	}
+}
+
+// The images a held stack renders are the site's as much as any other's, so
+// pruning a stack that shares their repository keeps them.
+func TestPruneKeepsTheImagesAHeldStackRenders(t *testing.T) {
+	host := supersededHost()
+	rendered := plan(t)
+	for i, file := range rendered.Files {
+		if file.Path == "home-a/srv/docs/compose.yaml" {
+			rendered.Files[i].Content = strings.Replace(file.Content, "outlinewiki/outline:1.10.0", "ghcr.io/example-org/mbin:v1.9.0", 1)
+		}
+	}
+	p, err := apply.Build("home-a", rendered, acmeModule(t), host, apply.Except("docs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prune := range p.Prunes {
+		if prune.Ref == "ghcr.io/example-org/mbin:v1.9.0" {
+			t.Error("an image the held docs stack renders is planned for pruning")
+		}
+	}
+}
+
+func countRan(h *fakeHost, sub string) int {
+	n := 0
+	for _, c := range h.commands {
+		if strings.Contains(c, sub) {
+			n++
+		}
+	}
+	return n
+}
