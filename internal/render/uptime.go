@@ -63,8 +63,8 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 		app := p.cfg.Apps[name]
 		if app.Kind == config.KindUptime {
 			// A monitor cannot report its own death, and a direct check of
-			// its own container can only ever pass. Its public URL is
-			// checked below, after every other app.
+			// its own container can only ever pass. Its public URL, and
+			// every other monitor's, is checked below, after every other app.
 			continue
 		}
 		health, ok := kinds.HealthFor(app.Kind)
@@ -104,13 +104,27 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 	// server and the certificate, whose expiry the fork warns about 14 days
 	// ahead. Behind an operator's own web server it is the only thing that
 	// notices a renewal that silently stopped.
+	//
+	// Every other monitor's public URL follows, checked the same way and in
+	// AppNames order. A monitor cannot report its own death, so with more
+	// than one, each is what notices that another has died: this check
+	// covers the other monitor and the path in front of it, and the ping of
+	// its site, seeded below, covers its host.
 	if health, ok := kinds.HealthFor(config.KindUptime); ok {
-		monitors = append(monitors, seedMonitor{
-			Name: PublicCheckName(self), MonitorType: "active", Method: "GET", CheckType: "status",
-			URL: "https://" + p.cfg.Apps[self].Hostname + health.Path, ExpectedStatus: health.Expect,
-			FollowRedirects: &noRedirects,
-			IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
-		})
+		uptimeCheck := func(name string) seedMonitor {
+			return seedMonitor{
+				Name: PublicCheckName(name), MonitorType: "active", Method: "GET", CheckType: "status",
+				URL: "https://" + p.cfg.Apps[name].Hostname + health.Path, ExpectedStatus: health.Expect,
+				FollowRedirects: &noRedirects,
+				IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
+			}
+		}
+		monitors = append(monitors, uptimeCheck(self))
+		for _, name := range p.cfg.AppNames() {
+			if name != self && p.cfg.Apps[name].Kind == config.KindUptime {
+				monitors = append(monitors, uptimeCheck(name))
+			}
+		}
 	}
 	for _, site := range p.order {
 		if site == monitorSite {

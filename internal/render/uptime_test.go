@@ -7,6 +7,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
 type seedFile struct {
@@ -34,12 +35,19 @@ func withMonitor(t *testing.T, smtp config.SMTP, own *config.SMTP) (*config.Conf
 
 func renderSeed(t *testing.T, cfg *config.Config, secrets *config.Secrets) seedFile {
 	t.Helper()
+	return renderSeedAt(t, cfg, secrets, "watch/srv/paisans/f2a9/status/monitors.json")
+}
+
+// renderSeedAt is renderSeed for the seed at path, for a deployment with more
+// than one monitor.
+func renderSeedAt(t *testing.T, cfg *config.Config, secrets *config.Secrets, path string) seedFile {
+	t.Helper()
 	plan, err := render.Build(cfg, secrets)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range plan.Files {
-		if f.Path != "watch/srv/paisans/f2a9/status/monitors.json" {
+		if f.Path != path {
 			continue
 		}
 		if f.Mode != 0o600 {
@@ -51,7 +59,7 @@ func renderSeed(t *testing.T, cfg *config.Config, secrets *config.Secrets) seedF
 		}
 		return seed
 	}
-	t.Fatal("no watch/srv/paisans/f2a9/status/monitors.json was rendered")
+	t.Fatalf("no %s was rendered", path)
 	return seedFile{}
 }
 
@@ -245,6 +253,70 @@ func TestTheMonitorChecksItsOwnPublicURL(t *testing.T) {
 	self := byName(renderSeed(t, cfg, secrets))[render.PublicCheckName("status")]
 	if self == nil || self["url"] != "https://status.example.org/healthz" || self["expected_status"] != "200" || self["follow_redirects"] != false {
 		t.Fatalf("self check: %v", self)
+	}
+}
+
+// With a second monitor on a second monitor site, each checks the other's
+// public URL exactly as it checks its own, so a monitor host that dies is
+// noticed by the one still running. Neither gains a second check of itself.
+func TestEachMonitorChecksTheOthersPublicURL(t *testing.T) {
+	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+	watchB := cfg.Sites["watch"]
+	watchB.Address = "10.44.0.5"
+	watchB.Endpoint = "watch-b.example.org:51820"
+	watchB.PublicAddress = "203.0.113.21"
+	watchB.SSH.Host = "watch-b.example.org"
+	cfg.Sites["watch-b"] = watchB
+	cfg.Apps["status-b"] = config.App{Kind: config.KindUptime, Hostname: "status-b.example.org",
+		Placement: config.Placement{Mode: config.PlacementPinned, Site: "watch-b"},
+		Settings:  map[string]any{"admin_group": "admins"}}
+	secrets.Sites["watch-b"] = config.SiteSecrets{WireGuardPrivateKey: "REREREREREREREREREREREREREREREREREREREREREQ="}
+	secrets.Apps["status-b"] = map[string]any{"admin_password": "fixture-admin-b", "session_secret": "fixture-session-b"}
+	if refusals := validate.Check(cfg).Refusals(); len(refusals) > 0 {
+		t.Fatalf("two monitors is a configuration the toolkit refuses: %v", refusals)
+	}
+
+	for self, other := range map[string]string{"status": "status-b", "status-b": "status"} {
+		site := cfg.Apps[self].Placement.Site
+		seed := renderSeedAt(t, cfg, secrets, site+"/srv/paisans/f2a9/"+self+"/monitors.json")
+		count := map[string]int{}
+		for _, m := range seed.Monitors {
+			count[m["name"].(string)]++
+		}
+		for _, name := range []string{render.PublicCheckName(self), render.PublicCheckName(other)} {
+			if count[name] != 1 {
+				t.Errorf("%s seeds %q %d times", self, name, count[name])
+			}
+		}
+		m := byName(seed)[render.PublicCheckName(other)]
+		want := "https://" + cfg.Apps[other].Hostname + "/healthz"
+		if m == nil || m["url"] != want || m["expected_status"] != "200" || m["follow_redirects"] != false ||
+			m["monitor_type"] != "active" || m["interval_seconds"] != float64(60) {
+			t.Errorf("%s's check of %s: %v", self, other, m)
+		}
+		pinged := false
+		for _, m := range seed.Monitors {
+			if m["monitor_type"] == "ping" && m["ping_host"] == cfg.Sites[cfg.Apps[other].Placement.Site].Address {
+				pinged = true
+			}
+		}
+		if !pinged {
+			t.Errorf("%s does not ping %s's site", self, other)
+		}
+	}
+}
+
+// A deployment with one monitor seeds exactly one uptime check, its own.
+func TestASingleMonitorSeedsOnlyItsOwnUptimeCheck(t *testing.T) {
+	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+	var public []string
+	for _, m := range renderSeed(t, cfg, secrets).Monitors {
+		if url, _ := m["url"].(string); strings.HasPrefix(url, "https://status") {
+			public = append(public, m["name"].(string))
+		}
+	}
+	if len(public) != 1 || public[0] != render.PublicCheckName("status") {
+		t.Fatalf("uptime checks: %v", public)
 	}
 }
 
