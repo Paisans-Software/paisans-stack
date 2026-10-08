@@ -136,7 +136,7 @@ func checkDNS(ctx context.Context, t Target, p Probes) Result {
 		r.Detail = fmt.Sprintf("%s resolves to %s: %s", t.Hostname, strings.Join(got, ", "), strings.Join(why, ", "))
 		r.Fix = fix
 		if len(stray) > 0 {
-			r.Fix += fmt.Sprintf(".\nDelete the records for %s pointing at %s; a record dns init created is removed by `paisans dns prune`, any other by hand", t.Hostname, strings.Join(stray, ", "))
+			r.Fix += fmt.Sprintf(".\nDelete the records for %s pointing at %s by hand at the provider: dns init never updates a record, and dns prune keeps one whose name is still wanted", t.Hostname, strings.Join(stray, ", "))
 		}
 		return r
 	}
