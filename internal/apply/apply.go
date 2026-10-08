@@ -176,6 +176,10 @@ type Plan struct {
 	// recorded is the manifest as Build read it, which a scoped plan's own
 	// manifest write keeps for every file outside its scope.
 	recorded map[string]render.ManifestFile
+	// heldOwed is what the record of owed actions held for stacks this plan
+	// holds back with Except. Execute keeps it there, so the apply that
+	// releases a held stack still force-recreates it.
+	heldOwed []pendingAction
 	// Progress receives what Execute decided along the way that is not an
 	// error, such as a replica leaving the database work to the leader. Nil
 	// discards it.
@@ -308,6 +312,7 @@ type options struct {
 	minFreeSet bool
 	keepImages bool
 	only       []string
+	except     []string
 	dbApps     []string
 	// replicationChange lets a garage.toml with a different
 	// replication_factor replace the deployed one. Only `storage add
@@ -357,6 +362,17 @@ func Recreate(stacks ...string) Option {
 // plan's does.
 func Only(stacks ...string) Option {
 	return func(o *options) { o.only = append(o.only, stacks...) }
+}
+
+// Except holds the named app stacks back from this apply: their files are
+// not compared or written, their actions and gates do not run, and the
+// manifest keeps their entries as the last apply recorded them. Everything
+// else on the site, the mesh included, applies as usual. apply's identity
+// step uses it for an app whose client at Pocket ID is not in place, and to
+// start Pocket ID before the apps that sign in through it. A held stack that
+// a stopped apply still owes stays owed.
+func Except(stacks ...string) Option {
+	return func(o *options) { o.except = append(o.except, stacks...) }
 }
 
 // DatabaseApps names the apps that reach the cluster's database through the
@@ -428,6 +444,15 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		onlySet = map[string]bool{}
 		for _, stack := range o.only {
 			onlySet[stack] = true
+		}
+		out.partial = true
+		out.recorded = entries
+	}
+	var exceptSet map[string]bool
+	if len(o.except) > 0 {
+		exceptSet = map[string]bool{}
+		for _, stack := range o.except {
+			exceptSet[stack] = true
 		}
 		out.partial = true
 		out.recorded = entries
@@ -523,6 +548,9 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		if onlySet != nil && !onlySet[change.Stack] {
 			continue
 		}
+		if exceptSet[change.Stack] {
+			continue
+		}
 		out.Changes = append(out.Changes, change)
 		// The gateway's routing files are the reload's alone. Making them an
 		// infrastructure action as well restarted Caddy after reloading it:
@@ -615,6 +643,14 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		}
 		wireguard = nil
 	}
+	for _, action := range resumed.Actions {
+		if exceptSet[action.Stack] {
+			out.heldOwed = append(out.heldOwed, action)
+		}
+	}
+	for stack := range exceptSet {
+		delete(stacks, stack)
+	}
 
 	for _, stack := range stackOrder(stacks) {
 		action := Action{Stack: stack}
@@ -640,7 +676,13 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		}
 		out.Actions = append(out.Actions, action)
 	}
-	out.restartDatabaseApps(o.dbApps, rendered)
+	var dbApps []string
+	for _, app := range o.dbApps {
+		if !exceptSet[app] {
+			dbApps = append(dbApps, app)
+		}
+	}
+	out.restartDatabaseApps(dbApps, rendered)
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
 
@@ -946,7 +988,17 @@ func Execute(plan *Plan, t Transport) error {
 		return err
 	}
 	if owes {
-		if _, err := t.Run("rm -f " + shellQuote(pendingPath)); err != nil {
+		if len(plan.heldOwed) > 0 {
+			// Everything this plan moved is done; what it held back is still
+			// owed, and nothing else is.
+			data, err := json.MarshalIndent(pending{Version: 1, Actions: plan.heldOwed}, "", "  ")
+			if err != nil {
+				return err
+			}
+			if err := t.WriteFile(pendingPath, string(data)+"\n", 0o600); err != nil {
+				return fmt.Errorf("%s: everything this apply moved was applied, but the record of the stacks it held back could not be written: %w", plan.Site, err)
+			}
+		} else if _, err := t.Run("rm -f " + shellQuote(pendingPath)); err != nil {
 			return fmt.Errorf("%s: everything was applied, but the record of owed actions could not be removed, so the next apply will repeat them: %w", plan.Site, err)
 		}
 	}
@@ -988,6 +1040,7 @@ func writePending(plan *Plan, actions []Action, t Transport) error {
 	for _, action := range actions {
 		p.Actions = append(p.Actions, pendingAction{Stack: action.Stack, Recreate: action.Recreate})
 	}
+	p.Actions = append(p.Actions, plan.heldOwed...)
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return err
