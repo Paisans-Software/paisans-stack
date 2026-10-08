@@ -2625,8 +2625,10 @@ which fails only when the pass loop has hung: a new deployment has no `admins`
 group until someone makes one, and `apply`'s health gate must not hold the
 Pocket ID stack back on it.
 
-**The reconciler's one write is a standing exception.** Every other change to
-Pocket ID's groups needs a human each time (see `docs/deployment-agent-rules.md`).
+**The reconciler's one write is approved once, not per write.** An agent
+needs a human for every change to Pocket ID's groups; the reconciler is a
+service the deployment runs, approved as a whole when its design was
+(`docs/deployment-agent-rules.md`, *Services the deployment runs*).
 Pocket ID administrators are the community's administrators, so putting them
 in `admins` changes nobody's power, only which apps recognise it. The reconciler
 never removes anyone, never changes a user, and never creates or deletes a

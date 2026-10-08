@@ -81,7 +81,7 @@ The body is plain text, one line, so it reads well in the monitor's incident
 email. It names users by username, never by email.
 
 Every write is logged on one line: the username, the user's ID, and the
-result. That log is the audit trail for the standing exception below.
+result. That log is the audit trail the approval below depends on.
 
 ## Standby
 
@@ -125,14 +125,17 @@ Pocket ID: `<app> — admin reconciler (<site>)`, a GET of
 `http://<site address>:1412/healthz` expecting 200. There is no public check:
 the reconciler is not routed by the gateway.
 
-## The standing exception
+## Approval
 
-Every Pocket ID group change normally needs a human's approval each time.
-The reconciler's one write is a standing exception, granted by the founder on
-2026-10-08: Pocket ID administrators are the community's administrators, so
-putting them in `admins` changes nobody's power, only which apps recognise it.
-It is recorded in `docs/decisions.md`, and `docs/deployment-agent-rules.md`
-names it beside the tier it is an exception to.
+An agent needs a human's approval for every Pocket ID group change. The
+reconciler is not an agent: it is a service the deployment runs, and
+`docs/deployment-agent-rules.md` (*Services the deployment runs*) approves such
+a service once, as a whole, rather than write by write. The founder approved
+this one on 2026-10-08: Pocket ID administrators are the community's
+administrators, so putting them in `admins` changes nobody's power, only which
+apps recognise it. It is recorded in `docs/decisions.md`. A second kind of
+write in the reconciler needs its own approval, and the reconciler gives an
+agent no authority to add anyone to `admins` by hand.
 
 ## Tests
 
