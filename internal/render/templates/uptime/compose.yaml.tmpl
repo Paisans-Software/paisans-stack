@@ -25,11 +25,22 @@ services:
     # ICMP for the per site ping checks.
     cap_add:
       - NET_RAW
-    # The mesh address only. Docker's own iptables rules bypass a host
-    # firewall, so a port published on every interface of a host with a
-    # public address is reachable from the internet whatever ufw says.
+{{- if .IngressListen }}
+    # Published on sites.{{ .App.Site }}.ingress.listen alone, where the
+    # operator's own web server proxies to. Nothing dials the mesh address:
+    # the gateway does not route this app and the monitor does not check its
+    # own container. Docker's own iptables rules bypass a host firewall, which
+    # is why validate accepts only a loopback or private listen.
+    ports:
+      - "{{ .IngressListen }}:{{ .App.Port }}"
+{{- else }}
+    # The mesh address only, where the Caddy on this site reaches it. Docker's
+    # own iptables rules bypass a host firewall, so a port published on every
+    # interface of a host with a public address is reachable from the
+    # internet whatever ufw says.
     ports:
       - "{{ .MeshAddress }}:{{ .App.Port }}:{{ .App.Port }}"
+{{- end }}
     volumes:
       - {{ .DataPath }}/data:/data
       - {{ .DataPath }}/monitors.json:/seed/monitors.json:ro
@@ -40,3 +51,12 @@ networks:
   default:
     labels:
       {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
+{{- if .IngressNetwork }}
+    # Pinned, so the address the web server's connections arrive from
+    # through Docker's publish is this network's gateway, which TRUST_PROXY
+    # names.
+    ipam:
+      config:
+        - subnet: {{ .IngressNetwork }}
+          gateway: {{ .IngressGateway }}
+{{- end }}

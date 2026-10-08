@@ -461,11 +461,11 @@ func publicKeyPEM(key *rsa.PublicKey) (string, error) {
 // operator finishing an install knows exactly what is left and who issues it.
 func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 	var out []Owed
-	if secrets.External["acme_dns_token"] == "" && len(cfg.GatewaySites()) > 0 {
+	if secrets.External["acme_dns_token"] == "" && len(cfg.CaddySites()) > 0 {
 		out = append(out, Owed{
 			Name: "external.acme_dns_token",
 			Why: fmt.Sprintf(
-				"issued by the DNS provider, %s in this deployment, scoped to this zone only. Certificates use DNS-01, so the gateway cannot obtain one without it",
+				"issued by the DNS provider, %s in this deployment, scoped to this zone only. Certificates use DNS-01, so the gateway, and a monitor serving its own hostname, cannot obtain one without it",
 				cfg.ACME.Provider),
 		})
 	}
@@ -499,20 +499,24 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 				kinds.MASRedirectURI(cfg.Apps[name].Hostname, name) +
 				", which is the authentication service's callback for this upstream provider and not the /oauth/callback every other kind uses"
 		}
+		// A kind with a known client shape has its client created by apply
+		// itself, since declaring the app is the approval for it (founder
+		// decision, 2026-10-08). The redirect URI and PKCE are still named,
+		// because they are what apply creates and what an operator checking
+		// an existing client needs to see.
+		created := "created at the deployment's Pocket ID by `paisans apply --execute` on a site that runs " + name +
+			", which records the client ID and secret here itself before " + name + " starts; declaring the app is the approval. `paisans oidc client create --app " + name +
+			"` runs the same step alone. "
 		if cfg.Apps[name].Kind == config.KindMbin {
-			// The toolkit creates this one itself, so the instruction is the
-			// command. The redirect URI and PKCE are still named, because they
-			// are what the command creates and what an operator checking an
-			// existing client needs to see: the fork's OidcClient extends
-			// KnpU's OAuth2PKCEClient and always sends a code challenge
-			// (src/Security/Oidc/OidcClient.php:18 at tag v1.13.3+paisans).
-			why = "created at the identity provider by `paisans oidc client create --app " + name +
-				"`, which records the client ID and secret here itself. It shows each Pocket ID mutation and changes nothing until it is re-run with --execute, and that re-run is the human approval. The client's redirect URI is " +
+			// The fork's OidcClient extends KnpU's OAuth2PKCEClient and always
+			// sends a code challenge (src/Security/Oidc/OidcClient.php:18 at
+			// tag v1.13.3+paisans).
+			why = created + "The client's redirect URI is " +
 				kinds.MbinRedirectURI(cfg.Apps[name].Hostname) + ", with PKCE enabled: Mbin always sends a code challenge"
 		}
 		if cfg.Apps[name].Kind == config.KindUptime {
-			why += ". Register its redirect URI as https://" + cfg.Apps[name].Hostname +
-				"/login/oidc/callback (src/lib/oidc.js:26 in the uptime fork) and restrict the client to the group named in apps." +
+			why = created + "The client's redirect URI is https://" + cfg.Apps[name].Hostname +
+				"/login/oidc/callback (src/lib/oidc.js:26 in the uptime fork), restricted to the group named in apps." +
 				name + ".settings.admin_group, so the identity provider refuses everyone else before the monitor does"
 		}
 		out = append(out, Owed{Name: "oidc_clients." + name, Why: why})

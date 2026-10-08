@@ -34,3 +34,9 @@ var (
 	LayoutFile = layoutFile(Fixture)
 	CountsFile = countsFile(Fixture)
 )
+
+// KeepsImagesOn is whether a plan built with opts passes KeepImages to the
+// applies it runs on site.
+func KeepsImagesOn(opts Options, site string) bool {
+	return (&Plan{opts: opts}).keepImages(site)
+}

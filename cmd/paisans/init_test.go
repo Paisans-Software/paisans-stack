@@ -105,6 +105,7 @@ func fakeSites() map[string]*initFake {
 		"home-a": {name: "home-a.local"},
 		"home-b": {name: "home-b.local"},
 		"vm":     {name: "vm.example.org"},
+		"watch":  {name: "watch.example.org"},
 	}
 }
 
@@ -135,6 +136,7 @@ func TestInitRollsASubnetClearOfEveryHost(t *testing.T) {
 		"address: 10.44.0.1 ", "address: 10.212.37.1 ",
 		"address: 10.44.0.2\n", "address: 10.212.37.2\n",
 		"address: 10.44.0.3\n", "address: 10.212.37.3\n",
+		"address: 10.44.0.4\n", "address: 10.212.37.4\n",
 	).Replace(string(before))
 	if string(after) != want {
 		t.Errorf("init wrote:\n%s", after)
@@ -187,7 +189,7 @@ func TestInitKeepsAClearSubnet(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, _ := os.ReadFile(path)
-	if !bytes.Equal(before, after) || !strings.Contains(out.String(), "overlaps nothing on home-a, home-b, vm; kept") {
+	if !bytes.Equal(before, after) || !strings.Contains(out.String(), "overlaps nothing on home-a, home-b, vm, watch; kept") {
 		t.Errorf("a clear subnet was not kept as it was:\n%s", out)
 	}
 }

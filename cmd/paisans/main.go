@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -64,6 +65,8 @@ Usage:
   paisans oidc client create --app <name> [--rotate-secret]
                [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--site <name>] [--ssh <destination>] [--execute]
+  paisans ingress show  --app <name> [--config paisans.yaml]
+  paisans ingress check --app <name> [--config paisans.yaml]
 
 Commands:
   validate   Load the configuration and report every problem found.
@@ -137,6 +140,16 @@ Commands:
              Pocket ID, with the groups the app reads, and record its ID and
              secret in the secrets file. The secret is never printed.
              Writes nothing without --execute. Mbin only, so far.
+  ingress    show: for an app pinned to a monitor site, print what the web
+             server in front of it must do (terminate TLS for its hostname,
+             pass Host, set X-Forwarded-For and X-Forwarded-Proto), filled
+             in for Caddy, nginx and Apache. From paisans.yaml alone.
+             check: from this machine, check that the hostname resolves to
+             the monitor, that /healthz answers with a valid certificate,
+             that sign in redirects with an https callback, and that the
+             published port is closed from outside. Reads only; exits 1 on
+             any FAIL. With the toolkit's own Caddy in front (ingress mode
+             paisans), only the first two apply.
 
 host prepare, apply, prune, site add, storage init, storage add, storage
 rotate-key, app admin create, oidc client create, preflight, failover test,
@@ -148,7 +161,8 @@ another deployment there holds this one's token, WireGuard interface or listen
 port, or a mesh subnet overlapping this one's. apply and host prepare also
 refuse when anything else on the host overlaps the mesh subnet. dns init and dns
 prune reach no host, only the DNS provider's API, and change it only with
---execute.
+--execute. ingress check reaches no host over ssh and changes nothing: it
+looks at a monitor's public hostname as any visitor could.
 Everything else writes files locally and stops.
 `
 
@@ -185,6 +199,8 @@ func main() {
 		err = runApp(os.Args[2:])
 	case "oidc":
 		err = runOIDC(os.Args[2:])
+	case "ingress":
+		err = runIngress(os.Args[2:])
 	case "storage":
 		switch {
 		case len(os.Args) >= 3 && os.Args[2] == "init":
@@ -423,6 +439,10 @@ func runRender(args []string) error {
 // reaches a machine, the machine it reaches is running a community, and the
 // difference between "show me" and "do it" should be a flag an operator typed
 // rather than a habit they formed.
+//
+// An app that signs in through Pocket ID has its client ensured first, by
+// the identity step in clients.go: declaring the app is the approval for
+// its client, so `--execute` creates and records it like any other secret.
 func runApply(args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ExitOnError)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
@@ -488,19 +508,42 @@ func runApply(args []string) error {
 	if err := checkMeshLive(cfg, *site, transport); err != nil {
 		return err
 	}
+	host, err := hostGate(os.Stdout, cfg, *site, transport)
+	if err != nil {
+		return err
+	}
 	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
 
-	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...)}
-	if *keepImages {
-		options = append(options, apply.KeepImages())
-	}
-	plan, err := planSiteApply(cfg, secrets, *site, transport, options...)
+	// The identity step: every app this site starts that signs in through
+	// Pocket ID gets its client ensured before it renders. Planned here,
+	// read only, so the dry run shows it and an app it must hold back is
+	// left out of the plan below.
+	clients, err := newClientStep(cfg, *site, *destination, *secretsPath, secrets, only)
 	if err != nil {
 		return err
 	}
-	plan.Progress = os.Stdout
+	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...)}
+	// On a shared host an image the toolkit renders (caddy, postgres) may
+	// be what a foreign project runs from, so none is removed.
+	if *keepImages || host.Shared() {
+		options = append(options, apply.KeepImages())
+	}
+	// planFor plans the site holding back the named app stacks, as a later
+	// pass after the done ones. See executeWithClients.
+	planFor := func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
+		p, err := planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...)})...)
+		if err != nil {
+			return nil, err
+		}
+		p.Progress = os.Stdout
+		return p, nil
+	}
+	plan, err := planWithClients(clients, func(hold []string) (*apply.Plan, error) { return planFor(hold, nil) }, *execute)
+	if err != nil {
+		return err
+	}
 
 	// A site running etcd, or configured to, is checked against the live
 	// membership. Only this site is asked unless it is a configured member,
@@ -550,19 +593,50 @@ func runApply(args []string) error {
 	}
 
 	if !*execute {
-		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone {
-			return nil
+		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone && (clients == nil || clients.steps == 0) {
+			return clients.result()
 		}
 		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
-		return nil
+		return clients.result()
 	}
-	if err := apply.Execute(plan, transport); err != nil {
+
+	plans := []*apply.Plan{plan}
+	if clients == nil {
+		if err := apply.Execute(plan, transport); err != nil {
+			return err
+		}
+	} else {
+		pass := sitePass{
+			plan: func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
+				p, err := planFor(hold, done)
+				if err != nil {
+					return nil, err
+				}
+				if plan.Bootstrap != nil && p.Bootstrap != nil {
+					p.Bootstrap.EtcdUnstarted = plan.Bootstrap.EtcdUnstarted
+				}
+				return p, nil
+			},
+			execute: func(p *apply.Plan) error { return apply.Execute(p, transport) },
+		}
+		if plans, err = executeWithClients(clients, pass); err != nil {
+			return err
+		}
+	}
+	// The check after the apply looks at what every pass acted on.
+	acted := &apply.Plan{}
+	written := 0
+	for _, p := range plans {
+		acted.Actions = append(acted.Actions, p.Actions...)
+		written += len(p.Writes())
+	}
+	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", written, plan.Transport)
+	if err := checkStandby(cfg, acted, *site, transport, func(name string) apply.Transport {
+		return siteTransport(cfg.Sites[name], "", *sudo)
+	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", len(plan.Writes()), plan.Transport)
-	return checkStandby(cfg, plan, *site, transport, func(name string) apply.Transport {
-		return siteTransport(cfg.Sites[name], "", *sudo)
-	})
+	return clients.result()
 }
 
 // checkStandby is the deployment level gate after an apply that acted on a
@@ -744,10 +818,18 @@ func runHostPrepare(args []string) error {
 	if err := checkMeshLive(cfg, *site, transport); err != nil {
 		return err
 	}
+	host, err := hostGate(os.Stdout, cfg, *site, transport)
+	if err != nil {
+		return err
+	}
 	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
-	plan, err := hostprep.Build(*site, cfg, transport)
+	var options []hostprep.Option
+	if host.Shared() {
+		options = append(options, hostprep.Shared())
+	}
+	plan, err := hostprep.Build(*site, cfg, transport, options...)
 	if err != nil {
 		return err
 	}
@@ -779,6 +861,9 @@ func printGaragePlan(plan *garage.Plan) {
 
 func printPlan(plan *apply.Plan) {
 	fmt.Fprintf(os.Stdout, "%s (%s)\n", plan.Site, plan.Transport)
+	for _, note := range plan.Notes {
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "note", note)
+	}
 	if plan.Disk != nil {
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "check", plan.Disk.Describe())
 	}

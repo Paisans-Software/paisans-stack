@@ -38,6 +38,11 @@ type Listener struct {
 	// Owner names what binds it, as an operator would recognise it: an
 	// infrastructure service, or an app by name and kind.
 	Owner string
+	// Key is the paisans.yaml key that makes the site bind it, for a
+	// message that has to tell the operator what to change. A listener
+	// added here carries its key, and the host check claims it with no
+	// change of its own.
+	Key string
 	// Proto is "tcp" or "udp".
 	Proto string
 	// Address is the IP bound, or "" for every address on the host.
@@ -74,39 +79,50 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 	addr := s.Address
 	const loopback = "127.0.0.1"
 	var out []Listener
-	add := func(owner, proto, address string, port int) {
-		out = append(out, Listener{Owner: owner, Proto: proto, Address: address, Port: port})
+	add := func(owner, key, proto, address string, port int) {
+		out = append(out, Listener{Owner: owner, Key: key, Proto: proto, Address: address, Port: port})
 	}
+	roles := func(role config.Role) string { return fmt.Sprintf("sites.%s.roles (%s)", site, role) }
 
 	if port := s.ListenPort(); port != 0 {
-		add("WireGuard", "udp", "", port)
+		add("WireGuard", "mesh", "udp", "", port)
 	}
 	if contains(cfg.Etcd.Members, site) {
-		add("etcd client", "tcp", addr, etcdClientPort)
-		add("etcd client", "tcp", loopback, etcdClientPort)
-		add("etcd peer", "tcp", addr, etcdPeerPort)
+		add("etcd client", "etcd.members", "tcp", addr, etcdClientPort)
+		add("etcd client", "etcd.members", "tcp", loopback, etcdClientPort)
+		add("etcd peer", "etcd.members", "tcp", addr, etcdPeerPort)
 	}
 	if s.Has(config.RoleData) {
-		add("Postgres", "tcp", addr, postgresPort)
-		add("Postgres", "tcp", loopback, postgresPort)
-		add("Patroni API", "tcp", addr, patroniAPIPort)
-		add("bg_mon", "tcp", addr, bgMonPort)
+		add("Postgres", roles(config.RoleData), "tcp", addr, postgresPort)
+		add("Postgres", roles(config.RoleData), "tcp", loopback, postgresPort)
+		add("Patroni API", roles(config.RoleData), "tcp", addr, patroniAPIPort)
+		add("bg_mon", roles(config.RoleData), "tcp", addr, bgMonPort)
 	}
 	if RunsHAProxy(cfg, site) {
+		// HAProxy runs on an apps site whenever an app is clustered. The
+		// cluster port is the number cluster.port sets; the stats port is
+		// fixed, so what claims it is the role that runs HAProxy at all.
 		port := ClusterPort(cfg)
-		add("HAProxy cluster port", "tcp", addr, port)
-		add("HAProxy cluster port", "tcp", loopback, port)
-		add("HAProxy stats", "tcp", loopback, haproxyStatsPort)
+		add("HAProxy cluster port", "cluster.port", "tcp", addr, port)
+		add("HAProxy cluster port", "cluster.port", "tcp", loopback, port)
+		add("HAProxy stats", roles(config.RoleApps), "tcp", loopback, haproxyStatsPort)
 	}
 	if contains(cfg.Storage.Garage.Sites, site) {
-		add("Garage S3 API", "tcp", addr, garageS3Port)
-		add("Garage RPC", "tcp", addr, garageRPCPort)
-		add("Garage web endpoint", "tcp", addr, garageWebPort)
-		add("Garage admin API", "tcp", addr, garageAdminPort)
+		add("Garage S3 API", "storage.garage.sites", "tcp", addr, garageS3Port)
+		add("Garage RPC", "storage.garage.sites", "tcp", addr, garageRPCPort)
+		add("Garage web endpoint", "storage.garage.sites", "tcp", addr, garageWebPort)
+		add("Garage admin API", "storage.garage.sites", "tcp", addr, garageAdminPort)
 	}
 	if s.Has(config.RoleGateway) {
-		add("Caddy", "tcp", "", caddyHTTPPort)
-		add("Caddy", "tcp", "", caddyHTTPSPort)
+		add("Caddy", roles(config.RoleGateway), "tcp", "", caddyHTTPPort)
+		add("Caddy", roles(config.RoleGateway), "tcp", "", caddyHTTPSPort)
+	}
+	// A monitor in ingress mode paisans runs the gateway's Caddy image for its
+	// own apps, binding the same two ports on every interface. On a gateway,
+	// which validate refuses as a monitor, it is the gateway's one Caddy.
+	if s.Has(config.RoleMonitor) && s.IngressMode() == config.IngressPaisans && !s.Has(config.RoleGateway) {
+		add("Caddy", roles(config.RoleMonitor), "tcp", "", caddyHTTPPort)
+		add("Caddy", roles(config.RoleMonitor), "tcp", "", caddyHTTPSPort)
 	}
 
 	var apps []string
@@ -119,14 +135,18 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 	for _, name := range apps {
 		kind := cfg.Apps[name].Kind
 		owner := fmt.Sprintf("app %s (%s)", name, kind)
-		if port, ok := appPort[kind]; ok {
-			add(owner, "tcp", addr, port)
+		// In ingress mode external the app is published on listen alone, for
+		// the operator's own web server; nothing dials its mesh address.
+		if host, port, ok := ExternalListen(cfg, name); ok {
+			add(owner, fmt.Sprintf("sites.%s.ingress.listen", site), "tcp", host, port)
+		} else if port, ok := appPort[kind]; ok {
+			add(owner, "apps."+name, "tcp", addr, port)
 		}
 		switch kind {
 		case config.KindOAuth2Proxy:
-			add(owner+" members instance", "tcp", addr, gateMembersPort)
+			add(owner+" members instance", "apps."+name, "tcp", addr, gateMembersPort)
 		case config.KindSynapse:
-			add(owner+" MAS", "tcp", addr, masPort)
+			add(owner+" MAS", "apps."+name, "tcp", addr, masPort)
 		}
 	}
 	return out

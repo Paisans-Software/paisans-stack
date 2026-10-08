@@ -3,7 +3,7 @@
   "files": [
     {
       "path": "etc/wireguard/psns-f2a9.conf",
-      "sha256": "321d6a17fcb34dedfa2d08897c428dc0320309dae1a9af241fda1f5d06bea33b",
+      "sha256": "847c972badb0e2769f48a2c238e228c0dcc0bed1656b394f579b863973dbcb91",
       "mode": "0600"
     },
     {

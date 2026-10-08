@@ -3,7 +3,7 @@
   "files": [
     {
       "path": "etc/wireguard/psns-f2a9.conf",
-      "sha256": "55206f3fb5e1ebd18bc3bf0512ee550db7e4859ecff457b9a736a62a0c7ccc42",
+      "sha256": "357b0a7f6d98e1623b9c1aa11dc94a212d8835318145ca4687bb211ff40c363e",
       "mode": "0600"
     },
     {
@@ -33,7 +33,7 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/caddy/Caddyfile",
-      "sha256": "e3ffcaf53d3d963e0e386bcff4041ad27f519477d218226109e4074490ec95fc",
+      "sha256": "e1e224a347a2110f0909998f56472790e4b181920361de527b4f7109752d139c",
       "mode": "0644"
     },
     {
@@ -87,11 +87,6 @@
       "mode": "0644"
     },
     {
-      "path": "srv/paisans/f2a9/infra/caddy/snippets/status.caddy",
-      "sha256": "6723004fdc43103c153c9ce97c6303cca62491f958e276c9e9ac76661e713d84",
-      "mode": "0644"
-    },
-    {
       "path": "srv/paisans/f2a9/infra/caddy/snippets/talk-media.caddy",
       "sha256": "e9294a3439525cc3cc9cd86edb3ececb9c79e28ae0c5086809dca5e9dbebfa36",
       "mode": "0644"
@@ -115,21 +110,6 @@
       "path": "srv/paisans/f2a9/infra/etcd-initial",
       "sha256": "ba76b866cca9d84f06ab7bf484b87c06e2ccc96cbbbe83e063dd4ce73971b009",
       "mode": "0644"
-    },
-    {
-      "path": "srv/paisans/f2a9/status/.env",
-      "sha256": "1290c6f3e1aaeb6c431d6daac55a8b205083f3dd4e30208c4be1a3e8cc26f24f",
-      "mode": "0600"
-    },
-    {
-      "path": "srv/paisans/f2a9/status/compose.yaml",
-      "sha256": "e9ed4f81a1befd588978c58fc95c55ae254ee9b82edc6959cd46feb6b441fcdf",
-      "mode": "0644"
-    },
-    {
-      "path": "srv/paisans/f2a9/status/monitors.json",
-      "sha256": "0c4aba23869fa27ac5d08d40edde4d911c36fe9add5ac6e9344b97c2316f1970",
-      "mode": "0600"
     }
   ]
 }

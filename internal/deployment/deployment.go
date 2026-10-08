@@ -127,6 +127,10 @@ func (d Deployment) WireGuardConf() string {
 // interface up from that file, wg-quick@psns-<token>.
 func (d Deployment) WireGuardUnit() string { return "wg-quick@" + d.Interface() }
 
+// Manifest is the toolkit's record of every file apply wrote for this
+// deployment on a host.
+func (d Deployment) Manifest() string { return d.Path(".paisans-manifest.json") }
+
 // LabelFilter is the `docker ... --filter` argument selecting this
 // deployment's objects by label.
 func (d Deployment) LabelFilter() string { return "label=" + Label + "=" + d.ID }

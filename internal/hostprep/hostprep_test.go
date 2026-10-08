@@ -151,9 +151,7 @@ func preparedHost(gateway bool) *fakeHost {
 		firewall += owned("allow in on br-+ to 10.44.0.1 port 5000 proto tcp", "allow in on br-+ to 10.44.0.1 port 3900 proto tcp")
 	}
 	if gateway {
-		// The fixture's gateway also hosts the uptime monitor beside the
-		// homeserver, so preparing it allowed the monitor to reach 8008.
-		firewall += owned("allow 51820/udp", "allow 80/tcp", "allow 443/tcp", "allow in on br-+ to 10.44.0.3 port 8008 proto tcp")
+		firewall += owned("allow 51820/udp", "allow 80/tcp", "allow 443/tcp")
 	}
 	return keysPrepared(&fakeHost{
 		files: map[string]string{
@@ -192,8 +190,8 @@ func fixture(t *testing.T) *config.Config {
 }
 
 // withoutMonitor is the fixture without its uptime app, for a test about the
-// firewall's handling of rules on vm that the monitor's own rule there would
-// only add noise to.
+// firewall's handling of rules on vm that nothing about the monitor should
+// bear on.
 func withoutMonitor(t *testing.T) *config.Config {
 	t.Helper()
 	cfg := fixture(t)
@@ -402,6 +400,29 @@ func TestFirewallRulesFollowRoles(t *testing.T) {
 	}
 }
 
+// A monitor serving its own apps opens 80 and 443 like a gateway; behind the
+// operator's own web server it opens nothing for the web, because that server
+// already holds both.
+func TestAPaisansMonitorOpensEightyAndFourFortyThree(t *testing.T) {
+	cfg := fixture(t)
+	var got []string
+	for _, r := range hostprep.Rules(cfg.Deployment(), cfg.Sites["watch"]) {
+		got = append(got, r.String())
+	}
+	if want := "22/tcp,51820/udp,all inbound on psns-f2a9,80/tcp,443/tcp"; strings.Join(got, ",") != want {
+		t.Errorf("paisans: got %s, want %s", strings.Join(got, ","), want)
+	}
+	watch := cfg.Sites["watch"]
+	watch.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}
+	got = nil
+	for _, r := range hostprep.Rules(cfg.Deployment(), watch) {
+		got = append(got, r.String())
+	}
+	if want := "22/tcp,51820/udp,all inbound on psns-f2a9"; strings.Join(got, ",") != want {
+		t.Errorf("external: got %s, want %s", strings.Join(got, ","), want)
+	}
+}
+
 // A fresh gateway gets 80 and 443 and no watchdog: it holds no data role.
 func TestAFreshGatewaySiteDiffersFromADataSite(t *testing.T) {
 	host := freshHost()
@@ -558,8 +579,8 @@ func TestARemovedPackageIsNotInstalled(t *testing.T) {
 
 // An apps site lets its containers reach the database proxy and, where Garage
 // runs, object storage on its own mesh address, over the compose bridges and
-// nothing wider. A gateway only site gets neither; the fixture's gateway hosts
-// the uptime monitor beside the pinned homeserver, so it gets that one rule.
+// nothing wider. A gateway only site gets neither, and so does the fixture's
+// monitor site, where the monitor is the only app and does not check itself.
 func TestContainerRulesReachOnlyWhatAppsUse(t *testing.T) {
 	cfg := fixture(t)
 	var got []string
@@ -569,12 +590,10 @@ func TestContainerRulesReachOnlyWhatAppsUse(t *testing.T) {
 	if want := "5000/tcp on br-+ to 10.44.0.1,3900/tcp on br-+ to 10.44.0.1"; strings.Join(got, ",") != want {
 		t.Errorf("home-a: got %s, want %s", strings.Join(got, ","), want)
 	}
-	got = nil
-	for _, r := range hostprep.ContainerRules(cfg, "vm") {
-		got = append(got, r.String())
-	}
-	if want := "8008/tcp on br-+ to 10.44.0.3"; strings.Join(got, ",") != want {
-		t.Errorf("vm: got %s, want only the monitor's rule %s", strings.Join(got, ","), want)
+	for _, site := range []string{"vm", "watch"} {
+		if rules := hostprep.ContainerRules(cfg, site); len(rules) != 0 {
+			t.Errorf("%s: got %v, want none", site, rules)
+		}
 	}
 }
 
@@ -1100,6 +1119,9 @@ func TestContainerRulesLetTheMonitorReachLocalApps(t *testing.T) {
 	status := cfg.Apps["status"]
 	status.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-a"}
 	cfg.Apps["status"] = status
+	homeA := cfg.Sites["home-a"]
+	homeA.Roles = append(homeA.Roles, config.RoleMonitor)
+	cfg.Sites["home-a"] = homeA
 	var got []string
 	for _, r := range hostprep.ContainerRules(cfg, "home-a") {
 		if r.Why == "the uptime monitor to apps on this site" {
@@ -1147,6 +1169,64 @@ func TestDockerIsOrderedAfterTheMeshInterface(t *testing.T) {
 		}
 		if step.Command != "systemctl daemon-reload" {
 			t.Errorf("installing the drop-in runs %q; it must not restart docker", step.Command)
+		}
+	}
+}
+
+// On a shared host, prepare adds and removes only its own commented rules.
+// The default policy and enabling ufw are host wide, and something else
+// lives there whose traffic they would decide.
+func TestASharedHostNeverSetsTheFirewallsDefaults(t *testing.T) {
+	cfg := fixture(t)
+	host := freshHost()
+	host.responses[probeFirewall] = "ufw present\nstatus inactive\n" + owned("allow 9999/tcp")
+	host.files["/etc/default/ufw"] = "DEFAULT_INPUT_POLICY=\"ACCEPT\"\nDEFAULT_OUTPUT_POLICY=\"DROP\"\n"
+	dedicated, err := hostprep.Build("home-a", cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexOf(commands(dedicated), "ufw --force enable") < 0 || indexOf(commands(dedicated), "ufw default deny incoming") < 0 {
+		t.Fatalf("the dedicated plan does not set the defaults, so this test proves nothing:\n%s", strings.Join(commands(dedicated), "\n"))
+	}
+	shared, err := hostprep.Build("home-a", cfg, host, hostprep.Shared())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := commands(shared)
+	for _, c := range cmds {
+		if strings.HasPrefix(c, "ufw default") || strings.Contains(c, "ufw --force enable") || c == "ufw enable" {
+			t.Errorf("a shared host's plan runs %q", c)
+		}
+	}
+	for _, want := range []string{
+		"ufw allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'",
+		"ufw delete allow 9999/tcp comment 'paisans-f2a9: test'",
+	} {
+		if indexOf(cmds, want) < 0 {
+			t.Errorf("a shared host's plan does not manage its own rules, missing %q:\n%s", want, strings.Join(cmds, "\n"))
+		}
+	}
+	if !strings.Contains(printed(shared), "default policy and enabled state left alone") {
+		t.Errorf("the plan does not say the defaults were left alone:\n%s", printed(shared))
+	}
+}
+
+// Docker installed as a snap is refused, not removed, as Ubuntu's docker.io
+// is, and whether or not `docker compose` works with it: the toolkit runs
+// Docker from Docker's own repository on every host. Removing it would stop
+// whatever runs from it.
+func TestSnapDockerIsRefusedNotRemoved(t *testing.T) {
+	for _, compose := range []string{"compose present", "compose absent"} {
+		host := freshHost()
+		host.responses[probePackages] = compose + "\nsnap docker\npkg ufw install ok installed\nkeyring absent\narch amd64\n"
+		_, err := hostprep.Build("home-a", fixture(t), host)
+		if err == nil || !strings.Contains(err.Error(), "snap") || !strings.Contains(err.Error(), "snap remove docker") {
+			t.Errorf("%s: got %v", compose, err)
+		}
+		for _, c := range host.ran {
+			if strings.Contains(c, "snap remove") || strings.Contains(c, "apt-get") {
+				t.Errorf("%s: prepare changed something: %s", compose, c)
+			}
 		}
 	}
 }

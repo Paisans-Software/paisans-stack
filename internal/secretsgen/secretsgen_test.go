@@ -235,7 +235,7 @@ func TestAnMbinOwedClientNamesItsRedirectURIAndPKCE(t *testing.T) {
 	if why == "" {
 		t.Fatal("the Mbin app's client was not reported as owed at all")
 	}
-	for _, want := range []string{kinds.MbinRedirectURI(cfg.Apps["talk"].Hostname), "PKCE", "paisans oidc client create --app talk"} {
+	for _, want := range []string{kinds.MbinRedirectURI(cfg.Apps["talk"].Hostname), "PKCE", "paisans apply", "paisans oidc client create --app talk"} {
 		if !strings.Contains(why, want) {
 			t.Errorf("the owed client does not name %q:\n%s", want, why)
 		}
@@ -542,6 +542,9 @@ func TestAnUptimeOwedClientNamesItsRedirectURI(t *testing.T) {
 	if !strings.Contains(why, "https://status.example.org/login/oidc/callback") {
 		t.Errorf("the owed client does not name the redirect URI:\n%s", why)
 	}
+	if !strings.Contains(why, "paisans apply") {
+		t.Errorf("the owed client does not say apply creates it:\n%s", why)
+	}
 }
 
 // GarageKeyPair is what storage rotate-key generates a replacement with, so it
@@ -566,4 +569,25 @@ func TestGarageKeyPairIsWellFormedAndFresh(t *testing.T) {
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		t.Fatalf("a generated pair is refused: %v", err)
 	}
+}
+
+// The DNS token is owed wherever the toolkit's Caddy runs, which includes a
+// monitor serving its own hostname in a deployment with no gateway at all.
+func TestTheDNSTokenIsOwedForAMonitorsOwnCaddy(t *testing.T) {
+	cfg := &config.Config{
+		ACME: config.ACME{Provider: "desec"},
+		Sites: map[string]config.Site{
+			"watch": {Roles: []config.Role{config.RoleMonitor}, Address: "10.44.0.4"},
+		},
+	}
+	filled, err := secretsgen.Fill(cfg, &config.Secrets{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range filled.Owed {
+		if o.Name == "external.acme_dns_token" {
+			return
+		}
+	}
+	t.Fatal("a monitor in ingress mode paisans needs the token, and it was not owed")
 }

@@ -9,9 +9,11 @@
 package preflight
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"path"
 	"sort"
 	"strconv"
@@ -20,6 +22,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
 	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
@@ -73,6 +76,10 @@ const diskHeadroom = 2 << 30
 // are tested in hostprep, and repeating them here would test them twice.
 var buildHostPrep = hostprep.Build
 
+// inspectHost is hostcheck.Run: what the new site's host already runs, and
+// whether that leaves it clean, shared or in conflict.
+var inspectHost = hostcheck.Run
+
 // Run makes every check. transports holds one transport per site, keyed by
 // site name; a site without one is refused, since it cannot be read.
 //
@@ -95,13 +102,15 @@ func Run(cfg *config.Config, newSite string, transports map[string]apply.Transpo
 	}
 	if r.reachable[newSite] {
 		t := transports[newSite]
+		r.host(t)
 		r.hostPrepare(t)
 		r.registry(t)
 		r.osMatch(t)
 		r.wireguard(t)
 		r.watchdog(t)
-		r.ports(t)
+		r.ports()
 		r.meshClear(t)
+		r.routes(t)
 		r.disk(t)
 		r.storage(t)
 		r.rtt(t)
@@ -116,6 +125,9 @@ type runner struct {
 	transports map[string]apply.Transport
 	reachable  map[string]bool
 	checks     []Check
+	// hostReport is the host check's finding on the new site, nil when it
+	// could not be made.
+	hostReport *hostcheck.Report
 }
 
 func (r *runner) pass(site, name, format string, args ...any) {
@@ -188,12 +200,46 @@ func (r *runner) clock(name string) {
 	}
 }
 
+// host is the host check on the new site: what already runs there, and
+// whether any of it holds something the site claims. A conflict is refused,
+// and so is a shared host without a firewall that is up and denying by
+// default, exactly as `host prepare` and `apply` would refuse them.
+func (r *runner) host(t apply.Transport) {
+	report, err := inspectHost(r.cfg, r.newSite, t)
+	if err != nil {
+		r.refuse(r.newSite, "host", "%v", err)
+		return
+	}
+	r.hostReport = report
+	if err := report.Refusal(); err != nil {
+		var lines []string
+		for _, c := range report.Conflicts {
+			lines = append(lines, c.String())
+		}
+		detail := err.Error()
+		if len(lines) > 0 {
+			detail = strings.Join(lines, "; ") + ". " + detail
+		}
+		r.refuse(r.newSite, "host", "%s", detail)
+		return
+	}
+	if report.Shared() {
+		r.pass(r.newSite, "host", "shared with %s; the toolkit will touch only what is its own", strings.Join(report.Foreign, ", "))
+		return
+	}
+	r.pass(r.newSite, "host", "clean: nothing found that the deployment does not own")
+}
+
 // hostPrepare requires that `host prepare` would do nothing. Every check
 // below assumes a prepared host (WireGuard tools, Docker, the firewall), and
 // reusing the plan rather than re-checking each part keeps one definition of
 // "prepared".
 func (r *runner) hostPrepare(t apply.Transport) {
-	plan, err := buildHostPrep(r.newSite, r.cfg, t)
+	var opts []hostprep.Option
+	if r.hostReport != nil && r.hostReport.Shared() {
+		opts = append(opts, hostprep.Shared())
+	}
+	plan, err := buildHostPrep(r.newSite, r.cfg, t, opts...)
 	if err != nil {
 		r.refuse(r.newSite, "prepared", "host prepare could not plan: %v", err)
 		return
@@ -318,69 +364,35 @@ func (r *runner) watchdog(t apply.Transport) {
 	r.pass(r.newSite, "watchdog", "mode %s, /dev/watchdog present", mode)
 }
 
-// port is one listener the new site will need.
-type port struct {
-	proto  string
-	number int
-	what   string
-}
-
-// wanted is every port the site will bind, by role.
-func (r *runner) wanted() []port {
-	var ports []port
-	if listen := r.site.ListenPort(); listen != 0 {
-		ports = append(ports, port{"udp", listen, "WireGuard"})
-	}
-	for _, m := range r.cfg.Etcd.Members {
-		if m == r.newSite {
-			ports = append(ports, port{"tcp", render.EtcdClientPort, "etcd client"}, port{"tcp", render.EtcdPeerPort, "etcd peer"})
-		}
-	}
-	if r.site.Has(config.RoleData) {
-		ports = append(ports,
-			port{"tcp", render.PostgresPort, "Postgres"},
-			port{"tcp", render.PatroniAPIPort, "Patroni API"},
-			port{"tcp", render.BgMonPort, "bg_mon"})
-	}
-	if render.RunsHAProxy(r.cfg, r.newSite) {
-		ports = append(ports, port{"tcp", render.ClusterPort(r.cfg), "HAProxy cluster port"})
-	}
-	return ports
-}
-
-// listening parses `ss -Hltnu`: Netid, State, Recv-Q, Send-Q, Local
-// Address:Port, Peer Address:Port. The port is after the last colon, which
-// holds for "*:22", "0.0.0.0:22", "[::]:22" and "127.0.0.53%lo:53".
-func listening(out string) map[string]bool {
-	in := map[string]bool{}
-	for _, line := range strings.Split(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) < 5 {
-			continue
-		}
-		local := f[4]
-		i := strings.LastIndex(local, ":")
-		if i < 0 {
-			continue
-		}
-		in[f[0]+"/"+local[i+1:]] = true
-	}
-	return in
-}
-
-// ports checks nothing already listens where the site's services will.
-func (r *runner) ports(t apply.Transport) {
-	out, err := t.Run("ss -Hltnu")
-	if err != nil {
-		r.refuse(r.newSite, "ports", "could not list listeners: %s", firstLine(errText(out, err)))
+// ports checks nothing already listens where the site's services will. The
+// ports are the host check's claims, render.SiteListeners, so a gateway's 80
+// and 443 are checked like every other. Every listener counts, whoever owns
+// it: the host being joined is blank, and anything on a claimed port stops a
+// bind.
+func (r *runner) ports() {
+	if r.hostReport == nil {
+		r.refuse(r.newSite, "ports", "could not list listeners: the host check did not complete")
 		return
 	}
-	in := listening(out)
+	var names []string
+	owner := map[string]string{}
+	busy := map[string]bool{}
+	for _, claim := range render.SiteListeners(r.cfg, r.newSite) {
+		name := fmt.Sprintf("%d/%s", claim.Port, claim.Proto)
+		if _, ok := owner[name]; !ok {
+			names = append(names, name)
+			owner[name] = claim.Owner
+		}
+		for _, s := range r.hostReport.Inventory.Sockets {
+			if claim.Overlaps(s.Listener()) {
+				busy[name] = true
+			}
+		}
+	}
 	var taken, free []string
-	for _, p := range r.wanted() {
-		name := fmt.Sprintf("%d/%s", p.number, p.proto)
-		if in[p.proto+"/"+strconv.Itoa(p.number)] {
-			taken = append(taken, fmt.Sprintf("%s (%s)", name, p.what))
+	for _, name := range names {
+		if busy[name] {
+			taken = append(taken, fmt.Sprintf("%s (%s)", name, owner[name]))
 		} else {
 			free = append(free, name)
 		}
@@ -423,6 +435,54 @@ func (r *runner) meshClear(t apply.Transport) {
 		return
 	}
 	r.pass(r.newSite, "mesh", "nothing on the host overlaps the mesh subnet %s", r.cfg.Mesh.Subnet)
+}
+
+// routes checks the mesh subnet overlaps no route the host already has: a
+// Docker bridge, a LAN or another VPN on the same range would capture mesh
+// traffic, or have its own captured. A route through this deployment's own
+// interface is the mesh itself and is not a collision.
+func (r *runner) routes(t apply.Transport) {
+	_, mesh, err := net.ParseCIDR(r.cfg.Mesh.Subnet)
+	if err != nil {
+		r.refuse(r.newSite, "routes", "mesh.subnet %q is not a network", r.cfg.Mesh.Subnet)
+		return
+	}
+	out, err := t.Run("ip -j route")
+	if err != nil {
+		r.refuse(r.newSite, "routes", "could not list routes: %s", firstLine(errText(out, err)))
+		return
+	}
+	var routes []struct {
+		Dst string `json:"dst"`
+		Dev string `json:"dev"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &routes); err != nil {
+		r.refuse(r.newSite, "routes", "unreadable `ip -j route` output: %v", err)
+		return
+	}
+	var clash []string
+	iface := r.cfg.Deployment().Interface()
+	for _, route := range routes {
+		if route.Dst == "default" || route.Dev == iface {
+			continue
+		}
+		dst := route.Dst
+		if !strings.Contains(dst, "/") {
+			dst += "/32"
+		}
+		_, network, err := net.ParseCIDR(dst)
+		if err != nil {
+			continue
+		}
+		if network.Contains(mesh.IP) || mesh.Contains(network.IP) {
+			clash = append(clash, fmt.Sprintf("%s dev %s", route.Dst, route.Dev))
+		}
+	}
+	if len(clash) > 0 {
+		r.refuse(r.newSite, "routes", "mesh subnet %s overlaps %s", r.cfg.Mesh.Subnet, strings.Join(clash, ", "))
+		return
+	}
+	r.pass(r.newSite, "routes", "no route overlaps the mesh subnet %s", r.cfg.Mesh.Subnet)
 }
 
 // registry checks the new site's host can be claimed for this deployment: no

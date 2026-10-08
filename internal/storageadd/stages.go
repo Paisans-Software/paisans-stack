@@ -242,7 +242,7 @@ func (p *Plan) buildReset() (*Stage, error) {
 		}
 		for _, n := range changing {
 			t := p.transports[n.site]
-			sp, err := apply.Build(n.site, p.rendered, acme.Module(p.cfg.ACME.Provider), t, apply.Scope(apply.GarageConfig(p.dep())), apply.ReplicationChange())
+			sp, err := apply.Build(n.site, p.rendered, acme.Module(p.cfg.ACME.Provider), t, p.applyOptions(n.site, apply.Scope(apply.GarageConfig(p.dep())), apply.ReplicationChange())...)
 			if err != nil {
 				return err
 			}

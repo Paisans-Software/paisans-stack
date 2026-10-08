@@ -58,6 +58,11 @@ type Plan struct {
 	// Progress receives each stage as it starts and each gate as it passes.
 	// Nil discards it.
 	Progress io.Writer
+	// KeepImages leaves superseded images on the new site, as apply's
+	// --keep-images does. It is set for a host the host check found shared,
+	// where an image the toolkit renders may be what something else runs
+	// from.
+	KeepImages bool
 
 	cfg        *config.Config
 	secrets    *config.Secrets
