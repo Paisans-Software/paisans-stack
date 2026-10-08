@@ -36,6 +36,10 @@ type Claims struct {
 type ClaimedNetwork struct {
 	Net *net.IPNet
 	Key string
+	// Project is the compose project the network belongs to. Any other
+	// project holding the subnet, the toolkit's own included, is a
+	// conflict.
+	Project string
 }
 
 // ClaimsFor is what the toolkit will take on one site's host, from the
@@ -60,7 +64,7 @@ func ClaimsFor(cfg *config.Config, site string) (Claims, error) {
 		if err != nil {
 			return Claims{}, fmt.Errorf("host check: %s pins %q, which is not a network", n.Key, n.Subnet)
 		}
-		claims.Networks = append(claims.Networks, ClaimedNetwork{Net: subnet, Key: n.Key})
+		claims.Networks = append(claims.Networks, ClaimedNetwork{Net: subnet, Key: n.Key, Project: n.Project})
 	}
 	return claims, nil
 }

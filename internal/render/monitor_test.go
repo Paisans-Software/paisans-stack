@@ -227,7 +227,7 @@ func TestAnExternalAppIsPublishedOnListenOnly(t *testing.T) {
 func TestAnExternalMonitorClaimsItsNetwork(t *testing.T) {
 	cfg := monitorConfig(t, &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"})
 	got := render.SiteNetworks(cfg, "watch")
-	if len(got) != 1 || got[0].Subnet != "10.255.255.0/29" || got[0].Key != "sites.watch.ingress" {
+	if len(got) != 1 || got[0].Subnet != "10.255.255.0/29" || got[0].Key != "sites.watch.ingress" || got[0].Project != "paisans-status" {
 		t.Fatalf("%+v", got)
 	}
 	for _, l := range render.SiteListeners(cfg, "watch") {

@@ -200,17 +200,24 @@ func Classify(claims Claims, inv *Inventory) *Report {
 		if len(n.ID) >= 12 {
 			bridges["br-"+n.ID[:12]] = true
 		}
-		if ours(n.Project) {
-			continue
-		}
 		for _, subnet := range n.Subnets {
-			if overlapsMesh(claims.Mesh, subnet) {
+			if !ours(n.Project) && overlapsMesh(claims.Mesh, subnet) {
 				conflict(Conflict{Resource: "subnet " + subnet, Key: "mesh.subnet", Holder: networkDesc(n)})
 			}
+			// A pinned network may be held by its own project and nothing
+			// else. One of the toolkit's other stacks holding it, such as
+			// the one an app left behind when it was renamed, makes compose
+			// refuse the new network mid apply, so it is a conflict too,
+			// naming the stack to take down.
 			for _, pinned := range claims.Networks {
-				if overlapsMesh(pinned.Net, subnet) {
-					conflict(Conflict{Resource: "subnet " + subnet, Key: pinned.Key, Holder: networkDesc(n)})
+				if n.Project == pinned.Project || !overlapsMesh(pinned.Net, subnet) {
+					continue
 				}
+				holder := networkDesc(n)
+				if ours(n.Project) {
+					holder += fmt.Sprintf(", a stack of this toolkit's that %s does not run; if nothing uses it any more, remove it with `docker compose -p %s down`", claims.Site, n.Project)
+				}
+				conflict(Conflict{Resource: "subnet " + subnet, Key: pinned.Key, Holder: holder})
 			}
 		}
 	}

@@ -321,3 +321,23 @@ func TestSomethingOverlappingTheIngressNetworkConflicts(t *testing.T) {
 	// The same network on a site with no external monitor is nobody's claim.
 	wantClass(t, check(t, "watch", h), hostcheck.Shared)
 }
+
+// The pinned network belongs to one compose project, paisans-<app>. Another
+// of the toolkit's own projects holding it, such as the stack an app left
+// behind when it was renamed, makes compose refuse the new one mid apply
+// ("Pool overlaps"), so it is a conflict naming the stale stack. The app's
+// own network holding it is what an apply leaves, and is clean.
+func TestAStaleToolkitStackOnTheIngressNetworkConflicts(t *testing.T) {
+	stale := cleanHost()
+	stale.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-status_default","labels":{"com.docker.compose.project":"paisans-status"},"ipam":[{"Subnet":"10.255.255.0/29"}]}
+`, id("7"))
+	r := check(t, "porch", stale)
+	wantClass(t, r, hostcheck.Conflicted)
+	wantLine(t, r, "CONFLICT  subnet 10.255.255.0/29: claimed by sites.porch.ingress, held by docker network paisans-status_default (compose project paisans-status)")
+	wantLine(t, r, "docker compose -p paisans-status down")
+
+	own := cleanHost()
+	own.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-porch-status_default","labels":{"com.docker.compose.project":"paisans-porch-status"},"ipam":[{"Subnet":"10.255.255.0/29"}]}
+`, id("8"))
+	wantClass(t, check(t, "porch", own), hostcheck.Clean)
+}

@@ -63,6 +63,9 @@ type Network struct {
 	Owner  string
 	Key    string
 	Subnet string
+	// Project is the compose project whose default network it is,
+	// paisans-<app>, the one project that may hold it.
+	Project string
 }
 
 // SiteNetworks is every subnet the rendered stacks on one site pin. Only an
@@ -73,9 +76,10 @@ func SiteNetworks(cfg *config.Config, site string) []Network {
 	for _, name := range cfg.PinnedTo(site) {
 		if _, _, ok := ExternalListen(cfg, name); ok {
 			out = append(out, Network{
-				Owner:  fmt.Sprintf("app %s (%s)", name, cfg.Apps[name].Kind),
-				Key:    fmt.Sprintf("sites.%s.ingress", site),
-				Subnet: IngressNetwork,
+				Owner:   fmt.Sprintf("app %s (%s)", name, cfg.Apps[name].Kind),
+				Key:     fmt.Sprintf("sites.%s.ingress", site),
+				Subnet:  IngressNetwork,
+				Project: "paisans-" + name,
 			})
 		}
 	}
