@@ -580,6 +580,12 @@ from this configuration and the fork reconciles it at every start:
   in front of it, DNS, the web server and the certificate. Behind an
   operator's web server it is the only thing that notices a renewal that
   silently stopped.
+* every `uptime` app pinned to a different `monitor` site gets the same
+  check of its public URL, `https://<hostname>/healthz` expecting 200. A
+  monitor cannot report its own death, so a monitor on a separate site is
+  what notices one that died, and the ping of its site, above, says whether
+  it was the host. A monitor on the same site is not checked: it shares the
+  host, so it would go down with it and could say nothing about losing it.
 
 Every other app's public check now runs from a machine that is not the
 gateway, so a dead gateway shows as every public check failing while the
