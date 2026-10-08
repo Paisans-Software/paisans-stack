@@ -12,3 +12,19 @@
 // the day someone installs something beside the toolkit, and a stored answer
 // would be wrong from that day on.
 package hostcheck
+
+import "github.com/paisans-software/paisans-stack/internal/config"
+
+// Run computes the site's claims, inventories its host and classifies it.
+// It changes nothing.
+func Run(cfg *config.Config, site string, t Transport) (*Report, error) {
+	claims, err := ClaimsFor(cfg, site)
+	if err != nil {
+		return nil, err
+	}
+	inv, err := Inspect(t)
+	if err != nil {
+		return nil, err
+	}
+	return Classify(claims, inv), nil
+}
