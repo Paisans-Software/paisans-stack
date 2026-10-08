@@ -15,6 +15,16 @@
 # waits $PAISANS_STANDBY_RETRY seconds and tries again. Any other exit is
 # passed on, so Docker's restart policy and apply's gate see it as before.
 #
+# The state file stays through each retry, so the toolkit's instance probe
+# reads a waiting standby as standby for the whole wait, not as down while the
+# retry is being refused. It goes as soon as a retried instance is admitted:
+# when the image's healthcheck first passes (asked every second), or after
+# $PAISANS_STANDBY_HOLD seconds (10 by default) if the instance is still
+# running without passing it, which is longer than a refusal takes. So an
+# active instance loses the file within a second of serving, and an admitted
+# one that never serves reads as down instead of hiding behind the standby's
+# healthy healthcheck.
+#
 # A stop is forwarded to the child as SIGTERM, so an active instance shuts
 # down cleanly and deregisters, and a standby elsewhere takes over within one
 # retry instead of after the 90 s an unclean stop leaves its registration to
@@ -30,6 +40,9 @@ fifo=/tmp/paisans-standby.fifo
 kept=/tmp/paisans-standby.tail
 marker='already one instance of Pocket ID running'
 retry="${PAISANS_STANDBY_RETRY:-15}"
+hold="${PAISANS_STANDBY_HOLD:-10}"
+# The image's own healthcheck, as compose.yaml's healthcheck runs it.
+ready='/app/pocket-id healthcheck'
 
 child=
 stopping=
@@ -56,8 +69,26 @@ reap() {
 	return "$code"
 }
 
+# watch removes the state file once the retried child ($1) is admitted: when
+# it is ready, or once it has outlived a refusal by $hold seconds. It returns
+# when the child is gone, leaving the file for the loop to keep or remove.
+watch() {
+	waited=0
+	while kill -0 "$1" 2>/dev/null; do
+		if $ready >/dev/null 2>&1 || [ "$waited" -ge "$hold" ]; then
+			rm -f "$state"
+			return
+		fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+}
+
+# A restarted container keeps its /tmp, so a state file from before the
+# restart would make this first attempt read as standby.
+rm -f "$state"
 while :; do
-	rm -f "$state" "$fifo" "$kept"
+	rm -f "$fifo" "$kept"
 	mkfifo "$fifo" || exit 1
 	# Every line goes straight to the container's log; only the last 50 are
 	# held, in a ring, and written to $kept when the child closes its output.
@@ -71,6 +102,11 @@ while :; do
 	reader=$!
 	"$@" > "$fifo" 2>&1 &
 	child=$!
+	watcher=
+	if [ -f "$state" ]; then
+		watch "$child" &
+		watcher=$!
+	fi
 	# A stop that arrived before there was a child to forward it to.
 	if [ -n "$stopping" ]; then
 		kill -TERM "$child" 2>/dev/null
@@ -79,12 +115,19 @@ while :; do
 	status=$?
 	child=
 	reap "$reader"
+	# The watcher sees the child gone within a second; wait for it, so it
+	# cannot remove a state file the loop is about to keep.
+	if [ -n "$watcher" ]; then
+		reap "$watcher"
+	fi
 	rm -f "$fifo"
 
 	if [ "$status" -eq 0 ] || [ -n "$stopping" ]; then
+		rm -f "$state"
 		exit "$status"
 	fi
 	if ! grep -qF -e "$marker" "$kept" 2>/dev/null; then
+		rm -f "$state"
 		exit "$status"
 	fi
 
