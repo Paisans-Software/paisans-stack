@@ -208,9 +208,8 @@ the pending record owes runs `up -d --force-recreate`, and the plan shows it as
 `recreate <stack> (forced)`. `--recreate <stack>` does the same for a stack
 named by the operator when no record exists; it is repeatable, one stack per
 flag, a stack this site does not render is refused, and a named stack is
-planned even when nothing changed. Forcing every recreate was rejected: it
-would replace every container of every acted on stack on every apply, an
-outage each time for the one case that needs it.
+planned even when nothing changed. Only those stacks are forced, because a
+forced recreate replaces every container of a stack, an outage each time.
 
 **Each stack must come up healthy before the next one moves.** An apply
 reported success while Mbin's app could not reach its database, because `up -d`
@@ -238,7 +237,7 @@ and its free space, and `Plan.Disk` carries the numbers; the dry run prints
 them as `check disk:`, and `Execute` refuses first, before the pending record.
 The default is 3 GiB, `apply --min-free <size>` overrides it for one run, and
 the refusal quotes `docker system df`. README.md "`apply` checks free space
-before it pulls" has the rejected alternatives.
+before it pulls" has the reasoning.
 
 **A healthy stack's superseded images are pruned.** After the health gate,
 `Execute` lists images (`docker image ls --no-trunc --format json`), reprobes
@@ -250,7 +249,7 @@ the same candidates, without the container filter, as `Plan.Prunes`, printed
 as `prune` lines. `apply --keep-images` skips both. IDs are compared by
 prefix with `sha256:` stripped, since Docker prints them full or 12
 characters short. README.md "`apply` prunes the images it superseded" has the
-rejected alternatives (`docker image prune -a`, keeping N versions).
+reasoning.
 
 **An image's declared volume must be mounted at exactly its path.** Docker
 gives every new container an anonymous volume for a `VOLUME` nothing mounts,
@@ -283,7 +282,7 @@ anonymous ones and those of a `paisans-*` compose project; another project's,
 or a named one, is kept. The listing ends with an `end` marker, so a cut
 short answer is an error rather than a shorter list. README.md "Every volume
 an image declares is mounted, and `apply` checks it" has the audit table and
-the rejected alternatives.
+the reasoning.
 
 **Files are recorded as soon as they land.** The manifest is written right
 after the files, and again at the end, not only on success. A manifest written
@@ -296,8 +295,7 @@ apply, and the way out used to be deleting the file on the host by hand.
 Naming the path is the same decision made through the toolkit, and it is
 repeatable, one path per flag, so a single choice never covers files the
 operator did not look at. A path that is not a conflict is refused rather than
-ignored, so a typo cannot pass for consent. A blanket `--force` was rejected
-for that reason.
+ignored, so a typo cannot pass for consent.
 
 **The assembled gateway configuration is validated before any reload, and a
 failure stops the reload.** It is built from per app snippets, so a wrong
@@ -494,7 +492,7 @@ gateway, and the records are created by hand.
 The opposite choice in each case, for the same reason: what the operator already
 has.
 
-`sops` and `age` are embedded because their alternative is telling an operator to
+`sops` and `age` are embedded so that an operator need not
 install two binaries before they can render anything, and because no code path
 here may put a decryption key on a host.
 
@@ -751,11 +749,10 @@ challenge only zone and scope the token to that zone, leaving a credential on
 the gateway that can write challenges and nothing else. The toolkit does not
 require that arrangement, and it does not prevent it.
 
-Weighed against the alternative: anyone with root on the gateway already
+The token is acceptable on the gateway because anyone with root there already
 terminates TLS for every hostname and holds every private key, so they can
 already read and alter all traffic. The token adds reach past that machine,
-which is why scoping it matters and why account wide credentials are not
-acceptable here.
+which is why it is scoped to one zone.
 
 ## Every app has its own database credential
 

@@ -33,9 +33,8 @@ Command names are provisional.
 ### Rule 1: the cluster always runs, even when it has one node
 
 A single-site install runs Postgres under Patroni, with etcd and a local
-HAProxy, as a cluster of one. It would be simpler to install plain Postgres and
-add Patroni when a second site appears — but that is a *conversion*, performed
-on live member data, not an addition. Running the control plane from the start
+HAProxy, as a cluster of one, so that a second site is an addition and never
+a *conversion* performed on live member data. Running the control plane from the start
 costs a single-site adopter roughly 150 MB and some extra moving parts. It buys
 an upgrade path that cannot corrupt anything.
 
@@ -360,15 +359,7 @@ replication is physical: the whole cluster replicates together. So every
 database in it gets HA **for free**. There is no per-database switch, and
 nothing is saved by excluding an app. Leaving it in costs nothing.
 
-A second cluster would only be justified by a different Postgres major version,
-observed resource contention between apps, or a wish for independent failover
-timing. None of those are worth a second Postgres process, a second failover
-drill, and a second thing to get wrong, on home hardware and for a community of
-this size. If one of them ever becomes real, it is a decision to revisit with
-evidence — not a knob to ship.
-
-An app that must not share the cluster gets `pinned` instead, which is simpler
-in every respect.
+An app that must not share the cluster gets `pinned` placement.
 
 **A useful consequence: exactly one Patroni per data-bearing host.** Pinned apps
 run plain Postgres with no Patroni, and there is only ever one cluster. So the
@@ -415,12 +406,6 @@ Caddy raised: an application's own 502, 503 or 504 response (Garage's 503 for
 lost quorum among them) is passed through unchanged, so it never hides an
 application's real answer. It does also turn an auth gate's failure into 503,
 which is the right answer there too.
-
-Rejected: an active health check on each app. It would keep live requests off
-a dead site between failures, but Caddy's check sends the upstream's address
-as the Host header, which an app checking trusted hosts may refuse, and it
-adds steady traffic to every app on every site; the dial timeout it saves is
-paid once per `fail_duration`.
 
 ## Monitoring
 
@@ -838,11 +823,9 @@ client at once.
 every file as root, and Mbin reads the key as uid 1000 after its entrypoint
 drops privileges, so a 0600 key is a key Mbin cannot open. The key is
 encrypted, and the passphrase that opens it is only in the 0600 `.env`, so a
-host user who can read `private.pem` holds ciphertext. The alternatives were
-worse: `apply` chowning the file to 1000 couples the generic writer to one
-image's runtime user; running the container as root defeats the entrypoint's
-own privilege drop; and an unencrypted key at 0644 is a plaintext signing key
-for anyone on the host.
+host user who can read `private.pem` holds ciphertext. That keeps the generic
+writer free of any one image's runtime user and leaves the entrypoint's own
+privilege drop in place.
 
 The captured case matters. An identity provider holds a client secret and the
 app needs the identical value; recording it here makes it reproducible instead
@@ -975,10 +958,8 @@ lands is read off the tree rather than held in a mapping somewhere else. A file
 the application expects at a path inside its own image is bind-mounted there by
 that kind's `compose.yaml`.
 
-The alternative is to treat `.env` as the shape and bolt on a per-app escape
-hatch for anything that is not one. That inverts the majority and the exception
-for no gain, because nothing in the secrets path is env-specific: every rule
-above holds file by file, whatever the format. A rendered `config.ini` is a
+Nothing in the secrets path is env-specific: every rule above holds file by
+file, whatever the format. A rendered `config.ini` is a
 build artifact, is written 0600, receives its secrets at render time on the
 workstation, and is refused a clobber when locally edited, on exactly the same
 terms as a rendered `.env`.
@@ -1051,12 +1032,10 @@ overrides and what it changes**, in a comment at the top, and a changed image
 reference is the thing to go looking at when a stack starts behaving as though
 the override is not there.
 
-The rejected alternative is one gateway Caddyfile template that knows every
-`kind` through conditionals. Two things go wrong with it. Adding an application
-becomes a diff in a file that every other application shares, so the cost of
-adding one grows with how many are already there. And a mistake in one
-application's routing takes the whole gateway config with it, rather than one
-host block.
+Per-app snippets keep two costs bounded. Adding an application is a snippet
+of its own that no other application shares, so the cost of adding one does
+not grow with how many are already there. And a mistake in one application's
+routing belongs to one host block.
 
 That leaves the gateway's own template holding only what is genuinely
 cross-cutting: TLS and the DNS-01 configuration, the trusted proxy setting
@@ -1081,9 +1060,8 @@ changed, the stack's `up -d` is the action, and the reload waits for it: a
 Caddy `up -d` replaced started on the new routing and is not reloaded, and one
 `up -d` left in place (because only another service's configuration changed)
 is reloaded afterwards, told apart by its container ID. A stopped Caddy has
-nothing to reload and is started instead. Reloading first and recreating
-afterwards was the rejected order: the reload is wasted whenever the recreate
-follows, and it reloads a container about to be replaced.
+nothing to reload and is started instead. The reload comes second so that it is
+never spent on a container about to be replaced.
 
 #### An app may answer on more than one hostname
 
@@ -1103,8 +1081,8 @@ delegation documents live on whatever name appears in user identifiers. Routing
 them identically would publish the entire API on the apex.
 
 The key is a **role**, not a label: it selects which snippet the kind ships. A
-role a kind does not understand is refused, because the alternative is a
-gateway that fails to load its whole configuration over one missing import.
+role a kind does not understand is refused, so one missing import can never
+stop the gateway loading its whole configuration.
 
 **A hostname may be claimed once, by one app and one role.** Two claims on one
 name are refused. Caddy will not choose between two site blocks that hold the
@@ -1160,13 +1138,11 @@ all. The same is true of every gated app.
 **So every published port binds the site's mesh address and nothing else**
 (Eg: `"10.44.0.1:8080:8080"`, never `"8080:8080"`). The gateway reaches every
 app over the mesh, so the mesh is the only interface a port needs, and the
-members of the mesh are the hosts this deployment already trusts. Leaving the
-port on every interface and relying on a host firewall instead was the
-previous position, and it was rejected: Docker writes its own iptables rules
-for a published port, ahead of the host's, so a port published on all
-interfaces of a host with a public address is reachable from the internet
-whatever ufw says. A firewall the container runtime routes around is not a
-control, and a cloud VM holding the apps role is exactly that host.
+members of the mesh are the hosts this deployment already trusts. The bind
+address is the control, because Docker writes its own iptables rules for a
+published port, ahead of the host's, so a port published on all interfaces of
+a host with a public address is reachable from the internet whatever ufw says.
+A cloud VM holding the apps role is exactly that host.
 
 What remains the operator's is the mesh itself. A port on the mesh address is
 reachable from every mesh peer, so a compromised peer reaches the app ungated.
@@ -1189,9 +1165,9 @@ any two that overlap, naming both and the port. The list is read from the same
 constants the rendered files use, so the check cannot drift from what lands on
 a host. It is a refusal rather than a warning because the configuration cannot
 work as written. The fix is the operator's: pin one of the two elsewhere, or
-move the role that brings the other. The alternative, giving the renderer
-freedom to pick a free port, was rejected: a port that depends on what else is
-on the site changes when an app is added, and the gateway's routes with it.
+move the role that brings the other. Ports are fixed because a port that
+depended on what else is on the site would change when an app is added, and
+the gateway's routes with it.
 Some combinations are refused by this today, and a homeserver pinned to a data
 site is the one worth knowing: Synapse's 8008 is the Patroni API's, and MAS's
 8009 is bg_mon's.
@@ -1274,9 +1250,8 @@ Garage v1.0.1's source behind each gate, is
 of the slowest site's upload, which on a home line can be hours. A stage
 waiting on Garage exits with status 75, "try again later", and the next run
 reads live state and carries on; `--wait <duration>` polls instead. Everything
-a resumed run needs is on the hosts, so any machine can resume it. Rejected:
-blocking in the foreground, which leaves an operator's terminal hostage to a
-residential uplink.
+a resumed run needs is on the hosts, so any machine can resume it, and an
+operator's terminal is never held hostage to a residential uplink.
 
 **`storage.garage.sites` is a preference order, not a set.** The first site
 serves every media read the gateway passes on, for every app's media
@@ -1286,13 +1261,7 @@ Garage node that receives a write sends the other copies itself, and a home
 line's upload is its slow direction, so the site with the best upload goes
 first. A new site joins at the end of the list and moves up only after
 `storage add` has passed, because a node with no role answers every bucket as
-missing; `storage add` refuses the other order. Rejected: each app writing to
-its own site's node (every write would leave the home once per remote copy),
-choosing the fastest node at run time (Caddy 2.11.6 has no latency aware
-policy, and a render must not change with network conditions), and an active
-health check on Garage's `/health` (it judges with the consistent write
-quorum whatever the configured mode, so at replication 2 on two nodes it calls
-the survivor unavailable while it serves every read). Media failover is
+missing; `storage add` refuses the other order. Media failover is
 passive: `lb_policy first`, `lb_try_duration` so the request that finds a
 node dead is retried on the next, and `unhealthy_status 503` for a node that
 has lost quorum.
@@ -1328,19 +1297,14 @@ factor exits), each stored layout is moved aside to
 and the cluster is laid out again. Media is unavailable for about a minute.
 Before it stops anything it waits for every node to have caught up, so nothing
 written at `dangerous` exists on one node only, and it records each bucket's
-object count on a host, to be compared once the data has moved. Rejected:
-rebuilding Garage empty (loses data, and contradicts rule 3's growth from one
-node), and a second cluster plus an S3 copy (not in Garage's documentation,
-twice the disk, and a cutover of every app's endpoint).
+object count on a host, to be compared once the data has moved.
 
 **A host that exists only for Garage has the `storage` role.** A third copy
 on a third host is what keeps uploads working with a site down, and that host
 need not be a data, apps, gateway or witness site. It renders WireGuard and an
 infrastructure stack with Garage alone. Garage is still placed by
 `storage.garage.sites`, so the role on a site that list does not name is
-refused; a data or apps site that runs Garage needs no such role. Rejected: an
-empty role list for such a site, which keeps one source of truth but makes "no
-roles" mean something. Founder decision.
+refused; a data or apps site that runs Garage needs no such role.
 
 **Each site can advertise its own capacity.** `storage.garage.capacities` maps
 a site to a size and overrides `storage.garage.capacity` for it, so a small
@@ -1397,13 +1361,8 @@ a run that has just seen stages 3 and 4 pass. Garage never lets a deleted key's
 ID be imported again (`handle_import_key` in v1.0.1's
 `src/garage/admin/key.rs`), which is one more reason the deletion is last.
 
-Rejected: deleting the old key and importing the new one in its place, which
-is an outage between the two and leaves the app with no key at all if the
-import fails. Rejected: finding an app's keys by the name they were imported
-under. Both keys carry the app's name while a rotation runs, Garage does not
-keep names unique, and `storage init` used to read a grant as present when
-only the name matched, which would have left the new key without access. Keys
-are found, granted and deleted by ID alone.
+Keys are found, granted and deleted by ID alone, because both keys carry the
+app's name while a rotation runs and Garage does not keep names unique.
 
 ### `dns init` creates the records a deployment needs
 
@@ -1424,10 +1383,9 @@ derived or declared, get an A record pointing at the gateway site's
 `public_address`. A site whose `endpoint` is a name rather than
 an address gets an A record pointing at that site's own `public_address`,
 because that is the name the other sites' WireGuard dials. Where a site also
-declares `public_address6`, each of its names gets an AAAA record as well. A
-list of records in `paisans.yaml` would be simpler to read, but it would be a
-second place to write every hostname, and the copy that drifts is the one that
-sends visitors somewhere else.
+declares `public_address6`, each of its names gets an AAAA record as well.
+Deriving them keeps every hostname written in one place, since a second copy is
+the one that drifts and sends visitors somewhere else.
 
 ```yaml
 sites:
@@ -1462,10 +1420,9 @@ of its own. For each record it needs, the provider holds one of three things:
 **Any conflict refuses the whole run before a single record is written.** This
 is the same rule `apply` follows for a file it did not write: a record that
 disagrees with the configuration is somebody's, and overwriting it would take
-down whatever they pointed it at. Creating the records that do not conflict and
-skipping the rest was rejected too, because half a set of records is a
-deployment some names reach and others do not, which is harder to diagnose
-than a refusal. A stray AAAA is a conflict because clients on IPv6 would reach
+down whatever they pointed it at. The whole run stops because half a set of
+records is a deployment some names reach and others do not, which is harder to
+diagnose than a refusal. A stray AAAA is a conflict because clients on IPv6 would reach
 it instead of the gateway, silently. After `--execute`, every record created is
 read back and compared.
 
@@ -1519,8 +1476,8 @@ dropped leaves a record no rule can tie to this deployment, so prune keeps it
 and says so. Naming it with `--name` lifts the scope rule for that exact name
 and nothing else: the comment, the address and the not-wanted rules still
 apply, and a `--name` that matches no record `dns init` created is refused, so
-a typo cannot widen anything. Widening the scope to the whole zone was
-rejected: a zone usually holds more than one deployment's names.
+a typo cannot widen anything. The lift is per name because a zone usually
+holds more than one deployment's names.
 
 
 A record is deleted only when every one of these holds:
@@ -1533,10 +1490,9 @@ A record is deleted only when every one of these holds:
 | its address is a site's `public_address` or `public_address6` | it pointed at this deployment's own host |
 | no record of its type is wanted at its name | prune removes names, it does not repoint them |
 
-**The comment is necessary and never sufficient.** Deleting every record that
-carries it was rejected: a comment is free text that anyone with the zone can
-write, on a record the toolkit never made, and a rule that trusted it would let
-one edit in a console steer a deletion. The name and address rules tie a record
+**The comment is necessary and never sufficient.** A comment is free text that
+anyone with the zone can write, on a record the toolkit never made, and a rule
+that trusted it alone would let one edit in a console steer a deletion. The name and address rules tie a record
 to this deployment by things a comment cannot forge. The cost is that a stale
 record outside `community.domain`, at a name the configuration no longer names,
 is kept: nothing left in the configuration says it was ever this deployment's.
@@ -1589,10 +1545,8 @@ sites:
 **`softdog` is a fallback, never the assumption.** It is a kernel timer, so it
 reboots a machine whose Patroni hung but not one whose kernel did, and a hung
 kernel is exactly the case where the node cannot fence itself any other way. A
-hardware or hypervisor watchdog is better wherever one exists. Assuming
-`softdog` everywhere would have been simpler to write and would have quietly
-downgraded every host that had a real one; `auto` takes the real one when it
-is there.
+hardware or hypervisor watchdog is better wherever one exists, and `auto` takes
+the real one when it is there.
 
 **`off` is a warning, not a refusal** (`watchdog-off-on-data-site`). Some hosts
 genuinely cannot load any driver, and a single data site has nobody to split
@@ -1619,10 +1573,6 @@ Hosts end up with plaintext `.env` regardless — Compose requires it — so the
 gain is not host hardening. It is **blast radius**: root on one host yields that
 host's rendered secrets, not the gateway's WireGuard key or another site's
 credentials. The complete set exists only encrypted.
-
-Decrypting on the hosts instead is simpler to automate and gives unattended
-deploys. A single-admin fork may prefer it. It should not be the default, and
-choosing it should print what it gives up.
 
 Two honest limits, which belong in any doc that describes this:
 
@@ -1703,9 +1653,8 @@ is added to `authorized_keys` by hand, where `host prepare` leaves it alone.
 
 The section replaced a single string, `ssh: home-a.local`. That form is now
 refused, and the refusal prints the section to write with the old host filled
-in. Keeping it as a shorthand was rejected (founder decision): two ways to write
-a site's access is one more thing to read twice, and the string has nowhere to
-put the keys.
+in. A site's access has one way to write it (founder decision), so there is
+nothing to read twice, and the string has nowhere to put the keys.
 
 #### Public keys, not a path to a private key
 
@@ -1762,8 +1711,8 @@ Everything else in `~/.ssh/config` still applies (`ProxyJump`, `known_hosts`,
 `ServerAliveInterval`), except where the command line already says: `-p` and
 the `user@` win over that file's `Port` and `User`, since ssh_config(5) takes
 "the first obtained value" and command line options come first. `BatchMode` is
-not set, so a first connection can still ask the operator to accept a host key;
-refusing that would push them to turn host key checking off instead.
+not set, so a first connection can still ask the operator to accept a host key,
+which keeps host key checking on from the very first connection.
 
 #### A connection that never opened is tried again
 
@@ -1784,12 +1733,12 @@ pre authentication `Connection closed by <host> port <port>`). A session that
 had opened before it dropped (`client_loop: ...`, or `Connection to <host>
 closed by remote host`) is not retried, because the command may have run.
 
-Retrying every failure was rejected: a command that ran and failed is the
-host's answer, and running it again could repeat whatever it did first. A
-connection that never opened ran nothing, so a retry cannot do anything twice.
-File writes are retried too, safely, because each lands in a temporary file
-that is then renamed. Setting `ConnectionAttempts` in the operator's
-`~/.ssh/config` was the alternative, and it is still honoured, but a default
+Only a connection that never opened is retried, because a command that ran
+and failed is the host's answer, and running it again could repeat whatever it
+did first. A connection that never opened ran nothing, so a retry cannot do
+anything twice. File writes are retried too, safely, because each lands in a
+temporary file that is then renamed. `ConnectionAttempts` in the operator's
+`~/.ssh/config` is still honoured, and the retry is built in because a default
 that depends on every admin's own file is not a default.
 
 #### Never infer host state from a failed probe
@@ -1813,9 +1762,8 @@ stage may well have worked, and a rollback would most likely fail to reach the
 same host anyway. A probe that ran and failed is still an answer, and is read
 as one (a ping with no reply, a Garage that refuses).
 
-Treating a failed probe as the safe default ("absent, so do it again") was the
-alternative, and it is safe only when doing it again is harmless. Here it is
-not: counting objects again after a reset has stopped the nodes replaces the
+Reading a failed probe as "absent, so do it again" is safe only when doing it
+again is harmless. Here it is not: counting objects again after a reset has stopped the nodes replaces the
 numbers the provision gate compares against, and restarting HAProxy stops every
 database app on the site.
 
@@ -1861,8 +1809,8 @@ its shell lives as templates in its own directory under
 `internal/hostprep/profiles/`. Adding Debian or Fedora is adding a directory
 and a registration, not editing the command.
 
-Only `ubuntu 24.04` ships. Matching on `ID` alone would be simpler and was
-rejected: Docker's apt source names the release codename, and a profile that
+Only `ubuntu 24.04` ships. A profile matches the release as well as `ID`,
+because Docker's apt source names the release codename, and a profile that
 accepted every Ubuntu would write one release's packages onto another. A host
 no profile matches is refused, naming what is supported:
 
@@ -1913,12 +1861,11 @@ derives with what `ufw show added` prints, and decides per rule:
 | a commented rule nothing derives any more | `remove` | deleted, last |
 | any uncommented or foreign rule | `present (not paisans)` if it bears on a derived rule | nothing, ever |
 
-The alternative was the previous rule, that nothing is ever removed. It is
-safe, and it leaves a site that lost the gateway role serving 80 and 443 until
-someone notices, which for a firewall is the wrong way round. Removing anything
-not derived would be simpler still, and would delete the rule an operator added
-for their monitoring agent. The comment separates the two without a state file
-that could drift from the host.
+A commented rule nothing derives is removed, so a site that lost the gateway
+role stops serving 80 and 443 without someone having to notice. Every other
+rule stays, so the rule an operator added for their monitoring agent is never
+deleted. The comment separates the two without a state file that could drift
+from the host.
 
 Rules are matched the way ufw matches them, on everything except action and
 comment. That is not a choice: ufw keeps one rule per match and **adding a rule
@@ -1931,10 +1878,9 @@ would loosen it. Both are left alone.
 The same behaviour makes adoption one command. A host prepared before rules
 carried a comment holds exactly the derived rules, uncommented. Re-adding each
 with the comment rewrites it in place, so there is no moment without the rule
-and nothing to delete afterwards. Deleting the uncommented copy as a second
-step was considered and rejected: ufw lets a delete that names no comment
-remove a rule that has one, so it would remove the rule just adopted, and for
-SSH, lock the host out. An uncommented rule that no longer matches anything
+and nothing to delete afterwards. That matters, because ufw lets a delete that
+names no comment remove a rule that has one, so a delete there would remove the
+rule just adopted, and for SSH, lock the host out. An uncommented rule that no longer matches anything
 derived (a role lost before the upgrade) is indistinguishable from an
 operator's and stays until removed by hand.
 
@@ -1954,9 +1900,6 @@ bootstrap route`) and the plan says so:
   change    firewall: allow 2222/tcp (ssh, the bootstrap route)
   present   firewall: `ufw allow 22/tcp comment 'paisans: ssh, the bootstrap route'` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow. Delete it yourself once SSH on 2222 works
 ```
-
-Removing it once the new one is in was rejected: it saves one open port and
-risks a lockout that takes a console to undo.
 
 Removals run after every addition, the default policy and enabling, so a rule
 is only taken away once everything that replaces it is in place.
@@ -2009,12 +1952,9 @@ home-a (ubuntu 24.04)
   remove    ssh: remove key SHA256:baqJQcVDEweKmw1OiZxGooCG2MGxYtwsQQzzOstxmiA (carol@example.org) from /home/ubuntu/.ssh/authorized_keys, which host prepare added and ssh.public_key no longer lists
 ```
 
-**Ownership lives in the sidecar, not in the key's comment.** Appending a
-marker to the comment of every line host prepare writes, and adopting a
-cloud-init key by rewriting its comment, would need no second file. It was
-rejected because the comment is how an operator recognises a key
-(`alice@laptop`), and rewriting it changes what they see in the one place they
-look. The sidecar keeps `authorized_keys` exactly as the keys were pasted. Each
+**Ownership lives in the sidecar, not in the key's comment.** The comment is
+how an operator recognises a key (`alice@laptop`), and leaving it alone keeps
+what they see in the one place they look. The sidecar keeps `authorized_keys` exactly as the keys were pasted. Each
 step rewrites the sidecar along with its change, so a stopped run resumes: a
 key in the file and not the sidecar is adopted again, and a sidecar entry whose
 key someone already deleted is forgotten, so a copy they add by hand later is
@@ -2110,9 +2050,8 @@ does for stacks:
 | changed peers | up | `wg syncconf` from `wg-quick strip`, in place |
 | changed `Address`, `MTU`, `PostUp` or another wg-quick only line | up | `systemctl restart wg-quick@wg0` |
 
-**A peer change is synced rather than restarted.** Restarting is simpler and
-always correct, but it takes the interface down, and on a data site that
-partitions etcd and Patroni for as long as it is down; with election timeouts
+**A peer change is synced rather than restarted.** A restart takes the
+interface down, and on a data site that partitions etcd and Patroni for as long as it is down; with election timeouts
 measured in seconds, adding a site could start a failover on every existing one.
 `wg syncconf` changes peers without touching the interface. It cannot apply the
 lines wg-quick handles itself, because `wg-quick strip` removes them before `wg`
@@ -2190,10 +2129,9 @@ A timeout, an unknown leader or a psql failure stops the apply before any app
 stack starts, and the next apply resumes at the same place. It is a gate, not a warning: an app
 pointed at a role that does not exist has nothing to fall back on.
 
-**Setting the password every time is what makes rotation an addition.** The
-alternative, creating with a password once and never touching it again, means
-a changed `apps.<name>.database_password` renders a new `.env` the role does not
-accept, and rotation becomes a manual `ALTER ROLE` on the primary.
+**Setting the password every time is what makes rotation an addition.** A
+changed `apps.<name>.database_password` renders a new `.env`, and the role
+accepts it on the same apply, with no manual `ALTER ROLE` on the primary.
 
 **The SQL goes on stdin, never on a command line.** A command line is visible in
 `ps` to every user on the host and is quoted back in ssh errors. For the same
@@ -2238,10 +2176,9 @@ garage`. A file at the top of the stack still restarts the whole project, and
 an environment or compose change is still a recreate, which Compose limits to
 the services whose configuration changed.
 
-**Mapping files to services by parsing each compose file's volumes was
-rejected.** It gives the same answer for every file the templates render, with
-a YAML parser in the path of every apply, and the templates are the toolkit's
-own.
+**The directory is the mapping because the templates are the toolkit's own.**
+Their layout already says which service reads each file, with no YAML parser in
+the path of every apply.
 
 **A bind mounted file changed beside a recreate is restarted after it.** The
 recreate is `up -d`, and Compose replaces only a container whose configuration
@@ -2253,8 +2190,8 @@ file is renamed over, the running container keeps the old inode
 bind mounted file changed and whose container `up -d` left in place, and none
 it replaced. Which is which comes from the container IDs `docker compose ps`
 reports before and after, not from `up -d`'s progress lines, which are for
-people. Restarting those services unconditionally was rejected: a container
-`up -d` has just replaced would be restarted a second time, and for Patroni on
+people. Only those are restarted, because a container `up -d` has just
+replaced would otherwise be restarted a second time, and for Patroni on
 the primary that is a second failover. A forced recreate (`--recreate`, or a
 stack a stopped apply owes) replaces every container, so it needs none of
 this.
@@ -2271,7 +2208,7 @@ and the primary demotes itself. Every member is rendered with
 `server/etcdmain/help.go`). An hour is far more history than anything reads.
 The quota is etcd's own default, 2 GiB (`DefaultQuotaBytes` in
 `server/etcdserver/quota.go`), made explicit so that a later etcd changing its
-default does not move it silently. A smaller one was rejected: compaction
+default does not move it silently. It is no smaller because compaction
 frees pages for reuse but the file never shrinks without a defrag, which
 nothing schedules, so a tight quota is an alarm waiting on a burst.
 
@@ -2302,9 +2239,8 @@ names it: `apply --recreate <stack>`, one stack per flag, refused for a stack
 the site does not render, and planned even when nothing changed. The ordering
 holds either way: the infrastructure stack first, the databases, then apps.
 
-**Forcing every recreate was rejected.** It would cover this case without a
-record, but it replaces every container of every stack an apply touches, every
-time, and a recreate is an outage however brief.
+**Only those stacks are forced**, because a forced recreate replaces every
+container of a stack, and a recreate is an outage however brief.
 
 ### `apply` checks each stack before the next one moves
 
@@ -2338,8 +2274,8 @@ bootstrap, because a running Spilo container is not yet a primary.
 **Failing on the first `restarting` rather than waiting it out is deliberate.**
 Every rendered service carries `restart: unless-stopped`, so `restarting` means
 the process already crashed once after its dependencies were up, and Docker will
-keep trying forever without telling anyone. Treating a timeout as a warning was
-rejected for the same reason the other gates refuse rather than warn: an apply
+keep trying forever without telling anyone. A timeout stops the apply too, for
+the same reason the other gates refuse rather than warn: an apply
 that reports success over a broken stack is how this was found.
 
 ### `apply` restarts the apps whose database path changed
@@ -2387,12 +2323,11 @@ Engine 29.7.2: across a restart the container ID stayed the same, the start
 time changed, and every process inside, PID 1 and its children, had a new
 PID.
 
-**Fixing reconnection inside each app was rejected as the toolkit's answer.**
-It is right in principle, and worth reporting upstream, but the toolkit deploys
-apps it does not write and cannot guarantee it for every one of them; a restart
-it can guarantee. **Restarting every app after every infrastructure change was
-rejected too:** each restart is an outage, however brief, and most
-infrastructure changes (a Garage setting, a Caddy route, an etcd timing) never
+**The toolkit's answer is a restart.** Reconnection inside each app is worth
+reporting upstream, but the toolkit deploys apps it does not write and cannot
+guarantee it for every one of them; a restart it can guarantee. **Only a change
+to the database path restarts them:** each restart is an outage, however brief,
+and most infrastructure changes (a Garage setting, a Caddy route, an etcd timing) never
 touch the database path.
 
 ### Mbin's locks are split: flock by default, Postgres for the few that cross sites
@@ -2477,27 +2412,6 @@ not be put in front of an app that uses them.
   make when they move the database path (see "`apply` restarts the apps whose
   database path changed") all bring about. The failed message is retried.
 
-Rejected:
-
-* **`LOCK_DSN` itself on Postgres**, the first version of this change. It
-  breaks the web workers, as above.
-* **`flock` everywhere, the image's default.** Per container, so the two locks
-  that matter lock nothing.
-* **`semaphore`.** A System V semaphore is per IPC namespace, which in Docker
-  is per container, and never spans sites.
-* **A `redis://` store on Valkey.** Valkey is per stack, one on each apps site
-  with nothing replicating between them, so it coordinates one site and not
-  the other. Making it work would mean one Valkey every site reaches, a new
-  shared service with its own failover, where Postgres is already the one
-  shared, highly available thing.
-* **symfony/lock's table store** (a plain `postgresql://` through
-  `StoreFactory`). It works across sites, but a lock is a row with an expiry,
-  so a dead holder blocks others until it expires, and it creates a
-  `lock_keys` table the app's own schema does not declare.
-* **The advisory store on Mbin's own Doctrine connection.** No extra
-  connection, but Mbin closes that connection after every message, which would
-  drop a scheduler lock held between messages.
-
 ### Mbin's queues are in Postgres by default
 
 Mbin hands every federated activity and background job to Symfony Messenger.
@@ -2565,17 +2479,6 @@ delete), each waiting for the synchronous replica on the other site, and the
 table churns, which is vacuum's work. For a community of this size that is
 noise; an instance that outgrows it is the operator `queue: rabbitmq` exists
 for.
-
-Rejected:
-
-* **RabbitMQ by default, Postgres only on more than one apps site.** The
-  `site add` migration above.
-* **One RabbitMQ cluster across the sites, with quorum queues.** It replicates,
-  but it is a second clustered system with its own partitions and failover to
-  run over the mesh, where Postgres is already the one shared, highly available
-  thing.
-* **An inbox journal table in the fork.** Protects inbound activities only, and
-  is custom code where the Doctrine transport already exists.
 
 ### Pocket ID runs on every apps site, and one of them is active
 
@@ -2651,19 +2554,6 @@ closed port, which is refused at once and marks only the standby down for
 proxy accepting a connection it cannot forward would turn it into a failed
 request instead, and the first multi site run should look.
 
-Rejected:
-
-* **Pinning Pocket ID to one site.** It gives up the failover that cluster
-  placement exists for, for the one service every other one signs in through.
-  *Worked example: should the identity provider live on the gateway?* argues
-  the same point from the other side.
-* **A lock or leader election of our own in front of it.** francis already
-  admits hosts atomically in Postgres, under a row lock on its cluster
-  configuration; a second election could disagree with it.
-* **Starting the second site's stack only on failover.** That is an
-  orchestrator, and the failover it would drive happens when the toolkit is
-  not running.
-
 **When upstream binds HA mode to a variable**, delete the wrapper and the
 healthcheck override and set it: every site then serves, and the check
 becomes "at least one active". Until then, Mbin on a second apps site has
@@ -2696,13 +2586,13 @@ The threshold is 3 GiB, one Mbin image and room beside it, and `apply
 --min-free <size>` (Eg: `2G`; K, M, G and T are binary, as `df -h` means them)
 changes it for one run, for an operator who knows the pull fits.
 
-**Estimating the pull's size was rejected.** A registry's manifest gives the
+**The threshold is a fixed floor.** A registry's manifest gives the
 compressed size of each layer, not what it unpacks to, and layers already on
-the host are shared, so an estimate would be wrong in both directions and need
+the host are shared, so a pull's size cannot be known in advance without
 registry credentials from the host. A fixed floor is crude and is right about
-the case that matters: a small disk nearly full. **Warning instead of
-refusing was rejected** for the reason every other gate refuses: the failure
-it warns of happens with the old stack already stopped.
+the case that matters: a small disk nearly full. **It refuses** for the reason
+every other gate refuses: the failure it guards against happens with the old
+stack already stopped.
 
 ### `apply` prunes the images it superseded
 
@@ -2729,13 +2619,12 @@ image. Waiting for the gate is the point: until the new image is healthy, the
 old one is what a rollback would run. `apply --keep-images` skips pruning for
 one run, for an operator who wants to keep that image a while longer.
 
-**`docker image prune -a` was rejected.** It removes every image no container
-uses, including ones the toolkit never pulled and knows nothing about: an
-operator's own tools, an image staged by hand for a later apply. The toolkit
-removes only what its own stacks superseded. **Keeping the previous N versions
-was rejected** because of the disk this is for: on a 10 GB host one extra Mbin
-image is 1.4 GB, and `--keep-images` covers the rollback case when an operator
-actually wants it.
+**The toolkit removes only what its own stacks superseded.** An image no
+container uses may still be one the toolkit never pulled and knows nothing
+about: an operator's own tools, an image staged by hand for a later apply.
+**No previous versions are kept by default** because of the disk this is for:
+on a 10 GB host one extra Mbin image is 1.4 GB, and `--keep-images` covers the
+rollback case when an operator actually wants it.
 
 ### Every volume an image declares is mounted, and `apply` checks it
 
@@ -2813,13 +2702,11 @@ or one somebody named, is kept. That verdict rests on the host being dedicated
 to the deployment, which `host prepare` already assumes, and the plan says so
 at the top.
 
-**`docker volume prune` was rejected** for the reason `docker image prune -a`
-was: it removes what is unused whoever made it, with no list first, and its
-default changed in Engine 23.0 from every unused volume to anonymous ones only,
-so the same command does different things on different hosts. **Leaving the
-volumes declared and unmounted was rejected** because each recreate costs a
-volume, and **a bind under `/srv` for throwaway paths** because a shared cache
-directory between replicas is a race, not state.
+**`prune` lists first and removes only this deployment's volumes**, the same
+rule `apply` follows for images. **Every declared
+volume is mounted** because each recreate otherwise costs a volume, and a
+throwaway path is not bound under `/srv` because a shared cache directory
+between replicas is a race, not state.
 
 ### `app admin create` makes an app's first administrator
 
@@ -2917,7 +2804,7 @@ email matches an existing local account unless the provider marked it
 verified. That guard stops anyone taking over an account by claiming its
 address at the provider, and it is right; the operator creating an
 administrator is vouching for the address they typed, which is the
-verification it asks for. Turning the guard off in the fork was rejected: it
+verification it asks for. The guard stays on in the fork because it
 protects every member who signs up at Pocket ID by themselves, and the
 founder's case is fixed where the vouching happens.
 
@@ -2933,20 +2820,7 @@ would let an operator believe a password was set. Stdin is not read at all
 when it is a terminal, so an interactive run never waits on it.
 
 The calls go through Pocket ID's REST API with its static API key; see *The
-toolkit administers Pocket ID through its static API key*. Three alternatives
-were rejected:
-
-* **The binary's `one-time-access-token` subcommand** in the container. It
-  takes the username on the command line, which is harmless, but it always
-  issues a one hour token (`cmds/one_time_access_token.go:68-78`), and the user
-  has to exist first, which only the API can arrange.
-* **Pocket ID's first-admin setup page** (`POST /api/signup/setup`,
-  `usersignup/module.go:87`). It is open to whoever reaches it first while no
-  user exists, which on a public hostname is a race with the internet, and it
-  is a browser step.
-* **Storing the link**, in the secrets file or anywhere else, so it could be
-  printed again. A stored link is a stored way to sign in as an administrator,
-  and issuing a new one is one command.
+toolkit administers Pocket ID through its static API key*.
 
 ### The toolkit administers Pocket ID through its static API key
 
@@ -2978,18 +2852,6 @@ which is worth stating plainly. It adds nothing to what root on that host
 already holds: the same `.env` carries the database connection string and the
 encryption key, and either is all of Pocket ID. It is reachable only over the
 mesh, because the port is bound to the mesh address and nowhere else.
-
-Three alternatives were rejected:
-
-* **Clicking through the admin UI.** It is a step on a host nobody can repeat
-  or review, and it cannot run before the first administrator exists, which is
-  the problem being solved.
-* **A key file on the host for an operator's own `curl`.** That is a second
-  long lived copy of an admin credential, outside the rendered set `apply` owns
-  and checks, readable by whoever can read that file rather than by whoever
-  holds the age key to the secrets file.
-* **A user API key minted in the UI.** It expires, it belongs to a person who
-  might leave, and minting it is the clicking this exists to remove.
 
 ### `oidc client create` makes an app's client at Pocket ID
 
@@ -3030,7 +2892,10 @@ the fork always sends a code challenge, and a confidential client. The groups
 are the app's own: the fork reads `OAUTH_OIDC_ADMIN_GROUP` and
 `OAUTH_OIDC_MEMBER_GROUP` from the `groups` claim, which Pocket ID fills with
 group names (`oidc/claims_service.go:157-162`), so the command reads the same
-two keys from the app's `config` and creates whichever group is missing. A
+two keys from the app's `config` and creates whichever group is missing. That
+is the one place a passthrough key is read rather than only placed, because the
+group name has to agree with the app's own setting, and a second place to type
+it could disagree. A
 member group also restricts the client to the member and admin groups, so a
 refused member is stopped at Pocket ID before the app sees them. Putting a
 user in the admin group is `app admin create`'s job, not this command's.
@@ -3114,22 +2979,6 @@ toolkit default is the one exception, set as above, because neither is a
 choice anybody made. After `--execute` it probes again and
 fails unless a fresh plan is empty.
 
-Four alternatives were rejected:
-
-* **Creating the client in Pocket ID's UI and pasting the secret into `secrets
-  set`.** It is the step this replaces: a browser on the admin UI, a secret
-  shown on screen and copied by hand, and a callback URL typed from memory.
-  `secrets set` still accepts the key for a client made elsewhere.
-* **Letting Pocket ID generate the secret and capturing it from the
-  response.** The value would exist only at Pocket ID until the write that
-  follows succeeded, and an interruption there leaves a live secret nobody has.
-* **Flags for the group names.** The name has to agree with the app's own
-  setting, and a flag is a second place to type it that can disagree. Reading
-  the app's `config` is the one place a passthrough key is read rather than
-  only placed, and this is why.
-* **Updating a client that differs.** It would quietly undo whatever made it
-  differ, which might have been deliberate.
-
 ### `site add` — the gateway and witness
 
 The straightforward case, because the VM has a stable address and is the one
@@ -3161,24 +3010,12 @@ Home-b reaches the VM the same way home-a does. Fine.
 has an endpoint the other can dial.** WireGuard needs one side to know where to
 send the first packet, and neither does.
 
-Three ways out:
-
-* **Relay home↔home through the VM.** Works immediately with no new machinery.
-  Cost: with `synchronous_mode: true` every commit waits a round trip, so writes
-  pay home-a → VM → home-b instead of going direct. Largely mitigated by siting
-  the VM near the homes, which costs nothing.
-* **Dynamic DNS per home.** Each home gets a resolvable endpoint. Two problems:
-  WireGuard resolves endpoints at load and does not re-resolve on its own, and
-  **publishing a home's public address in DNS is a privacy decision**, not merely
-  a technical one.
-* **Endpoint discovery through the VM.** Homes report their current address; the
-  VM distributes it. This is rebuilding part of what a coordination service does,
-  and it is real work for a toolkit meant to stay small.
-
-**Recommendation: relay, and site the VM near the homes.** Then measure. Direct
-home-to-home is an optimisation to pursue if the measurement is bad, not a
-prerequisite — and relaying keeps the networking to static configuration with no
+**The toolkit relays home↔home through the VM.** It works immediately with no
+new machinery, and it keeps the networking to static configuration with no
 daemon and no coordination service, which is why plain WireGuard was chosen.
+The cost is latency: with `synchronous_mode: true` every commit waits a round
+trip, so writes pay home-a → VM → home-b. Siting the VM near the homes largely
+mitigates that and costs nothing, so site it there and then measure.
 
 ### The staged gate, and the half-joined site
 
@@ -3248,9 +3085,7 @@ quorum two before it has started; if it then fails to start, the cluster stops.
 A learner does not vote, so the cluster keeps its quorum while it catches up,
 and etcd refuses the promotion until it has (`ErrLearnerNotReady`, etcd
 v3.5.16), which is why the promotion is retried with a doubling delay rather
-than timed. Rejected: both new members added as voters at once, where any
-failure costs quorum, and a re-bootstrap at three, which is an outage for a
-routine growth step. Between the witness's promotion and the new site's, the
+than timed. Between the witness's promotion and the new site's, the
 cluster has two voters; that is the price of one learner at a time, and it
 lasts one stage.
 
@@ -3272,9 +3107,7 @@ instead, so its first apply under this rule changes nothing it runs. Writing
 the record never acts on a stack, because no container reads it.
 
 The specification named the file `etcd-founders` and gave every joiner all of
-`etcd.members`; both were corrected here for the reason above. Rejected:
-deciding `new` or `existing` from whether a data directory is non empty, which
-flips a running founder's flag on its first apply and recreates it.
+`etcd.members`; both were corrected here for the reason above.
 
 **`apply` refuses a half grown cluster.** While the live membership (learners
 included) differs from `etcd.members`, `apply` on a site that is, or is
@@ -3301,11 +3134,7 @@ and is what `apply` itself does for a changed `haproxy.cfg` (see "`apply`
 restarts only the infrastructure service whose file changed"). The gate
 reads HAProxy's statistics from a listener on `127.0.0.1:8404`, as CSV. That
 listener is new in every rendered `haproxy.cfg`, so a deployment that applies
-before growing restarts its infrastructure stack once for it. Rejected: a
-stats socket, which needs a client the image may not carry, and a query
-through HAProxy for `pg_is_in_recovery()`, which needs the superuser password
-over TCP and shows only that a primary answered, not that a replica is out of
-the rotation.
+before growing restarts its infrastructure stack once for it.
 
 **The apps that use the database are stopped around HAProxy's restart.** On
 the first real join, stage 6 restarted HAProxy under a running Mbin, and Mbin
@@ -3457,8 +3286,8 @@ site's HAProxy marks the new one up, which with the rendered `inter 3s` and
 primary are closed when it is marked down (`on-marked-down
 shutdown-sessions`), and reads through HAProxy pause too, since it routes only
 to the primary. The plan lists each app restart after each switch, a further
-few seconds per app. Waiting for each app to reconnect on its own was
-rejected: some never do, and their healthchecks do not notice.
+few seconds per app. The apps are restarted because some never reconnect on
+their own, and their healthchecks do not notice.
 
 ## Moving the gateway
 
@@ -3597,66 +3426,6 @@ the DNS TTL well in advance and restore it afterwards, and refuse to stop the ol
 gateway until the new one has answered correctly for every hostname.
 
 Rollback is moving the role back and applying again.
-
-## Worked example: should the identity provider live on the gateway?
-
-A reasonable question, and the answer is more interesting than a flat no.
-
-First, a modelling point. `pocket-id` is not a site role — **sites declare roles,
-apps declare placement**:
-
-```yaml
-sites:
-  vm: { roles: [gateway, witness, apps] }   # the vm may host apps
-
-apps:
-  auth:
-    placement: { pinned: vm }               # the actual move
-```
-
-Roles say what a site provides; placement says where an app runs. Keep those
-separate or every new app becomes a new role.
-
-It is feasible. It is not advisable.
-
-**Pinning gives up failover.** On `cluster` placement the identity provider rides
-the HA database and survives losing a site entirely. Pinned to the gateway, its
-availability becomes exactly that machine's, with no failover at all.
-
-The natural counterargument is that losing the gateway blacks out public access
-anyway, so the identity provider being there costs nothing extra. That is true,
-and it is why this is not a silly idea. But it means the move **gains nothing** —
-it survives nothing it would not otherwise have survived — while the costs are
-all real:
-
-* **A second database to operate**, separately backed up and upgraded, outside
-  the archive that covers everything else. That partly undoes "one story instead
-  of four", for the app that least needs it.
-* **Gateway sizing.** A witness box is specified for a reverse proxy, a tunnel
-  and etcd. Adding a database and an application roughly doubles it.
-* **fsync contention with etcd** — the same risk recorded above, whose failure
-  mode is spurious database failovers.
-
-**And the argument that settles it: the gateway is the public attack surface;
-the identity provider is the crown jewels.** Co-locating them puts the service
-holding every member's credentials on the most internet-exposed machine in the
-deployment. Today it sits behind the gateway on a host with no inbound
-reachability at all.
-
-There is a superficially similar argument in the other direction — isolate the
-identity provider so compromising an application host does not yield it. But
-that points at a separate *unexposed* host, not at the one running the public
-web server.
-
-**Recommendation: leave it on `cluster` placement.** It gets high availability
-for free, its uploads ride replication when `FILE_BACKEND` is `database`, it
-stays off the public-facing box, and it needs no second database.
-
-The one scenario that would change this: if authentication outages became the
-dominant complaint *and* the gateway itself were made redundant. With two
-gateways, "the gateway died" stops meaning "everything is dark", and pinning the
-identity provider to the more reliable tier starts to buy something. That is a
-different design.
 
 ## Where documentation lives
 
