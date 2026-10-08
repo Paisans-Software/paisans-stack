@@ -34,10 +34,13 @@ func Show(w io.Writer, t Target) {
 	fmt.Fprintf(w, "Your web server must:\n")
 	fmt.Fprintf(w, "  * terminate TLS for %s, with a certificate you obtain and renew;\n", t.Hostname)
 	fmt.Fprintf(w, "    the monitor checks https://%s%s and warns 14 days before it expires\n", t.Hostname, t.HealthPath)
-	fmt.Fprintf(w, "  * proxy every path to %s\n", t.Upstream())
+	fmt.Fprintf(w, "  * proxy every path to %s, but for the four refused below\n", t.Upstream())
 	fmt.Fprintf(w, "  * pass the Host header through unchanged\n")
 	fmt.Fprintf(w, "  * set X-Forwarded-For to the client's address and X-Forwarded-Proto to https;\n")
-	fmt.Fprintf(w, "    the monitor's sign in rate limit is keyed on the client's address\n\n")
+	fmt.Fprintf(w, "    the monitor's sign in rate limit is keyed on the client's address\n")
+	fmt.Fprintf(w, "  * refuse /status*, /badge/*, /metrics and /api/v1/*: the status page lists\n")
+	fmt.Fprintf(w, "    every monitor, mesh addresses included, and /metrics is public whenever\n")
+	fmt.Fprintf(w, "    no API token exists, which under this toolkit is always\n\n")
 
 	if ip := net.ParseIP(t.ListenHost); ip != nil && !ip.IsLoopback() {
 		fmt.Fprintf(w, "WARNING: listen is %s, not loopback. Docker publishes the port with its own\n", t.Listen)
@@ -64,11 +67,18 @@ func Show(w io.Writer, t Target) {
 // replaces Host unless ProxyPreserveHost is on (httpd 2.4 mod_proxy,
 // "Reverse Proxy Request Headers", read 2026-10-08). nginx sets none of them
 // unasked.
+//
+// Each also refuses what the toolkit's own snippet for the uptime kind
+// refuses (templates/uptime/caddy.snippet.tmpl), because behind the
+// operator's web server that snippet is not in front of the app. Apache's
+// refusal is a 403 from Require rather than a 404.
 func caddySnippet(t Target) string {
 	return fmt.Sprintf(`%s {
 	# %s: leave this line out if this Caddy obtains the certificate
 	# itself; otherwise name your own files.
 	tls /etc/ssl/%s/fullchain.pem /etc/ssl/%s/privkey.pem
+	@refused path /status* /badge/* /metrics /api/v1/*
+	respond @refused 404
 	reverse_proxy %s
 }
 `, t.Hostname, certificateMarker, t.Hostname, t.Hostname, t.Listen)
@@ -83,6 +93,10 @@ func nginxSnippet(t Target) string {
     # %s: replace both paths with your own.
     ssl_certificate     /etc/ssl/%s/fullchain.pem;
     ssl_certificate_key /etc/ssl/%s/privkey.pem;
+
+    location ~ ^/(status|badge/|metrics$|api/v1/) {
+        return 404;
+    }
 
     location / {
         proxy_pass %s;
@@ -102,6 +116,10 @@ func apacheSnippet(t Target) string {
     SSLEngine on
     SSLCertificateFile    /etc/ssl/%s/fullchain.pem
     SSLCertificateKeyFile /etc/ssl/%s/privkey.pem
+
+    <LocationMatch "^/(status|badge/|metrics$|api/v1/)">
+        Require all denied
+    </LocationMatch>
 
     ProxyPreserveHost On
     RequestHeader set X-Forwarded-Proto "https"

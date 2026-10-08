@@ -106,3 +106,22 @@ func TestShowHasNothingToHandOffInPaisansMode(t *testing.T) {
 		t.Fatal(out)
 	}
 }
+
+// The toolkit's own edge refuses the monitor's status page, badges, /metrics
+// and token API whatever the app's settings say. Behind the operator's web
+// server that edge is theirs, so each snippet carries the same refusals.
+func TestEverySnippetRefusesWhatTheToolkitsEdgeRefuses(t *testing.T) {
+	var buf bytes.Buffer
+	ingress.Show(&buf, external(t, "127.0.0.1:8480"))
+	out := buf.String()
+	for _, want := range []string{
+		"@refused path /status* /badge/* /metrics /api/v1/*",
+		"location ~ ^/(status|badge/|metrics$|api/v1/) {",
+		`<LocationMatch "^/(status|badge/|metrics$|api/v1/)">`,
+		"refuse /status*, /badge/*, /metrics and /api/v1/*",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
