@@ -108,6 +108,11 @@ services:
       - {{ .Dir }}/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # One file per application, imported by that application's host block.
       - {{ .Dir }}/caddy/snippets:/etc/caddy/snippets:ro
+{{- if .Site.IsGateway }}
+      # Site blocks the host's owner adds, imported by the Caddyfile. The
+      # host's directory, not this deployment's: paisans only creates it.
+      - {{ .HostSitesSource }}:{{ .HostSites }}:ro
+{{- end }}
       - {{ .Dir }}/caddy/data:/data
       - {{ .Dir }}/caddy/config:/config
 {{- end }}

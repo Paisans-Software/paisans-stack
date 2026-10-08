@@ -2,6 +2,7 @@ package hostcheck_test
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -215,3 +216,23 @@ func TestTheProbesTolerateWhatVanishesMidway(t *testing.T) {
 
 // fixtureDeployment is the example configuration's deployment.
 var fixtureDeployment = deployment.Deployment{ID: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}
+
+// A container's compose service and networks, the manifest's files and the
+// host's own Caddy site blocks are read for the ownership report.
+func TestInspectReadsWhatTheOwnershipReportNeeds(t *testing.T) {
+	h := cleanHost()
+	h.answers["docker inspect"] = fmt.Sprintf(`{"id":%q,"name":"/blog-ghost-1","pid":913,"labels":{"com.docker.compose.project":"blog","com.docker.compose.service":"ghost"},"networks":{"web":{},"blog_default":{}},"ports":{}}
+`, shopID)
+	h.answers["/srv/caddy.d/"] = "/srv/caddy.d/blog.caddy\n/srv/caddy.d/a.caddy\n"
+	h.files["/srv/paisans/f2a9/.paisans-manifest.json"] = `{"version":1,"files":[{"path":"srv/paisans/f2a9/docs/.env","sha256":"x","mode":"0600","leftover":true,"leftover_since":"2026-10-01T00:00:00Z"}]}`
+	inv := inspect(t, h)
+	if c := inv.Containers[0]; c.Service != "ghost" || !reflect.DeepEqual(c.Networks, []string{"blog_default", "web"}) {
+		t.Errorf("container %+v", c)
+	}
+	if !reflect.DeepEqual(inv.HostSites, []string{"/srv/caddy.d/a.caddy", "/srv/caddy.d/blog.caddy"}) {
+		t.Errorf("host sites %v", inv.HostSites)
+	}
+	if len(inv.ManifestFiles) != 1 || !inv.ManifestFiles[0].Leftover || inv.ManifestFiles[0].LeftoverSince != "2026-10-01T00:00:00Z" {
+		t.Errorf("manifest files %+v", inv.ManifestFiles)
+	}
+}

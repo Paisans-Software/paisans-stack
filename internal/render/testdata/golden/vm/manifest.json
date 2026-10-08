@@ -33,7 +33,7 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/caddy/Caddyfile",
-      "sha256": "e1e224a347a2110f0909998f56472790e4b181920361de527b4f7109752d139c",
+      "sha256": "2a165e75bfb189568f6ae3ce308d62c1ba4b78f9a88eedd63022e4de018de4d8",
       "mode": "0644"
     },
     {
@@ -103,7 +103,7 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/compose.yaml",
-      "sha256": "0f49261b1f6ab609d2dde14c5ec075e7e48635a01fee5c785672bc49a819427d",
+      "sha256": "c772e69d0e87ed350aefbb2c1501b8e30144ee44eba631616c9c90556c9be908",
       "mode": "0644"
     },
     {

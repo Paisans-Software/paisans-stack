@@ -578,6 +578,9 @@ func runApply(args []string) error {
 		}
 	}
 	printPlan(plan)
+	if err := printLeftovers(os.Stdout, cfg, *site, host.Inventory, plan); err != nil {
+		return err
+	}
 
 	members, found, err := apply.ProbeEtcdMembers(cfg, *site, transports)
 	if err != nil {
@@ -919,6 +922,9 @@ func printPlan(plan *apply.Plan) {
 	}
 	if !bootstrapped {
 		printBootstrap(plan.Bootstrap)
+	}
+	if plan.HostSites {
+		fmt.Fprintf(os.Stdout, "  %-9s %s, if missing, for site blocks the host's owner adds; nothing in it is ever changed\n", "ensure", render.HostSitesDir)
 	}
 	if plan.GatewayChanging && plan.ACMEModule != "" {
 		fmt.Fprintf(os.Stdout, "  %-9s the gateway's Caddy carries %s, before anything moves\n", "check", plan.ACMEModule)

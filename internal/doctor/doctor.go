@@ -35,6 +35,9 @@ const (
 	Warn
 	// Fail is something broken now. Any Fail makes doctor exit non zero.
 	Fail
+	// Info is something worth knowing that is neither a risk nor a fault,
+	// Eg: a foreign site served by the gateway's Caddy.
+	Info
 )
 
 func (l Level) String() string {
@@ -45,6 +48,8 @@ func (l Level) String() string {
 		return "WARN"
 	case Fail:
 		return "FAIL"
+	case Info:
+		return "info"
 	}
 	return "ok"
 }
@@ -61,9 +66,10 @@ const (
 	SectionContainers = "containers"
 	SectionPocketID   = "pocket-id"
 	SectionClocks     = "clocks"
+	SectionLeftovers  = "leftovers"
 )
 
-var sections = []string{SectionReach, SectionMesh, SectionEtcd, SectionPatroni, SectionContainers, SectionPocketID, SectionClocks}
+var sections = []string{SectionReach, SectionMesh, SectionEtcd, SectionPatroni, SectionContainers, SectionPocketID, SectionClocks, SectionLeftovers}
 
 // Finding is one line of the report, with any explanation, recovery advice or
 // evidence under it.
@@ -130,6 +136,7 @@ type Input struct {
 	Containers []SiteContainers
 	Standby    []StandbyProbe
 	Clocks     []ClockSample
+	Leftovers  []LeftoverProbe
 }
 
 // Reached is the set of sites that answered ssh, and can be asked the rest.
@@ -175,6 +182,7 @@ func Diagnose(cfg *config.Config, in Input) Report {
 	noPrimary := len(in.Patroni.Cluster) > 0 && !HasLeader(in.Patroni.Cluster)
 	findings = append(findings, Standby(cfg.Deployment(), in.Standby, noPrimary)...)
 	findings = append(findings, Clocks(in.Clocks)...)
+	findings = append(findings, Leftovers(in.Leftovers)...)
 	return Report{Sites: len(in.Sites), Reached: len(reached), Findings: findings}
 }
 

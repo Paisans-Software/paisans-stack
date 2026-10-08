@@ -47,6 +47,9 @@ services:
       - /srv/paisans/f2a9/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # One file per application, imported by that application's host block.
       - /srv/paisans/f2a9/infra/caddy/snippets:/etc/caddy/snippets:ro
+      # Site blocks the host's owner adds, imported by the Caddyfile. The
+      # host's directory, not this deployment's: paisans only creates it.
+      - /srv/caddy.d:/etc/caddy.d:ro
       - /srv/paisans/f2a9/infra/caddy/data:/data
       - /srv/paisans/f2a9/infra/caddy/config:/config
 

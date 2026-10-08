@@ -19,6 +19,15 @@
 // route each other's traffic. See internal/mesh for the checks against
 // everything else on the host.
 //
+// It also keeps the gateway and the data role to one deployment per host.
+// The gateway owns ports 80 and 443 and the Caddy that imports /srv/caddy.d;
+// a data site owns the Postgres and etcd ports and the storage under
+// them. Each entry carries the site's roles as one string, sorted and joined
+// with commas (Eg: "apps,data,gateway"), so the awk merge tests a role with
+// one index() on the list wrapped in commas, and a claim is refused when
+// another deployment holds gateway and this one claims gateway, or data and
+// data. An entry without roles holds none.
+//
 // The claim runs as one remote shell command under flock, so two operators
 // claiming one host at once are serialised rather than both reading the old
 // file. The merge itself is awk, which a host has before host prepare has
@@ -84,6 +93,29 @@ type Entry struct {
 	// address in it.
 	Subnet  string `json:"subnet,omitempty"`
 	Address string `json:"address,omitempty"`
+	// Roles is the site's roles, sorted and joined with commas, one string
+	// because the awk merge matches a role in it with index().
+	Roles string `json:"roles,omitempty"`
+}
+
+// exclusiveRoles are the roles one host gives to one deployment: the gateway
+// binds 80 and 443 and runs the Caddy that imports /srv/caddy.d, and a data
+// site binds the Postgres and etcd ports and holds the cluster's storage.
+var exclusiveRoles = []config.Role{config.RoleData, config.RoleGateway}
+
+// JoinRoles is roles in an entry's form: sorted, joined with commas.
+func JoinRoles(roles []config.Role) string {
+	out := make([]string, 0, len(roles))
+	for _, r := range roles {
+		out = append(out, string(r))
+	}
+	sort.Strings(out)
+	return strings.Join(out, ",")
+}
+
+// hasRole reports whether an entry's role list holds role.
+func hasRole(list string, role config.Role) bool {
+	return list != "" && strings.Contains(","+list+",", ","+string(role)+",")
 }
 
 // Registry is the whole file.
@@ -106,6 +138,7 @@ func For(cfg *config.Config, site string, now time.Time) (string, Entry) {
 		ListenPort: declared.ListenPort(),
 		Subnet:     cfg.Mesh.Subnet,
 		Address:    declared.Address,
+		Roles:      JoinRoles(declared.Roles),
 	}
 }
 
@@ -149,7 +182,8 @@ func (c Conflict) Error() string {
 }
 
 // clashes is everything theirs holds that ours needs: the same token, root,
-// interface or listen port, or a mesh subnet overlapping ours either way.
+// interface or listen port, a mesh subnet overlapping ours either way, or the
+// gateway or data role when ours claims it too.
 // An empty or zero value holds nothing, so an entry written before a field
 // existed never clashes on it.
 func clashes(theirs, ours Entry) []string {
@@ -171,6 +205,11 @@ func clashes(theirs, ours Entry) []string {
 			out = append(out, "mesh subnet "+theirs.Subnet)
 		} else {
 			out = append(out, fmt.Sprintf("mesh subnet %s, which overlaps this deployment's %s", theirs.Subnet, ours.Subnet))
+		}
+	}
+	for _, role := range exclusiveRoles {
+		if hasRole(theirs.Roles, role) && hasRole(ours.Roles, role) {
+			out = append(out, fmt.Sprintf("the %s role", role))
 		}
 	}
 	return out
@@ -296,8 +335,9 @@ const (
 // mergeProgram is the claim's merge, in awk. It reads the registry in
 // Encode's layout, keeps every other deployment's line, drops id's own line
 // (the refresh), and prints the result with entry last. A line under another
-// id holding the claimed token, root, interface or listen port, or a mesh
-// subnet overlapping the claimed one, is a conflict: it is printed to stderr
+// id holding the claimed token, root, interface or listen port, a mesh
+// subnet overlapping the claimed one, or the gateway or data role the claim
+// also holds, is a conflict: it is printed to stderr
 // after conflictMarker and the program exits 3 without printing a registry.
 // A file in any other layout exits 4.
 //
@@ -321,6 +361,9 @@ function num(line, name,   key, i, rest) {
 	rest = substr(line, i + length(key))
 	if (!match(rest, /^[0-9]+/)) return ""
 	return substr(rest, 1, RLENGTH)
+}
+function hasrole(list, r) {
+	return list != "" && index("," list ",", "," r ",") > 0
 }
 function ipnum(a,   p) {
 	split(a, p, ".")
@@ -346,7 +389,9 @@ $0 == footer { done = 1; next }
 	if (index(line, "\"token\":\"" token "\"") || index(line, "\"root\":\"" root "\"") ||
 		(iface != "" && str(line, "interface") == iface) ||
 		(port != "" && port != "0" && num(line, "listen_port") == port) ||
-		(subnet != "" && overlaps(subnet, str(line, "subnet")))) {
+		(subnet != "" && overlaps(subnet, str(line, "subnet"))) ||
+		(hasrole(roles, "gateway") && hasrole(str(line, "roles"), "gateway")) ||
+		(hasrole(roles, "data") && hasrole(str(line, "roles"), "data"))) {
 		print marker line > "/dev/stderr"
 		conflict = 1
 	}
@@ -377,11 +422,11 @@ func awkArgs(id string, e Entry) ([]string, error) {
 	}
 	vars := map[string]string{
 		"id": id, "token": e.Token, "root": e.Root, "entry": entry,
-		"iface": e.Interface, "port": port, "subnet": e.Subnet,
+		"iface": e.Interface, "port": port, "subnet": e.Subnet, "roles": e.Roles,
 		"header": header, "footer": footer, "marker": conflictMarker, "unreadable": unreadableMarker,
 	}
 	var args []string
-	for _, name := range []string{"id", "token", "root", "iface", "port", "subnet", "entry", "header", "footer", "marker", "unreadable"} {
+	for _, name := range []string{"id", "token", "root", "iface", "port", "subnet", "roles", "entry", "header", "footer", "marker", "unreadable"} {
 		args = append(args, "-v", name+"="+awkString(vars[name]))
 	}
 	return append(args, mergeProgram), nil
@@ -499,17 +544,25 @@ func Read(t Runner) (Registry, error) {
 }
 
 func refused(t Runner, e Entry, why error) error {
+	roles := e.Roles
+	if roles == "" {
+		roles = "none"
+	}
 	advice := "Two deployments with one token would share every name, directory and WireGuard interface. Use another host for one of them"
 	var c Conflict
 	if errors.As(why, &c) && len(c.Clashes) > 0 && !strings.HasPrefix(c.Clashes[0], "token") && !strings.HasPrefix(c.Clashes[0], "root") && !strings.HasPrefix(c.Clashes[0], "WireGuard interface") {
 		switch {
+		case strings.HasPrefix(c.Clashes[0], "the gateway role"):
+			advice = "One host runs one deployment's gateway: it binds ports 80 and 443 and its Caddy imports /srv/caddy.d. Use another host for one of the gateways"
+		case strings.HasPrefix(c.Clashes[0], "the data role"):
+			advice = "One host runs one deployment's data site: it binds the Postgres and etcd ports and holds the cluster's storage. Use another host for one of the data sites"
 		case strings.HasPrefix(c.Clashes[0], "WireGuard listen port"):
 			advice = "Two WireGuard interfaces cannot listen on one port. Give this site's endpoint another port in paisans.yaml, and forward that port where the host is behind NAT"
 		default:
 			advice = "Two meshes on overlapping subnets would route each other's traffic. A deployed mesh subnet never changes, so the deployment not yet applied here moves: if this one has never been applied, run `paisans init`, which picks a subnet clear of every host"
 		}
 	}
-	return fmt.Errorf("%s: %v, so this deployment (token %s, interface %s, mesh %s) cannot share the host with it, and nothing was changed. %s", t.Describe(), why, e.Token, e.Interface, e.Subnet, advice)
+	return fmt.Errorf("%s: %v, so this deployment (token %s, interface %s, mesh %s, roles %s) cannot share the host with it, and nothing was changed. %s", t.Describe(), why, e.Token, e.Interface, e.Subnet, roles, advice)
 }
 
 // awkString escapes a value for an awk -v assignment, which processes
