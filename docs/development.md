@@ -210,7 +210,9 @@ a host decides how much is touched* has the reasoning; what the code does:
   Caddy against a site that claims 80 and 443 and one that does not, a
   foreign Postgres, a published port with no listener, a foreign `wg0`, a
   network over the mesh, and the three ways a shared host's firewall is
-  refused.
+  refused. The routing table is judged by `hostcheck.Routes`, which
+  `Classify` calls and preflight's routes check calls on the same inventory,
+  so the two cannot disagree about a host.
 
 What "shared" changes, and where:
 

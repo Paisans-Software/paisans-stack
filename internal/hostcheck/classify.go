@@ -204,13 +204,7 @@ func Classify(claims Claims, inv *Inventory) *Report {
 		})
 	}
 
-	// A Docker network's own bridge route is that network, judged by its
-	// subnet below rather than a second time as a route.
-	bridges := map[string]bool{"docker0": true}
 	for _, n := range inv.Networks {
-		if len(n.ID) >= 12 {
-			bridges["br-"+n.ID[:12]] = true
-		}
 		for _, subnet := range n.Subnets {
 			if !o.ours(n.Deployment) && overlapsMesh(claims.Mesh, subnet) {
 				conflict(Conflict{Resource: "subnet " + subnet, Key: "mesh.subnet", Holder: o.networkDesc(n)})
@@ -232,10 +226,40 @@ func Classify(claims Claims, inv *Inventory) *Report {
 			}
 		}
 	}
-	// A route equal to the mesh or inside it captures mesh traffic: the
-	// kernel picks the longest matching prefix, and it is at least as long
-	// as wg0's. A broader one (a provider's 10.0.0.0/8 private network) is
-	// shorter than wg0's route, so the mesh still wins, and it is noted.
+	routeConflicts, notes := Routes(claims, inv)
+	for _, c := range routeConflicts {
+		conflict(c)
+	}
+	r.Notes = append(r.Notes, notes...)
+
+	r.Foreign = foreign(o)
+	switch {
+	case len(r.Conflicts) > 0:
+		r.Class = Conflicted
+	case len(r.Foreign) > 0:
+		r.Class = Shared
+	}
+	return r
+}
+
+// Routes judges the host's routing table against the site's claims, and is
+// the one rule for it: Classify uses it, and so does preflight's routes line,
+// so the two cannot disagree about a host.
+//
+// A route equal to the mesh or inside it captures mesh traffic: the kernel
+// picks the longest matching prefix, and it is at least as long as wg0's. A
+// broader one (a provider's 10.0.0.0/8 private network) is shorter than wg0's
+// route, so the mesh still wins, and it is returned as a note. A route
+// through the mesh interface is the mesh itself, and a Docker network's own
+// bridge route is that network, judged by its subnet in Classify rather than
+// a second time as a route.
+func Routes(claims Claims, inv *Inventory) (conflicts []Conflict, notes []string) {
+	bridges := map[string]bool{"docker0": true}
+	for _, n := range inv.Networks {
+		if len(n.ID) >= 12 {
+			bridges["br-"+n.ID[:12]] = true
+		}
+	}
 	for _, route := range inv.Routes {
 		if route.Dst == "default" || route.Dev == claims.Interface || bridges[route.Dev] {
 			continue
@@ -250,27 +274,19 @@ func Classify(claims Claims, inv *Inventory) *Report {
 		// its traffic.
 		for _, pinned := range claims.Networks {
 			if within(n, pinned.Net) {
-				conflict(Conflict{Resource: resource, Key: pinned.Key, Holder: "the host's routing table"})
+				conflicts = append(conflicts, Conflict{Resource: resource, Key: pinned.Key, Holder: "the host's routing table"})
 			}
 		}
 		if !(n.Contains(claims.Mesh.IP) || claims.Mesh.Contains(n.IP)) {
 			continue
 		}
 		if within(n, claims.Mesh) {
-			conflict(Conflict{Resource: resource, Key: "mesh.subnet", Holder: "the host's routing table"})
+			conflicts = append(conflicts, Conflict{Resource: resource, Key: "mesh.subnet", Holder: "the host's routing table"})
 		} else {
-			r.Notes = append(r.Notes, fmt.Sprintf("%s contains the mesh subnet %s; wg0's route is more specific and takes the mesh's traffic", resource, claims.Mesh))
+			notes = append(notes, fmt.Sprintf("%s contains the mesh subnet %s; wg0's route is more specific and takes the mesh's traffic", resource, claims.Mesh))
 		}
 	}
-
-	r.Foreign = foreign(o)
-	switch {
-	case len(r.Conflicts) > 0:
-		r.Class = Conflicted
-	case len(r.Foreign) > 0:
-		r.Class = Shared
-	}
-	return r
+	return conflicts, notes
 }
 
 // foreign lists what is neither the deployment's nor the base system's. An

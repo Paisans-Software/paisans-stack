@@ -262,9 +262,13 @@ func TestPreflightRefuses(t *testing.T) {
 			setup: func(h map[string]*fakeHost) {
 				h["home-b"].override(rule{match: "ss -Hltnu", out: "tcp LISTEN 0 244 [::]:5432 [::]:*\n"})
 			}},
-		{name: "route collides", site: "home-b", check: "routes", want: "10.44.0.0/16 dev br-lan",
+		{name: "route equals the mesh", site: "home-b", check: "routes", want: "route 10.44.0.0/24 dev br-lan",
 			setup: func(h map[string]*fakeHost) {
-				h["home-b"].override(rule{match: "ip -j route", out: `[{"dst":"10.44.0.0/16","dev":"br-lan"}]`})
+				h["home-b"].override(rule{match: "ip -j route", out: `[{"dst":"10.44.0.0/24","dev":"br-lan"}]`})
+			}},
+		{name: "route inside the mesh", site: "home-b", check: "routes", want: "route 10.44.0.128/25 dev tun0",
+			setup: func(h map[string]*fakeHost) {
+				h["home-b"].override(rule{match: "ip -j route", out: `[{"dst":"10.44.0.128/25","dev":"tun0"}]`})
 			}},
 		{name: "disk short", site: "home-b", check: "disk", want: "needs 3.0 GiB",
 			setup: func(h map[string]*fakeHost) {
@@ -400,6 +404,24 @@ func TestTheMeshsOwnRouteIsNotACollision(t *testing.T) {
 	h["home-b"].override(rule{match: "ip -j route", out: `[{"dst":"10.44.0.0/24","dev":"wg0"}]`})
 	if r := run(t, fixture(t), h); r.Refused() {
 		t.Fatalf("refused:\n%s", printed(r))
+	}
+}
+
+// A route broader than the mesh, such as a provider's private network, is
+// shorter than the one wg0 adds, so longest prefix match still sends the
+// mesh's traffic through wg0. The host check accepts it with a note, and
+// preflight must agree with it rather than refuse the host.
+func TestABroaderRouteIsANoteNotACollision(t *testing.T) {
+	prepared(t)
+	h := hosts()
+	h["home-b"].override(rule{match: "ip -j route", out: `[{"dst":"default","dev":"eth0"},{"dst":"10.0.0.0/8","dev":"eth1"}]`})
+	r := run(t, fixture(t), h)
+	if r.Refused() {
+		t.Fatalf("refused:\n%s", printed(r))
+	}
+	routes := find(r, "home-b", "routes")
+	if len(routes) != 1 || !strings.Contains(routes[0].Detail, "route 10.0.0.0/8 dev eth1 contains the mesh subnet") {
+		t.Fatalf("want the broader route noted on the routes line, got:\n%s", printed(r))
 	}
 }
 

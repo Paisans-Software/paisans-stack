@@ -9,11 +9,9 @@
 package preflight
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"path"
 	"sort"
 	"strconv"
@@ -108,7 +106,7 @@ func Run(cfg *config.Config, newSite string, transports map[string]apply.Transpo
 		r.wireguard(t)
 		r.watchdog(t)
 		r.ports()
-		r.routes(t)
+		r.routes()
 		r.disk(t)
 		r.storage(t)
 		r.rtt(t)
@@ -402,51 +400,37 @@ func (r *runner) ports() {
 	r.pass(r.newSite, "ports", "free: %s", strings.Join(free, ", "))
 }
 
-// routes checks the mesh subnet overlaps no route the host already has: a
-// Docker bridge, a LAN or another VPN on the same range would capture mesh
-// traffic, or have its own captured. A route through wg0 is the mesh itself
-// and is not a collision.
-func (r *runner) routes(t apply.Transport) {
-	_, mesh, err := net.ParseCIDR(r.cfg.Mesh.Subnet)
+// routes judges the new host's routing table by the host check's own rule,
+// hostcheck.Routes, on the table the host check already read, so preflight
+// and the host check cannot disagree about a host. A route equal to the mesh
+// subnet (or a pinned network) or inside it refuses, because longest prefix
+// match would hand it that traffic; a broader one is noted and passes,
+// because wg0's route is more specific. A route through wg0 is the mesh
+// itself.
+func (r *runner) routes() {
+	if r.hostReport == nil {
+		r.refuse(r.newSite, "routes", "could not list routes: the host check did not complete")
+		return
+	}
+	claims, err := hostcheck.ClaimsFor(r.cfg, r.newSite)
 	if err != nil {
-		r.refuse(r.newSite, "routes", "mesh.subnet %q is not a network", r.cfg.Mesh.Subnet)
+		r.refuse(r.newSite, "routes", "%v", err)
 		return
 	}
-	out, err := t.Run("ip -j route")
-	if err != nil {
-		r.refuse(r.newSite, "routes", "could not list routes: %s", firstLine(errText(out, err)))
+	conflicts, notes := hostcheck.Routes(claims, r.hostReport.Inventory)
+	if len(conflicts) > 0 {
+		var lines []string
+		for _, c := range conflicts {
+			lines = append(lines, c.String())
+		}
+		r.refuse(r.newSite, "routes", "%s. Longest prefix match would send that traffic away from where the site needs it; remove the route or change the key it names", strings.Join(lines, "; "))
 		return
 	}
-	var routes []struct {
-		Dst string `json:"dst"`
-		Dev string `json:"dev"`
+	detail := fmt.Sprintf("no route captures the mesh subnet %s", r.cfg.Mesh.Subnet)
+	if len(notes) > 0 {
+		detail += "; note: " + strings.Join(notes, "; ")
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &routes); err != nil {
-		r.refuse(r.newSite, "routes", "unreadable `ip -j route` output: %v", err)
-		return
-	}
-	var clash []string
-	for _, route := range routes {
-		if route.Dst == "default" || route.Dev == "wg0" {
-			continue
-		}
-		dst := route.Dst
-		if !strings.Contains(dst, "/") {
-			dst += "/32"
-		}
-		_, network, err := net.ParseCIDR(dst)
-		if err != nil {
-			continue
-		}
-		if network.Contains(mesh.IP) || mesh.Contains(network.IP) {
-			clash = append(clash, fmt.Sprintf("%s dev %s", route.Dst, route.Dev))
-		}
-	}
-	if len(clash) > 0 {
-		r.refuse(r.newSite, "routes", "mesh subnet %s overlaps %s", r.cfg.Mesh.Subnet, strings.Join(clash, ", "))
-		return
-	}
-	r.pass(r.newSite, "routes", "no route overlaps the mesh subnet %s", r.cfg.Mesh.Subnet)
+	r.pass(r.newSite, "routes", "%s", detail)
 }
 
 // registry checks the new site's host can be claimed for this deployment: no
