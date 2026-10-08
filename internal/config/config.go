@@ -33,9 +33,16 @@ const (
 	// that list does not name. Founder decision, over accepting an empty
 	// role list for such a site.
 	RoleStorage Role = "storage"
+	// RoleMonitor is a host that runs the uptime monitor. It is never the
+	// gateway or the witness, because reporting their failures is its job,
+	// and it serves its own apps rather than routing them through the
+	// gateway, which would take it dark at exactly the moment it is needed.
+	// See docs/specs/2026-10-08-monitor-role-and-host-check.md. Founder
+	// decision.
+	RoleMonitor Role = "monitor"
 )
 
-var knownRoles = map[Role]bool{RoleData: true, RoleApps: true, RoleGateway: true, RoleWitness: true, RoleStorage: true}
+var knownRoles = map[Role]bool{RoleData: true, RoleApps: true, RoleGateway: true, RoleWitness: true, RoleStorage: true, RoleMonitor: true}
 
 // Kind is an application the toolkit knows how to render.
 type Kind string
@@ -170,6 +177,66 @@ type Site struct {
 	// site. It only matters where the site holds the data role. Empty means
 	// auto; read it through WatchdogMode rather than directly.
 	Watchdog WatchdogMode `yaml:"watchdog"`
+	// Ingress is what sits in front of a monitor site's apps. Only a site
+	// holding the monitor role may declare it: a gateway always runs the
+	// toolkit's Caddy, and every other site is reached through the gateway.
+	// Absent means mode paisans; read it through IngressMode.
+	Ingress *Ingress `yaml:"ingress"`
+}
+
+// IngressMode is what serves a monitor site's apps to the internet.
+type IngressMode string
+
+const (
+	// IngressPaisans runs the toolkit's own Caddy on the monitor, the same
+	// image as the gateway's, with certificates over DNS-01.
+	IngressPaisans IngressMode = "paisans"
+	// IngressExternal runs nothing in front of the app: a web server the
+	// operator already runs terminates TLS and proxies to Listen. Its
+	// certificates are the operator's, because the toolkit cannot know how
+	// an unfamiliar proxy obtains them and must not edit a configuration it
+	// does not own.
+	IngressExternal IngressMode = "external"
+)
+
+var knownIngressModes = map[IngressMode]bool{IngressPaisans: true, IngressExternal: true}
+
+// Ingress is how the internet reaches a monitor site's apps.
+type Ingress struct {
+	Mode IngressMode `yaml:"mode"`
+	// Listen is where the app is published for the operator's web server, as
+	// an IPv4 address and a port. Required with mode external, refused with
+	// mode paisans.
+	Listen string `yaml:"listen"`
+}
+
+// ListenHostPort splits Listen into an IPv4 address and a port, false when it
+// is not one.
+func (i Ingress) ListenHostPort() (string, int, bool) {
+	host, port, err := net.SplitHostPort(i.Listen)
+	if err != nil || !isIPv4(host) {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return "", 0, false
+	}
+	return host, n, true
+}
+
+// IngressMode returns the site's declared ingress mode, paisans when none is
+// declared. It is meaningful only on a monitor site.
+func (s Site) IngressMode() IngressMode {
+	if s.Ingress == nil || s.Ingress.Mode == "" {
+		return IngressPaisans
+	}
+	return s.Ingress.Mode
+}
+
+// RunsCaddy reports whether the toolkit's Caddy runs on the site: on a
+// gateway, and on a monitor that serves its own apps.
+func (s Site) RunsCaddy() bool {
+	return s.Has(RoleGateway) || (s.Has(RoleMonitor) && s.IngressMode() == IngressPaisans)
 }
 
 // WatchdogMode is how a data site's watchdog device is provided.
@@ -552,6 +619,29 @@ func (c *Config) PinnedTo(site string) []string {
 	return out
 }
 
+// CaddySites returns the sites that run the toolkit's Caddy, sorted: every
+// gateway, and every monitor serving its own apps.
+func (c *Config) CaddySites() []string {
+	var out []string
+	for _, name := range c.SiteNames() {
+		if c.Sites[name].RunsCaddy() {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// MonitorSites returns the sites holding the monitor role, sorted.
+func (c *Config) MonitorSites() []string {
+	var out []string
+	for _, name := range c.SiteNames() {
+		if c.Sites[name].Has(RoleMonitor) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // GatewaySites returns the sites holding the gateway role, sorted.
 func (c *Config) GatewaySites() []string {
 	var out []string
@@ -599,11 +689,21 @@ func (c *Config) structural() error {
 	for _, name := range c.SiteNames() {
 		site := c.Sites[name]
 		if len(site.Roles) == 0 && len(c.PinnedTo(name)) == 0 {
-			add("sites.%s.roles: required. Give the site at least one of data, apps, gateway, witness, storage. A site may have none only when an app is pinned to it, because then it exists to host that app.", name)
+			add("sites.%s.roles: required. Give the site at least one of data, apps, gateway, witness, storage, monitor. A site may have none only when an app is pinned to it, because then it exists to host that app.", name)
 		}
 		for _, role := range site.Roles {
 			if !knownRoles[role] {
-				add("sites.%s.roles: unknown role %q. Valid roles are data, apps, gateway, witness, storage.", name, role)
+				add("sites.%s.roles: unknown role %q. Valid roles are data, apps, gateway, witness, storage, monitor.", name, role)
+			}
+		}
+		if in := site.Ingress; in != nil {
+			if in.Mode != "" && !knownIngressModes[in.Mode] {
+				add("sites.%s.ingress.mode: unknown mode %q. Valid modes are paisans, where the toolkit's Caddy serves the site's apps, and external, where your own web server does.", name, in.Mode)
+			}
+			if in.Listen != "" {
+				if _, _, ok := in.ListenHostPort(); !ok {
+					add("sites.%s.ingress.listen: %q is not an IPv4 address and a port. Write it as the address your web server proxies to, for example 127.0.0.1:8480.", name, in.Listen)
+				}
 			}
 		}
 		if site.Address == "" {
@@ -647,12 +747,12 @@ func (c *Config) structural() error {
 		}
 	}
 	problems = append(problems, smtpProblems("smtp", c.SMTP)...)
-	if len(c.GatewaySites()) > 0 && c.ACME.Provider == "" {
+	if c.ACME.Provider == "" && len(c.CaddySites()) > 0 {
 		// The providers are deliberately not listed here. This package does not
 		// import internal/acme, by design, so any list written out would be a
 		// second copy in prose that nothing keeps in step with the catalogue.
 		// `validate` names them, built from acme.Providers.
-		add("acme.provider: required, because a site holds the gateway role. Certificates are issued over DNS-01, so the provider that answers the challenge has to be named. It must be one this toolkit publishes an image for, which `paisans validate` will list, or any other provider together with an acme.image carrying its module.")
+		add("acme.provider: required, because %s runs the toolkit's Caddy (a gateway, or a monitor in ingress mode paisans). Certificates are issued over DNS-01, so the provider that answers the challenge has to be named. It must be one this toolkit publishes an image for, which `paisans validate` will list, or any other provider together with an acme.image carrying its module.", strings.Join(c.CaddySites(), ", "))
 	}
 	if len(problems) == 0 {
 		return nil
