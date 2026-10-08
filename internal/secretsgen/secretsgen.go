@@ -461,11 +461,11 @@ func publicKeyPEM(key *rsa.PublicKey) (string, error) {
 // operator finishing an install knows exactly what is left and who issues it.
 func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 	var out []Owed
-	if secrets.External["acme_dns_token"] == "" && len(cfg.GatewaySites()) > 0 {
+	if secrets.External["acme_dns_token"] == "" && len(cfg.CaddySites()) > 0 {
 		out = append(out, Owed{
 			Name: "external.acme_dns_token",
 			Why: fmt.Sprintf(
-				"issued by the DNS provider, %s in this deployment, scoped to this zone only. Certificates use DNS-01, so the gateway cannot obtain one without it",
+				"issued by the DNS provider, %s in this deployment, scoped to this zone only. Certificates use DNS-01, so the gateway, and a monitor serving its own hostname, cannot obtain one without it",
 				cfg.ACME.Provider),
 		})
 	}

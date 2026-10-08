@@ -399,6 +399,29 @@ func TestFirewallRulesFollowRoles(t *testing.T) {
 	}
 }
 
+// A monitor serving its own apps opens 80 and 443 like a gateway; behind the
+// operator's own web server it opens nothing for the web, because that server
+// already holds both.
+func TestAPaisansMonitorOpensEightyAndFourFortyThree(t *testing.T) {
+	cfg := fixture(t)
+	var got []string
+	for _, r := range hostprep.Rules(cfg.Sites["watch"]) {
+		got = append(got, r.String())
+	}
+	if want := "22/tcp,51820/udp,all inbound on wg0,80/tcp,443/tcp"; strings.Join(got, ",") != want {
+		t.Errorf("paisans: got %s, want %s", strings.Join(got, ","), want)
+	}
+	watch := cfg.Sites["watch"]
+	watch.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}
+	got = nil
+	for _, r := range hostprep.Rules(watch) {
+		got = append(got, r.String())
+	}
+	if want := "22/tcp,51820/udp,all inbound on wg0"; strings.Join(got, ",") != want {
+		t.Errorf("external: got %s, want %s", strings.Join(got, ","), want)
+	}
+}
+
 // A fresh gateway gets 80 and 443 and no watchdog: it holds no data role.
 func TestAFreshGatewaySiteDiffersFromADataSite(t *testing.T) {
 	host := freshHost()

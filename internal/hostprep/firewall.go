@@ -51,11 +51,12 @@ const meshInterface = "wg0"
 const wireguardPort = 51820
 
 // Rules derives a site's inbound rules from its roles. Nothing is listed per
-// site: a site that gains the gateway role gains 80 and 443 on its next
-// prepare, and one that loses it has them removed by the same prepare, since
-// the profile removes a rule it added once nothing derives it any more. SSH is
-// the exception and is never removed; see the profile's Firewall. Its port is
-// the site's ssh.port, 22 unless declared.
+// site: a site that gains the gateway role, or the monitor role in ingress
+// mode paisans, gains 80 and 443 on its next prepare, and one that loses it
+// has them removed by the same prepare, since the profile removes a rule it
+// added once nothing derives it any more. SSH is the exception and is never
+// removed; see the profile's Firewall. Its port is the site's ssh.port, 22
+// unless declared.
 //
 // Why is written into the host's firewall as part of the rule's ownership
 // comment, so it must not contain a single quote: ufw refuses one in a comment.
@@ -68,10 +69,19 @@ func Rules(site config.Site) []Rule {
 		{Port: wireguardPort, Proto: "udp", Why: "WireGuard, the mesh"},
 		{Interface: meshInterface, Why: "the mesh: etcd, Patroni, Garage, HAProxy"},
 	}
-	if site.Has(config.RoleGateway) {
+	switch {
+	case site.Has(config.RoleGateway):
 		rules = append(rules,
 			Rule{Port: 80, Proto: "tcp", Why: "the gateway, HTTP"},
 			Rule{Port: 443, Proto: "tcp", Why: "the gateway, HTTPS"},
+		)
+	case site.RunsCaddy():
+		// A monitor serving its own hostname through the toolkit's Caddy.
+		// Behind the operator's own web server it opens nothing here: that
+		// server holds 80 and 443 and its rules are the operator's.
+		rules = append(rules,
+			Rule{Port: 80, Proto: "tcp", Why: "the monitor, HTTP"},
+			Rule{Port: 443, Proto: "tcp", Why: "the monitor, HTTPS"},
 		)
 	}
 	return rules

@@ -567,3 +567,24 @@ func TestGarageKeyPairIsWellFormedAndFresh(t *testing.T) {
 		t.Fatalf("a generated pair is refused: %v", err)
 	}
 }
+
+// The DNS token is owed wherever the toolkit's Caddy runs, which includes a
+// monitor serving its own hostname in a deployment with no gateway at all.
+func TestTheDNSTokenIsOwedForAMonitorsOwnCaddy(t *testing.T) {
+	cfg := &config.Config{
+		ACME: config.ACME{Provider: "desec"},
+		Sites: map[string]config.Site{
+			"watch": {Roles: []config.Role{config.RoleMonitor}, Address: "10.44.0.4"},
+		},
+	}
+	filled, err := secretsgen.Fill(cfg, &config.Secrets{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range filled.Owed {
+		if o.Name == "external.acme_dns_token" {
+			return
+		}
+	}
+	t.Fatal("a monitor in ingress mode paisans needs the token, and it was not owed")
+}
