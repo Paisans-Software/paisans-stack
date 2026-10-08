@@ -105,11 +105,13 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 	// ahead. Behind an operator's own web server it is the only thing that
 	// notices a renewal that silently stopped.
 	//
-	// Every other monitor's public URL follows, checked the same way and in
-	// AppNames order. A monitor cannot report its own death, so with more
-	// than one, each is what notices that another has died: this check
-	// covers the other monitor and the path in front of it, and the ping of
-	// its site, seeded below, covers its host.
+	// The public URL of every monitor on another monitor site follows,
+	// checked the same way and in AppNames order. A monitor cannot report its
+	// own death or its host's, so a monitor on a separate site is what
+	// notices either: this check covers the other monitor and the path in
+	// front of it, and the ping of its site, seeded below, covers its host.
+	// A monitor on this same site dies with this host, so checking it would
+	// add nothing about losing the host, and it is left out.
 	if health, ok := kinds.HealthFor(config.KindUptime); ok {
 		uptimeCheck := func(name string) seedMonitor {
 			return seedMonitor{
@@ -121,7 +123,8 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 		}
 		monitors = append(monitors, uptimeCheck(self))
 		for _, name := range p.cfg.AppNames() {
-			if name != self && p.cfg.Apps[name].Kind == config.KindUptime {
+			other := p.cfg.Apps[name]
+			if other.Kind == config.KindUptime && other.Placement.Site != monitorSite {
 				monitors = append(monitors, uptimeCheck(name))
 			}
 		}

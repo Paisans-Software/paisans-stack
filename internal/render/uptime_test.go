@@ -306,6 +306,28 @@ func TestEachMonitorChecksTheOthersPublicURL(t *testing.T) {
 	}
 }
 
+// Two monitors on one monitor site share a host, so checking each other
+// proves nothing about losing it: each seeds only its own public URL. validate
+// refuses this shape today (port-collision in mode paisans, and in mode
+// external a monitor site hosts the monitor alone), but Build does not
+// validate, so the seed holds the rule itself rather than leaning on that.
+func TestMonitorsOnOneSiteDoNotCheckEachOther(t *testing.T) {
+	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+	cfg.Apps["status-b"] = config.App{Kind: config.KindUptime, Hostname: "status-b.example.org",
+		Placement: config.Placement{Mode: config.PlacementPinned, Site: "watch"},
+		Settings:  map[string]any{"admin_group": "admins"}}
+	secrets.Apps["status-b"] = map[string]any{"admin_password": "fixture-admin-b", "session_secret": "fixture-session-b"}
+	for self, other := range map[string]string{"status": "status-b", "status-b": "status"} {
+		monitors := byName(renderSeedAt(t, cfg, secrets, "watch/srv/paisans/f2a9/"+self+"/monitors.json"))
+		if monitors[render.PublicCheckName(self)] == nil {
+			t.Errorf("%s does not check its own public URL", self)
+		}
+		if monitors[render.PublicCheckName(other)] != nil {
+			t.Errorf("%s checks %s, which shares its site", self, other)
+		}
+	}
+}
+
 // A deployment with one monitor seeds exactly one uptime check, its own.
 func TestASingleMonitorSeedsOnlyItsOwnUptimeCheck(t *testing.T) {
 	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
