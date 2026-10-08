@@ -18,7 +18,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/status.caddy",
-      "sha256": "6c88f3b597221bae4514fc071f0d1c1c4cc46a3fe4d819f2d1b6bc05ad96b43d",
+      "sha256": "6cafc0d06abd5895704dce83dd58d4f1f2a84d9f841388dc9c803019efb44308",
       "mode": "0644"
     },
     {

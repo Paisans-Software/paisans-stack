@@ -247,3 +247,23 @@ func TestTheMonitorChecksItsOwnPublicURL(t *testing.T) {
 		t.Fatalf("self check: %v", self)
 	}
 }
+
+// The edge refuses /metrics/ as well as /metrics: Express routes both to the
+// same handler, its routing being non strict. Caddy's path matcher is case
+// insensitive, so /Metrics needs nothing more.
+func TestTheEdgeRefusesMetricsWithATrailingSlash(t *testing.T) {
+	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range plan.Files {
+		if f.Path == "watch/srv/infra/caddy/snippets/status.caddy" {
+			if !strings.Contains(f.Content, "@refused path /status* /badge/* /metrics /metrics/ /api/v1/*") {
+				t.Fatalf("%s", f.Content)
+			}
+			return
+		}
+	}
+	t.Fatal("no snippet")
+}

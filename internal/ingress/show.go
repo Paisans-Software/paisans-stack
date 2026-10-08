@@ -72,12 +72,18 @@ func Show(w io.Writer, t Target) {
 // refuses (templates/uptime/caddy.snippet.tmpl), because behind the
 // operator's web server that snippet is not in front of the app. Apache's
 // refusal is a 403 from Require rather than a 404.
+//
+// The app is Express with its default routing, which ignores case and a
+// trailing slash, so /STATUS and /metrics/ reach the same handlers as
+// /status and /metrics. Caddy's path matcher already ignores case; nginx's
+// ~* and the (?i) in Apache's pattern make theirs do the same, and every
+// pattern accepts /metrics/.
 func caddySnippet(t Target) string {
 	return fmt.Sprintf(`%s {
 	# %s: leave this line out if this Caddy obtains the certificate
 	# itself; otherwise name your own files.
 	tls /etc/ssl/%s/fullchain.pem /etc/ssl/%s/privkey.pem
-	@refused path /status* /badge/* /metrics /api/v1/*
+	@refused path /status* /badge/* /metrics /metrics/ /api/v1/*
 	respond @refused 404
 	reverse_proxy %s
 }
@@ -94,7 +100,7 @@ func nginxSnippet(t Target) string {
     ssl_certificate     /etc/ssl/%s/fullchain.pem;
     ssl_certificate_key /etc/ssl/%s/privkey.pem;
 
-    location ~ ^/(status|badge/|metrics$|api/v1/) {
+    location ~* ^/(status|badge/|metrics/?$|api/v1/) {
         return 404;
     }
 
@@ -117,7 +123,7 @@ func apacheSnippet(t Target) string {
     SSLCertificateFile    /etc/ssl/%s/fullchain.pem
     SSLCertificateKeyFile /etc/ssl/%s/privkey.pem
 
-    <LocationMatch "^/(status|badge/|metrics$|api/v1/)">
+    <LocationMatch "(?i)^/(status|badge/|metrics/?$|api/v1/)">
         Require all denied
     </LocationMatch>
 

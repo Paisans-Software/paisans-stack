@@ -3,6 +3,7 @@ package ingress_test
 import (
 	"bytes"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -115,13 +116,64 @@ func TestEverySnippetRefusesWhatTheToolkitsEdgeRefuses(t *testing.T) {
 	ingress.Show(&buf, external(t, "127.0.0.1:8480"))
 	out := buf.String()
 	for _, want := range []string{
-		"@refused path /status* /badge/* /metrics /api/v1/*",
-		"location ~ ^/(status|badge/|metrics$|api/v1/) {",
-		`<LocationMatch "^/(status|badge/|metrics$|api/v1/)">`,
+		"@refused path /status* /badge/* /metrics /metrics/ /api/v1/*",
+		"location ~* ^/(status|badge/|metrics/?$|api/v1/) {",
+		`<LocationMatch "(?i)^/(status|badge/|metrics/?$|api/v1/)">`,
 		"refuse /status*, /badge/*, /metrics and /api/v1/*",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// refusalCases are paths the monitor's Express app routes to its status
+// page, badges, metrics or token API, in the forms its non strict, case
+// insensitive routing still accepts, and paths that must pass.
+var refusalCases = map[string]bool{
+	"/status": true, "/STATUS": true, "/status/x": true, "/badge/1": true, "/Badge/1": true,
+	"/metrics": true, "/metrics/": true, "/Metrics": true, "/api/v1/x": true, "/api/V1/x": true,
+	"/": false, "/healthz": false, "/login/oidc": false, "/api/sites": false, "/metricsx": false,
+}
+
+// caddyPathMatches is Caddy's path matcher for the forms the snippets use:
+// exact, or a prefix when the pattern ends in *, and case insensitive
+// ("Path matches are exact but case-insensitive", caddyserver.com/docs/
+// caddyfile/matchers).
+func caddyPathMatches(patterns []string, path string) bool {
+	path = strings.ToLower(path)
+	for _, p := range patterns {
+		p = strings.ToLower(p)
+		if strings.HasSuffix(p, "*") && strings.HasPrefix(path, strings.TrimSuffix(p, "*")) || p == path {
+			return true
+		}
+	}
+	return false
+}
+
+func TestEachSnippetRefusesEveryFormOfTheRefusedPaths(t *testing.T) {
+	var buf bytes.Buffer
+	ingress.Show(&buf, external(t, "127.0.0.1:8480"))
+	out := buf.String()
+
+	caddy := regexp.MustCompile(`@refused path (.+)`).FindStringSubmatch(out)
+	nginx := regexp.MustCompile(`location ~\* (\S+) \{`).FindStringSubmatch(out)
+	apache := regexp.MustCompile(`<LocationMatch "([^"]+)">`).FindStringSubmatch(out)
+	if caddy == nil || nginx == nil || apache == nil {
+		t.Fatalf("a snippet has no refusal:\n%s", out)
+	}
+	// nginx's ~* is a case insensitive match.
+	nginxRe := regexp.MustCompile("(?i)" + nginx[1])
+	apacheRe := regexp.MustCompile(apache[1])
+	for path, refused := range refusalCases {
+		if got := caddyPathMatches(strings.Fields(caddy[1]), path); got != refused {
+			t.Errorf("caddy: %s refused %v, want %v", path, got, refused)
+		}
+		if got := nginxRe.MatchString(path); got != refused {
+			t.Errorf("nginx: %s refused %v, want %v", path, got, refused)
+		}
+		if got := apacheRe.MatchString(path); got != refused {
+			t.Errorf("apache: %s refused %v, want %v", path, got, refused)
 		}
 	}
 }

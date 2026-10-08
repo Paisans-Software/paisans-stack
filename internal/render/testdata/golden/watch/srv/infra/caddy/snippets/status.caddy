@@ -8,7 +8,9 @@
 # token API (/api/v1/*) are refused here whatever the app's own settings say:
 # the status page lists every monitor, mesh addresses included, and /metrics
 # is public whenever no API token exists, which under this toolkit is always.
-@refused path /status* /badge/* /metrics /api/v1/*
+# Express ignores a trailing slash, so /metrics/ is refused too; Caddy's path
+# matcher already ignores case.
+@refused path /status* /badge/* /metrics /metrics/ /api/v1/*
 respond @refused 404
 reverse_proxy 10.44.0.4:3001 {
 	header_up X-Forwarded-Proto https
