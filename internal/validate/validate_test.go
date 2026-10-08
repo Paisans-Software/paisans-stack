@@ -447,3 +447,29 @@ func TestExternalIngressNeedsListen(t *testing.T) {
 		t.Fatal("external with no listen was not refused")
 	}
 }
+
+// acme.image's module check covers every site running the toolkit's Caddy,
+// a monitor serving its own hostname included, not only a gateway.
+func TestACMEProviderNeedsAnImageForAMonitorsCaddy(t *testing.T) {
+	cfg := load(t, "uptime-without-smtp")
+	vm := cfg.Sites["vm"]
+	vm.Roles = []config.Role{config.RoleWitness}
+	cfg.Sites["vm"] = vm
+	cfg.ACME = config.ACME{Provider: "route53"}
+	if !validate.Check(cfg).Has("acme-provider-needs-an-image") {
+		t.Fatal("a monitor's Caddy with an unpublished provider and no image was not refused")
+	}
+}
+
+// Carrier grade NAT space, which Tailscale uses, is as private to the site as
+// RFC 1918: allowed as a listen address, with the firewall warning.
+func TestACGNATListenIsWarnedNotRefused(t *testing.T) {
+	cfg := load(t, "uptime-without-smtp")
+	site := cfg.Sites["watch"]
+	site.Ingress = &config.Ingress{Mode: config.IngressExternal, Listen: "100.101.102.103:8480"}
+	cfg.Sites["watch"] = site
+	result := validate.Check(cfg)
+	if result.Has("ingress-listen-public") || !result.Has("ingress-listen-bypasses-firewall") {
+		t.Fatalf("%v", result.Findings)
+	}
+}

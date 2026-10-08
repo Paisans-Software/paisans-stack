@@ -82,8 +82,9 @@ func (c *checker) hostsUptime(site string) bool {
 // operator's own web server, so it belongs to mode external alone and that
 // mode cannot work without it. Docker publishes a port in front of ufw, so a
 // listen address the internet could reach would expose the app around the
-// proxy whatever the firewall says: only loopback, a private LAN address or
-// the site's own mesh address are accepted, and the last two with a warning.
+// proxy whatever the firewall says: only loopback, a private LAN address
+// (RFC 1918, or carrier grade NAT space as Tailscale uses) or the site's own
+// mesh address are accepted, and all but loopback with a warning.
 // One listen publishes one app, so an external monitor hosts the monitor and
 // nothing else: a second app pinned there would be routed by nothing.
 func (c *checker) ingress() {
@@ -122,12 +123,12 @@ func (c *checker) ingress() {
 		ip := net.ParseIP(host)
 		switch {
 		case ip.IsLoopback():
-		case host == site.Address || (!c.cfg.Mesh.Contains(host) && ip.IsPrivate()):
+		case host == site.Address || (!c.cfg.Mesh.Contains(host) && (ip.IsPrivate() || cgnat.Contains(ip))):
 			c.warn("ingress-listen-bypasses-firewall", key+".listen",
 				"is %s, which is not loopback. Docker publishes a port with its own iptables rules, in front of ufw, so the firewall does not protect it: anything that can reach %s can reach the app around your web server. Prefer 127.0.0.1 when the web server runs on this machine.", listen, host)
 		default:
 			c.refuse("ingress-listen-public", key+".listen",
-				"is %s. The app would be published where the proxy is not in front of it, and Docker's rules bypass ufw. Use loopback (127.0.0.1), a private LAN address, or this site's own mesh address, %s.", listen, site.Address)
+				"is %s. The app would be published where the proxy is not in front of it, and Docker's rules bypass ufw. Use loopback (127.0.0.1), a private LAN address (RFC 1918, or 100.64.0.0/10 as Tailscale uses), or this site's own mesh address, %s.", listen, site.Address)
 		}
 	}
 }

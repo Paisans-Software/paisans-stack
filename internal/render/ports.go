@@ -121,8 +121,9 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 		add("Caddy", roles(config.RoleGateway), "tcp", "", caddyHTTPSPort)
 	}
 	// A monitor in ingress mode paisans runs the gateway's Caddy image for its
-	// own apps, binding the same two ports on every interface.
-	if s.Has(config.RoleMonitor) && s.IngressMode() == config.IngressPaisans {
+	// own apps, binding the same two ports on every interface. On a gateway,
+	// which validate refuses as a monitor, it is the gateway's one Caddy.
+	if s.Has(config.RoleMonitor) && s.IngressMode() == config.IngressPaisans && !s.Has(config.RoleGateway) {
 		add("Caddy", roles(config.RoleMonitor), "tcp", "", caddyHTTPPort)
 		add("Caddy", roles(config.RoleMonitor), "tcp", "", caddyHTTPSPort)
 	}
