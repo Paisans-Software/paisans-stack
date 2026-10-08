@@ -2126,6 +2126,53 @@ inside the mesh subnet, which the interface's own `Address` already routes
 interface brought up by hand serves every service just as well, and starting the
 unit on top of it would fail on an interface that already exists.
 
+### A new deployment is applied witness first
+
+The first time a deployment's sites are applied, the order matters, and it is
+one order only: **every witness in `etcd.members` first, then the data sites.**
+After that first round, sites are applied in any order.
+
+The reason is etcd, not Patroni. A new etcd cluster starts at cluster version
+3.0 and raises it only once its leader has heard a version from **every**
+founding member: one member that has never started leaves the decision open
+(etcd v3.5.16, `server/etcdserver/cluster_util.go`, `decideClusterVersion`
+returns nothing while any member's version is unknown). Quorum is not enough.
+Patroni reads that version from `/version` and, below 3.3, talks to etcd under
+`/v3alpha` (Patroni v4.1.0, `patroni/dcs/etcd3.py`), a prefix etcd 3.5 does
+not serve. It logs `waiting on etcd` and never takes the leader key, so a data
+site's apply polls for a primary until it times out, with nothing on screen
+pointing at the member that is missing. That happened on the first three-site
+deployment: both data sites, applied before the witness, timed out, and the
+cluster formed seconds after the witness was applied.
+
+The witness goes first because nothing waits on it: it runs no Patroni, so its
+apply finishes on its own and its etcd is running for the sites after it. Two
+gates enforce the rest, and both apply only while **this site's etcd member is
+being founded**, which `apply` reads as the absence of `/srv/infra/etcd-initial`:
+
+| Gate | When | What `apply` does |
+|------|------|-------------------|
+| witness first | a data site's member is being founded and a witness in `etcd.members` runs no etcd | refuses to touch the infrastructure stack, and names the witness to apply |
+| founding stop | a data site's member is being founded and another member runs no etcd yet | brings the infrastructure stack up, so this site's etcd joins the set, then stops before the wait for a primary, naming the sites still to apply; the next apply resumes |
+
+So three sites go: the witness; the first data site, which stops after its
+infrastructure; the second, whose etcd completes the set, so it waits for a
+primary and carries on; then the first again, which resumes. Applying the two
+data sites at the same time is safe but saves nothing: each can see the other's
+etcd not yet running and stop after its infrastructure, and then each is
+applied once more.
+
+**Both gates are about founding, and only founding.** A member that has run
+once has settled the cluster version for good, and a witness that is down
+afterwards must never hold up a data site's apply: riding out that outage is
+what the witness is for. The gate reads the record on the site being applied
+rather than the live cluster, so it costs an ordinary apply no extra host.
+
+Rejected: having a data site's apply apply the witness itself. `apply` is a
+site at a time on purpose, and one that reaches into another site's stack is
+the half success across machines that rule exists to prevent. Also rejected:
+polling longer. No wait is long enough for a member nobody has started.
+
 ### `apply` creates each clustered app's role and database
 
 Step 6 needs something step 5 does not provide. Patroni creates its superuser,

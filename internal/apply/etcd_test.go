@@ -131,6 +131,48 @@ func TestApplyRefusesAHalfGrownEtcd(t *testing.T) {
 	}
 }
 
+// A data site founding its etcd member waits for the witness: until the
+// witness runs, the new cluster cannot settle its version and no primary
+// appears. A member that has run before is never held up by a witness that
+// is down, which is the outage a witness exists to ride out, and the witness
+// itself waits on nobody.
+func TestTheWitnessGoesFirst(t *testing.T) {
+	cfg := fixtureConfig(t) // home-a, home-b data; vm the witness
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), newHost())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = apply.WitnessFirstRefusal(cfg, p, true, map[string]bool{"home-b": true})
+	if err == nil || !strings.Contains(err.Error(), "`paisans apply --site vm`") {
+		t.Fatalf("a data site was founded before the witness: %v", err)
+	}
+	if err := apply.WitnessFirstRefusal(cfg, p, true, map[string]bool{"vm": true}); err != nil {
+		t.Errorf("a running witness did not let the data site through: %v", err)
+	}
+	if err := apply.WitnessFirstRefusal(cfg, p, false, nil); err != nil {
+		t.Errorf("a member past bootstrap was held up by a witness that is down: %v", err)
+	}
+	if got := apply.WitnessesFirst(cfg, "vm"); len(got) != 0 {
+		t.Errorf("the witness waits on %v", got)
+	}
+	if got := apply.WitnessesFirst(cfg, "home-b"); len(got) != 1 || got[0] != "vm" {
+		t.Errorf("home-b waits on %v, want vm", got)
+	}
+}
+
+// The founding stop names every other member not running, in the order the
+// configuration lists them, and not the site being applied.
+func TestFoundingUnstarted(t *testing.T) {
+	cfg := fixtureConfig(t)
+	got := apply.FoundingUnstarted(cfg, "home-a", map[string]bool{"vm": true})
+	if len(got) != 1 || got[0] != "home-b" {
+		t.Errorf("got %v, want [home-b]", got)
+	}
+	if got := apply.FoundingUnstarted(cfg, "home-b", map[string]bool{"home-a": true, "vm": true}); len(got) != 0 {
+		t.Errorf("the last founder still waits on %v", got)
+	}
+}
+
 // The probe asks the site first and then the other configured members, and
 // a host with no etcd running is an answer rather than an error.
 func TestProbeEtcdMembers(t *testing.T) {

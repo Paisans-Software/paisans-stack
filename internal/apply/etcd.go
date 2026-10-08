@@ -151,6 +151,39 @@ func ProbeEtcdMembers(cfg *config.Config, site string, transports map[string]Tra
 	return nil, false, nil
 }
 
+// EtcdRunning asks every configured etcd member with a transport whether its
+// etcd container runs, keyed by site. It is asked only when a member is being
+// founded, so an ordinary apply reaches no more hosts than it did.
+func EtcdRunning(cfg *config.Config, transports map[string]Transport) (map[string]bool, error) {
+	running := map[string]bool{}
+	for _, name := range cfg.Etcd.Members {
+		t, ok := transports[name]
+		if !ok {
+			continue
+		}
+		_, up, err := ReadEtcdMembers(t)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		running[name] = up
+	}
+	return running, nil
+}
+
+// FoundingUnstarted lists the other members of etcd.members whose etcd does
+// not run, in configuration order. A founding apply stops after its
+// infrastructure stack rather than wait for a primary that cannot appear
+// until each of them is applied; see WitnessFirstRefusal for why.
+func FoundingUnstarted(cfg *config.Config, site string, running map[string]bool) []string {
+	var unstarted []string
+	for _, name := range cfg.Etcd.Members {
+		if name != site && !running[name] {
+			unstarted = append(unstarted, name)
+		}
+	}
+	return unstarted
+}
+
 // EtcdRefusal is apply's refusal to touch a site's infrastructure stack while
 // the live etcd membership differs from etcd.members.
 //
@@ -162,18 +195,7 @@ func ProbeEtcdMembers(cfg *config.Config, site string, transports map[string]Tra
 // no file and no action in the infrastructure stack is let through, so an app
 // change is never held hostage to a half grown cluster.
 func EtcdRefusal(cfg *config.Config, plan *Plan, members []EtcdMember) error {
-	touches := false
-	for _, c := range plan.Changes {
-		if c.Stack == infraStack && (c.Kind == Create || c.Kind == Update) {
-			touches = true
-		}
-	}
-	for _, a := range plan.Actions {
-		if a.Stack == infraStack {
-			touches = true
-		}
-	}
-	if !touches {
+	if !touchesInfra(plan) {
 		return nil
 	}
 	var live []string
@@ -203,4 +225,88 @@ func EtcdRefusal(cfg *config.Config, plan *Plan, members []EtcdMember) error {
 	return fmt.Errorf(
 		"%s: the running etcd cluster's members are %s, and etcd.members says %s, so this site's infrastructure stack was not touched. Applying it now would start an etcd the cluster has not admitted. Growing the cluster is `paisans site add <site>`, which adds each member as a learner and promotes it once it has caught up; run it for the site being added, then apply",
 		plan.Site, strings.Join(live, ", "), strings.Join(want, ", "))
+}
+
+// touchesInfra reports whether a plan writes a file in, or acts on, the
+// infrastructure stack.
+func touchesInfra(plan *Plan) bool {
+	for _, c := range plan.Changes {
+		if c.Stack == infraStack && (c.Kind == Create || c.Kind == Update) {
+			return true
+		}
+	}
+	for _, a := range plan.Actions {
+		if a.Stack == infraStack {
+			return true
+		}
+	}
+	return false
+}
+
+// WitnessesFirst names the witness sites a founding apply waits on: the
+// members of etcd.members with the witness role, other than site itself.
+// Empty when site is a witness, is not an etcd member, or the deployment
+// has no witness in etcd.
+func WitnessesFirst(cfg *config.Config, site string) []string {
+	if !contains(cfg.Etcd.Members, site) || cfg.Sites[site].Has(config.RoleWitness) {
+		return nil
+	}
+	var witnesses []string
+	for _, name := range cfg.Etcd.Members {
+		if name != site && cfg.Sites[name].Has(config.RoleWitness) {
+			witnesses = append(witnesses, name)
+		}
+	}
+	return witnesses
+}
+
+// WitnessFirstRefusal is apply's refusal to found an etcd member on a site
+// that is not a witness while a witness's etcd is not running yet.
+//
+// A new etcd cluster holds its cluster version at 3.0 until every founding
+// member answers: the leader decides the version only from a full set of
+// member versions (etcd v3.5.16, server/etcdserver/cluster_util.go,
+// decideClusterVersion returns nil when any member's version is unknown).
+// Patroni reads that version from /version and, finding 3.0, falls back to
+// the v3alpha gateway (Patroni v4.1.0, patroni/dcs/etcd3.py), which etcd 3.5
+// does not serve, so it logs "waiting on
+// etcd" and never takes the leader key. Every data site's apply then times
+// out waiting for a primary, with nothing on screen that points at the
+// witness. Observed on the first three-site deployment: the two data sites
+// applied first both timed out, and the cluster formed seconds after the
+// witness was applied.
+//
+// The witness goes first because it is the one founding member nothing else
+// depends on: it runs no Patroni and waits on nothing, so its apply finishes
+// on its own. The data sites follow, and each one's etcd completes the set
+// for the next. Applying the witness from inside a data site's apply was
+// rejected: apply is a site at a time on purpose, and an apply that reaches
+// into another site's stack is the half success across machines that rule
+// exists to prevent.
+//
+// founding is whether this site's etcd member has never been started, from
+// ReadEtcdInitial. A member that has run once is past bootstrap, and a
+// witness that is down later must never hold up an apply of a data site:
+// that is the outage the witness exists to ride out. running says which of
+// the witnesses has an etcd container running now.
+func WitnessFirstRefusal(cfg *config.Config, plan *Plan, founding bool, running map[string]bool) error {
+	if !founding || !touchesInfra(plan) {
+		return nil
+	}
+	var waiting []string
+	for _, name := range WitnessesFirst(cfg, plan.Site) {
+		if !running[name] {
+			waiting = append(waiting, name)
+		}
+	}
+	if len(waiting) == 0 {
+		return nil
+	}
+	var commands []string
+	for _, name := range waiting {
+		commands = append(commands, "`paisans apply --site "+name+"`")
+	}
+	return fmt.Errorf(
+		"%s: this site's etcd member would be founded while the witness %s runs no etcd, so this site's infrastructure stack was not touched. A new etcd cluster settles its version only once every founding member answers, and until then Patroni cannot take the leader key on any data site. Apply the witness first with %s, then apply this site again",
+		plan.Site, strings.Join(waiting, ", "), strings.Join(commands, ", then "))
 }
