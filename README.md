@@ -2131,6 +2131,67 @@ exactly what the operator typed, never a blend. `host prepare` still manages
 the section's user's authorized keys under `--ssh`, because those come from the
 file, not from the connection.
 
+#### A sudo that wants a password is asked for once, on a terminal
+
+Commands that read or change a host run through sudo, because `/srv`, `/etc`,
+the packages and the firewall are root's (`--sudo`, on by default). Before the
+first one on a site, the toolkit asks the host `sudo -n true`. `-n` makes sudo
+fail at once instead of waiting for a password, so the answer is immediate.
+
+**A host whose sudo needs no password** runs each command as
+`sudo sh -c '<command>'`, and nobody is asked anything.
+
+**A host whose sudo wants one** (sudo answers "a password is required") gets
+it from the operator, once per site per run, on the controlling terminal:
+
+```
+sudo password for ubuntu@203.0.113.10:
+```
+
+The prompt reads `/dev/tty` with echo off, not stdin, because stdin may
+already carry a value (`secrets set` and `app admin create` read one from it).
+The password is checked once with `sudo -k -S -p '' true`, and every later
+command runs as `sudo -k -S -p '' sh -c '<command>'` with the password as the
+first line of that ssh session's stdin:
+
+* `-S` reads the password from stdin, and `-p ''` prints no prompt into
+  output the toolkit parses.
+* `-k` ignores a cached credential, so sudo reads the password line on every
+  command. A command run while the credential was cached would otherwise get
+  that line as the top of its own input, and a file write would put the
+  password into the file.
+* sudo reads the password up to the newline, so whatever follows it on stdin
+  reaches the command unchanged.
+
+The password is held in memory for the run and shared by every connection to
+the same destination. It never appears on a command line, where `ps` on either
+machine would show it, never in an error message, and never on disk. The next
+run asks again.
+
+**What stops a run, and what it says:**
+
+| The host | What happens |
+|----------|--------------|
+| wants a password, and there is no terminal (cron, CI) | refused before any command runs; the message says an unattended run needs a NOPASSWD sudoers rule for the ssh user |
+| rejects the password typed | reported with sudo's own message, and not sent again in this run, since repeated failures can lock the account where the host counts them |
+| refuses the user outright | sudo's own message; no password is asked for |
+| does not answer the probe | the host could not be reached, as for any probe (see *Never infer host state from a failed probe*); nothing about sudo is concluded or kept |
+
+An unattended run needs passwordless sudo for the ssh user, which is one line
+in a file under `/etc/sudoers.d/`, written with `visudo -f`:
+
+```
+ubuntu ALL=(ALL) NOPASSWD: ALL
+```
+
+That makes the ssh key alone enough for root on that host. It is a decision
+about the host, made once by whoever owns it, and the toolkit never makes it.
+
+`preflight` and `doctor` report each of these as a sudo problem
+(`apply.ErrSudo`), separately from a host that does not answer, so the finding
+points at sudoers rather than at the network. `--sudo=false` skips sudo
+entirely, and with it everything above.
+
 ### The host check: what is already on a host decides how much is touched
 
 `host prepare`, `apply`, `site add` and `prune` each assumed the host was the
@@ -3767,7 +3828,7 @@ at, and "could not look" is not "looked and it was fine".
 
 | Check | Where | How | Refused when |
 |---|---|---|---|
-| SSH and sudo | every site | `sudo -n true` | the host does not answer, or sudo wants a password |
+| SSH and sudo | every site | `sudo -n true`, through the site's sudo (see *A sudo that wants a password is asked for once, on a terminal*) | the host does not answer, or sudo cannot be used: it refuses the user, wants a password with no terminal to ask on, or rejects the one typed |
 | Clock | every site | `timedatectl show -p NTPSynchronized --value` | not `yes` |
 | Host | new site | the host check (see *The host check*) | something foreign holds a claim, or the host is shared and its firewall is not already up and denying by default |
 | Prepared | new site | `host prepare`'s own plan, without the firewall's defaults on a shared host | it has any step left |
