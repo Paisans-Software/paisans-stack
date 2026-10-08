@@ -235,7 +235,7 @@ func TestAnMbinOwedClientNamesItsRedirectURIAndPKCE(t *testing.T) {
 	if why == "" {
 		t.Fatal("the Mbin app's client was not reported as owed at all")
 	}
-	for _, want := range []string{kinds.MbinRedirectURI(cfg.Apps["talk"].Hostname), "PKCE", "paisans oidc client create --app talk"} {
+	for _, want := range []string{kinds.MbinRedirectURI(cfg.Apps["talk"].Hostname), "PKCE", "paisans apply", "paisans oidc client create --app talk"} {
 		if !strings.Contains(why, want) {
 			t.Errorf("the owed client does not name %q:\n%s", want, why)
 		}
@@ -541,6 +541,9 @@ func TestAnUptimeOwedClientNamesItsRedirectURI(t *testing.T) {
 	why := owedBy(t, withUptime(t, nil), &config.Secrets{})["oidc_clients.status"]
 	if !strings.Contains(why, "https://status.example.org/login/oidc/callback") {
 		t.Errorf("the owed client does not name the redirect URI:\n%s", why)
+	}
+	if !strings.Contains(why, "paisans apply") {
+		t.Errorf("the owed client does not say apply creates it:\n%s", why)
 	}
 }
 

@@ -633,8 +633,8 @@ An app takes two maps that look alike and are not.
 **`settings` is input the toolkit reasons about.** A template asks for each key
 by name, and some are validated or acted on: `s3_bucket` is a setting because
 `validate` refuses one named `outline` and `storage init` creates it, and
-`sso_dashboard_link` is one because `oidc client create` sends it to the
-identity provider (see *`oidc client create` makes an app's client at Pocket
+`sso_dashboard_link` is one because `apply` and `oidc client create` send it
+to the identity provider (see *`oidc client create` makes an app's client at Pocket
 ID*). An Mbin app's `queue` is one because it decides which services the stack
 runs (see *Mbin's queues are in Postgres by default*). A key no template asks
 for is silently ignored. That is the direction in which choosing
@@ -819,7 +819,7 @@ Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.
 |------|----------|--------|
 | **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys, Mercure JWT, RabbitMQ and Valkey passwords, Mbin's OAuth2 server keypair | created at `init`, never typed or seen |
 | **Pasted** | Cloudflare API token, SMTP password (`external.smtp_password`, or per app) | issued elsewhere, supplied by a human |
-| **Captured** | OIDC client secrets | belong to a running service; recorded here, by `oidc client create` for Pocket ID |
+| **Captured** | OIDC client secrets | belong to a running service; recorded here, by `apply` or `oidc client create` for Pocket ID |
 
 **Mbin's OAuth2 keypair is generated, not placed.** Mbin signs the tokens it
 issues to API clients and apps with an RSA key that its image does not create;
@@ -844,13 +844,14 @@ privilege drop in place.
 
 The captured case matters. An identity provider holds a client secret and the
 app needs the identical value; recording it here makes it reproducible instead
-of existing on exactly one host. Creating one is a privileged mutation that
-belongs to a human, and the toolkit does not automate that approval away: `oidc
-client create` prints every mutation and changes nothing until the operator
-re-runs it with `--execute`. For Pocket ID the value is not even captured. The
-toolkit generates it, records it here, and then hands it to Pocket ID, which
-accepts a caller supplied secret; see *`oidc client create` makes an app's
-client at Pocket ID*.
+of existing on exactly one host. Creating one is a privileged mutation, and
+for the deployment's own Pocket ID the approval is the declaration: an app in
+`paisans.yaml` whose kind has a known client shape approves that client, so
+`apply --execute` creates it as part of setting the app up, and a dry run
+prints every mutation first. For Pocket ID the value is not even captured.
+The toolkit generates it, records it here, and then hands it to Pocket ID,
+which accepts a caller supplied secret; see *`oidc client create` makes an
+app's client at Pocket ID*.
 
 **Pasted and captured secrets go in through a pipe.** `paisans secrets set
 <dotted.key>` reads the value from stdin, writes it into `secrets.enc.yaml`
@@ -2572,7 +2573,7 @@ otherwise, and `absent` before it has the stack. None active is waited for, up
 to three minutes, then fails: sign in is down. Two active fails at once,
 since waiting would leave both serving. A site that cannot be reached is shown
 and not counted. `app admin create` and `oidc client create` call the active
-site the same way unless `--site` names one.
+site the same way unless `--site` names one, and so does `apply`'s client step.
 
 **The gateway needs nothing new.** The route lists every apps site in order
 under `upstream_failover`, as every multi site app does, with no active
@@ -2886,13 +2887,49 @@ mesh, because the port is bound to the mesh address and nowhere else.
 An app that signs members in through Pocket ID needs a client there, and the
 app needs that client's ID and secret. The toolkit creates the client and
 records both in the secrets file, where `render` already reads them
-(`oidc_clients.<app>.client_id` and `.client_secret`), so the next `apply`
-renders the app's sign in settings with nothing else to do:
+(`oidc_clients.<app>.client_id` and `.client_secret`).
+
+**`apply` does this itself, for every app it starts whose kind has a client
+shape** (`kinds.OIDCClient`, today `mbin` and `uptime`). Creating an app's
+client at the deployment's own Pocket ID is part of setting the app up, and
+declaring the app in `paisans.yaml` is the approval for that client. Founder
+decision, 2026-10-08. So a first apply of a site needs nothing run before it:
+
+```sh
+paisans apply --site home-a             # shows the clients with the rest of the plan
+paisans apply --site home-a --execute   # creates, records and renders them
+```
+
+The step is the command's own code, so everything below holds for both. On a
+site that runs Pocket ID, `--execute` starts the infrastructure and Pocket ID
+first, with every other app stack held back, waits until exactly one Pocket ID
+instance answers `/healthz`, ensures the clients, and only then plans the site
+again and starts the rest, so each app renders the credentials just recorded.
+On any other site the clients come first. A dry run probes and prints the
+client lines with the rest of the plan and sends nothing; on a site whose
+Pocket ID is not running yet it says the clients are made once it answers.
+
+**An app is held back rather than started without its client.** When Pocket
+ID cannot be reached, or `apps.<pocket-id>.static_api_key` is not in the
+secrets file yet, an app with no recorded client is skipped with the reason
+and the rest of the site is applied; a re-run once Pocket ID answers finishes
+it, and the apply does not fail for it. An app whose client is already
+recorded is not held back by an unreachable Pocket ID: its client was right
+when it was made, and an outage elsewhere is no reason to stop an app that can
+already sign people in. An existing client that differs from what the app
+needs refuses that app alone, as the command does; the rest of the site is
+applied and `apply` exits non zero, because a person has to fix the client.
+The secrets file is written through the same recorder, re-encrypted to the
+recipients in `.sops.yaml`, and an encrypted file with no recipient is refused
+before Pocket ID is contacted.
+
+`apply` never rotates a secret. The command stays for that and for running the
+step alone:
 
 ```sh
 paisans oidc client create --app talk             # shows what it would do
 paisans oidc client create --app talk --execute   # does it
-paisans apply --site home-a --execute              # renders OAUTH_OIDC_*
+paisans oidc client create --app talk --rotate-secret --execute
 ```
 
 For an app whose configuration sets `OAUTH_OIDC_ADMIN_GROUP: admins`, the dry
@@ -2907,12 +2944,11 @@ talk's client at auth on home-a (pocket-id)
 Nothing was changed. Re-run with --execute to apply this.
 ```
 
-**Each line is a Pocket ID mutation, and printing it is what makes approving
-it possible.** Client, group and user changes at the identity provider need a
-human's approval every time. The command cannot know whether it has one, so it
-never assumes it: the dry run is the request, and the operator's `--execute`
-is the approval of exactly what was printed. The same probe runs again on
-`--execute`, so what executes is what a fresh probe plans.
+**Each line is a Pocket ID mutation, and every one is printed.** For an app
+declared in `paisans.yaml` the declaration approves its client; the printed
+plan is what lets an operator see exactly what that approval sends, in a dry
+run of either `apply` or the command, before `--execute`. The same probe runs
+again on `--execute`, so what executes is what a fresh probe plans.
 
 The client is the app kind's, not a choice made at the command line. For Mbin
 that is the paisans fork's verify route as the only callback, PKCE on because
