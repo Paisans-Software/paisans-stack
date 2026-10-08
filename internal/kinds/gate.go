@@ -170,8 +170,11 @@ var gates = map[config.Kind]GateSpec{
 		Gateable: true,
 		OpenPaths: []string{
 			// OIDC: /auth/oidc, its /auth/oidc.callback, and /auth/redirect
-			// (oidcRouter.ts:63,277-289, routes/auth/index.ts:35-36).
-			"/auth/*",
+			// (oidcRouter.ts:63,277-289, routes/auth/index.ts:35-36). Named
+			// rather than /auth/*, which would open every other sign-in
+			// provider's routes too (Eg: email sign-in, which sends mail to
+			// any address it is given).
+			"/auth/oidc", "/auth/oidc.callback", "/auth/redirect",
 			// What an OAuth client, an MCP client among them, needs before it
 			// holds a token: discovery, registration and the token endpoint
 			// (index.ts:116-170, oauth/index.ts:181-200). /oauth/authorize is
@@ -195,7 +198,12 @@ var gates = map[config.Kind]GateSpec{
 	config.KindOAuth2Proxy: {Gateable: false},
 	// Its checks and alerts run whatever the gate's state; only its own pages
 	// sit behind the gate. Its health route is dedicated, so it stays open.
-	config.KindUptime: {Gateable: true},
+	config.KindUptime: {
+		Gateable: true,
+		// Push heartbeats, from machines with no session: the URL carries
+		// the monitor's own token (templates/uptime/caddy.snippet.tmpl).
+		OpenPaths: []string{"/ping/*"},
+	},
 }
 
 // GateFor returns a kind's gate record. A kind with none recorded is not

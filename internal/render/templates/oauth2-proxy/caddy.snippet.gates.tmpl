@@ -17,7 +17,9 @@
 # (403).
 #
 # A person needs a page, not oauth2-proxy's raw status, so each answer becomes
-# a redirect: 401 to sign in, 403 to {{ .Hostname }}/pending. `rd` is not URL
+# a redirect: 401 to sign in, 403 to {{ .Hostname }}/pending. Each carries a
+# fixed body, which is how the monitor tells the gate's redirect from an
+# app's own. `rd` is not URL
 # encoded, because Caddy has no placeholder that encodes one, so a deep link
 # with more than one query parameter loses the extras on the first visit that
 # crosses sign-in. The page is right; only extra parameters are lost.
@@ -37,7 +39,8 @@
 			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Preferred-Username
 			@gate_signin status 401
 			handle_response @gate_signin {
-				redir https://{{ .Hostname }}/oauth2/start?rd={http.request.scheme}://{http.request.host}{http.request.orig_uri} 302
+				header Location "https://{{ .Hostname }}/oauth2/start?rd={http.request.scheme}://{http.request.host}{http.request.orig_uri}"
+				respond "{{ gateMarker }}" 302
 			}
 		}
 	}
@@ -51,11 +54,13 @@
 			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Preferred-Username
 			@gate_signin status 401
 			handle_response @gate_signin {
-				redir https://{{ .Hostname }}/oauth2/start?rd={http.request.scheme}://{http.request.host}{http.request.orig_uri} 302
+				header Location "https://{{ .Hostname }}/oauth2/start?rd={http.request.scheme}://{http.request.host}{http.request.orig_uri}"
+				respond "{{ gateMarker }}" 302
 			}
 			@gate_pending status 403
 			handle_response @gate_pending {
-				redir https://{{ .Hostname }}/pending?rd={http.request.scheme}://{http.request.host}{http.request.orig_uri} 302
+				header Location "https://{{ .Hostname }}/pending?rd={http.request.scheme}://{http.request.host}{http.request.orig_uri}"
+				respond "{{ gateMarker }}" 302
 			}
 		}
 	}

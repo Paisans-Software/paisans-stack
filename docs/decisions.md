@@ -990,6 +990,15 @@ JRD answer passed through, HTML and JSON answers became empty 404s, a mixed
 a 302 its `Location` with no body; `/u/*/inbox` matched one segment and not
 two; `Authorization: Bearer` matched and `Basic` did not.
 
+The rendered gateway configuration itself, every gateable kind gated, was then
+run in the same image with its upstreams pointed at a stub app and a stub gate.
+An anonymous page, and `curl` with no `Accept`, met the gate's redirect with
+its marker body; an ActivityPub `Accept` on an HTML or API route got an empty
+404 and on an actor its document; a `HEAD` and a POST off the inboxes met the
+gate; a member reached the page, a provisional user the pending page, a forged
+`X-Auth-Request-*` header was stripped, and Outline's API took a bearer token
+but not `Basic`, with `/auth/email` behind the gate.
+
 ### What is still open
 
 Mbin's token paths are empty, so its native apps meet the gate after signing

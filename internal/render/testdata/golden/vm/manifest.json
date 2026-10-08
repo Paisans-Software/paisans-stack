@@ -33,7 +33,7 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/caddy/Caddyfile",
-      "sha256": "5f19a083e04de3c32de81d3826f194493193f42a4d65406e99b89f54ea72c394",
+      "sha256": "52fdf72ea870d6d96f9b844f18eec401bb9a2cdc9aa99aadf2e496dc3d5ea541",
       "mode": "0644"
     },
     {
@@ -78,7 +78,7 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/caddy/snippets/gate-gates.caddy",
-      "sha256": "c9f914518833a7fb20349969e5aa6b9c8f2238e682314f970d8ce53128b243eb",
+      "sha256": "148792c853a4211ccbf502f49159ee8df5715ed8f63ed8d7405ac4281772df6b",
       "mode": "0644"
     },
     {

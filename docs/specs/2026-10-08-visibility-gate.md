@@ -85,7 +85,7 @@ the snippet's `{block}`, that decides what comes back:
 
 | Upstream answer | What the client gets |
 |---|---|
-| 2xx, `Content-Type` ActivityPub, JSON-LD or JRD | the answer, unchanged |
+| 2xx with `Content-Type` ActivityPub, JSON-LD or JRD | the answer, unchanged |
 | 3xx | the status and `Location`, no body |
 | any other 2xx | an empty 404 |
 | anything else | the status, no body |
@@ -144,8 +144,9 @@ route, never when it is `/`.
 |---|---|---|---|---|
 | `mbin` | OIDC (`/oauth/*`), the native app's chain (`/authorize /consent /token /login`), discovery (webfinger, host-meta, nodeinfo, `/i/actor`, contexts), the sign-in page's assets | `/i/inbox /f/inbox /u/*/inbox /m/*/inbox` | none | `/` and `/login` to `/oauth/oidc/connect`, unless `PHPSESSID` or `REMEMBERME` |
 | `writefreely` | OIDC (`/oauth/*`), discovery (webfinger, host-meta, nodeinfo), the sign-in page's assets | `/api/collections/*/inbox` | none | `/login` always, `/` unless `wfu`, to `/oauth/generic` |
-| `outline` | OIDC (`/auth/*`), OAuth discovery, registration and token endpoints, `/_health` | none | `/api/*`, `/mcp` | none: its sign-in screen redirects itself when OIDC is the only provider |
-| `element`, `uptime` | the health route | none | none | none |
+| `outline` | OIDC (`/auth/oidc`, `/auth/oidc.callback`, `/auth/redirect`, never `/auth/*`, which would open email sign-in), OAuth discovery, registration and token endpoints, `/_health` | none | `/api/*`, `/mcp` | none: its sign-in screen redirects itself when OIDC is the only provider |
+| `uptime` | push heartbeats (`/ping/*`), whose URL carries the monitor's token, and the health route | none | none | none |
+| `element` | the health route | none | none | none |
 
 Each entry is cited in `internal/kinds/gate.go` against the pinned tag.
 
@@ -193,6 +194,9 @@ person with a page rather than oauth2-proxy's raw status:
 * **403**, signed in but not a member (`gate_member` only): redirect to
   `https://<gate hostname>/pending?rd=` the original URL.
 
+Both redirects carry a fixed body, `render.GateMarker`, so the monitor can tell
+the gate's redirect from an app's own.
+
 ### The pending page
 
 The gate app's hostname serves `/pending`, a static page: the community's name
@@ -227,10 +231,15 @@ is what catches that.
 
 | Check | Request | Expect | Proves |
 |---|---|---|---|
-| gate | `GET /` with no session | `302` to sign in | the edge, and the gate in the path |
+| gate | `GET /` with no session | a body holding the gate's marker | the edge, and the gate in the path |
 | public | the kind's health route, with no session | the health route's answer | the edge reaches the app |
 | signed fetch | an unsigned `GET` asking for ActivityPub, of the kind's probe | `401` | the read surface is closed |
 | direct | unchanged | unchanged | the app itself |
+
+The gate check asserts the marker rather than a 302, because a private Mbin or
+WriteFreely answers `/` with a 302 to its own sign-in page, and a check on the
+status alone would pass with the gate gone. The uptime fork's string check
+passes on any status below 400 whose body holds the expected text.
 
 The public check is seeded for a gated app only when its health route is in its
 open paths, which is true of a dedicated route and never of `/`. Until the
@@ -266,10 +275,22 @@ the gate from then on with no other change.
 * **Webfinger is open to anyone**, because a peer needs it before it can sign,
   and it answers JRD rather than ActivityPub. It confirms whether a handle
   exists.
-* **Outline's optional-auth API endpoints** downgrade an unrecognised bearer
-  token to anonymous (authentication.ts:67-71), so a published share is
-  readable through `/api/shares.info` by anyone holding its unguessable ID,
-  although `/s/*` itself stays behind the gate.
+* **Outline's API answers a made-up bearer token as anonymous** on its
+  optional-auth endpoints (authentication.ts:67-71), so everything Outline
+  serves anonymously through its API is reachable past the gate with any
+  `Authorization: Bearer` value: published shares (`shares.info`,
+  `documents.info` with a share ID) and files with a public ACL, each by an
+  unguessable ID, although `/s/*` itself stays behind the gate.
+* **Outline's `/oauth/register` is open**, so anyone can register an OAuth
+  client, rate limited (oauth/index.ts:181-200). A client alone holds nothing:
+  a token still needs `/oauth/authorize`, which needs a session and stays
+  behind the gate. It is open because an MCP client registers itself before
+  it can sign in.
+* **Auto-login checks the gate cookie's name, not its validity**, because it
+  runs before the gate. A forged cookie sends a visitor to the app's OIDC start
+  route, an open path anyway, and every request after that still goes through
+  the gate. A signed-in non-member sent there meets the app's own Pocket ID
+  client, which may refuse them, rather than the pending page.
 * **`rd` is not URL encoded**, because Caddy has no placeholder that encodes
   one: a deep link with more than one query parameter loses the extras on the
   visit that crosses sign-in.

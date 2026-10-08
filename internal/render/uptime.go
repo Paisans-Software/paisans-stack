@@ -22,6 +22,7 @@ type seedMonitor struct {
 	Method           string            `json:"method,omitempty"`
 	CheckType        string            `json:"check_type,omitempty"`
 	ExpectedStatus   string            `json:"expected_status,omitempty"`
+	ExpectedString   string            `json:"expected_string,omitempty"`
 	FollowRedirects  *bool             `json:"follow_redirects,omitempty"`
 	RequestHeaders   map[string]string `json:"request_headers,omitempty"`
 	PingHost         string            `json:"ping_host,omitempty"`
@@ -97,10 +98,13 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 			})
 		}
 		if gated {
-			// The gate redirects a request with no session to sign in.
+			// The gate redirects a request with no session to sign in. A
+			// string check passes on any status below 400 whose body holds
+			// the marker, and only the gate's redirect carries it: the app's
+			// own redirect to its sign-in page does not.
 			monitors = append(monitors, seedMonitor{
-				Name: GateCheckName(name), MonitorType: "active", Method: "GET", CheckType: "status",
-				URL: "https://" + app.Hostname + "/", ExpectedStatus: "302",
+				Name: GateCheckName(name), MonitorType: "active", Method: "GET", CheckType: "string",
+				URL: "https://" + app.Hostname + "/", ExpectedString: GateMarker,
 				FollowRedirects: &noRedirects,
 				IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
 			})

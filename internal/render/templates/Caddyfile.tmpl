@@ -118,6 +118,7 @@ import {{ . }}
 	handle @activitypub_read {
 		import {{ .Snippet }} {
 			@activitypub_type {
+				status 2xx
 				header Content-Type *application/activity+json*
 				header Content-Type *application/ld+json*
 				header Content-Type *application/jrd+json*

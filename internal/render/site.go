@@ -46,12 +46,17 @@ var templateFuncs = template.FuncMap{
 	// gateSessionCookie is the gate's session cookie name, so the auto-login
 	// matcher and the Go constant cannot disagree.
 	"gateSessionCookie": func() string { return GateSessionCookie },
+	// gateMarker is the body of the gate's own redirects, so the monitor can
+	// tell the gate's 302 from an app's.
+	"gateMarker": func() string { return GateMarker },
 	// caddyhtml escapes a value for an HTML page Caddy serves with respond:
 	// HTML escaping, and braces as entities too, because Caddy expands a
 	// {placeholder} in a response body, and one in a community's name would
 	// otherwise pull a value from Caddy's environment into the page.
 	"caddyhtml": func(v string) string {
-		return strings.NewReplacer("{", "&#123;", "}", "&#125;").Replace(template.HTMLEscapeString(v))
+		// Newlines become spaces: a line that was exactly the heredoc's
+		// marker would end the page and be read as configuration.
+		return strings.NewReplacer("{", "&#123;", "}", "&#125;", "\r", " ", "\n", " ").Replace(template.HTMLEscapeString(v))
 	},
 	"yesno": func(b bool) string {
 		if b {
@@ -187,6 +192,12 @@ type gateBypass struct {
 // name, which the rendered .env does not change. Auto-login fires only when
 // it is present, so an anonymous visitor always meets the gate first.
 const GateSessionCookie = "_oauth2_proxy"
+
+// GateMarker is the body of every redirect the gate snippets send. An app
+// behind the gate can answer `/` with a 302 of its own (Eg: a private Mbin or
+// WriteFreely, to its sign-in page), so the monitor's gate check asserts this
+// body rather than the status alone, and fails when the gate is gone.
+const GateMarker = "Sign in required by the visibility gate."
 
 func bypassFor(name string, app config.App) gateBypass {
 	spec := kinds.GateFor(app.Kind)

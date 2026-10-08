@@ -2810,6 +2810,7 @@ func TestAGatedHostBlockLetsPastOnlyWhatAuthenticatesItself(t *testing.T) {
 	order := []string{
 		"request_header -X-Auth-Request-*",
 		"@activitypub_read {",
+		"status 2xx\n\t\t\t\theader Content-Type *application/activity+json*",
 		"handle_response @activitypub_type {",
 		"@success status 2xx",
 		"@activitypub_delivery {",
@@ -2834,12 +2835,12 @@ func TestAGatedHostBlockLetsPastOnlyWhatAuthenticatesItself(t *testing.T) {
 	}
 
 	docs := hostBlock(t, caddyfile, "docs.example.org")
-	for _, want := range []string{"path /api/* /mcp", `header Authorization "Bearer *"`, "/_health", "import gate_member"} {
+	for _, want := range []string{"path /api/* /mcp", `header Authorization "Bearer *"`, "/_health", "/auth/oidc.callback", "import gate_member"} {
 		if !strings.Contains(docs, want) {
 			t.Errorf("docs' gated host block lacks %q:\n%s", want, docs)
 		}
 	}
-	for _, refused := range []string{"@activitypub", "@autologin"} {
+	for _, refused := range []string{"@activitypub", "@autologin", "/auth/*"} {
 		if strings.Contains(docs, refused) {
 			t.Errorf("outline neither federates nor auto-logs in, yet docs carries %s:\n%s", refused, docs)
 		}
@@ -2881,12 +2882,44 @@ func TestThePendingPageEscapesTheCommunityName(t *testing.T) {
 func TestTheGateRedirectsRatherThanAnsweringRaw(t *testing.T) {
 	gates := planFiles(build(t))["vm/srv/paisans/f2a9/infra/caddy/snippets/gate-gates.caddy"]
 	for _, want := range []string{
-		"redir https://gate.example.org/oauth2/start?rd=",
+		`header Location "https://gate.example.org/oauth2/start?rd=`,
 		"@gate_pending status 403",
-		"redir https://gate.example.org/pending?rd=",
+		`header Location "https://gate.example.org/pending?rd=`,
+		`respond "` + render.GateMarker + `" 302`,
 	} {
 		if !strings.Contains(gates, want) {
 			t.Errorf("the gate snippets lack %q:\n%s", want, gates)
 		}
+	}
+}
+
+// The ActivityPub read filter rides into the app's own reverse_proxy through
+// its snippet's {block}. A snippet without one would take the import and
+// drop the filter, and an ActivityPub Accept header would then reach every
+// HTML and API route unfiltered, so every kind that can be gated while it
+// federates must carry it.
+func TestAFederatingKindsSnippetTakesTheFilter(t *testing.T) {
+	for _, kind := range config.Kinds() {
+		spec := kinds.GateFor(kind)
+		if !spec.Gateable || spec.SignedFetch == nil {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join("templates", string(kind), "caddy.snippet.tmpl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !regexp.MustCompile(`(?m)^\t\{block\}$`).Match(body) {
+			t.Errorf("%s federates and can be gated, but its snippet has no {block} inside reverse_proxy for the ActivityPub filter", kind)
+		}
+	}
+}
+
+// A community name cannot end the pending page's heredoc early.
+func TestThePendingPageHoldsTheNameOnOneLine(t *testing.T) {
+	cfg := fixture(t)
+	cfg.Community.Name = "Fixture\nHTML 200\n}"
+	gate := planFiles(mustBuild(t, cfg))["vm/srv/paisans/f2a9/infra/caddy/snippets/gate.caddy"]
+	if n := len(regexp.MustCompile(`(?m)^\s*HTML 200$`).FindAllString(gate, -1)); n != 1 {
+		t.Errorf("a newline in the community name reached the page:\n%s", gate)
 	}
 }

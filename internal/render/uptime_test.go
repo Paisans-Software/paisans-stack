@@ -84,9 +84,9 @@ func TestTheSeedChecksEveryAppTwiceAndPingsEveryOtherSite(t *testing.T) {
 		t.Fatalf("talk's gate check: %v", talk)
 	}
 	// talk is behind the member gate: it redirects a request with no session
-	// to sign in, before the app is asked.
-	if talk["expected_status"] != "302" {
-		t.Errorf("talk gate check expects %v", talk["expected_status"])
+	// to sign in, before the app is asked, with a body only the gate sends.
+	if talk["expected_string"] != render.GateMarker {
+		t.Errorf("talk gate check expects %v", talk["expected_string"])
 	}
 	auth := monitors["auth — public"]
 	if auth == nil || auth["url"] != "https://"+cfg.Apps["auth"].Hostname+"/healthz" || auth["expected_status"] != "204" {
@@ -125,7 +125,8 @@ func TestTheSeedChecksEveryAppTwiceAndPingsEveryOtherSite(t *testing.T) {
 
 // A gated app is checked through the edge three ways (docs/specs/
 // 2026-10-08-visibility-gate.md). The gate check expects the gate's redirect
-// to sign in. The public check reaches the app only when its health route is
+// to sign in, by its body, because a private app redirects `/` to its own
+// sign-in page too. The public check reaches the app only when its health route is
 // open, which a dedicated route is and `/` never is, so a gated mbin, whose
 // health route is its front page, has none. The signed fetch check expects
 // the app to refuse an unsigned ActivityPub read. An ungated app keeps its
@@ -136,8 +137,8 @@ func TestAGatedAppIsCheckedThroughTheGate(t *testing.T) {
 	if _, ok := monitors["talk — public"]; ok {
 		t.Error("gated mbin has a public check, which the gate would answer rather than the app")
 	}
-	if got := monitors["talk — gate"]["expected_status"]; got != "302" {
-		t.Errorf("gated mbin gate check expects %v", got)
+	if gate := monitors["talk — gate"]; gate["check_type"] != "string" || gate["expected_string"] != render.GateMarker {
+		t.Errorf("gated mbin gate check does not assert the gate's own redirect: %v", gate)
 	}
 	signed := monitors["talk — signed fetch"]
 	if signed["expected_status"] != "401" || signed["url"] != "https://talk.example.org/" {
@@ -165,7 +166,7 @@ func TestAGatedAppIsCheckedThroughTheGate(t *testing.T) {
 	if got := gated["docs — public"]["expected_status"]; got != "200" {
 		t.Errorf("gated outline's dedicated health route is open, yet its public check expects %v", got)
 	}
-	if got := gated["docs — gate"]["expected_status"]; got != "302" {
+	if got := gated["docs — gate"]["expected_string"]; got != render.GateMarker {
 		t.Errorf("gated outline gate check expects %v", got)
 	}
 	if _, ok := gated["docs — signed fetch"]; ok {

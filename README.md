@@ -589,8 +589,9 @@ from this configuration and the fork reconciles it at every start:
   each pinned image's source and, where possible, by running it, and chosen so
   the gateway routes it to the same service the direct check reaches.
 * a gated app gets a **gate** check instead, a request for `/` with no
-  session that expects the gate's `302` to sign in, proving the edge and the
-  gate. Its public check stays only when its health route is a dedicated one,
+  session that expects the body only the gate's redirect to sign in carries,
+  proving the edge and the gate: a private app redirects `/` to its own sign-in
+  page, so the status alone would pass with the gate gone. Its public check stays only when its health route is a dedicated one,
   which is open past the gate; a health route of `/` is the front page and
   never is. A gated app that federates also gets a **signed fetch** check: an
   unsigned ActivityPub request for a path the app refuses whatever content
