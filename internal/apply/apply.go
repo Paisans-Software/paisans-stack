@@ -180,6 +180,20 @@ type Plan struct {
 	// recorded is the manifest as Build read it, which a scoped plan's own
 	// manifest write keeps for every file outside its scope.
 	recorded map[string]render.ManifestFile
+	// heldOwed is what the record of owed actions held for stacks this plan
+	// holds back with Except. Execute keeps it there, so the apply that
+	// releases a held stack still force-recreates it.
+	heldOwed []pendingAction
+	// HeldOverwrites are --overwrite paths in stacks this plan holds back
+	// with Except. They are not written, and the operator is told so.
+	HeldOverwrites []string
+	// Notes are things Build decided that the operator should read and
+	// that change nothing they asked for.
+	Notes []string
+	// renderedChanges is every file this site renders, held back or not,
+	// for the prune keep set: an image a held stack renders is still the
+	// site's.
+	renderedChanges []Change
 	// Progress receives what Execute decided along the way that is not an
 	// error, such as a replica leaving the database work to the leader. Nil
 	// discards it.
@@ -313,6 +327,8 @@ type options struct {
 	minFreeSet bool
 	keepImages bool
 	only       []string
+	except     []string
+	after      []*Plan
 	dbApps     []string
 	// replicationChange lets a garage.toml with a different
 	// replication_factor replace the deployed one. Only `storage add
@@ -364,6 +380,27 @@ func Only(stacks ...string) Option {
 	return func(o *options) { o.only = append(o.only, stacks...) }
 }
 
+// Except holds the named app stacks back from this apply: their files are
+// not compared or written, their actions and gates do not run, and the
+// manifest keeps their entries as the last apply recorded them. Everything
+// else on the site, the mesh included, applies as usual. apply's identity
+// step uses it for an app whose client at Pocket ID is not in place, and to
+// start Pocket ID before the apps that sign in through it. A held stack that
+// a stopped apply still owes stays owed.
+func Except(stacks ...string) Option {
+	return func(o *options) { o.except = append(o.except, stacks...) }
+}
+
+// After tells a later pass of the same apply what the earlier passes did, so
+// that the operator's word is carried out once: an --overwrite path an earlier
+// pass replaced is no longer a conflict and is not named again, and a
+// --recreate stack an earlier pass acted on is not recreated twice. Those an
+// earlier pass held back with Except still apply. apply's identity step runs a
+// site in passes and passes each later one this.
+func After(done ...*Plan) Option {
+	return func(o *options) { o.after = append(o.after, done...) }
+}
+
 // DatabaseApps names the apps that reach the cluster's database through the
 // site's HAProxy, as ClusterDatabaseApps returns them. When the plan moves
 // HAProxy or Patroni on this site, each of them this site runs is restarted
@@ -402,7 +439,29 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	for _, opt := range opts {
 		opt(&o)
 	}
-	overwrite := o.overwrite
+	// An earlier pass of the same apply already carried out these. See After.
+	doneOverwrite, doneStacks := map[string]bool{}, map[string]bool{}
+	for _, p := range o.after {
+		for _, c := range p.Changes {
+			if c.Overwritten {
+				doneOverwrite[c.Path] = true
+			}
+		}
+		for _, a := range p.Actions {
+			doneStacks[a.Stack] = true
+		}
+	}
+	var overwrite, recreate []string
+	for _, path := range o.overwrite {
+		if !doneOverwrite[path] {
+			overwrite = append(overwrite, path)
+		}
+	}
+	for _, stack := range o.recreate {
+		if !doneStacks[stack] {
+			recreate = append(recreate, stack)
+		}
+	}
 
 	// Paths the operator has said may be replaced although they conflict.
 	// Each must name a file that really is a conflict: a path that is not one
@@ -434,6 +493,15 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		onlySet = map[string]bool{}
 		for _, stack := range o.only {
 			onlySet[stack] = true
+		}
+		out.partial = true
+		out.recorded = entries
+	}
+	var exceptSet map[string]bool
+	if len(o.except) > 0 {
+		exceptSet = map[string]bool{}
+		for _, stack := range o.except {
+			exceptSet[stack] = true
 		}
 		out.partial = true
 		out.recorded = entries
@@ -526,7 +594,14 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		if change.Stack != "" {
 			rendered[change.Stack] = true
 		}
+		out.renderedChanges = append(out.renderedChanges, change)
 		if onlySet != nil && !onlySet[change.Stack] {
+			continue
+		}
+		if exceptSet[change.Stack] {
+			if change.Overwritten {
+				out.HeldOverwrites = append(out.HeldOverwrites, change.Path)
+			}
 			continue
 		}
 		out.Changes = append(out.Changes, change)
@@ -593,19 +668,43 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	// finish, and an `up -d` that stopped part way can leave a container
 	// created and never attached to its network; a plain `up -d` or a restart
 	// would start that container as it is.
+	changedStacks := map[string]bool{}
+	for stack := range stacks {
+		changedStacks[stack] = true
+	}
 	owed := map[string]bool{}
+	// A restart an earlier pass held back while the database path moved is
+	// owed as a restart, not as a half built stack. See heldOwed.
+	dbOwed := map[string]bool{}
+	var live []pendingAction
 	for _, action := range resumed.Actions {
-		owed[action.Stack] = true
+		// An app removed from the configuration renders no stack here, and
+		// acting on it would fail every apply from now on.
+		if !rendered[action.Stack] {
+			out.Notes = append(out.Notes, fmt.Sprintf("%s was owed an action by a stopped apply, and this site no longer renders it, so the record of it is dropped", action.Stack))
+			continue
+		}
+		live = append(live, action)
+		if action.DatabasePath {
+			dbOwed[action.Stack] = true
+		} else {
+			owed[action.Stack] = true
+		}
 		stacks[action.Stack] = true
 	}
 
 	forced := map[string]bool{}
-	for _, stack := range o.recreate {
+	for _, stack := range recreate {
 		if !rendered[stack] {
 			return nil, fmt.Errorf("%s: --recreate %s names no stack this site renders. Its stacks are %s", site, stack, strings.Join(sortedKeys(rendered), ", "))
 		}
 		forced[stack] = true
 		stacks[stack] = true
+		// The operator's --recreate of a held stack is carried to the apply
+		// that releases it, as an owed recreate.
+		if exceptSet[stack] && !owed[stack] {
+			out.heldOwed = append(out.heldOwed, pendingAction{Stack: stack, Recreate: true})
+		}
 	}
 
 	if onlySet != nil {
@@ -620,6 +719,16 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 			}
 		}
 		wireguard = nil
+	}
+	// What is owed outside this plan, held back or outside --only, stays
+	// owed: this plan's own record replaces the one it read.
+	for _, action := range live {
+		if exceptSet[action.Stack] || (onlySet != nil && !onlySet[action.Stack]) {
+			out.heldOwed = append(out.heldOwed, action)
+		}
+	}
+	for stack := range exceptSet {
+		delete(stacks, stack)
 	}
 
 	for _, stack := range stackOrder(stacks) {
@@ -637,6 +746,8 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 				action.Refresh = sortedKeys(refresh)
 				action.Reason += "; " + strings.Join(action.Refresh, ", ") + " is restarted after it if `up -d` leaves its container in place, since a changed bind mounted file is not a reason Compose recreates one"
 			}
+		} else if dbOwed[stack] && !changedStacks[stack] {
+			action.Reason = databasePathReason + ", and it was held back from the pass that moved them"
 		} else {
 			action.Reason = "only bind mounted configuration changed, so the container keeps its identity"
 			if stack == infraStack && !infraWhole && len(infraServices) > 0 {
@@ -646,7 +757,23 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		}
 		out.Actions = append(out.Actions, action)
 	}
-	out.restartDatabaseApps(o.dbApps, rendered)
+	var dbApps []string
+	for _, app := range o.dbApps {
+		if !exceptSet[app] {
+			dbApps = append(dbApps, app)
+		}
+	}
+	out.restartDatabaseApps(dbApps, rendered)
+	// A held app is not restarted, but it still loses its connections when
+	// HAProxy or Patroni moves, so its restart is owed to the pass that
+	// releases it.
+	if out.databasePathMoves() {
+		for _, app := range o.dbApps {
+			if exceptSet[app] && rendered[app] && !out.owesHeld(app) {
+				out.heldOwed = append(out.heldOwed, pendingAction{Stack: app, DatabasePath: true})
+			}
+		}
+	}
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
 
@@ -732,6 +859,23 @@ func wgQuickLines(content string) string {
 // Execute carries out a plan. It refuses outright if anything conflicts,
 // because a partial apply across a stack is worse than no apply.
 func Execute(plan *Plan, t Transport) error {
+	if err := Refusal(plan); err != nil {
+		return err
+	}
+	if err := settleOwedVolumes(plan, t); err != nil {
+		return err
+	}
+	if plan.Volumes != nil && len(plan.Volumes.Uncovered) > 0 {
+		return volumeRefusal(plan)
+	}
+	return execute(plan, t)
+}
+
+// Refusal is what Execute refuses before it writes anything: a file edited on
+// the host, too little free space for the pulls, or an image volume its
+// service does not mount. A caller that runs a site in several passes asks it
+// of the whole plan first, so nothing is written when any pass would refuse.
+func Refusal(plan *Plan) error {
 	if conflicts := plan.Conflicts(); len(conflicts) > 0 {
 		var names []string
 		for _, c := range conflicts {
@@ -751,19 +895,17 @@ func Execute(plan *Plan, t Transport) error {
 	}
 
 	// An image declaring a volume its service does not mount leaks an
-	// anonymous volume on every recreate. Refuse before the first write, and
-	// pull what Build could not inspect first, which is the one pull `up -d`
-	// would have made anyway.
+	// anonymous volume on every recreate. Refuse before the first write.
+	// Execute then pulls what Build could not inspect, which is the one pull
+	// `up -d` would have made anyway, and checks those too.
 	if plan.Volumes != nil && len(plan.Volumes.Uncovered) > 0 {
 		return volumeRefusal(plan)
 	}
-	if err := settleOwedVolumes(plan, t); err != nil {
-		return err
-	}
-	if plan.Volumes != nil && len(plan.Volumes.Uncovered) > 0 {
-		return volumeRefusal(plan)
-	}
+	return nil
+}
 
+// execute is Execute once nothing refuses.
+func execute(plan *Plan, t Transport) error {
 	// Record what this apply owes before writing anything. Files that land
 	// before a gate stops the apply already match the render, so without
 	// this record the next apply would see nothing to do, and an app stack
@@ -953,7 +1095,17 @@ func Execute(plan *Plan, t Transport) error {
 		return err
 	}
 	if owes {
-		if _, err := t.Run("rm -f " + shellQuote(pendingPath(plan.Deployment))); err != nil {
+		if len(plan.heldOwed) > 0 {
+			// Everything this plan moved is done; what it held back is still
+			// owed, and nothing else is.
+			data, err := json.MarshalIndent(pending{Version: 1, Actions: plan.heldOwed}, "", "  ")
+			if err != nil {
+				return err
+			}
+			if err := t.WriteFile(pendingPath(plan.Deployment), string(data)+"\n", 0o600); err != nil {
+				return fmt.Errorf("%s: everything this apply moved was applied, but the record of the stacks it held back could not be written: %w", plan.Site, err)
+			}
+		} else if _, err := t.Run("rm -f " + shellQuote(pendingPath(plan.Deployment))); err != nil {
 			return fmt.Errorf("%s: everything was applied, but the record of owed actions could not be removed, so the next apply will repeat them: %w", plan.Site, err)
 		}
 	}
@@ -976,6 +1128,21 @@ type pending struct {
 type pendingAction struct {
 	Stack    string `json:"stack"`
 	Recreate bool   `json:"recreate,omitempty"`
+	// DatabasePath marks a restart a held stack owes because HAProxy or
+	// Patroni moved while it was held, rather than an action that stopped
+	// part way. It is a restart when released, not a forced recreate.
+	DatabasePath bool `json:"database_path,omitempty"`
+}
+
+// owesHeld reports whether this plan already carries an owed action for a
+// held stack.
+func (p *Plan) owesHeld(stack string) bool {
+	for _, a := range p.heldOwed {
+		if a.Stack == stack {
+			return true
+		}
+	}
+	return false
 }
 
 func readPending(t Transport, d deployment.Deployment) (pending, error) {
@@ -995,6 +1162,7 @@ func writePending(plan *Plan, actions []Action, t Transport) error {
 	for _, action := range actions {
 		p.Actions = append(p.Actions, pendingAction{Stack: action.Stack, Recreate: action.Recreate})
 	}
+	p.Actions = append(p.Actions, plan.heldOwed...)
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return err

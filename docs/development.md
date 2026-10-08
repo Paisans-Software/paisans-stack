@@ -71,8 +71,9 @@ about it are load bearing:
 * **It generates only what it can.** A DNS token is issued by a provider and an
   OIDC client lives at a running identity provider, where creating one is a
   mutation a human approves. Both are reported as owed, with the reason,
-  rather than invented or left silent. An owed Mbin client names the command
-  that creates it, `oidc client create`.
+  rather than invented or left silent. An owed client of a kind with a known
+  shape (`kinds.OIDCClient`) says that `apply --execute` creates it, since
+  declaring the app is the approval for its client.
 * **Without an age recipient it writes plaintext and says so loudly.** Refusing
   would leave an operator holding generated secrets that went nowhere, and a
   first look at the tool must not require a key.
@@ -108,8 +109,10 @@ Pocket ID's dashboard lists it, and records its ID and
 secret under `oidc_clients.<app>`. Every step is printed with what it sends and
 nothing changes without `--execute`. The secret is generated on the
 workstation and written to the secrets file before Pocket ID is sent it, and is
-never printed. `--rotate-secret` adds a new secret, leaving the old one valid. Only Mbin's
-client is known so far (`kinds.OIDCClient`). The launch URL is the app's
+never printed. `--rotate-secret` adds a new secret, leaving the old one valid.
+`apply` runs the same step for every app it starts (see *`apply` creates each
+app's OIDC client* below), so the command is for running it alone and for
+rotating. The known clients are Mbin's and uptime's (`kinds.OIDCClient`). The launch URL is the app's
 hostname plus the kind's dashboard path (`kinds.DashboardPath`, Mbin's
 `/oauth/oidc/connect` so the tile signs the member in, otherwise `/`), or
 `apps.<app>.settings.sso_dashboard_link`, which `validate` refuses unless it is
@@ -386,6 +389,34 @@ requires a block with a `token` subdirective and rejects a bare argument. That
 is why `internal/acme` holds the exact lines for each provider rather than
 building one shared form (github.com/caddy-dns/cloudflare, README "Caddyfile"
 section; github.com/caddy-dns/desec, README "Caddyfile" section).
+
+**`apply` creates each app's OIDC client.** Declaring an app whose kind has a
+client shape (`kinds.OIDCClient`) is the approval for its client at the
+deployment's Pocket ID (founder decision, 2026-10-08), so `apply` ensures it
+before the app renders. `clientStep` in `cmd/paisans/clients.go` holds the
+step; `oidc client create` calls the same helpers there, and
+`internal/oidcclient` does the planning and sending, unchanged. The step plans
+read only before the site plan, so a dry run shows it. On `--execute`, a site
+running Pocket ID applies in two passes (`executeWithClients`): the first
+holds every other app stack back with `apply.Except`, then `CheckOneActive`
+waits for Pocket ID's `/healthz`, then the clients are ensured, then the site
+is planned again with the new credentials and executed. Any other site
+ensures first and applies once. An app with no recorded client is held back
+when Pocket ID cannot be asked, which exits 0; a refused client holds its app
+back and exits 1 once the rest is applied, and so does an app whose recorded
+client Pocket ID does not hold (`keepsRecorded`): apply creates a client only
+when nothing is recorded. The second pass gets `apply.After(first)`, so an
+`--overwrite` or `--recreate` the first pass carried out is not repeated, and
+a held app's database path restart is owed in the pending record
+(`DatabasePath`) and runs once when the app is released. `planWithClients`
+calls `apply.Refusal`, the checks `Execute` makes before its first write, on
+the whole site before Pocket ID is asked anything. The pending record is kept
+whole across partial plans: an `--only` run carries what is owed outside it,
+a `--recreate` of a held stack is owed, and an owed stack the site no longer
+renders is dropped with a note (`Plan.Notes`). `apply.Except` keeps a held stack
+owed in the pending record, so the apply that releases it force-recreates it.
+`clients_test.go` drives the passes with a fake `sitePass` that renders and
+records, and the Pocket ID fake from `oidc_test.go`.
 
 **After an apply that acted on a Pocket ID stack running on more than one site,
 every one of those sites is asked whether its instance is active.** Each

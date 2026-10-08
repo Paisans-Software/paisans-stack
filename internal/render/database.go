@@ -73,7 +73,7 @@ var requiredAppSecrets = map[config.Kind][]struct{ Key, Why string }{
 		// Not needed to start, but without it the toolkit cannot create an
 		// administrator or a client, and Pocket ID deletes the synthetic
 		// user an earlier key created (apikey/service.go:31-36).
-		{"static_api_key", "it is the only credential `paisans app admin create` and `paisans oidc client create` can reach Pocket ID's API with"},
+		{"static_api_key", "it is the only credential `paisans app admin create`, `paisans oidc client create` and apply's client step can reach Pocket ID's API with"},
 	},
 }
 

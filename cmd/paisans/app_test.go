@@ -22,16 +22,16 @@ func TestAdminSite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := adminSite(cfg, "talk", ""); got != "home-a" {
+	if got, _ := adminSite(cfg, "talk", "", "app admin create"); got != "home-a" {
 		t.Errorf("cluster default %q, want the first apps site", got)
 	}
-	if got, _ := adminSite(cfg, "talk", "home-b"); got != "home-b" {
+	if got, _ := adminSite(cfg, "talk", "home-b", "app admin create"); got != "home-b" {
 		t.Errorf("override %q", got)
 	}
-	if _, err := adminSite(cfg, "talk", "vm"); err == nil {
+	if _, err := adminSite(cfg, "talk", "vm", "app admin create"); err == nil {
 		t.Error("a site the app does not run on was accepted")
 	}
-	if got, _ := adminSite(cfg, "chat", ""); got != "vm" {
+	if got, _ := adminSite(cfg, "chat", "", "app admin create"); got != "vm" {
 		t.Errorf("pinned %q, want vm", got)
 	}
 }
