@@ -35,6 +35,13 @@ type world struct {
 	// served is the haproxy.cfg each site's running HAProxy read at its
 	// last start.
 	served map[string]string
+	// etcdHosts is ETCD3_HOSTS as each site's running Patroni has it.
+	etcdHosts map[string]string
+	// recreated is every site whose Patroni was recreated, in order.
+	recreated []string
+	// starting is, by site, how many more times a recreated Patroni's REST
+	// API answers that Postgres is starting.
+	starting map[string]int
 
 	// Knobs that break one thing.
 	noPing          bool
@@ -198,6 +205,27 @@ func (h *host) Run(command string) (string, error) {
 		}
 		data, _ := json.Marshal(out)
 		return string(data), nil
+	case strings.Contains(command, "exec -T patroni printenv ETCD3_HOSTS"):
+		if !w.patroni[h.name] {
+			return "service \"patroni\" is not running", fmt.Errorf("exit status 1")
+		}
+		return w.etcdHosts[h.name] + "\n", nil
+	case strings.HasSuffix(command, "up -d --no-deps --force-recreate patroni"):
+		w.recreated = append(w.recreated, h.name)
+		w.etcdHosts[h.name] = envLine(h.files["/srv/paisans/f2a9/infra/patroni.env"], "ETCD3_HOSTS")
+		// The member key keeps what the old process wrote until it expires,
+		// so `patronictl list` goes on saying streaming.
+		w.starting[h.name] = 1
+		return "", nil
+	case strings.Contains(command, "exec -T patroni python3 -c") && strings.Contains(command, "/patroni"):
+		if !w.patroni[h.name] || !strings.Contains(command, "http://"+w.cfg.Sites[h.name].Address+":8008/patroni") {
+			return "urllib.error.URLError: Connection refused", fmt.Errorf("exit status 1")
+		}
+		if w.starting[h.name] > 0 {
+			w.starting[h.name]--
+			return "starting \n", nil
+		}
+		return "running streaming\n", nil
 	case strings.Contains(command, "--quiet patroni"):
 		if !w.patroni[h.name] {
 			return "__PAISANS_NO_PATRONI__\n", nil
@@ -230,6 +258,15 @@ func (h *host) Run(command string) (string, error) {
 		return w.stats(h.name)
 	}
 	return "", nil
+}
+
+func envLine(content, key string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if v, ok := strings.CutPrefix(line, key+"="); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 func (w *world) memberList() string {
@@ -358,7 +395,7 @@ func newWorld(t *testing.T) *world {
 	cfg, secrets := endState(t)
 	w := &world{t: t, cfg: cfg, secrets: secrets, hosts: map[string]*host{}, nextID: 1,
 		running: map[string]bool{"home-a": true}, patroni: map[string]bool{"home-a": true},
-		served: map[string]string{}, syncMode: false}
+		served: map[string]string{}, syncMode: false, etcdHosts: map[string]string{}, starting: map[string]int{}}
 	for _, name := range cfg.SiteNames() {
 		w.hosts[name] = &host{w: w, name: name, files: map[string]string{}}
 	}

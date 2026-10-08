@@ -122,6 +122,11 @@ var (
 	syncWait    = 2 * time.Minute
 	syncPoll    = 5 * time.Second
 
+	// A replica's Patroni recreated for its patroni.env replays the WAL it
+	// missed while it restarted, which is seconds of writes, not a clone.
+	replicaWait = 5 * time.Minute
+	replicaPoll = 5 * time.Second
+
 	// HAProxy: a server is marked UP after two good checks three seconds
 	// apart (haproxy.cfg.tmpl, inter 3s rise 2).
 	haproxyWait = 60 * time.Second
@@ -214,8 +219,13 @@ func Build(cfg *config.Config, secrets *config.Secrets, newSite string, transpor
 		return nil, err
 	}
 	p.Stages = append(p.Stages, proxy)
+	replicas, err := p.buildReplicaEnvs(rendered, members)
+	if err != nil {
+		return nil, err
+	}
+	p.Stages = append(p.Stages, replicas)
 
-	if err := p.noteOwed(rendered); err != nil {
+	if err := p.noteOwed(rendered, members); err != nil {
 		return nil, err
 	}
 	return p, nil
@@ -328,28 +338,93 @@ func (p *Plan) buildPreflight() *Stage {
 	return st
 }
 
-// noteOwed lists what the join leaves on purpose. An existing data site's
-// patroni.env names every etcd member after the join, and applying that
-// recreates its Patroni, which on the primary is a failover. The join does not
-// need it: that Patroni keeps working against the etcd member it started
-// with, which stays a voter throughout.
-func (p *Plan) noteOwed(rendered *render.Plan) error {
-	for _, name := range p.cfg.Cluster.Sites {
-		if name == p.Site {
-			continue
-		}
-		want := renderedFile(rendered, name, p.dep().RelPath("infra", "patroni.env"))
-		have, found, err := p.transports[name].ReadFile(p.dep().Path("infra", "patroni.env"))
-		if err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
-		if found && have != want {
-			p.Notes = append(p.Notes, fmt.Sprintf(
-				"%s's patroni.env will still name the etcd members it started with. `paisans apply --site %s` brings it up to date and recreates its Patroni, which on the primary is a failover; run it when that is acceptable, Eg: once the leader has been switched to another site",
-				name, name))
+// leader is the existing member that leads, empty when none does.
+func leader(members []patroniMember) string {
+	for _, m := range members {
+		if m.role() == "Leader" {
+			return m.name()
 		}
 	}
+	return ""
+}
+
+// noteOwed lists what the join leaves on purpose: the leader's patroni.env,
+// which names every etcd member after the join. Applying it recreates the
+// leader's Patroni, a failover, and the join does not need it (see
+// apply.LeaderPatroniEnvNote). Every replica's is applied by stage 7.
+func (p *Plan) noteOwed(rendered *render.Plan, members []patroniMember) error {
+	name := leader(members)
+	if name == "" || name == p.Site {
+		return nil
+	}
+	want := renderedFile(rendered, name, apply.PatroniEnv(p.dep()))
+	have, found, err := p.transports[name].ReadFile("/" + apply.PatroniEnv(p.dep()))
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	if found && have != want {
+		p.Notes = append(p.Notes, apply.LeaderPatroniEnvNote(name))
+	}
 	return nil
+}
+
+// buildReplicaEnvs is stage 7: every existing replica's patroni.env, which
+// names every etcd member after the join, applied one replica at a time, its
+// Patroni recreated and streaming again before the next (see
+// apply.ReplicaEnv).
+func (p *Plan) buildReplicaEnvs(rendered *render.Plan, members []patroniMember) (*Stage, error) {
+	st := &Stage{Number: 7, Name: "replicas' patroni.env"}
+	lead := leader(members)
+	if lead == "" {
+		st.Gate = "none: Patroni reported no leader, so no replica is recreated; stage 4 cannot pass without one either"
+		return st, nil
+	}
+	var replicas []*apply.ReplicaEnv
+	for _, name := range p.cfg.Cluster.Sites {
+		if name == p.Site || name == lead {
+			continue
+		}
+		r, err := apply.PlanReplicaEnv(name, rendered, p.transports[name])
+		if err != nil {
+			return nil, fmt.Errorf("site add %s: %w", p.Site, err)
+		}
+		if r == nil {
+			continue
+		}
+		for _, s := range r.Steps(p.dep()) {
+			st.Steps = append(st.Steps, Step{Site: name, Verb: s.Verb, Text: s.Text})
+		}
+		replicas = append(replicas, r)
+	}
+	if len(replicas) == 0 {
+		st.Gate = "none: no existing replica runs with other etcd hosts than its patroni.env names"
+		return st, nil
+	}
+	st.Gate = "each replica runs with the etcd hosts its patroni.env names and streams again, checked as each is recreated, before the next; then `patronictl list` shows every one streaming"
+	st.gate = func() error {
+		members, err := p.patroniList()
+		if err != nil {
+			return err
+		}
+		for _, r := range replicas {
+			if m := findMember(members, r.Site); m == nil || m.state() != "streaming" {
+				return fmt.Errorf("%s is not streaming", r.Site)
+			}
+		}
+		return nil
+	}
+	st.run = func() error {
+		for _, r := range replicas {
+			p.say("  %-9s Patroni on %s, with its patroni.env up to date\n", "recreate", r.Site)
+			gate := apply.ReplicaEnvGate{At: p.transports[lead], Wait: replicaWait, Poll: replicaPoll, Sleep: sleep, Sync: p.cfg.Cluster.Synchronous}
+			if err := r.Execute(p.dep(), p.transports[r.Site], gate); err != nil {
+				return err
+			}
+			p.say("  %-9s %s streams again\n", "checked", r.Site)
+		}
+		return nil
+	}
+	return st, nil
 }
 
 // Execute runs the stages in order. A stage's steps run only when it has

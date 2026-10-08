@@ -70,20 +70,39 @@ type world struct {
 
 	served map[string]string
 
+	// log is every command on every host, in order, as "site: command".
+	log []string
+	// recreated is every site whose Patroni was recreated, in order.
+	recreated []string
+	// activePocket is the site whose Pocket ID instance is active.
+	activePocket string
+
 	// Knobs that break one thing.
 	failOnce    string
 	unreachable map[string]bool
 	caddyBroken bool
+	// neverStreams is a site whose recreated Patroni never streams again,
+	// while its member key in etcd, which the old process wrote, still says
+	// streaming.
+	neverStreams string
 }
 
 type host struct {
-	w          *world
-	name       string
-	files      map[string]string
-	commands   []string
-	wgUp       bool
-	patroniUp  bool
-	etcdUp     bool
+	w         *world
+	name      string
+	files     map[string]string
+	commands  []string
+	wgUp      bool
+	patroniUp bool
+	etcdUp    bool
+	// etcdContainer is whether the etcd container runs, which a removed
+	// member's does until it is stopped.
+	etcdContainer bool
+	// etcdHosts is ETCD3_HOSTS as the running Patroni has it.
+	etcdHosts string
+	// starting is how many more times the recreated Patroni's REST API
+	// answers that Postgres is starting.
+	starting   int
 	containers []hostcheck.Container
 	networks   []hostcheck.Network
 	volumes    []hostcheck.Volume
@@ -132,6 +151,7 @@ var (
 func (h *host) Run(command string) (string, error) {
 	w := h.w
 	h.commands = append(h.commands, command)
+	w.log = append(w.log, h.name+": "+command)
 	if w.unreachable[h.name] {
 		return "ssh: connect to host port 22: Operation timed out\n", fmt.Errorf("%s: %w after 3 attempts: exit status 255", h.name, apply.ErrUnreachable)
 	}
@@ -142,6 +162,46 @@ func (h *host) Run(command string) (string, error) {
 	switch {
 	case command == "true":
 		return "", nil
+
+	// patroni.env on a replica, and the witness's etcd container
+	case strings.Contains(command, "exec -T patroni printenv ETCD3_HOSTS"):
+		if !h.patroniUp {
+			return "service \"patroni\" is not running", errors.New("exit status 1")
+		}
+		return h.etcdHosts + "\n", nil
+	case strings.HasSuffix(command, "up -d --no-deps --force-recreate patroni"):
+		w.recreated = append(w.recreated, h.name)
+		h.patroniUp = true
+		h.etcdHosts = envLine(h.files[root+"/infra/patroni.env"], "ETCD3_HOSTS")
+		// The member key keeps what the old process wrote until it expires,
+		// so `patronictl list` goes on saying streaming.
+		h.starting = 1
+		return "", nil
+	case strings.Contains(command, "exec -T patroni python3 -c") && strings.Contains(command, "/patroni"):
+		if !h.patroniUp {
+			return "service \"patroni\" is not running", errors.New("exit status 1")
+		}
+		if !strings.Contains(command, "http://"+w.cfg.Sites[h.name].Address+":8008/patroni") {
+			return "urllib.error.URLError: Connection refused", errors.New("exit status 1")
+		}
+		if h.name == w.neverStreams || h.starting > 0 {
+			h.starting--
+			return "starting \n", nil
+		}
+		return "running streaming\n", nil
+	case strings.HasPrefix(command, "ids=$(docker ps -q --filter") && strings.Contains(command, "service=etcd"):
+		h.etcdContainer, h.etcdUp = false, false
+		return "", nil
+	case strings.HasPrefix(command, "docker ps -q --filter") && strings.Contains(command, "service=etcd"):
+		if h.etcdContainer {
+			return "0123456789ab\n", nil
+		}
+		return "", nil
+	case strings.Contains(command, "/healthz"):
+		if w.activePocket == h.name {
+			return "active\n", nil
+		}
+		return "standby\n", nil
 
 	// etcd
 	case strings.Contains(command, "--quiet etcd"):
@@ -465,6 +525,15 @@ func (h *host) Run(command string) (string, error) {
 	return "", fmt.Errorf("%s: unexpected command %q", h.name, command)
 }
 
+func envLine(content, key string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if v, ok := strings.CutPrefix(line, key+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 func (h *host) sortedFiles() []string {
@@ -764,6 +833,7 @@ func worldConfig(t *testing.T, edits ...func(string) string) (*config.Config, *c
 	secrets.Sites["home-c"] = config.SiteSecrets{WireGuardPrivateKey: "REREREREREREREREREREREREREREREREREREREREREQ="}
 	// box is a site only some worlds declare.
 	secrets.Sites["box"] = config.SiteSecrets{WireGuardPrivateKey: "RUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUU="}
+	secrets.Sites["home-d"] = config.SiteSecrets{WireGuardPrivateKey: "RkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkY="}
 	return cfg, secrets, path
 }
 
@@ -797,13 +867,14 @@ func newWorld(t *testing.T, edits ...func(string) string) *world {
 		manifest, _ := json.MarshalIndent(render.Manifest{Version: 1, Files: entries}, "", "  ")
 		h.files[dep.Manifest()] = string(manifest) + "\n"
 		if contains(cfg.Etcd.Members, name) {
-			h.etcdUp = true
+			h.etcdUp, h.etcdContainer = true, true
 			w.nextID++
 			addr := cfg.Sites[name].Address
 			w.etcd = append(w.etcd, apply.EtcdMember{ID: w.nextID * 0x1111, Name: name, PeerURLs: []string{"http://" + addr + ":2380"}, ClientURLs: []string{"http://" + addr + ":2379"}})
 		}
 		if contains(cfg.Cluster.Sites, name) {
 			h.patroniUp = true
+			h.etcdHosts = envLine(h.files[root+"/infra/patroni.env"], "ETCD3_HOSTS")
 		}
 		if proxy, ok := h.files[root+"/infra/haproxy/haproxy.cfg"]; ok {
 			w.served[name] = proxy

@@ -7,7 +7,9 @@
 // The site stays declared in paisans.yaml while the command runs, because its
 // ssh section is how its host is reached and its roles say what it holds.
 // Everything else is computed from config.WithoutSite, the end state, which
-// the last stage writes back to the file.
+// the last stage writes back to the file. When that end state would leave
+// one data site and a witness, two etcd voters, the witness leaves etcd in
+// the same removal (see EndState).
 //
 // On the site's host it touches only what is provably this deployment's: a
 // Docker object with the deployment label carrying this id, a file whose
@@ -78,8 +80,11 @@ type Plan struct {
 	// Nil discards it.
 	Progress io.Writer
 
-	cfg        *config.Config
-	end        *config.Config
+	cfg *config.Config
+	end *config.Config
+	// witness is the site that leaves etcd and loses the witness role with
+	// this removal, empty when none does (see EndState).
+	witness    string
 	secrets    *config.Secrets
 	transports map[string]apply.Transport
 	initial    map[string]render.EtcdInitial
@@ -124,6 +129,11 @@ var (
 
 	etcdWait = 60 * time.Second
 	etcdPoll = 5 * time.Second
+
+	// A replica's Patroni recreated for its patroni.env replays the WAL it
+	// missed while it restarted, which is seconds of writes, not a clone.
+	replicaWait = 5 * time.Minute
+	replicaPoll = 5 * time.Second
 
 	// HAProxy marks a server UP after two good checks three seconds apart.
 	haproxyWait = 60 * time.Second
@@ -203,15 +213,68 @@ func Refusal(cfg *config.Config, site string, o Options) error {
 			return fmt.Errorf("site remove %s: it is a Garage site, and without it %d node(s) would hold objects at storage.garage.replication %d, so the data on it would have nowhere to go. Add a Garage site, or lower the replication factor, with `paisans storage add` first", site, left, cfg.Storage.Garage.Replication)
 		}
 	}
-	end := cfg.WithoutSite(site)
+	end, _, err := EndState(cfg, site)
+	if err != nil {
+		return err
+	}
 	if result := validate.Check(end); result.Refused() {
 		var lines []string
+		twoVoters := false
 		for _, f := range result.Refusals() {
 			lines = append(lines, f.Key+": "+f.Message)
+			twoVoters = twoVoters || f.Rule == "two-etcd-voters"
 		}
-		return fmt.Errorf("site remove %s: the configuration without it is refused:\n  %s\nsite remove takes one site out and changes nothing else, so the end state has to validate as it is", site, strings.Join(lines, "\n  "))
+		advice := "site remove takes one site out and changes nothing else, so the end state has to validate as it is"
+		if twoVoters {
+			advice = "Two data sites would stay as etcd voters, and neither can leave etcd while it holds data. Add a witness first, a site that holds no data with the witness role, as an etcd member, so that three voters remain without " + site
+		}
+		return fmt.Errorf("site remove %s: the configuration without it is refused:\n  %s\n%s", site, strings.Join(lines, "\n  "), advice)
 	}
 	return nil
+}
+
+// EndState is the configuration once site is removed, and the witness that
+// leaves etcd with it, empty when none does.
+//
+// Taking one data site out of two data sites and a witness leaves two etcd
+// voters, which validation refuses: a majority of two is two, so either
+// failing stops the cluster. One voter is strictly better, and with one data
+// site the witness has nothing left to break a tie between. So when the end
+// state's etcd members would be exactly the one remaining data site and a site
+// that is a member only because it is the witness, that site leaves etcd too,
+// and loses the witness role while keeping every other. A site whose only
+// role was the witness would be left with none, which the configuration allows
+// only for a site an app is pinned to.
+func EndState(cfg *config.Config, site string) (*config.Config, string, error) {
+	end := cfg.WithoutSite(site)
+	if !contains(cfg.Etcd.Members, site) || len(end.Etcd.Members) != 2 || len(end.Cluster.Sites) != 1 {
+		return end, "", nil
+	}
+	data := end.Cluster.Sites[0]
+	var witness string
+	for _, name := range end.Etcd.Members {
+		s := end.Sites[name]
+		if name != data && s.Has(config.RoleWitness) && !s.Has(config.RoleData) {
+			witness = name
+		}
+	}
+	if witness == "" || !contains(end.Etcd.Members, data) {
+		return end, "", nil
+	}
+	w := end.Sites[witness]
+	var roles []config.Role
+	for _, r := range w.Roles {
+		if r != config.RoleWitness {
+			roles = append(roles, r)
+		}
+	}
+	if len(roles) == 0 && len(end.PinnedTo(witness)) == 0 {
+		return nil, "", fmt.Errorf("site remove %s: without it, %s and the witness %s would be two etcd voters, so %s leaves etcd and loses the witness role in the same removal. Witness is its only role, and a site with none is allowed only when an app is pinned to it. Give %s another role and apply it first, or run `paisans site remove %s` once this removal is done", site, data, witness, witness, witness, witness)
+	}
+	w.Roles = roles
+	end.Sites[witness] = w
+	end.Etcd.Members = []string{data}
+	return end, witness, nil
 }
 
 // Build decides the removal of site, reading every site it reaches and
@@ -221,11 +284,16 @@ func Build(cfg *config.Config, secrets *config.Secrets, site string, transports 
 	if err := Refusal(cfg, site, o); err != nil {
 		return nil, err
 	}
+	end, witness, err := EndState(cfg, site)
+	if err != nil {
+		return nil, err
+	}
 	p := &Plan{
 		Site:       site,
 		Options:    o,
 		cfg:        cfg,
-		end:        cfg.WithoutSite(site),
+		end:        end,
+		witness:    witness,
 		secrets:    secrets,
 		transports: map[string]apply.Transport{},
 		initial:    map[string]render.EtcdInitial{},
@@ -264,7 +332,6 @@ func Build(cfg *config.Config, secrets *config.Secrets, site string, transports 
 			p.initial[name] = in
 		}
 	}
-	var err error
 	if p.full, err = p.render(cfg); err != nil {
 		return nil, err
 	}
@@ -292,9 +359,32 @@ func Build(cfg *config.Config, secrets *config.Secrets, site string, transports 
 	if err != nil {
 		return nil, err
 	}
+	p.notePocketID(host)
 	p.Stages = append(p.Stages, host)
 	p.Stages = append(p.Stages, p.buildConfig())
 	return p, nil
+}
+
+// notePocketID says, at the head of stage 3, when the site holds the active
+// instance of a Pocket ID app that stands by elsewhere: stage 3 stops it, and
+// sign in is unavailable until a standby takes over (README, "Pocket ID runs
+// on every apps site, and one of them is active"). The stop is clean, so that
+// is a standby's next retry, a few seconds; an instance that does not stop
+// cleanly leaves its registration to age for 90 seconds first. Only the site's own
+// instance is asked, since it is the only one this stops.
+func (p *Plan) notePocketID(st *Stage) {
+	if p.HostGone || st.Skipped != "" {
+		return
+	}
+	var notes []Step
+	for _, app := range apply.StandbyApps(p.cfg) {
+		for _, in := range apply.LookAtInstances(p.cfg, app, map[string]apply.Transport{p.Site: p.transports[p.Site]}) {
+			if in.Site == p.Site && in.State == apply.Active {
+				notes = append(notes, Step{Site: p.Site, Verb: "note", Text: fmt.Sprintf("it holds the active instance of Pocket ID %s, so once this stage stops it, sign in is unavailable for a few seconds while a standby on another site takes over, up to about 90 seconds if the instance does not stop cleanly", app)})
+			}
+		}
+	}
+	st.Steps = append(notes, st.Steps...)
 }
 
 func (p *Plan) render(cfg *config.Config) (*render.Plan, error) {
@@ -315,9 +405,16 @@ func (p *Plan) buildConfig() *Stage {
 		Gate:   fmt.Sprintf("%s loads, and declares no site %s", p.ConfigPath, p.Site),
 		Steps:  []Step{{Site: p.Site, Verb: "remove", Text: fmt.Sprintf("sites.%s from %s, and its name from cluster.sites, etcd.members, storage.garage.sites and storage.garage.capacities, keeping every comment", p.Site, p.ConfigPath)}},
 	}
+	if p.witness != "" {
+		st.Gate += fmt.Sprintf(", etcd.members does not list %s, and %s has no witness role", p.witness, p.witness)
+		st.Steps = append(st.Steps, Step{Site: p.witness, Verb: "remove", Text: fmt.Sprintf("%s from etcd.members and witness from sites.%s.roles, in the same write", p.witness, p.witness)})
+	}
 	st.run = func() error {
 		if p.ConfigPath == "" {
 			return fmt.Errorf("no configuration file to edit")
+		}
+		if p.witness != "" {
+			return config.RemoveSiteAndWitness(p.ConfigPath, p.Site, p.witness)
 		}
 		return config.RemoveSite(p.ConfigPath, p.Site)
 	}
@@ -328,6 +425,9 @@ func (p *Plan) buildConfig() *Stage {
 		}
 		if _, ok := cfg.Sites[p.Site]; ok {
 			return fmt.Errorf("%s still declares %s", p.ConfigPath, p.Site)
+		}
+		if p.witness != "" && (contains(cfg.Etcd.Members, p.witness) || cfg.Sites[p.witness].Has(config.RoleWitness)) {
+			return fmt.Errorf("%s still has %s as the witness or in etcd.members", p.ConfigPath, p.witness)
 		}
 		return nil
 	}

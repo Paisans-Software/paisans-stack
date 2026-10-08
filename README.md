@@ -3786,6 +3786,7 @@ So a join is staged, and every stage is a gate:
 | 4. Spilo joins, clones, streams | replication lag converging |
 | 5. Synchronous mode, when configured | a `Sync Standby` exists |
 | 6. HAProxy backends | HAProxy routes only to the primary |
+| 7. Each existing replica's `patroni.env`, one at a time | the replica streams again |
 
 Failing at stage 2 rolls back cleanly: drop the peer entries, leave the running
 cluster untouched. Failing at stage 3 or later is harder to undo, which is
@@ -3831,6 +3832,7 @@ skipped and why.
 | 4. Replica | the new site's remaining files by a whole `apply`, then `up -d`, which starts Patroni beside the running etcd | the member `streaming`, its replay lag zero or falling over three samples five seconds apart |
 | 5. Cluster configuration | `patronictl edit-config --force -q -s synchronous_mode=true -s synchronous_mode_strict=<value>` when the live values differ | a member with the role `Sync Standby` |
 | 6. HAProxy | `haproxy.cfg` as a scoped `apply`; the site's cluster database apps stopped, HAProxy alone restarted, the apps started and each through `apply`'s health gate | the statistics list every cluster site, the leader `UP` and every replica `DOWN` |
+| 7. Replicas' `patroni.env` | on each existing replica, one at a time: `patroni.env` as a scoped `apply`, then `up -d --no-deps --force-recreate patroni`; nothing when the cluster had no replica | the replica runs with the new `ETCD3_HOSTS`, and its own Patroni, asked through its REST API from inside the container, answers `running` and `streaming` before the next is touched; `patronictl list` reads a member key the old process may have written, so it is not asked |
 
 **Learners, one at a time.** A full voter added to a cluster of one makes the
 quorum two before it has started; if it then fails to start, the cluster stops.
@@ -3870,13 +3872,23 @@ An app only change on the same site is let through.
 
 **Existing sites move one file each.** A whole `apply` of the primary's site
 would recreate its Patroni, because `patroni.env` now lists every etcd member:
-a failover in the middle of a join. So stages 2 and 6 use a scoped `apply`,
+a failover in the middle of a join. So stages 2, 6 and 7 use a scoped `apply`,
 which compares, refuses on conflict, writes and records exactly like a whole
 one, but only for the named file, and runs only the one command that file
-needs. The primary's `patroni.env` is left, and the plan says so: its Patroni
-keeps working against its own etcd member, which stays a voter throughout, and
-a later `apply` of that site, when a primary restart is acceptable, brings it
-up to date.
+needs.
+
+**A replica's `patroni.env` is applied; the leader's waits.** Patroni reads the
+etcd hosts in it only to reach etcd at start: with `use_proxies` off, the
+default and what Spilo renders from `ETCD3_HOSTS`, it then asks etcd for the
+cluster's members and uses those, refreshing them as it runs (Patroni v4.1.0,
+`patroni/dcs/etcd.py`, `_load_machines_cache` and `_refresh_machines_cache`).
+An out of date list is harmless at runtime and matters at the next start. So
+stage 7 recreates each existing replica's Patroni with its new file, one at a
+time, which is a replica restart HAProxy does not notice since it routes only
+to the primary, and waits for it to stream again before the next; a replica
+that leads by then is left alone. The primary's is left, and the plan says
+so: it is picked up at the leader's next restart, a later `apply` of that site
+when a failover is acceptable. `site remove` does the same with the same code.
 
 **HAProxy is restarted, not reloaded.** Its configuration is a single file bind
 mount, `apply` replaces a file by renaming a new one over it, and a bind mount
@@ -3930,7 +3942,9 @@ paisans site remove home-b --host-gone --execute       # the host is never comin
 | the only data site | the database would have nowhere to live |
 | the first site in `storage.garage.sites` while apps are declared | every app writes its objects through that node; put another Garage site first and apply every site running an app |
 | a Garage site whose removal leaves fewer nodes than `storage.garage.replication`, or another Garage node unhealthy | the objects on it would have nowhere to go |
-| an end state `validate` refuses | Eg: two etcd voters, which is why one data site cannot leave two data sites and a witness: the witness would have to leave etcd too, which is a change to a site that stays |
+| an end state `validate` refuses | Eg: two data sites left as two etcd voters, when three data sites go to two; add a witness first |
+| one data site out of two and a witness, when the witness role is that site's only one and no app is pinned to it | it would be left with no role; give it another first, or `site remove` it afterwards |
+| one data site out of two and a witness, with either remaining voter unhealthy | going from two voters to one is a change both must commit |
 | any other etcd member unhealthy, or too few healthy members left for a quorum | a membership change on a limping cluster is how it stops |
 | any other Patroni member not running or streaming | the cluster changes under the stages below |
 | the site holds the leader and no member is a streaming `Sync Standby` | only a synchronous standby takes over without losing writes the leader acknowledged |
@@ -3944,18 +3958,34 @@ after a fixed problem resumes at the first stage with anything left to do.
 | Stage | What runs | Gate |
 |-------|-----------|------|
 | 1. Data out of the site | the leader switched over to the `Sync Standby` when the site holds it; `synchronous_mode` turned off when one data site remains, since a leader waiting on a standby that is leaving stops taking writes; Patroni stopped on the site and its member key deleted from etcd; its Garage node removed from the layout and the layout applied | another site leads and `patronictl list` no longer lists the site, with a `Sync Standby` when the end state wants one; no layout row for the site, and every remaining node settled (one live layout version, an empty resync queue) within an hour, and a run that times out resumes at this gate while Garage carries on copying |
-| 2. Out of the cluster | `etcdctl member remove`, then the site's etcd stopped; on every remaining site, the files whose render changes with the site gone, by scoped `apply`: `psns-<token>.conf` (`wg syncconf`), `haproxy.cfg` (HAProxy restarted with its database apps stopped around it, as `site add` does) and the gateway's routes (validated, then Caddy reloaded) | the voters are exactly the end state's and all healthy; no remaining site has the site's key as a WireGuard peer; HAProxy lists exactly the end state's cluster sites with the leader `UP` |
-| 3. Clean the host | below; skipped with `--host-gone` | checked before the keys go: nothing of this deployment's left but what the plan said it keeps |
-| 4. Config | the site taken out of `paisans.yaml`: its block, its name in `cluster.sites`, `etcd.members` and `storage.garage.sites`, its capacity; every other byte as it was | the file loads and no longer declares it |
+| 2. Out of the cluster | `etcdctl member remove`, then the site's etcd stopped; with two data sites and a witness, the witness's member next (below); on every remaining site, the files whose render changes with the site gone, by scoped `apply`: `psns-<token>.conf` (`wg syncconf`), `haproxy.cfg` (HAProxy restarted with its database apps stopped around it, as `site add` does) and the gateway's routes (validated, then Caddy reloaded); then each remaining replica's `patroni.env`, one at a time, as `site add`'s stage 7 does | the voters are exactly the end state's and all healthy; no remaining site has the site's key as a WireGuard peer; HAProxy lists exactly the end state's cluster sites with the leader `UP`; each replica streaming again before the next |
+| 3. Clean the host | below; skipped with `--host-gone`. When the site holds the active Pocket ID instance, the plan says that once this stage stops it, sign in is unavailable for a few seconds while a standby takes over, up to about 90 seconds if the instance does not stop cleanly | checked before the keys go: nothing of this deployment's left but what the plan said it keeps |
+| 4. Config | the site taken out of `paisans.yaml`: its block, its name in `cluster.sites`, `etcd.members` and `storage.garage.sites`, its capacity; with two data sites and a witness, the witness out of `etcd.members` and its `witness` role, in the same write; every other byte as it was | the file loads and no longer declares it |
 
-**What stage 2 does not move.** A remaining data site's `patroni.env` names
-every etcd member, and applying it recreates its Patroni, which on the primary
-is a failover. Nothing needs it: every member it names but the removed one
-stays a voter. The report lists it, with `paisans apply --site <site>` for when
-a failover is acceptable, as `site add` does. Any other file whose render
-changes is listed the same way. etcd's `--initial-cluster` flags are not among
-them: each member's are rendered from what its host records (see *A member
-keeps the flags it was born with*).
+**Two data sites and a witness go to one voter.** Taking one data site out of
+two and a witness would leave two etcd voters, and two are worse than one. With
+one data site left, the witness has no tie to break, so when the end state's
+etcd members would be exactly the remaining data site and a site that is a
+member only because it is the witness, that site leaves etcd in the same
+removal and loses the `witness` role, keeping its others; the end state must
+still validate. In stage 2 the leaving site's member goes first; then, once
+etcd's voters are exactly the remaining data site and the witness, both
+healthy, the witness's member is removed, leaving one voter with a quorum of
+one, and the witness's etcd container is stopped. It is found by this
+deployment's label, the infrastructure project and the `etcd` service, since
+the witness's `infra/compose.yaml`, written by the same scoped `apply` as its
+mesh file, no longer declares it. Two voters going to one is a change both
+must commit, so it needs both healthy. A re-run reads which members are left,
+so one stopped between the two removals does only the second.
+
+**What stage 2 does not move.** The leader's `patroni.env`, as in `site add`:
+recreating its Patroni would be a failover, and the out of date etcd hosts in
+it are harmless while it runs (see *A replica's `patroni.env` is applied; the
+leader's waits*). The report says it is picked up at the leader's next
+restart, with `paisans apply --site <site>` for when a failover is acceptable.
+Any other file whose render changes is listed the same way. etcd's
+`--initial-cluster` flags are not among them: each member's are rendered from
+what its host records (see *A member keeps the flags it was born with*).
 
 **The host keeps everything that is not provably this deployment's.** Each
 removal is proven a different way, because each is recorded in a different
