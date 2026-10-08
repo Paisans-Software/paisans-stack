@@ -11,5 +11,9 @@
 @refused path /status* /badge/* /metrics /api/v1/*
 respond @refused 404
 reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
+{{- if .UpstreamElsewhere }}
+	# One site, not the gateway's machine; see upstream_single in the Caddyfile.
+	import upstream_single
+{{- end }}
 	header_up X-Forwarded-Proto https
 }

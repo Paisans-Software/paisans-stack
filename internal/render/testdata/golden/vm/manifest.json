@@ -33,7 +33,7 @@
     },
     {
       "path": "srv/infra/caddy/Caddyfile",
-      "sha256": "a269f7e98a2857cbc09392ff1f163084b428d713635230d531494109c5edc0fb",
+      "sha256": "e3ffcaf53d3d963e0e386bcff4041ad27f519477d218226109e4074490ec95fc",
       "mode": "0644"
     },
     {
@@ -53,7 +53,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/blog.caddy",
-      "sha256": "a26ef299d3ff2f71bea936fc395241360bd0c5fc37a4ee43b05fdec854a79366",
+      "sha256": "bda8c9d964532c3f8828ccb20fdc0ed4523a8aba1e7b6063544d6c3514e984fa",
       "mode": "0644"
     },
     {
@@ -83,7 +83,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/gate.caddy",
-      "sha256": "42650bcd147b3905ded425925ec387aed3422cc26bb62ddb34b35a7aefe68c00",
+      "sha256": "033168495474282b17ede4d37ac7eae9dff998aab665a4d75c0d746f37fddffa",
       "mode": "0644"
     },
     {
@@ -103,7 +103,7 @@
     },
     {
       "path": "srv/infra/caddy/snippets/web.caddy",
-      "sha256": "715bb6873c75be19a3ea63cc02502f091bafb56918b3809c9b7525317a3fe898",
+      "sha256": "4be04cb8ce4acf3e0945ac16eeed26dc2791d19eb9f220bb10c29667a75a56f6",
       "mode": "0644"
     },
     {

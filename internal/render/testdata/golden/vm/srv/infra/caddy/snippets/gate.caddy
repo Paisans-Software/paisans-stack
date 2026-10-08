@@ -10,5 +10,7 @@
 # `provisional`, the permissive instance that owns the login flow, and every
 # authenticated user gets a session cookie regardless of membership.
 reverse_proxy 10.44.0.1:4180 {
+	# One site, not the gateway's machine; see upstream_single in the Caddyfile.
+	import upstream_single
 	header_up X-Forwarded-Proto https
 }

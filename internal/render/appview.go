@@ -95,6 +95,12 @@ type appValues struct {
 	// hardcodes a location, which is what keeps a pinned app and a clustered
 	// app the same shape.
 	Upstreams []string
+	// UpstreamElsewhere is true when Upstreams is a single address on a
+	// machine other than the gateway's, so the route imports upstream_single:
+	// that site can die while the gateway stays up, and a request on a
+	// connection the gateway already had open to it would otherwise wait for
+	// TCP to give up.
+	UpstreamElsewhere bool
 
 	// GateMembersPort and GateMembersUpstreams describe the oauth2-proxy
 	// kind's second instance, the one enforcing "members". They are populated
@@ -152,6 +158,9 @@ type s3Values struct {
 	// by, so losing one site does not take media down while another holds
 	// the data.
 	GarageAddresses []string
+	// GarageElsewhere is UpstreamElsewhere for GarageAddresses: one Garage
+	// node, on a machine other than the gateway's.
+	GarageElsewhere bool
 
 	// WebHost is the Host Garage's web endpoint resolves this app's bucket
 	// from: the bucket name under an internal suffix that resolves nowhere.
@@ -296,6 +305,7 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		// every read goes through PublicBase, not here.
 		Endpoint:        s3Endpoint,
 		GarageAddresses: garageAddresses(p),
+		GarageElsewhere: p.elsewhere(garageAddresses(p)),
 		AccessKeyID:     v.Secret("s3_access_key_id"),
 		SecretKey:       v.Secret("s3_secret_access_key"),
 		Bucket:          kinds.BucketName(planned.Name, app),
@@ -312,6 +322,7 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	}
 	v.OIDC = p.oidcFor(planned)
 	v.Upstreams = p.upstreams(planned.Name)
+	v.UpstreamElsewhere = p.elsewhere(v.Upstreams)
 	if planned.Kind == config.KindOAuth2Proxy {
 		v.GateMembersPort = gateMembersPort
 		v.GateMembersUpstreams = p.upstreamsOnPort(planned.Name, gateMembersPort)

@@ -6,6 +6,9 @@ reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
 {{- if gt (len .Upstreams) 1 }}
 	# Failover across apps sites; see upstream_failover in the Caddyfile.
 	import upstream_failover
+{{- else if .UpstreamElsewhere }}
+	# One site, not the gateway's machine; see upstream_single in the Caddyfile.
+	import upstream_single
 {{- end }}
 	header_up X-Forwarded-Proto https
 }

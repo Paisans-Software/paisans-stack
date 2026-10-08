@@ -5,5 +5,7 @@
 # beyond the proxy itself, which is worth stating: a snippet that is plain is a
 # fact about the application, not a file waiting to be filled in.
 reverse_proxy 10.44.0.1:8081 {
+	# One site, not the gateway's machine; see upstream_single in the Caddyfile.
+	import upstream_single
 	header_up X-Forwarded-Proto https
 }

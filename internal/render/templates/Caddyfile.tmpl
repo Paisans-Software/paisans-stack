@@ -55,12 +55,31 @@
 # dial_timeout is the whole price of trying it; lb_try_duration covers a full
 # dial to each site. fail_duration is how long a failed site is skipped before
 # one request tries it again.
+#
+# response_header_timeout bounds a request sent on a connection the gateway
+# already had open to a site that has since died: nothing answers and nothing
+# resets it, so without a bound the request waits for TCP to give up, which is
+# minutes. 60s is twice the 30s long poll a Matrix client holds open on /sync,
+# the longest wait for headers any kind here makes on purpose.
 (upstream_failover) {
 	lb_policy first
 	lb_try_duration 5s
 	fail_duration 30s
 	transport http {
 		dial_timeout 2s
+		response_header_timeout 60s
+	}
+}
+
+# Imported inside the proxy directive of an application, or a media route,
+# served by one site on a machine other than the gateway's. That site can go
+# down while the gateway stays up, and the same two bounds turn a dead site
+# into upstream_unavailable's 503 instead of a request that hangs: 2s to open
+# a connection, 60s for headers on one already open (see upstream_failover).
+(upstream_single) {
+	transport http {
+		dial_timeout 2s
+		response_header_timeout 60s
 	}
 }
 {{ range .GateSnippets }}
