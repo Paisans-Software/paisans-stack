@@ -1,0 +1,440 @@
+// Package siteremove takes one site out of a running deployment: `paisans
+// site remove`. It is the reverse of internal/siteadd and is built the same
+// way: staged, every stage ending at a gate that stops the command with its
+// evidence, and every stage planned from live state, so a run after a fixed
+// problem resumes at the first stage with anything left to do.
+//
+// The site stays declared in paisans.yaml while the command runs, because its
+// ssh section is how its host is reached and its roles say what it holds.
+// Everything else is computed from config.WithoutSite, the end state, which
+// the last stage writes back to the file.
+//
+// On the site's host it touches only what is provably this deployment's: a
+// Docker object with the deployment label carrying this id, a file whose
+// hash matches this deployment's manifest, a unit named for its token, a ufw
+// rule with its owner tag, a key its record lists, and its own registry
+// entry. Everything else found is reported as kept. docs/specs/
+// 2026-10-08-site-remove.md is the approved design.
+package siteremove
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/validate"
+)
+
+// Options is what the operator asked for besides the site.
+type Options struct {
+	// HostGone skips cleaning the site's host, which is not reached at all.
+	HostGone bool
+	// DeleteData deletes the deployment root and the named volumes on the
+	// host. The caller asks for the site's name at a terminal first.
+	DeleteData bool
+	// ConfigPath is the paisans.yaml the last stage edits.
+	ConfigPath string
+}
+
+// Step is one thing a stage will do, for the plan an operator reads.
+type Step struct {
+	Site string
+	Verb string
+	Text string
+}
+
+// Stage is one stage of the removal: its steps, then its gate.
+type Stage struct {
+	Number int
+	Name   string
+	Steps  []Step
+	// Gate says what must hold before the next stage may start.
+	Gate string
+	// Skipped says why the stage does nothing, empty when it runs.
+	Skipped string
+
+	run  func() error
+	gate func() error
+}
+
+// Plan is a whole removal, decided from the live deployment.
+type Plan struct {
+	Site string
+	Options
+	Stages []*Stage
+	// Notes are things the removal leaves for later, on purpose.
+	Notes []string
+	// Kept is what the removal leaves on the host, with why: planned at
+	// Build and added to as the host stage runs.
+	Kept []string
+	// Progress receives each stage as it starts and each gate as it passes.
+	// Nil discards it.
+	Progress io.Writer
+
+	cfg        *config.Config
+	end        *config.Config
+	secrets    *config.Secrets
+	transports map[string]apply.Transport
+	initial    map[string]render.EtcdInitial
+	full       *render.Plan
+	rendered   *render.Plan
+
+	etcd    etcdState
+	patroni patroniState
+	garage  garageState
+	host    *hostPlan
+}
+
+func (p *Plan) say(format string, args ...any) {
+	if p.Progress != nil {
+		fmt.Fprintf(p.Progress, format, args...)
+	}
+}
+
+// dep is the deployment every name and path here belongs to.
+func (p *Plan) dep() deployment.Deployment { return p.cfg.Deployment() }
+
+// Timing is every wait the gates make, as a count of polls, so a test that
+// replaces sleep with nothing still ends.
+var (
+	sleep = time.Sleep
+
+	// Patroni: a switchover completes in seconds, and a member key that is
+	// deleted disappears from the list at once, and one left to expire
+	// goes with its TTL, 30 seconds by default.
+	switchWait  = 3 * time.Minute
+	switchPoll  = 3 * time.Second
+	patroniWait = 2 * time.Minute
+	patroniPoll = 5 * time.Second
+
+	// Garage moves every partition the node held to the nodes that remain,
+	// which on a large store takes hours. A run that times out stops, and
+	// the next resumes at this gate while Garage carries on.
+	garageWait    = 60 * time.Minute
+	garagePoll    = 30 * time.Second
+	garageSamples = 3
+	garageGap     = 10 * time.Second
+
+	etcdWait = 60 * time.Second
+	etcdPoll = 5 * time.Second
+
+	// HAProxy marks a server UP after two good checks three seconds apart.
+	haproxyWait = 60 * time.Second
+	haproxyPoll = 3 * time.Second
+
+	// The handed over Caddy has started once its container runs and its
+	// configuration validates inside it.
+	handoverWait = 60 * time.Second
+	handoverPoll = 3 * time.Second
+)
+
+func attempts(wait, poll time.Duration) int {
+	if poll <= 0 {
+		return 1
+	}
+	if n := int(wait / poll); n > 0 {
+		return n
+	}
+	return 1
+}
+
+// poll calls check until it returns nil or the wait runs out, and returns
+// its last error.
+func poll(wait, every time.Duration, check func() error) error {
+	n := attempts(wait, every)
+	var err error
+	for i := 0; i < n; i++ {
+		if err = check(); err == nil {
+			return nil
+		}
+		if errors.Is(err, apply.ErrUnreachable) {
+			return err
+		}
+		if i < n-1 {
+			sleep(every)
+		}
+	}
+	return err
+}
+
+// Refusal is why site cannot be removed from this configuration, or nil. It
+// reads no host, so it runs before any is reached.
+func Refusal(cfg *config.Config, site string, o Options) error {
+	s, ok := cfg.Sites[site]
+	if !ok {
+		return fmt.Errorf("site remove: the configuration declares no site %q. Declared sites are %s", site, strings.Join(cfg.SiteNames(), ", "))
+	}
+	if o.HostGone && o.DeleteData {
+		return fmt.Errorf("site remove %s: --delete-data deletes data on the host, and --host-gone does not reach it. Drop one of them", site)
+	}
+	if s.Has(config.RoleGateway) && len(cfg.GatewaySites()) == 1 {
+		return fmt.Errorf("site remove %s: it is the only gateway, so nothing would answer for the community's hostnames. Give another site the gateway role and apply it first (README, \"Moving the gateway\")", site)
+	}
+	if s.Has(config.RoleApps) && len(cfg.AppsSites()) == 1 {
+		var placed []string
+		for _, name := range cfg.AppNames() {
+			if cfg.Apps[name].Placement.Mode == config.PlacementCluster {
+				placed = append(placed, name)
+			}
+		}
+		if len(placed) > 0 {
+			return fmt.Errorf("site remove %s: it is the only apps site, and %s placed cluster would run nowhere. Give another site the apps role and apply it first", site, strings.Join(placed, ", "))
+		}
+	}
+	if pinned := cfg.PinnedTo(site); len(pinned) > 0 {
+		return fmt.Errorf("site remove %s: %s pinned to it, and would run nowhere. Move each first (README, \"Moving a pinned app\")", site, strings.Join(pinned, ", "))
+	}
+	if contains(cfg.Cluster.Sites, site) && len(cfg.Cluster.Sites) == 1 || s.Has(config.RoleData) && len(cfg.DataSites()) == 1 {
+		return fmt.Errorf("site remove %s: it is the only data site, so the database would have nowhere to live. Add another data site first (`paisans site add`)", site)
+	}
+	if len(cfg.Storage.Garage.Sites) > 0 && cfg.Storage.Garage.Sites[0] == site && len(cfg.AppNames()) > 0 {
+		return fmt.Errorf("site remove %s: it is first in storage.garage.sites, the Garage node every app writes its objects through, and the apps would lose it the moment its node stops. Move another Garage site to the front of the list and apply every site running an app first, then run this again", site)
+	}
+	if contains(cfg.Storage.Garage.Sites, site) {
+		left := len(cfg.Storage.Garage.Sites) - 1
+		if left < cfg.Storage.Garage.Replication {
+			return fmt.Errorf("site remove %s: it is a Garage site, and without it %d node(s) would hold objects at storage.garage.replication %d, so the data on it would have nowhere to go. Add a Garage site, or lower the replication factor, with `paisans storage add` first", site, left, cfg.Storage.Garage.Replication)
+		}
+	}
+	end := cfg.WithoutSite(site)
+	if result := validate.Check(end); result.Refused() {
+		var lines []string
+		for _, f := range result.Refusals() {
+			lines = append(lines, f.Key+": "+f.Message)
+		}
+		return fmt.Errorf("site remove %s: the configuration without it is refused:\n  %s\nsite remove takes one site out and changes nothing else, so the end state has to validate as it is", site, strings.Join(lines, "\n  "))
+	}
+	return nil
+}
+
+// Build decides the removal of site, reading every site it reaches and
+// changing none. transports maps every remaining site's name to how it is
+// reached, and the site's own unless o.HostGone.
+func Build(cfg *config.Config, secrets *config.Secrets, site string, transports map[string]apply.Transport, o Options) (*Plan, error) {
+	if err := Refusal(cfg, site, o); err != nil {
+		return nil, err
+	}
+	p := &Plan{
+		Site:       site,
+		Options:    o,
+		cfg:        cfg,
+		end:        cfg.WithoutSite(site),
+		secrets:    secrets,
+		transports: map[string]apply.Transport{},
+		initial:    map[string]render.EtcdInitial{},
+	}
+	for _, name := range p.end.SiteNames() {
+		t, ok := transports[name]
+		if !ok {
+			return nil, fmt.Errorf("site remove %s: no way to reach site %s. Every remaining site is read, and most are changed", site, name)
+		}
+		p.transports[name] = t
+	}
+	if !o.HostGone {
+		t, ok := transports[site]
+		if !ok {
+			return nil, fmt.Errorf("site remove %s: no way to reach its host", site)
+		}
+		if out, err := t.Run("true"); err != nil {
+			if errors.Is(err, apply.ErrUnreachable) {
+				return nil, fmt.Errorf("site remove %s: its host does not answer over ssh (%v), so what is on it cannot be read or cleaned. Fix ssh and run again, or, if the host is never coming back, run with --host-gone: the cluster stages and the configuration edit run, and the host is left as it is", site, err)
+			}
+			return nil, fmt.Errorf("site remove %s: its host answered `true` with an error: %v: %s", site, err, lastLines(out, 2))
+		}
+		p.transports[site] = t
+	}
+
+	for _, name := range cfg.Etcd.Members {
+		t, ok := p.transports[name]
+		if !ok {
+			continue
+		}
+		in, found, err := apply.ReadEtcdInitial(t, p.dep())
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		if found {
+			p.initial[name] = in
+		}
+	}
+	var err error
+	if p.full, err = p.render(cfg); err != nil {
+		return nil, err
+	}
+	if p.rendered, err = p.render(p.end); err != nil {
+		return nil, err
+	}
+
+	if err := p.probeEtcd(); err != nil {
+		return nil, err
+	}
+	if err := p.probePatroni(); err != nil {
+		return nil, err
+	}
+	if err := p.probeGarage(); err != nil {
+		return nil, err
+	}
+
+	p.Stages = append(p.Stages, p.buildData())
+	cluster, err := p.buildCluster()
+	if err != nil {
+		return nil, err
+	}
+	p.Stages = append(p.Stages, cluster)
+	host, err := p.buildHost()
+	if err != nil {
+		return nil, err
+	}
+	p.Stages = append(p.Stages, host)
+	p.Stages = append(p.Stages, p.buildConfig())
+	return p, nil
+}
+
+func (p *Plan) render(cfg *config.Config) (*render.Plan, error) {
+	var opts []render.Option
+	for site, in := range p.initial {
+		if _, ok := cfg.Sites[site]; ok {
+			opts = append(opts, render.WithEtcdInitial(site, in))
+		}
+	}
+	return render.Build(cfg, p.secrets, opts...)
+}
+
+// buildConfig is stage 4: the site out of paisans.yaml.
+func (p *Plan) buildConfig() *Stage {
+	st := &Stage{
+		Number: 4,
+		Name:   "config",
+		Gate:   fmt.Sprintf("%s loads, and declares no site %s", p.ConfigPath, p.Site),
+		Steps:  []Step{{Site: p.Site, Verb: "remove", Text: fmt.Sprintf("sites.%s from %s, and its name from cluster.sites, etcd.members, storage.garage.sites and storage.garage.capacities, keeping every comment", p.Site, p.ConfigPath)}},
+	}
+	st.run = func() error {
+		if p.ConfigPath == "" {
+			return fmt.Errorf("no configuration file to edit")
+		}
+		return config.RemoveSite(p.ConfigPath, p.Site)
+	}
+	st.gate = func() error {
+		cfg, err := config.Load(p.ConfigPath)
+		if err != nil {
+			return err
+		}
+		if _, ok := cfg.Sites[p.Site]; ok {
+			return fmt.Errorf("%s still declares %s", p.ConfigPath, p.Site)
+		}
+		return nil
+	}
+	return st
+}
+
+// Execute runs the stages in order. A stage's steps run only when it has
+// any; its gate always runs, so a resumed removal proves each stage again
+// before moving past it.
+func Execute(p *Plan) error {
+	for _, st := range p.Stages {
+		p.say("stage %d, %s\n", st.Number, st.Name)
+		if st.Skipped != "" {
+			p.say("  %-9s %s\n", "skipped", st.Skipped)
+			continue
+		}
+		if st.run != nil && len(st.Steps) > 0 {
+			if err := st.run(); err != nil {
+				return p.fail(st, err)
+			}
+		}
+		if st.gate != nil {
+			if err := st.gate(); err != nil {
+				return p.fail(st, fmt.Errorf("gate: %w", err))
+			}
+		}
+		p.say("  %-9s %s\n", "passed", st.Gate)
+	}
+	return nil
+}
+
+func (p *Plan) fail(st *Stage, err error) error {
+	return fmt.Errorf("site remove %s stopped at stage %d (%s), and nothing after it ran: %v\nFix the cause and run site remove again: it resumes at the first stage with anything left to do", p.Site, st.Number, st.Name, err)
+}
+
+// Print writes the plan as an operator reads it. What it leaves for later is
+// Remains.
+func (p *Plan) Print(w io.Writer) {
+	fmt.Fprintf(w, "site remove %s\n", p.Site)
+	for _, st := range p.Stages {
+		fmt.Fprintf(w, "\n%d. %s\n", st.Number, st.Name)
+		if st.Skipped != "" {
+			fmt.Fprintf(w, "  %-9s %s\n", "skip", st.Skipped)
+			continue
+		}
+		if len(st.Steps) == 0 {
+			fmt.Fprintf(w, "  %-9s nothing to do here, and the gate is still checked\n", "nothing")
+		}
+		for _, step := range st.Steps {
+			fmt.Fprintf(w, "  %-9s %s: %s\n", step.Verb, step.Site, step.Text)
+		}
+		fmt.Fprintf(w, "  %-9s %s\n", "gate", st.Gate)
+	}
+}
+
+// Remains is what the operator still has to see to once the plan has run:
+// the site's secrets, its DNS records, what a scoped apply did not move, and
+// everything kept on the host, with why. Nothing here is changed by this
+// command.
+func (p *Plan) Remains() []string {
+	var out []string
+	if p.secrets != nil {
+		if _, ok := p.secrets.Sites[p.Site]; ok {
+			out = append(out, fmt.Sprintf("secrets: sites.%s (its WireGuard key) is still in the secrets file, which this command never edits. Remove it with sops once nothing needs it", p.Site))
+		}
+	}
+	if addr := p.cfg.Sites[p.Site].PublicAddress; addr != "" {
+		out = append(out, fmt.Sprintf("DNS: records dns init made pointing at %s stay until `paisans dns prune --execute` deletes them", addr))
+	} else {
+		out = append(out, "DNS: any record dns init made pointing at this host stays until `paisans dns prune --execute` deletes it")
+	}
+	out = append(out, p.Notes...)
+	out = append(out, p.Kept...)
+	return out
+}
+
+// Pending reports whether any stage has steps to run.
+func (p *Plan) Pending() bool {
+	for _, st := range p.Stages {
+		if st.Skipped == "" && len(st.Steps) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func contains(list []string, s string) bool {
+	for _, item := range list {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, " / ")
+}
+
+func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+func sortedCopy(list []string) []string {
+	out := append([]string(nil), list...)
+	sort.Strings(out)
+	return out
+}

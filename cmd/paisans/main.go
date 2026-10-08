@@ -45,6 +45,8 @@ Usage:
                    [--min-free <size>] [--keep-images] [--execute]
   paisans site add <site> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--execute]
+  paisans site remove <site> [--config paisans.yaml] [--secrets secrets.enc.yaml]
+               [--host-gone] [--delete-data] [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
   paisans storage add [--config paisans.yaml] [--secrets secrets.enc.yaml]
@@ -89,6 +91,19 @@ Commands:
              Patroni replica, synchronous mode, HAProxy. Reads every site
              and plans only what differs, so a re-run resumes. Writes
              nothing without --execute.
+             remove: take a site out of the running deployment in four
+             gated stages: its data out (the Patroni leader switched to
+             the Sync Standby, its Garage node out of the layout and the
+             objects moved), out of the cluster (its etcd member, and the
+             mesh, HAProxy and gateway routes on every remaining site),
+             its host cleaned of everything provably this deployment's
+             (a gateway's Caddy handed over to the host's owner when
+             their sites rely on it), and its entry out of paisans.yaml.
+             Refuses the only gateway, data or apps site, a site an app
+             is pinned to, and an unhealthy cluster. --host-gone skips
+             the host; --delete-data deletes its data after the site's
+             name is typed at a terminal. Writes nothing without
+             --execute.
   storage    init: provision object storage on a site: each app's key and
              bucket, and the layout when it is the only Garage site.
              add: join every site in storage.garage.sites into one Garage
@@ -163,9 +178,10 @@ Commands:
              any FAIL. With the toolkit's own Caddy in front (ingress mode
              paisans), only the first two apply.
 
-host prepare, apply, prune, site add, storage init, storage add, storage
-rotate-key, app admin create, app remove, oidc client create, preflight,
-failover test, doctor and init are the only commands that reach a host.
+host prepare, apply, prune, site add, site remove, storage init, storage
+add, storage rotate-key, app admin create, app remove, oidc client create,
+preflight, failover test, doctor and init are the only commands that reach a
+host.
 Each reads it to plan, and changes it only with --execute; preflight, doctor and
 init have no --execute and never change it. With --execute, a command first
 claims each host it writes to in /var/lib/paisans/registry.json, and refuses if
@@ -200,11 +216,15 @@ func main() {
 		}
 		err = runHostPrepare(os.Args[3:])
 	case "site":
-		if len(os.Args) < 3 || os.Args[2] != "add" {
-			fmt.Fprintf(os.Stderr, "paisans: site takes one subcommand, add\n\n%s", usage)
+		switch {
+		case len(os.Args) >= 3 && os.Args[2] == "add":
+			err = runSiteAdd(os.Args[3:])
+		case len(os.Args) >= 3 && os.Args[2] == "remove":
+			err = runSiteRemove(os.Args[3:], os.Stdin, os.Stdout)
+		default:
+			fmt.Fprintf(os.Stderr, "paisans: site takes one subcommand, add or remove\n\n%s", usage)
 			os.Exit(2)
 		}
-		err = runSiteAdd(os.Args[3:])
 	case "secrets":
 		err = runSecrets(os.Args[2:])
 	case "app":

@@ -570,3 +570,90 @@ func refused(t Runner, e Entry, why error) error {
 func awkString(s string) string { return strings.ReplaceAll(s, `\`, `\\`) }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// Remove is the registry without id's entry, which is what `site remove`
+// leaves on a host once this deployment is gone from it. Every other entry is
+// kept as it was, and an id with no entry changes nothing.
+func Remove(r Registry, id string) Registry {
+	out := Registry{Version: Version, Deployments: map[string]Entry{}}
+	for k, v := range r.Deployments {
+		if k != id {
+			out.Deployments[k] = v
+		}
+	}
+	return out
+}
+
+// removeProgram is Remove in awk, the counterpart of mergeProgram: it reads
+// the registry in Encode's layout, drops the line whose key is id, and prints
+// every other line in the order it read them, the last without its comma. A
+// file in any other layout exits 4 and prints nothing, so it is never
+// rewritten.
+const removeProgram = `
+NR == 1 { if ($0 != header) bad = 1; next }
+done { if ($0 != "") bad = 1; next }
+$0 == footer { done = 1; next }
+{
+	line = $0
+	sub(/,$/, "", line)
+	if (line !~ /^"[^"]+":\{.*\}$/) { bad = 1; next }
+	key = substr(line, 2, index(line, "\":") - 2)
+	if (key == id) next
+	kept[++n] = line
+}
+END {
+	if (NR > 0 && !done) bad = 1
+	if (bad) { print unreadable > "/dev/stderr"; exit 4 }
+	print header
+	for (i = 1; i <= n; i++) {
+		if (i < n) print kept[i] ","
+		else print kept[i]
+	}
+	print footer
+}
+`
+
+// removeArgs is the removal's awk argument list, unquoted.
+func removeArgs(id string) []string {
+	var args []string
+	for _, kv := range [][2]string{{"id", id}, {"header", header}, {"footer", footer}, {"unreadable", unreadableMarker}} {
+		args = append(args, "-v", kv[0]+"="+awkString(kv[1]))
+	}
+	return append(args, removeProgram)
+}
+
+// RemoveCommand is the one remote command that takes id's entry out of the
+// host's registry, under the same flock as a claim, through a temporary file
+// moved over it. A host with no registry is left without one, and a registry
+// in another layout is left as it was.
+func RemoveCommand(id string) string {
+	quoted := make([]string, 0, 10)
+	for _, a := range removeArgs(id) {
+		quoted = append(quoted, shellQuote(a))
+	}
+	return strings.Join([]string{
+		"set -e",
+		"umask 077",
+		"[ -f " + Path + " ] || exit 0",
+		"exec 9>>" + LockPath,
+		fmt.Sprintf("flock -w %d 9 || { echo 'paisans: another command holds %s'; exit 1; }", lockWait, LockPath),
+		"tmp=$(mktemp " + Dir + "/.registry.XXXXXX)",
+		`trap 'rm -f "$tmp"' EXIT`,
+		"awk " + strings.Join(quoted, " ") + " " + Path + ` > "$tmp"`,
+		`chmod 600 "$tmp"`,
+		`mv "$tmp" ` + Path,
+	}, "; ")
+}
+
+// Unclaim takes this deployment's entry out of the registry on the host t
+// reaches. A registry in another layout is reported, not rewritten.
+func Unclaim(t Runner, id string) error {
+	out, err := t.Run(RemoveCommand(id))
+	if err == nil {
+		return nil
+	}
+	if refusal := ParseClaim(out); refusal != nil {
+		return fmt.Errorf("%s: %w", t.Describe(), refusal)
+	}
+	return fmt.Errorf("%s: removing deployment %s from %s: %w\n%s", t.Describe(), id, Path, err, strings.TrimSpace(out))
+}

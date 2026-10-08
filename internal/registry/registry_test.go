@@ -413,3 +413,95 @@ type fakeHost struct{}
 func (fakeHost) Run(string) (string, error)            { return "", nil }
 func (fakeHost) ReadFile(string) (string, bool, error) { return "", false, nil }
 func (fakeHost) Describe() string                      { return "vm" }
+
+// runRemove runs the removal's awk program as RemoveCommand would.
+func runRemove(t *testing.T, input, id string) (string, string, int) {
+	t.Helper()
+	if _, err := exec.LookPath("awk"); err != nil {
+		t.Skip("no awk here")
+	}
+	src := filepath.Join(t.TempDir(), "registry.json")
+	if err := os.WriteFile(src, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("awk", append(removeArgs(id), src)...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	code := 0
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		code = exit.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	return stdout.String(), stderr.String(), code
+}
+
+// The awk removal writes exactly what Encode writes for Remove's result, for
+// an entry first, last, alone and absent, and refuses a file in another
+// layout.
+func TestUnclaimAgreesWithRemove(t *testing.T) {
+	three := Registry{Version: Version, Deployments: map[string]Entry{
+		ours:   entry("f2a9", "example.org", "home-a"),
+		other:  entry("0c1d", "example.net", "vm"),
+		theirs: meshEntry("f2a9", "example.com", "vm", 51820, "10.45.0.0/24"),
+	}}
+	alone := Registry{Version: Version, Deployments: map[string]Entry{ours: entry("f2a9", "example.org", "home-a")}}
+	for _, tc := range []struct {
+		name string
+		r    Registry
+		id   string
+	}{
+		{"first", three, other},
+		{"middle", three, ours},
+		{"last", three, theirs},
+		{"alone", alone, ours},
+		{"absent", alone, other},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input, err := Encode(tc.r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr, code := runRemove(t, string(input), tc.id)
+			if code != 0 {
+				t.Fatalf("exit %d: %s", code, stderr)
+			}
+			want, err := Encode(Remove(tc.r, tc.id))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stdout != string(want) {
+				t.Errorf("awk wrote:\n%s\nRemove encodes:\n%s", stdout, want)
+			}
+			before := len(tc.r.Deployments)
+			if _, ok := Remove(tc.r, tc.id).Deployments[tc.id]; ok {
+				t.Error("Remove kept the entry")
+			}
+			if len(tc.r.Deployments) != before {
+				t.Error("Remove changed its input")
+			}
+		})
+	}
+	if stdout, _, code := runRemove(t, "{\"something\":\"else\"}\n", ours); code != 4 || stdout != "" {
+		t.Errorf("a registry in another layout exited %d with %q, want 4 and nothing", code, stdout)
+	}
+}
+
+func TestRemoveCommandShape(t *testing.T) {
+	command := RemoveCommand(ours)
+	at := func(step string) int {
+		i := strings.Index(command, step)
+		if i < 0 {
+			t.Fatalf("the removal has no step %q:\n%s", step, command)
+		}
+		return i
+	}
+	order := []int{at("[ -f " + Path + " ] || exit 0"), at("exec 9>>" + LockPath), at("; flock -w "), at("; awk "), at(`; mv "$tmp" ` + Path)}
+	for i := 1; i < len(order); i++ {
+		if order[i] <= order[i-1] {
+			t.Fatalf("the removal's steps are out of order:\n%s", command)
+		}
+	}
+}
