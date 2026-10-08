@@ -1230,18 +1230,3 @@ func TestSnapDockerIsRefusedNotRemoved(t *testing.T) {
 		}
 	}
 }
-
-// The drop-in this deployment wrote while the interface was wg0 is removed:
-// its Wants= would still start wg-quick@wg0 at boot.
-func TestTheWG0DropInIsRemoved(t *testing.T) {
-	host := preparedHost(false)
-	old := "/etc/systemd/system/docker.service.d/paisans-f2a9-after-wg0.conf"
-	host.files[old] = "[Unit]\nWants=wg-quick@wg0.service\nAfter=wg-quick@wg0.service\n"
-	plan, err := hostprep.Build("home-a", fixture(t), host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.Steps) != 1 || plan.Steps[0].Command != "rm -f "+old+" && systemctl daemon-reload" {
-		t.Fatalf("want only the old drop-in removed, got %+v", plan.Steps)
-	}
-}

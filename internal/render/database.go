@@ -22,7 +22,7 @@ import (
 // sidecar on the host's interfaces and make two kinds that listen on the same
 // port collide. Pointing at the Docker bridge gateway would need HAProxy to
 // bind an address that differs per compose network and does not exist until
-// Docker creates it. The mesh address exists from the moment wg0 is up, which
+// Docker creates it. The mesh address exists from the moment the mesh interface is up, which
 // is before anything else starts, and it is already declared in the
 // configuration.
 //
