@@ -16,11 +16,18 @@ Nothing here reaches a host: no SSH, no Docker, no release. See
 `docs/development.md` for what exists and what does not.
 
 That matters for scope. Much of the work here is still *documentation of a
-design*, and the design is argued rather than asserted: every rule in
-`README.md` states the alternative it rejects and why. Match that, in code as
-well as in prose. A change that adds a rule without the reasoning behind it is
-incomplete, no matter how correct the rule is, and so is a refusal in the code
-that no rule in `README.md` justifies.
+design*, and the design is explained rather than asserted: every rule in
+`README.md` says why it holds. Match that, in code as well as in prose. A
+change that adds a rule without the reasoning behind it is incomplete, no
+matter how correct the rule is, and so is a refusal in the code that no rule in
+`README.md` justifies.
+
+**Do not write rejected alternatives.** Guides, documentation, code comments,
+commit messages and pull request descriptions describe what is built and why
+it works, not the options that were weighed and turned down. No "Rejected:"
+paragraph, no "X was considered and rejected", no list of alternatives. The one
+exception is `docs/decisions.md`, a decision record, which may keep them.
+Founder decision.
 
 This is also **not** the `paisans.community` deployment. Generic material is
 canonical here; a specific community's hosts, decision log and governance stay
@@ -103,8 +110,8 @@ wrong; generalise it.
 ### Documentation changes specifically
 
 * Keep tables as tables and prose as prose; the document uses each deliberately.
-* State the rejected alternative. "X, because Y" is the minimum; "X. It would
-  be simpler to Z, but Z is a migration rather than an addition" is the voice.
+* Give the reason. "X, because Y" is the minimum. Do not add the alternatives
+  that were turned down (see *What this repository is*).
 * Cross-reference by section name, not by line number.
 * **No em dashes in anything you write.** Use a comma, a semicolon, a colon, a
   full stop, or a real parenthetical instead. Where the aside is an
@@ -171,8 +178,8 @@ Format follows the existing log exactly. Read `git log` before writing one.
 ```
 <type>: <subject, lowercase, imperative, no trailing period>
 
-<body: what changed and, more importantly, why. Name the alternative that was
-rejected. Wrap at 80 columns. Attribute the decision when a human made it
+<body: what changed and, more importantly, why. Do not list alternatives that
+were turned down. Wrap at 80 columns. Attribute the decision when a human made it
 (Eg: "Founder decision." or "Founder direction."), so the log records who
 chose.>
 
