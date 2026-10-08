@@ -40,5 +40,9 @@ reverse_proxy{{ range .S3.GarageAddresses }} {{ . }}:3900{{ end }} {
 	lb_try_duration 5s
 	fail_duration 10s
 	unhealthy_status 503
+{{- else if .S3.GarageElsewhere }}
+	# One Garage node, not the gateway's machine; see upstream_single in the
+	# Caddyfile.
+	import upstream_single
 {{- end }}
 }

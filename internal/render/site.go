@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io/fs"
+	"net"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -714,6 +715,27 @@ func (p *planner) upstreams(name string) []string {
 		return nil
 	}
 	return p.upstreamsOnPort(name, appPort[app.Kind])
+}
+
+// elsewhere reports whether a route has exactly one upstream and it is on a
+// machine other than the gateway's. Addresses are host or host:port, compared
+// by host. Several upstreams import upstream_failover instead, and a single
+// upstream on the gateway itself dies with the gateway, so neither needs it.
+func (p *planner) elsewhere(upstreams []string) bool {
+	if len(upstreams) != 1 {
+		return false
+	}
+	host := upstreams[0]
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	for _, name := range p.cfg.SiteNames() {
+		site := p.cfg.Sites[name]
+		if site.Has(config.RoleGateway) && site.Address == host {
+			return false
+		}
+	}
+	return true
 }
 
 // upstreamsOnPort is upstreams with the port supplied rather than looked up,

@@ -393,7 +393,7 @@ snippets rather than in every kind.
 
 **`upstream_failover`**, imported inside the proxy of every app on more than
 one apps site: `lb_policy first`, `lb_try_duration 5s`, `fail_duration 30s`,
-`dial_timeout 2s`. `first`, not round robin, because the apps sites are not
+`dial_timeout 2s`, `response_header_timeout 60s`. `first`, not round robin, because the apps sites are not
 interchangeable during a failover. A dial that fails is retried on the next
 site within the same request, for a POST too: Caddy 2.11 retries any method
 only when the connection never opened, so no body was sent. A dead site on
@@ -402,6 +402,21 @@ price of finding it dead; once found, it is skipped for `fail_duration`, and
 then one request tries it again. Checked against a live Caddy: with one site
 refusing and the other up, a POST is answered by the live one with no error.
 A pinned app has nowhere to fail over to and does not import it.
+
+**The wait for headers is bounded at 60s.** A request can go out on a
+connection the gateway opened to a site before that site died. Nothing answers
+it and nothing resets it, so without a bound it waits for TCP to give up, which
+takes minutes, and the reader sees a page that never loads. 60s is twice the
+30s long poll a Matrix client holds open on `/sync`, the longest wait for
+headers any kind here makes on purpose.
+
+**`upstream_single`**, imported inside the proxy of an app, or a Garage media
+route, served by exactly one site on a machine other than the gateway's:
+`dial_timeout 2s` and `response_header_timeout 60s`, the same two bounds
+without the failover. That site can go down while the gateway stays up, and
+the bounds turn it into `upstream_unavailable`'s 503 within seconds instead of
+a request that hangs. A route to an app on the gateway itself imports neither,
+since that app goes down with the gateway.
 
 **`upstream_unavailable`**, imported in every host block, media included:
 when Caddy itself fails to reach any upstream, it answers 503 with

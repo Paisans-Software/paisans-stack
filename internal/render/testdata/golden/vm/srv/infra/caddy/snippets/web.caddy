@@ -3,5 +3,7 @@
 # Routing for web, imported by the gateway's block for
 # web.example.org. A static client needs nothing but the proxy.
 reverse_proxy 10.44.0.2:80 {
+	# One site, not the gateway's machine; see upstream_single in the Caddyfile.
+	import upstream_single
 	header_up X-Forwarded-Proto https
 }

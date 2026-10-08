@@ -2682,3 +2682,46 @@ func TestARolelessSiteRendersItsPinnedAppAndNoInfraStack(t *testing.T) {
 		t.Error("the gateway lost its infra stack")
 	}
 }
+
+// A route served by one site on another machine than the gateway imports
+// upstream_single, so a dead site answers 503 instead of hanging; a route
+// across several sites imports upstream_failover; and a route to the gateway
+// itself imports neither, since it dies with the gateway. Both snippets bound
+// the wait for headers.
+func TestRoutesBoundTheWaitOnAnotherMachine(t *testing.T) {
+	files := map[string]string{}
+	for _, f := range build(t).Files {
+		files[f.Path] = f.Content
+	}
+	snippet := func(app string) string {
+		path := "vm/srv/infra/caddy/snippets/" + app + ".caddy"
+		content, ok := files[path]
+		if !ok {
+			t.Fatalf("no %s", path)
+		}
+		return content
+	}
+	for _, app := range []string{"blog", "web"} { // pinned to home-a, home-b
+		if !strings.Contains(snippet(app), "import upstream_single") {
+			t.Errorf("%s, on one site away from the gateway, does not import upstream_single", app)
+		}
+	}
+	if s := snippet("talk"); !strings.Contains(s, "import upstream_failover") || strings.Contains(s, "upstream_single") {
+		t.Errorf("talk, on two apps sites, should import upstream_failover only:\n%s", s)
+	}
+	if strings.Contains(snippet("status"), "upstream_single") { // pinned to vm, the gateway
+		t.Error("status, on the gateway itself, imports upstream_single")
+	}
+	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
+	for _, name := range []string{"(upstream_failover) {", "(upstream_single) {"} {
+		i := strings.Index(caddyfile, name)
+		if i < 0 {
+			t.Fatalf("the Caddyfile defines no %s", name)
+		}
+		block := caddyfile[i:]
+		block = block[:strings.Index(block, "\n}\n")]
+		if !strings.Contains(block, "response_header_timeout 60s") || !strings.Contains(block, "dial_timeout 2s") {
+			t.Errorf("%s does not bound the dial and the wait for headers:\n%s", name, block)
+		}
+	}
+}
