@@ -3,5 +3,6 @@ if docker compose version >/dev/null 2>&1; then echo "compose present"; else ech
 for p in{{ range .Packages }} {{ . }}{{ end }}; do
   printf 'pkg %s %s\n' "$p" "$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null || echo absent)"
 done
+if command -v snap >/dev/null 2>&1 && snap list docker >/dev/null 2>&1; then echo "snap docker"; fi
 if [ -s /etc/apt/keyrings/docker.asc ]; then echo "keyring present"; else echo "keyring absent"; fi
 printf 'arch %s\n' "$(dpkg --print-architecture)"

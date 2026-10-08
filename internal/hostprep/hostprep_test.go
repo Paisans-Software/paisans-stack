@@ -1165,3 +1165,23 @@ func TestASharedHostNeverSetsTheFirewallsDefaults(t *testing.T) {
 		t.Errorf("the plan does not say the defaults were left alone:\n%s", printed(shared))
 	}
 }
+
+// Docker installed as a snap is refused, not removed, as Ubuntu's docker.io
+// is, and whether or not `docker compose` works with it: the toolkit runs
+// Docker from Docker's own repository on every host. Removing it would stop
+// whatever runs from it.
+func TestSnapDockerIsRefusedNotRemoved(t *testing.T) {
+	for _, compose := range []string{"compose present", "compose absent"} {
+		host := freshHost()
+		host.responses[probePackages] = compose + "\nsnap docker\npkg ufw install ok installed\nkeyring absent\narch amd64\n"
+		_, err := hostprep.Build("home-a", fixture(t), host)
+		if err == nil || !strings.Contains(err.Error(), "snap") || !strings.Contains(err.Error(), "snap remove docker") {
+			t.Errorf("%s: got %v", compose, err)
+		}
+		for _, c := range host.ran {
+			if strings.Contains(c, "snap remove") || strings.Contains(c, "apt-get") {
+				t.Errorf("%s: prepare changed something: %s", compose, c)
+			}
+		}
+	}
+}

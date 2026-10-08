@@ -44,6 +44,7 @@ type packageFacts struct {
 	installed    map[string]bool
 	keyring      bool
 	arch         string
+	snapDocker   bool
 }
 
 func (u ubuntu) probePackages(t Transport) (packageFacts, error) {
@@ -71,6 +72,8 @@ func (u ubuntu) probePackages(t Transport) (packageFacts, error) {
 			facts.keyring = rest == "present"
 		case "arch":
 			facts.arch = strings.TrimSpace(rest)
+		case "snap":
+			facts.snapDocker = strings.TrimSpace(rest) == "docker"
 		}
 	}
 	return facts, nil
@@ -86,6 +89,14 @@ func (u ubuntu) Packages(t Transport, host OSRelease) (Section, error) {
 	facts, err := u.probePackages(t)
 	if err != nil {
 		return out, err
+	}
+
+	// Refused, not removed, for the docker.io reason below, and whether or
+	// not compose works with it: every host runs Docker from Docker's own
+	// repository, which is what the toolkit is tested against, and a snap
+	// beside those packages would be a second engine.
+	if facts.snapDocker {
+		return out, fmt.Errorf("docker: Docker is installed as a snap, and every host here runs Docker Engine from Docker's own apt repository. Remove it yourself (snap remove docker), after checking nothing running depends on it, and prepare again")
 	}
 
 	var install []string
