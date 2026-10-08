@@ -174,3 +174,42 @@ func TestAMonitorCarriesTheGateOnlyWhenItsAppIsGated(t *testing.T) {
 		t.Fatalf("a gated monitor lacks the gate snippets:\n%s", files["watch/srv/infra/caddy/Caddyfile"])
 	}
 }
+
+// TRUST_PROXY names where the proxy in front of the monitor connects from,
+// because the login rate limiter is keyed on the client address and only a
+// trusted proxy's X-Forwarded-For is read. A port Docker publishes on
+// 127.0.0.1 reaches the container from its compose network's gateway, a
+// private address, never from loopback, so loopback alone would make every
+// visitor one client.
+func TestTrustProxyFollowsWhereTheProxyConnectsFrom(t *testing.T) {
+	for _, tc := range []struct {
+		ingress *config.Ingress
+		want    string
+	}{
+		{nil, "TRUST_PROXY=10.44.0.0/24"},
+		{&config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"}, "TRUST_PROXY=loopback,uniquelocal"},
+		{&config.Ingress{Mode: config.IngressExternal, Listen: "192.168.1.20:8480"}, "TRUST_PROXY=192.168.0.0/16"},
+		{&config.Ingress{Mode: config.IngressExternal, Listen: "172.20.0.5:8480"}, "TRUST_PROXY=172.16.0.0/12"},
+		{&config.Ingress{Mode: config.IngressExternal, Listen: "10.44.0.4:8480"}, "TRUST_PROXY=10.44.0.0/24"},
+	} {
+		env := planFiles(mustBuild(t, monitorConfig(t, tc.ingress)))["watch/srv/status/.env"]
+		if !strings.Contains(env, "\n"+tc.want+"\n") || !strings.Contains(env, "\nPUBLIC_BASE_URL=https://status.example.org\n") {
+			t.Errorf("%+v:\n%s", tc.ingress, env)
+		}
+	}
+}
+
+// In mode external the app is published on listen for the operator's web
+// server, and still on the mesh address, where the direct checks reach it.
+func TestAnExternalAppIsPublishedOnListenAsWell(t *testing.T) {
+	compose := planFiles(mustBuild(t, monitorConfig(t, &config.Ingress{Mode: config.IngressExternal, Listen: "127.0.0.1:8480"})))["watch/srv/status/compose.yaml"]
+	for _, want := range []string{`"10.44.0.4:3001:3001"`, `"127.0.0.1:8480:3001"`} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("missing %s:\n%s", want, compose)
+		}
+	}
+	compose = planFiles(build(t))["watch/srv/status/compose.yaml"]
+	if strings.Contains(compose, "8480") || strings.Count(compose, ":3001:3001") != 1 {
+		t.Errorf("mode paisans publishes on the mesh address alone:\n%s", compose)
+	}
+}

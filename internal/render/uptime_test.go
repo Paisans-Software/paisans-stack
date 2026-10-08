@@ -14,14 +14,15 @@ type seedFile struct {
 	Monitors []map[string]any `json:"monitors"`
 }
 
-// withMonitor is the fixture plus an uptime app pinned to vm, the secrets it
-// needs, and the given smtp blocks (deployment wide, then the app's own).
+// withMonitor is the fixture with its uptime app on the watch monitor site,
+// the secrets it needs, and the given smtp blocks (deployment wide, then the
+// app's own).
 func withMonitor(t *testing.T, smtp config.SMTP, own *config.SMTP) (*config.Config, *config.Secrets) {
 	t.Helper()
 	cfg := fixture(t)
 	cfg.SMTP = smtp
 	cfg.Apps["status"] = config.App{Kind: config.KindUptime, Hostname: "status.example.org",
-		Placement: config.Placement{Mode: config.PlacementPinned, Site: "vm"},
+		Placement: config.Placement{Mode: config.PlacementPinned, Site: "watch"},
 		Settings:  map[string]any{"admin_group": "admins"}, SMTP: own}
 	secrets := fixtureSecrets(t)
 	if secrets.Apps == nil {
@@ -38,7 +39,7 @@ func renderSeed(t *testing.T, cfg *config.Config, secrets *config.Secrets) seedF
 		t.Fatal(err)
 	}
 	for _, f := range plan.Files {
-		if f.Path != "vm/srv/status/monitors.json" {
+		if f.Path != "watch/srv/status/monitors.json" {
 			continue
 		}
 		if f.Mode != 0o600 {
@@ -50,7 +51,7 @@ func renderSeed(t *testing.T, cfg *config.Config, secrets *config.Secrets) seedF
 		}
 		return seed
 	}
-	t.Fatal("no vm/srv/status/monitors.json was rendered")
+	t.Fatal("no watch/srv/status/monitors.json was rendered")
 	return seedFile{}
 }
 
@@ -64,7 +65,8 @@ func byName(seed seedFile) map[string]map[string]any {
 
 // Every app other than the monitor gets a public check at its hostname and a
 // direct check per site it runs on, both on the kind's health route; every
-// other site gets a ping; the monitor watches neither itself nor its own site.
+// other site gets a ping; the monitor checks neither its own container nor
+// its own site.
 func TestTheSeedChecksEveryAppTwiceAndPingsEveryOtherSite(t *testing.T) {
 	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
 	monitors := byName(renderSeed(t, cfg, secrets))
@@ -98,17 +100,17 @@ func TestTheSeedChecksEveryAppTwiceAndPingsEveryOtherSite(t *testing.T) {
 			t.Errorf("direct %s: a direct check bypasses the gate and expects the kind's own codes, got %v", site, d["expected_status"])
 		}
 	}
-	for _, name := range []string{"home-a — ping", "home-b — ping"} {
+	for _, name := range []string{"home-a — ping", "home-b — ping", "vm — ping"} {
 		if m := monitors[name]; m == nil || m["monitor_type"] != "ping" {
 			t.Errorf("%s: %v", name, m)
 		}
 	}
-	if monitors["vm — ping"] != nil {
+	if monitors["watch — ping"] != nil {
 		t.Error("the monitor pings its own site")
 	}
-	for name := range monitors {
-		if strings.HasPrefix(name, "status ") {
-			t.Errorf("the monitor checks itself: %s", name)
+	for name, m := range monitors {
+		if url, _ := m["url"].(string); strings.Contains(url, ":3001") {
+			t.Errorf("the monitor checks its own container: %s %s", name, url)
 		}
 	}
 }
@@ -215,7 +217,7 @@ func TestTheEdgeRefusesTheTokenAPIButNotTheUIsOwnJSON(t *testing.T) {
 	}
 	var snippet string
 	for _, f := range plan.Files {
-		if f.Path == "vm/srv/infra/caddy/snippets/status.caddy" {
+		if f.Path == "watch/srv/infra/caddy/snippets/status.caddy" {
 			snippet = f.Content
 		}
 	}
@@ -232,5 +234,16 @@ func TestTheEdgeRefusesTheTokenAPIButNotTheUIsOwnJSON(t *testing.T) {
 	}
 	if strings.Contains(matcher, " /api/*") {
 		t.Errorf("the edge refuses the UI's own /api/sites JSON: %q", matcher)
+	}
+}
+
+// The monitor cannot report its own death, but whenever it runs it can see
+// the path in front of it: DNS, the web server and the certificate, whose
+// expiry the fork warns about. So it checks its own public URL, and only that.
+func TestTheMonitorChecksItsOwnPublicURL(t *testing.T) {
+	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+	self := byName(renderSeed(t, cfg, secrets))[render.PublicCheckName("status")]
+	if self == nil || self["url"] != "https://status.example.org/healthz" || self["expected_status"] != "200" || self["follow_redirects"] != false {
+		t.Fatalf("self check: %v", self)
 	}
 }

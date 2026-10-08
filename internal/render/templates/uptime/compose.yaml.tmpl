@@ -28,6 +28,11 @@ services:
     # public address is reachable from the internet whatever ufw says.
     ports:
       - "{{ .MeshAddress }}:{{ .App.Port }}:{{ .App.Port }}"
+{{- if .IngressListen }}
+      # Where the operator's own web server proxies to (sites.{{ .App.Site }}.ingress.listen).
+      # The mesh address above stays, for the direct checks.
+      - "{{ .IngressListen }}:{{ .App.Port }}"
+{{- end }}
     volumes:
       - {{ .DataPath }}/data:/data
       - {{ .DataPath }}/monitors.json:/seed/monitors.json:ro

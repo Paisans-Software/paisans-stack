@@ -28,7 +28,7 @@
     },
     {
       "path": "srv/status/.env",
-      "sha256": "ae9b7befff81ab44a5df619bfad87d3e60478e4a923b6f5b5852f4f6ece4b970",
+      "sha256": "dfdebb08e4f835dc50307a18158d900886868056e0f8603a0440161b0888ef96",
       "mode": "0600"
     },
     {
@@ -38,7 +38,7 @@
     },
     {
       "path": "srv/status/monitors.json",
-      "sha256": "edc7600b35b6ef560f3a0c7b90fd5a31771ae1debfc0dfc7a78e14a33cf7b20e",
+      "sha256": "91bcfcdeeba3af47eeba27b35a725801dd9a7af80f108c0fc2a0ac9a16452c54",
       "mode": "0600"
     }
   ]

@@ -58,6 +58,17 @@ type appValues struct {
 	// role can move without rewriting every application's configuration.
 	TrustedProxies string
 
+	// TrustProxy is the proxy an app on a monitor site trusts for the
+	// client's address: the mesh subnet behind the gateway or the monitor's
+	// own Caddy, and the network the operator's web server connects from in
+	// ingress mode external. See trustProxy.
+	TrustProxy string
+
+	// IngressListen is where an app on a monitor in ingress mode external is
+	// published for the operator's web server, as host:port, in addition to
+	// its mesh address. Empty for every other app.
+	IngressListen string
+
 	// MeshAddress is the mesh address of the site this instance runs on. A
 	// published port binds it and nothing else, and a clustered app reaches
 	// its local HAProxy at it. Empty when the gateway rebuilds the app for
@@ -286,6 +297,8 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 		secrets:         p.secrets.Apps[planned.Name],
 		set:             app.Settings,
 	}
+	v.TrustProxy = trustProxy(p.cfg, planned.Name)
+	v.IngressListen = ingressListen(p.cfg, planned.Name)
 	v.ServerName = planned.Hostname
 	if delegated := app.Hostnames[kinds.WellknownRole]; delegated != "" {
 		v.ServerName = delegated
