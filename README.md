@@ -2059,7 +2059,10 @@ listener, and a stopped container binds again when it starts. A foreign
 Docker network whose subnet overlaps the mesh conflicts, because containers
 would be handed the mesh's addresses. A route conflicts when it equals the
 mesh subnet or lies inside it, because the kernel picks the longest matching
-prefix and it would take the mesh's traffic. A route broader than the mesh (a
+prefix and it would take the mesh's traffic. The same holds for a subnet a
+site's stacks pin: a route equal to it or inside it conflicts, because it is
+at least as specific as that network's bridge route and would take its
+traffic. A route broader than the mesh (a
 provider's 10.0.0.0/8 private network) is shorter than the one `wg0` adds, so
 the mesh still wins; it is printed as a note. A `wg0` the toolkit did not
 write conflicts.
@@ -3548,7 +3551,9 @@ will eventually be violated:
   libraries between replicas risk corruption
 * Kernel WireGuard available; `/dev/watchdog` present
 * Ports free: 51820, 2379/2380, 5000
-* The mesh subnet does not collide with anything the host already routes
+* No route the host already has takes the mesh subnet's or a pinned network's
+  traffic: one equal to it or inside it is refused, and a broader one passes
+  with a note, because `wg0`'s route (or the bridge's) is more specific
 * Clock synchronised — etcd and Patroni both depend on it
 * Storage is local, not network-attached, with room
 * **Round-trip time measured to every existing site**, and etcd's heartbeat and
