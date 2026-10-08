@@ -64,8 +64,11 @@ func (p *Plan) changedFiles(site string) (moved []string, owed []string) {
 			moved = append(moved, rel)
 		case p.isCaddyRouting(rel) && p.end.Sites[site].RunsCaddy():
 			moved = append(moved, rel)
-		case rel == p.dep().RelPath("infra", "patroni.env"):
-			owed = append(owed, "/"+rel+" still names "+p.Site+"'s etcd member. Applying it recreates Patroni there, which on the primary is a failover, and nothing needs it: every member it names but "+p.Site+" stays a voter")
+		case rel == apply.PatroniEnv(p.dep()):
+			// A replica's is applied by its own step, and the leader's is
+			// noted, both by replicaEnvs.
+		case site == p.witness && rel == p.dep().RelPath("infra", "compose.yaml"):
+			moved = append(moved, rel)
 		default:
 			owed = append(owed, "/"+rel+" changes with "+p.Site+" gone")
 		}
@@ -91,6 +94,15 @@ func (p *Plan) buildCluster() (*Stage, error) {
 			st.Steps = append(st.Steps, Step{Site: p.etcd.control, Verb: "remove", Text: fmt.Sprintf("%s's etcd member %s: %s", p.Site, p.etcd.member.HexID(), apply.Etcdctl(p.dep(), "member remove "+p.etcd.member.HexID()))})
 			if !p.HostGone {
 				st.Steps = append(st.Steps, Step{Site: p.Site, Verb: "stop", Text: "its etcd, which a removed member cannot rejoin, so it does not restart in a loop: " + p.stopService("etcd")})
+			}
+		}
+		if p.witness != "" {
+			if p.etcd.witness != nil {
+				st.Steps = append(st.Steps, Step{Site: p.etcd.control, Verb: "check", Text: fmt.Sprintf("etcd's voters are exactly %s, both healthy, before the second removal", strings.Join(sortedCopy(append(append([]string(nil), p.end.Etcd.Members...), p.witness)), " and "))})
+				st.Steps = append(st.Steps, Step{Site: p.etcd.control, Verb: "remove", Text: fmt.Sprintf("the witness %s's etcd member %s, leaving %s the one voter, since two voters are worse than one: %s", p.witness, p.etcd.witness.HexID(), p.end.Etcd.Members[0], apply.Etcdctl(p.dep(), "member remove "+p.etcd.witness.HexID()))})
+			}
+			if p.etcd.witnessRunning {
+				st.Steps = append(st.Steps, Step{Site: p.witness, Verb: "stop", Text: "its etcd, which a removed member cannot rejoin, found by this deployment's label and the infrastructure project's etcd service: " + p.stopWitnessEtcd()})
 			}
 		}
 		gates = append(gates, fmt.Sprintf("etcd's voters are exactly %s and every member is healthy", strings.Join(sortedCopy(p.end.Etcd.Members), ", ")))
@@ -161,6 +173,10 @@ func (p *Plan) buildCluster() (*Stage, error) {
 			changes = append(changes, c)
 		}
 	}
+	replicas, err := p.replicaEnvs(st)
+	if err != nil {
+		return nil, err
+	}
 	gates = append(gates, fmt.Sprintf("no remaining site has %s's WireGuard key as a peer", p.Site))
 	if len(proxies) > 0 {
 		gates = append(gates, fmt.Sprintf("HAProxy on %s lists exactly %s, the leader UP", strings.Join(proxies, ", "), strings.Join(sortedCopy(p.end.Cluster.Sites), ", ")))
@@ -177,10 +193,28 @@ func (p *Plan) buildCluster() (*Stage, error) {
 				}
 			}
 		}
+		if p.etcd.witness != nil {
+			if err := p.removeWitness(); err != nil {
+				return err
+			}
+		}
+		if p.etcd.witness != nil || p.etcd.witnessRunning {
+			if out, err := p.transports[p.witness].Run(p.stopWitnessEtcd()); err != nil {
+				return fmt.Errorf("%s: stopping its etcd: %w: %s", p.witness, err, lastLines(out, 3))
+			}
+		}
 		for _, c := range changes {
 			if err := p.applyChange(c); err != nil {
 				return err
 			}
+		}
+		for _, r := range replicas {
+			p.say("  %-9s Patroni on %s, with its patroni.env up to date\n", "recreate", r.Site)
+			gate := apply.ReplicaEnvGate{At: p.transports[p.endLeader()], Wait: replicaWait, Poll: replicaPoll, Sleep: sleep, Sync: p.endWantsSync()}
+			if err := r.Execute(p.dep(), p.transports[r.Site], gate); err != nil {
+				return err
+			}
+			p.say("  %-9s %s streams again\n", "checked", r.Site)
 		}
 		return nil
 	}
@@ -199,6 +233,92 @@ func (p *Plan) buildCluster() (*Stage, error) {
 		return nil
 	}
 	return st, nil
+}
+
+// endLeader is the site that leads once stage 1 has run: the Sync Standby
+// the leadership goes to when the leaving site holds it, the leader as it
+// stands otherwise.
+func (p *Plan) endLeader() string {
+	if p.patroni.leader == p.Site {
+		return p.patroni.candidate
+	}
+	return p.patroni.leader
+}
+
+// replicaEnvs plans patroni.env on every remaining replica, each applied and
+// its Patroni recreated one at a time, and notes the leader's as owed.
+func (p *Plan) replicaEnvs(st *Stage) ([]*apply.ReplicaEnv, error) {
+	var out []*apply.ReplicaEnv
+	rel := apply.PatroniEnv(p.dep())
+	for _, name := range p.end.Cluster.Sites {
+		if name == p.endLeader() {
+			if renderedContent(p.full, name, rel) != renderedContent(p.rendered, name, rel) {
+				p.Notes = append(p.Notes, name+": "+apply.LeaderPatroniEnvNote(name))
+			}
+			continue
+		}
+		r, err := apply.PlanReplicaEnv(name, p.rendered, p.transports[name])
+		if err != nil {
+			return nil, fmt.Errorf("site remove %s: %w", p.Site, err)
+		}
+		if r == nil {
+			continue
+		}
+		for _, s := range r.Steps(p.dep()) {
+			st.Steps = append(st.Steps, Step{Site: name, Verb: s.Verb, Text: s.Text})
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func renderedContent(rendered *render.Plan, site, rel string) string {
+	for _, f := range rendered.Files {
+		if f.Path == site+"/"+rel {
+			return f.Content
+		}
+	}
+	return ""
+}
+
+// witnessEtcdIDs lists the running etcd containers of this deployment on the
+// leaving witness's host: its label, the infrastructure stack's compose
+// project and the etcd service, so nothing else on the host can match.
+func (p *Plan) witnessEtcdIDs() string {
+	d := p.dep()
+	return fmt.Sprintf("docker ps -q --filter %s --filter %s --filter %s",
+		quote(d.LabelFilter()), quote("label=com.docker.compose.project="+d.Project("infra")), quote("label=com.docker.compose.service=etcd"))
+}
+
+// stopWitnessEtcd stops them. It finds the container by its labels, not by
+// the compose file, because once that file is written without etcd Compose
+// no longer knows the service.
+func (p *Plan) stopWitnessEtcd() string {
+	return fmt.Sprintf("ids=$(%s) && { [ -z \"$ids\" ] || docker stop $ids; }", p.witnessEtcdIDs())
+}
+
+// removeWitness takes the witness out of etcd once the voters are exactly the
+// remaining data site and the witness, both healthy. Going from two voters to
+// one needs both: the removal is a change both must commit.
+func (p *Plan) removeWitness() error {
+	both := append(append([]string(nil), p.end.Etcd.Members...), p.witness)
+	if err := p.etcdVoters(both); err != nil {
+		return fmt.Errorf("before taking %s out of etcd: %w", p.witness, err)
+	}
+	members, err := p.etcdMembers()
+	if err != nil {
+		return err
+	}
+	for _, m := range members {
+		if apply.EtcdMemberSite(p.cfg, m) != p.witness {
+			continue
+		}
+		p.say("  %-9s the witness %s's etcd member\n", "remove", p.witness)
+		if out, err := p.transports[p.etcd.control].Run(apply.Etcdctl(p.dep(), "member remove "+m.HexID())); err != nil {
+			return fmt.Errorf("%s: etcdctl member remove %s: %w: %s", p.etcd.control, m.HexID(), err, lastLines(out, 3))
+		}
+	}
+	return nil
 }
 
 func renders(rendered *render.Plan, site, rel string) bool {
@@ -237,8 +357,12 @@ func (p *Plan) etcdMembers() ([]apply.EtcdMember, error) {
 	return apply.ParseEtcdMembers(out)
 }
 
-func (p *Plan) etcdGate() error {
-	want := strings.Join(sortedCopy(p.end.Etcd.Members), ",")
+func (p *Plan) etcdGate() error { return p.etcdVoters(p.end.Etcd.Members) }
+
+// etcdVoters waits, within etcdWait, for etcd's voters to be exactly sites,
+// with no learner, and every member healthy.
+func (p *Plan) etcdVoters(sites []string) error {
+	want := strings.Join(sortedCopy(sites), ",")
 	err := poll(etcdWait, etcdPoll, func() error {
 		members, err := p.etcdMembers()
 		if err != nil {
@@ -253,7 +377,7 @@ func (p *Plan) etcdGate() error {
 		}
 		sort.Strings(voters)
 		if strings.Join(voters, ",") != want {
-			return fmt.Errorf("the voters are %s, and the end state's etcd.members is %s", strings.Join(voters, ", "), strings.ReplaceAll(want, ",", ", "))
+			return fmt.Errorf("the voters are %s, and they should be %s", strings.Join(voters, ", "), strings.ReplaceAll(want, ",", ", "))
 		}
 		out, err := p.transports[p.etcd.control].Run(apply.Etcdctl(p.dep(), "endpoint health --cluster -w json"))
 		var health []endpointHealth

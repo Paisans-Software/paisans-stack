@@ -86,16 +86,19 @@ Commands:
              Installs only what is missing. Writes nothing without --execute.
   apply      Compare one site's rendered artifacts with what is on that host
              and show what would change. Writes nothing without --execute.
-  site       add: join a new data site to the running cluster in six gated
+  site       add: join a new data site to the running cluster in seven gated
              stages: preflight, mesh, etcd (learners, then promoted), the
-             Patroni replica, synchronous mode, HAProxy. Reads every site
-             and plans only what differs, so a re-run resumes. Writes
-             nothing without --execute.
+             Patroni replica, synchronous mode, HAProxy, and each existing
+             replica's patroni.env, one replica restart at a time. Reads
+             every site and plans only what differs, so a re-run resumes.
+             Writes nothing without --execute.
              remove: take a site out of the running deployment in four
              gated stages: its data out (the Patroni leader switched to
              the Sync Standby, its Garage node out of the layout and the
              objects moved), out of the cluster (its etcd member, and the
-             mesh, HAProxy and gateway routes on every remaining site),
+             mesh, HAProxy and gateway routes on every remaining site, and
+             each replica's patroni.env, one at a time; one data site out
+             of two and a witness takes the witness out of etcd too),
              its host cleaned of everything provably this deployment's
              (a gateway's Caddy handed over to the host's owner when
              their sites rely on it), and its entry out of paisans.yaml.

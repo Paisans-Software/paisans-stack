@@ -11,17 +11,17 @@ import (
 // SetFast makes every wait a few polls with no sleep, so a gate that fails
 // fails at once and one that passes passes on the first poll it can.
 func SetFast() func() {
-	durations := []*time.Duration{&switchWait, &switchPoll, &patroniWait, &patroniPoll, &garageWait, &garagePoll, &garageGap, &etcdWait, &etcdPoll, &haproxyWait, &haproxyPoll, &handoverWait, &handoverPoll}
+	durations := []*time.Duration{&switchWait, &switchPoll, &patroniWait, &patroniPoll, &garageWait, &garagePoll, &garageGap, &etcdWait, &etcdPoll, &haproxyWait, &haproxyPoll, &handoverWait, &handoverPoll, &replicaWait, &replicaPoll}
 	saved := make([]time.Duration, len(durations))
 	for i, d := range durations {
 		saved[i] = *d
 	}
 	oldSleep := sleep
 	sleep = func(time.Duration) {}
-	for _, d := range []*time.Duration{&switchWait, &patroniWait, &garageWait, &etcdWait, &haproxyWait, &handoverWait} {
+	for _, d := range []*time.Duration{&switchWait, &patroniWait, &garageWait, &etcdWait, &haproxyWait, &handoverWait, &replicaWait} {
 		*d = 10 * time.Second
 	}
-	for _, d := range []*time.Duration{&switchPoll, &patroniPoll, &garagePoll, &garageGap, &etcdPoll, &haproxyPoll, &handoverPoll} {
+	for _, d := range []*time.Duration{&switchPoll, &patroniPoll, &garagePoll, &garageGap, &etcdPoll, &haproxyPoll, &handoverPoll, &replicaPoll} {
 		*d = time.Second
 	}
 	return func() {

@@ -22,6 +22,12 @@ type etcdState struct {
 	control string
 	// member is the site's own member, nil once it has none.
 	member *apply.EtcdMember
+	// witness is the leaving witness's member, nil once it has none or when
+	// no witness leaves (see EndState).
+	witness *apply.EtcdMember
+	// witnessRunning is whether an etcd container of this deployment still
+	// runs on the leaving witness's host.
+	witnessRunning bool
 }
 
 // endpointHealth is one entry of `etcdctl endpoint health -w json` (etcd
@@ -67,6 +73,11 @@ func (p *Plan) probeEtcd() error {
 		switch {
 		case site == p.Site:
 			p.etcd.member = &members[i]
+		case site == p.witness && p.witness != "":
+			p.etcd.witness = &members[i]
+		}
+		switch {
+		case site == p.Site:
 		case !contains(p.cfg.Etcd.Members, site):
 			problems = append(problems, fmt.Sprintf("etcd has a member %s that etcd.members does not list", site))
 		case m.IsLearner:
@@ -92,6 +103,16 @@ func (p *Plan) probeEtcd() error {
 	}
 	if after > 0 && up*2 <= after {
 		problems = append(problems, fmt.Sprintf("without %s, %d of %d remaining members are healthy, which is no quorum", p.Site, up, after))
+	}
+	if p.witness != "" && up < after {
+		problems = append(problems, fmt.Sprintf("%s leaves etcd after %s, going from two voters to one, which is safe only while both are healthy: the removal is a change two voters must both agree to", p.witness, p.Site))
+	}
+	if p.witness != "" {
+		out, err := p.transports[p.witness].Run(p.witnessEtcdIDs())
+		if err != nil {
+			return fmt.Errorf("site remove %s: %s: looking for its etcd container: %w: %s", p.Site, p.witness, err, lastLines(out, 3))
+		}
+		p.etcd.witnessRunning = strings.TrimSpace(out) != ""
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("site remove %s: etcd is not healthy enough to change its membership:\n  %s\nFix the members named (`paisans doctor` says how) and run again. Nothing was changed", p.Site, strings.Join(problems, "\n  "))

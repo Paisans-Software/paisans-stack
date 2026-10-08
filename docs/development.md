@@ -571,8 +571,11 @@ takes a site out* has the design, and `docs/specs/2026-10-08-site-remove.md`
 the approved specification. What the code relies on, and what is easy to
 undo:
 
-* **The end state is `config.WithoutSite`**, and stage 4 writes exactly that
-  with `config.RemoveSite`, which edits `paisans.yaml` in place the way
+* **The end state is `siteremove.EndState`**: `config.WithoutSite`, and, when
+  that would leave one data site and a witness as two etcd voters, the
+  witness out of `etcd.members` and its `witness` role too. Stage 4 writes
+  exactly that with `config.RemoveSite`, or `config.RemoveSiteAndWitness` in
+  the witness case, both editing `paisans.yaml` in place the way
   `config.SetMesh` does: the site's block and the comment lines directly
   above it, one item in each list, one capacity line, every other byte kept.
   `Refusal` validates the end state, so a removal never writes a file
@@ -581,8 +584,12 @@ undo:
   the configuration with and without the site (each etcd member with the
   flags its host records) and diffs the two per site. The mesh file,
   `haproxy.cfg` and Caddy's routing files go through a scoped `apply` and the
-  one command each needs; every other changed file, `patroni.env` first among
-  them, is reported for a later `apply`.
+  one command each needs. A replica's `patroni.env` goes through
+  `apply.ReplicaEnv`, which `site add`'s stage 7 shares: a scoped `apply`
+  built at the moment it runs, so the manifest keeps what earlier scoped
+  writes on the same host recorded, then Patroni recreated alone and gated on
+  streaming. The leader's `patroni.env`, and every other changed file, is
+  reported for a later `apply`.
 * **Every host removal is selected by its proof, at the moment it runs.**
   Docker objects by the label filter, files by `appremove.FilesCommand`
   (hash checked on the host), units by the `paisans-<token>-` glob, ufw rules
