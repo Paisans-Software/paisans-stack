@@ -82,12 +82,12 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 				IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
 			})
 			if app.Kind == config.KindPocketID {
-				// The admin guard beside each instance: 503 while admins
-				// has fewer than two members (docs/specs/2026-10-08-admin-guard.md).
+				// The admin reconciler beside each instance: 503 while admins
+				// has fewer than two members (docs/specs/2026-10-08-admin-reconciler.md).
 				// The gateway does not route it, so there is no public check.
 				monitors = append(monitors, seedMonitor{
-					Name: fmt.Sprintf("%s — admin guard (%s)", name, site), MonitorType: "active", Method: "GET", CheckType: "status",
-					URL:            fmt.Sprintf("http://%s:%d/healthz", p.sites[site].Address, guardPort),
+					Name: fmt.Sprintf("%s — admin reconciler (%s)", name, site), MonitorType: "active", Method: "GET", CheckType: "status",
+					URL:            fmt.Sprintf("http://%s:%d/healthz", p.sites[site].Address, reconcilerPort),
 					ExpectedStatus: "200", FollowRedirects: &noRedirects,
 					IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
 				})

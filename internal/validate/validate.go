@@ -18,7 +18,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
-	"github.com/paisans-software/paisans-stack/internal/adminguard"
+	"github.com/paisans-software/paisans-stack/internal/adminreconciler"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -1331,10 +1331,10 @@ func (c *checker) uptimeNeedsAnAdminGroup() {
 
 // adminGroupNotAdmins warns about an app that reads its administrators from a
 // group other than admins in a deployment that runs Pocket ID. The admin
-// guard beside Pocket ID keeps every Pocket ID administrator in admins and
+// reconciler beside Pocket ID keeps every Pocket ID administrator in admins and
 // fails its health check while admins has fewer than two members
-// (docs/specs/2026-10-08-admin-guard.md), so an app reading another group is
-// one the guard does not protect.
+// (docs/specs/2026-10-08-admin-reconciler.md), so an app reading another group is
+// one the reconciler does not reconcile or report on.
 func (c *checker) adminGroupNotAdmins() {
 	runsPocketID := false
 	for _, app := range c.cfg.Apps {
@@ -1352,12 +1352,12 @@ func (c *checker) adminGroupNotAdmins() {
 			continue
 		}
 		admin, _ := spec.Groups(app)
-		if admin == "" || admin == adminguard.Group {
+		if admin == "" || admin == adminreconciler.Group {
 			continue
 		}
 		c.warn("admin-group-not-admins", spec.AdminGroupSource(name),
-			"is %s. The admin guard keeps Pocket ID's administrators in %s and alerts while it has fewer than two members, so %s's administrators are a group nobody is watching. Name %s here, or accept that this app's admin group is unguarded.",
-			admin, adminguard.Group, name, adminguard.Group)
+			"is %s. The admin reconciler keeps Pocket ID's administrators in %s and alerts while it has fewer than two members, so %s's administrators are a group nobody is watching. Name %s here, or accept that this app's admin group is unwatched.",
+			admin, adminreconciler.Group, name, adminreconciler.Group)
 	}
 }
 

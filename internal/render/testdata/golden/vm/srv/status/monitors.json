@@ -29,7 +29,7 @@
       "failure_threshold": 2
     },
     {
-      "name": "auth — admin guard (home-a)",
+      "name": "auth — admin reconciler (home-a)",
       "monitor_type": "active",
       "url": "http://10.44.0.1:1412/healthz",
       "method": "GET",
@@ -57,7 +57,7 @@
       "failure_threshold": 2
     },
     {
-      "name": "auth — admin guard (home-b)",
+      "name": "auth — admin reconciler (home-b)",
       "monitor_type": "active",
       "url": "http://10.44.0.2:1412/healthz",
       "method": "GET",

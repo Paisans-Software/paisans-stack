@@ -16,7 +16,7 @@
 # passed on, so Docker's restart policy and apply's gate see it as before.
 #
 # The same marker is written to /paisans/run/standby, a directory the admin
-# guard beside this container mounts read only, so the guard can tell a
+# reconciler beside this container mounts read only, so the reconciler can tell a
 # standby from a Pocket ID that is down. It is removed whenever an attempt
 # starts and whenever this script exits.
 #

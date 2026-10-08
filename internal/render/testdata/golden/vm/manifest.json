@@ -128,7 +128,7 @@
     },
     {
       "path": "srv/status/monitors.json",
-      "sha256": "602997a05c6e02bc8cbcff7d40ae9cb927c94eaefb449da376e02e1e465519b8",
+      "sha256": "a7d56eff7896d8a6232d6aea0d5665f5064676a3a12c8ea9c678a86de8c3328b",
       "mode": "0600"
     }
   ]

@@ -104,7 +104,7 @@ func startStandbyBox(t *testing.T, label string, env ...string) *standbyBox {
 		t.Fatal(err)
 	}
 	os.Chmod(fake, 0o777)
-	// The directory the wrapper mirrors its marker into for the admin guard.
+	// The directory the wrapper mirrors its marker into for the admin reconciler.
 	if err := os.Mkdir(filepath.Join(dir, "run"), 0o777); err != nil {
 		t.Fatal(err)
 	}
@@ -216,11 +216,11 @@ func TestStandbyWrapperIsHealthyOnStandbyAndStopsPromptly(t *testing.T) {
 	b.waitFor("healthy in standby", 30*time.Second, func() bool { return b.inspect("{{.State.Health.Status}}") == "healthy" })
 	shared := filepath.Join(b.dir, "run", "standby")
 	if _, err := os.Stat(shared); err != nil {
-		t.Errorf("in standby, but the marker the admin guard reads is missing: %v", err)
+		t.Errorf("in standby, but the marker the admin reconciler reads is missing: %v", err)
 	}
 	took := b.stop()
 	if _, err := os.Stat(shared); err == nil {
-		t.Errorf("the guard's marker outlived the stop")
+		t.Errorf("the reconciler's marker outlived the stop")
 	}
 	if took > 10*time.Second {
 		t.Errorf("docker stop took %s; the retry wait was not interrupted", took)
@@ -339,7 +339,7 @@ func TestStandbyWrapperWithTwoRealInstances(t *testing.T) {
 	t.Logf("stop of the active instance took %s; the standby served %s later", took, time.Since(handover).Round(time.Second))
 }
 
-// runDir is one instance's own directory for the guard's marker: two
+// runDir is one instance's own directory for the reconciler's marker: two
 // instances in this test stand in for two sites, which never share one.
 func runDir(t *testing.T, dir, name string) string {
 	t.Helper()

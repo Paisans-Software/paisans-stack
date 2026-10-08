@@ -131,7 +131,7 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 		case config.KindSynapse:
 			add(owner+" MAS", "tcp", addr, masPort)
 		case config.KindPocketID:
-			add(owner+" admin guard", "tcp", addr, guardPort)
+			add(owner+" admin reconciler", "tcp", addr, reconcilerPort)
 		}
 	}
 	return out

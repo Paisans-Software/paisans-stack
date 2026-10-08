@@ -8,17 +8,17 @@
     },
     {
       "path": "srv/auth/.env",
-      "sha256": "ba3c676bdcabff30931fd1c0a9ed0b5d8ab9cd9b76369ac86bbf509b1abc8d1b",
+      "sha256": "8b4fd5bd2b6e04ed55d9e69903d768ed374fc8e6316293019ad5a207b4deb30a",
       "mode": "0600"
     },
     {
       "path": "srv/auth/compose.yaml",
-      "sha256": "2c4cd50ce5b5e64e41a339f6eb70bdf918c3be4ac72fef505305f20f9fdd1894",
+      "sha256": "72e05746e5cd97dbabd294f585dc6e49d59ea56874a78a61d2e5f8a0dc01a819",
       "mode": "0644"
     },
     {
       "path": "srv/auth/paisans-standby.sh",
-      "sha256": "e4f57567f14b99b583cf6479d346bfa0bd64bc59f56a937aba277aebf7ada81d",
+      "sha256": "86b93c28bdd086d31b02928dd5e5e5f2a12836573141f00d00e1b44fefc0c0c5",
       "mode": "0644"
     },
     {

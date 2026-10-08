@@ -628,16 +628,16 @@ it whenever the Pocket ID image is bumped: it is what proves the marker
 against the binary. The image is `linux/amd64`, emulated on an arm64
 workstation.
 
-The admin guard has a Docker test of its own, behind its own tag:
+The admin reconciler has a Docker test of its own, behind its own tag:
 
 ```
-go test -tags pocketid_integration ./internal/adminguard/
+go test -tags pocketid_integration ./internal/adminreconciler/
 ```
 
 It starts the pinned Pocket ID image with a static API key, makes one
 administrator in `admins` and one outside it, runs one pass, and reads the
 groups back. Rerun it whenever the Pocket ID image is bumped: it proves what
-the guard assumes about the API, and the static key's user, against the real
+the reconciler assumes about the API, and the static key's user, against the real
 thing.
 
 ## Fixtures and secrets
@@ -661,8 +661,8 @@ installed, on a workstation or anywhere else.
 | Path | Holds |
 |------|-------|
 | `cmd/paisans` | the command, flag parsing, and how findings are printed |
-| `cmd/admin-guard` | the admin guard's binary and its image's Dockerfile: the pass loop, `/healthz`, and `healthcheck` |
-| `internal/adminguard` | one admin guard pass: who to add to `admins`, the one write, and what `/healthz` says |
+| `cmd/admin-reconciler` | the admin reconciler's binary and its image's Dockerfile: the pass loop, `/healthz`, and `healthcheck` |
+| `internal/adminreconciler` | one admin reconciler pass: who to add to `admins`, the one write, and what `/healthz` says |
 | `internal/config` | loading `paisans.yaml`, and decrypting `secrets.enc.yaml` |
 | `internal/validate` | the rules, and nothing else |
 | `internal/secretsgen` | what a deployment's secrets are, and which of them the toolkit may invent |
