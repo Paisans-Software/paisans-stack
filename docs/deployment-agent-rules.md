@@ -75,8 +75,18 @@ stricter one.
 * Reverse-proxy changes touching live routes
 * Bringing up a new container or stack on a shared host — a first deployment,
   not a restart of something already sanctioned
-* Any mutation of the identity provider's clients, groups or users
+* Any mutation of the identity provider's clients, groups or users, except
+  the one below
 * Deleting documentation
+
+The exception: **`paisans apply` creating the OIDC client an app declared in
+`paisans.yaml` needs**, as part of setting that app up, takes no approval of its
+own. Every app in the stack signs in through the identity provider, so an app
+cannot run without its client, and approval to run the apply is approval for the
+clients it creates, whether a person or an agent runs it. The exception covers
+creating a missing client, and restricting it to the app's group, only. Rotating
+a client's secret, deleting a client, and every change to groups or users stay
+in the tier above, and `apply` never replaces a client it has already recorded.
 
 **Never without the human present**
 
