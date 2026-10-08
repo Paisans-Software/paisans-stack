@@ -150,8 +150,9 @@ role, which the design warns about rather than refuses.
 
 ## The host check, before anything changes
 
-`host prepare`, `apply`, `site add` (on the site being added) and `prune` each
-run `internal/hostcheck` first, in a dry run as well as with `--execute`, and
+`host prepare`, `apply`, `site add` (on the site being added) and `prune`
+each run `internal/hostcheck` first, and so do `storage rotate-key` (on every
+site the app runs on) and `storage add` (every Garage site and the gateway), in a dry run as well as with `--execute`, and
 print its report above their own plan. `cmd/paisans/hostcheck.go` holds the
 one gate they share, `hostGate`. README.md *The host check: what is already on
 a host decides how much is touched* has the reasoning; what the code does:
@@ -162,9 +163,13 @@ a host decides how much is touched* has the reasoning; what the code does:
   `render.SiteListeners` with its key, and the host check, preflight's ports
   check and validate's collision check all see it.
 * **Inventory** (`hostcheck.Inspect`) runs one probe per fact and changes
-  nothing. A failed probe is an error, and Docker installed but not answering
-  is an error rather than an empty list. Each probe is told apart in tests by a
-  substring only it contains (`docker version`, `dpkg-query`,
+  nothing. Every probe is prefixed `export LC_ALL=C; `, and the first is
+  `id -u`, refused unless it answers 0. A failed probe is an error, and Docker
+  installed but not answering is an error rather than an empty list; the three
+  `docker ... inspect` probes discard stderr and their exit status, because a
+  container removed between the listing and the inspect is gone, not a
+  failure. Each probe is told apart in tests by a substring only it contains
+  (`id -u`, `docker version`, `dpkg-query`,
   `docker inspect`, `docker volume inspect`, `docker network inspect`,
   `ss -Hltnup`, `/proc/`, `ip -o link`, `ip -j route`, `ufw status verbose`,
   `is-active firewalld`); a fake transport elsewhere that reaches one of
@@ -184,11 +189,13 @@ What "shared" changes, and where:
 | `host prepare` | `hostprep.Shared()`: the profile's `Firewall` gets `hostWide` false and plans only `paisans:` rules, never `ufw default` or `ufw --force enable` |
 | `apply` | `apply.KeepImages()`, as `--keep-images` |
 | `site add` | `siteadd.Plan.KeepImages`, passed to the replica stage's whole apply |
+| `storage rotate-key` | `apply.KeepImages()` in the switch's apply on that site |
+| `storage add` | `storageadd.Options.SharedSites`: `apply.KeepImages()` in every scoped apply on that site |
 | `prune` | `apply.BuildVolumePrune(site, t, true)`: only `paisans-*` labelled volumes go, and `SharedPruneHeader` says so |
 | `preflight` | a `host` check line; the `prepared` check asks for the shared plan |
 
-A conflict, and a shared host whose ufw is not active with incoming denied by
-default (or whose firewalld is active), is refused by `Report.Refusal` before
+A conflict, and a shared host whose ufw is not active with incoming denied or
+rejected by default (or whose firewalld is active), is refused by `Report.Refusal` before
 anything else is asked of the host. There is no flag to skip the check.
 
 ## `apply`, and the gates in it

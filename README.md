@@ -1799,9 +1799,12 @@ file, not from the connection.
 deployment's alone: prepare set ufw's default policy and enabled it, apply
 removed the images it superseded, and prune removed every anonymous volume
 nothing mounted. Each is right on a dedicated host and wrong on one where
-somebody else runs a web server or a database. So before any of the four
-changes anything, in a dry run as well as with `--execute`, it runs the
-**host check** on the site it is about to change and prints what it found.
+somebody else runs a web server or a database. So before any of them changes
+anything, in a dry run as well as with `--execute`, it runs the **host
+check** on the site it is about to change and prints what it found. So do
+`storage rotate-key` and `storage add`, which apply files on the sites they
+change: rotate-key checks every site the app runs on, storage add every
+Garage site and the gateway, all before the first change.
 
 The check has three parts, in `internal/hostcheck`:
 
@@ -1810,8 +1813,11 @@ The check has three parts, in `internal/hostcheck`:
   (`render.SiteListeners`, the list the renderer itself uses, so the check
   cannot drift from what is deployed), the `wg0` interface, and the mesh
   subnet as a route.
-* **Inventory**, read only, one command per fact and through sudo so that
-  `ss -p` can name another user's process: Docker's version and package,
+* **Inventory**, read only, one command per fact, in the C locale because
+  the parsers read ufw's, dpkg's and ss's English words, and as root, which
+  `ss -p` needs to name another user's process: it asks `id -u` first and
+  refuses unless it is 0, so `--sudo=false` as a normal user is refused
+  rather than reading every root listener as unowned. Then Docker's version and package,
   every container with its compose project, PID and published ports,
   volumes, networks and their subnets, `ss -Hltnup`, `ip -o link`,
   `ip -j route`, `ufw status verbose`, whether firewalld is active, and
@@ -1837,8 +1843,13 @@ does not make a host shared, but the toolkit's own loopback bind on 5432
 would fail on it. A foreign container's published ports count whether or not
 anything listens, because Docker without its userland proxy publishes with no
 listener, and a stopped container binds again when it starts. A foreign
-Docker network or route over the mesh subnet conflicts, because it would
-capture mesh traffic, and so does a `wg0` the toolkit did not write.
+Docker network whose subnet overlaps the mesh conflicts, because containers
+would be handed the mesh's addresses. A route conflicts when it equals the
+mesh subnet or lies inside it, because the kernel picks the longest matching
+prefix and it would take the mesh's traffic. A route broader than the mesh (a
+provider's 10.0.0.0/8 private network) is shorter than the one `wg0` adds, so
+the mesh still wins; it is printed as a note. A `wg0` the toolkit did not
+write conflicts.
 
 A conflict line names the resource, the `paisans.yaml` key that claims it, and
 what holds it (a container and its compose project, or a process and its PID).
@@ -1848,9 +1859,10 @@ it: the bind fails all the same, only later and halfway through a change.
 
 On a **shared** host:
 
-* **The firewall must already be up.** ufw active with `Default: deny
-  (incoming)`, and firewalld not active, or the command refuses and says
-  which. The toolkit never runs `ufw default` or `ufw --force enable` there:
+* **The firewall must already be up.** ufw active with incoming traffic
+  denied or rejected by default, and firewalld not active, or the command
+  refuses and says which. Its advice allows the site's `ssh.port` first, so
+  following it over SSH keeps the session. The toolkit never runs `ufw default` or `ufw --force enable` there:
   both decide the other services' traffic as well, and enabling a deny
   default under a web server the toolkit knows nothing about takes it off
   the network. It still adds and removes its own `paisans:` rules.
@@ -1860,7 +1872,8 @@ On a **shared** host:
   anonymous one may be a foreign project's as easily as a replaced paisans
   container's, so it is listed and kept.
 * **Docker is left alone**, as it already is whenever `docker compose` works,
-  and Ubuntu's `docker.io` is still refused rather than removed.
+  and Ubuntu's `docker.io` and a Docker snap are still refused rather than
+  removed.
 
 The class is computed on every run and never stored: a host becomes shared
 the day someone installs something beside the deployment. `apply`'s manifest
@@ -1919,7 +1932,9 @@ from the same source whenever it was prepared. The packages that page lists as
 conflicting (`docker.io`, `docker-compose-v2`, `containerd`, `runc` and the
 rest) are **refused, not removed**: on a host already running containers from
 them, removing them stops those containers, and that is a decision for
-whoever started them. Every `apt-get` runs non-interactively.
+whoever started them. Docker installed as a snap is refused the same way,
+whether or not `docker compose` works with it, since it is an engine from a
+third source. Every `apt-get` runs non-interactively.
 
 #### Docker starts after `wg0`
 

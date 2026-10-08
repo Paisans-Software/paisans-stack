@@ -599,3 +599,17 @@ func hostGate(w io.Writer, cfg *config.Config, site string, t hostcheck.Transpor
 - [ ] `docs/development.md`: a section *The host check* (claims, inventory, ownership, classes, what each class does in each command); the prune paragraph and the image prune paragraph say what a shared host changes; the run list mentions the report.
 - [ ] `README.md`: the prune paragraph's "dedicated" premise becomes the host check's class; the preflight table's Ports row lists 80 and 443 for a gateway and names the claims as its source, and gains a Host row.
 - [ ] `gofmt -l .`, `go vet ./...`, `go test ./...`. **Commit** `docs: describe the host check`.
+
+---
+
+### Task 10: Review follow-up
+
+Found in review of the branch; each is a new commit with its failing test first.
+
+- [x] A route broader than the mesh is a note; a route equal to it or inside it conflicts. Docker subnets keep any overlap. (`TestABroaderRouteIsANoteNotAConflict`)
+- [x] `reject (incoming)` satisfies a shared host's firewall, and the refusal's advice allows `ssh.port` before enabling ufw. (`Claims.SSHPort`, `Report.SSHPort`)
+- [x] Every probe runs with `LC_ALL=C`; `id -u` must be 0; the cgroup read's `2>/dev/null` precedes its `<`; the three inspects tolerate what vanished since the listing.
+- [x] IPv4-mapped addresses fold to IPv4 before any comparison.
+- [x] `storage rotate-key` and `storage add` run the host check first (`gateSites`) and keep images on a shared site.
+- [x] host prepare refuses a Docker snap, as it refuses `docker.io`.
+- [x] HAProxy's stats listener is keyed `sites.<site>.roles (apps)`.
