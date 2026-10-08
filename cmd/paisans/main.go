@@ -465,24 +465,24 @@ func runApply(args []string) error {
 	if err != nil {
 		return err
 	}
-	var held []string
-	if clients != nil {
-		if err := clients.ensure(false, clients.pocketIDHere()); err != nil {
-			return err
-		}
-		held = clients.heldApps()
-		fmt.Fprintln(os.Stdout)
-	}
-
 	options := []apply.Option{apply.Overwrite(overwrite...), apply.Recreate(recreate...), apply.MinFree(needFree), apply.Only(only...)}
 	if *keepImages {
 		options = append(options, apply.KeepImages())
 	}
-	plan, err := planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(held...)})...)
+	// planFor plans the site holding back the named app stacks, as a later
+	// pass after the done ones. See executeWithClients.
+	planFor := func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
+		p, err := planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...)})...)
+		if err != nil {
+			return nil, err
+		}
+		p.Progress = os.Stdout
+		return p, nil
+	}
+	plan, err := planWithClients(clients, func(hold []string) (*apply.Plan, error) { return planFor(hold, nil) }, *execute)
 	if err != nil {
 		return err
 	}
-	plan.Progress = os.Stdout
 
 	// A site running etcd, or configured to, is checked against the live
 	// membership. Only this site is asked unless it is a configured member,
@@ -547,11 +547,10 @@ func runApply(args []string) error {
 	} else {
 		pass := sitePass{
 			plan: func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
-				p, err := planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...)})...)
+				p, err := planFor(hold, done)
 				if err != nil {
 					return nil, err
 				}
-				p.Progress = os.Stdout
 				if plan.Bootstrap != nil && p.Bootstrap != nil {
 					p.Bootstrap.EtcdUnstarted = plan.Bootstrap.EtcdUnstarted
 				}

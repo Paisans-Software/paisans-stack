@@ -348,7 +348,12 @@ client Pocket ID does not hold (`keepsRecorded`): apply creates a client only
 when nothing is recorded. The second pass gets `apply.After(first)`, so an
 `--overwrite` or `--recreate` the first pass carried out is not repeated, and
 a held app's database path restart is owed in the pending record
-(`DatabasePath`) and runs once when the app is released. `apply.Except` keeps a held stack
+(`DatabasePath`) and runs once when the app is released. `planWithClients`
+calls `apply.Refusal`, the checks `Execute` makes before its first write, on
+the whole site before Pocket ID is asked anything. The pending record is kept
+whole across partial plans: an `--only` run carries what is owed outside it,
+a `--recreate` of a held stack is owed, and an owed stack the site no longer
+renders is dropped with a note (`Plan.Notes`). `apply.Except` keeps a held stack
 owed in the pending record, so the apply that releases it force-recreates it.
 `clients_test.go` drives the passes with a fake `sitePass` that renders and
 records, and the Pocket ID fake from `oidc_test.go`.

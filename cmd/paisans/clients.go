@@ -150,10 +150,15 @@ type clientStep struct {
 	refused map[string]error
 	// steps counts the mutations the last ensure planned.
 	steps int
+	// heldOverwrites are --overwrite paths the last pass did not write,
+	// because their stack was held back.
+	heldOverwrites []string
 }
 
-// newClientStep is the identity step for site, or nil when the site runs no
-// app with a client shape among those --only names. It refuses, before
+// newClientStep is the identity step for site, or nil when the deployment
+// declares no pocket-id app, or the site runs no app with a client shape
+// among those --only names. Without a Pocket ID there is no client to make,
+// and an app is applied as it always was, without sign in. It refuses, before
 // Pocket ID is asked anything, a secrets file a new client could not be
 // written back into: encrypted, with no recipient beside it. The secret is
 // written before Pocket ID is sent it, so a run that cannot write must not
@@ -161,6 +166,9 @@ type clientStep struct {
 func newClientStep(cfg *config.Config, site, destination, secretsPath string, secrets *config.Secrets, only []string) (*clientStep, error) {
 	sites := render.AppSites(cfg)
 	c := &clientStep{cfg: cfg, site: site, destination: destination, secretsPath: secretsPath, secrets: secrets, idp: pocketIDApp(cfg)}
+	if c.idp == "" {
+		return nil, nil
+	}
 	for _, name := range cfg.AppNames() {
 		if !slices.Contains(sites[name], site) || (len(only) > 0 && !slices.Contains(only, name)) {
 			continue
@@ -243,18 +251,15 @@ func (c *clientStep) heldApps() []string {
 func (c *clientStep) ensure(execute, waiting bool) error {
 	c.reset()
 	fmt.Fprintf(os.Stdout, "\nOIDC clients for %s, before they start\n", strings.Join(c.apps, ", "))
-	if c.idp == "" {
-		c.cannotAsk(c.apps, "the configuration declares no pocket-id app to create a client in", false)
-		return nil
-	}
 	key, _ := c.secrets.Apps[c.idp]["static_api_key"].(string)
 	if key == "" {
-		c.cannotAsk(c.apps, fmt.Sprintf("secrets apps.%s.static_api_key is empty, and `paisans init` generates it", c.idp), false)
+		sites := render.AppSites(c.cfg)[c.idp]
+		c.cannotAsk(c.apps, fmt.Sprintf("secrets apps.%s.static_api_key is missing, so Pocket ID's API cannot be called. Run `paisans init` to generate it, apply %s (where %s runs) so Pocket ID has it, then apply this site again", c.idp, strings.Join(sites, " and "), c.idp), false)
 		return nil
 	}
 	where, err := c.pocketIDWhere()
 	if err != nil {
-		c.cannotAsk(c.apps, err.Error(), waiting)
+		c.cannotAsk(c.apps, unreachable(err), waiting)
 		return nil
 	}
 	destination := ""
@@ -273,7 +278,7 @@ func (c *clientStep) ensure(execute, waiting bool) error {
 		recorded := recordedClient(c.secrets, app)
 		state, err := probeClient(api, desired)
 		if err != nil {
-			c.cannotAsk(c.apps[i:], fmt.Sprintf("Pocket ID on %s could not be asked: %v", where, err), waiting)
+			c.cannotAsk(c.apps[i:], unreachable(fmt.Errorf("Pocket ID on %s could not be asked: %w", where, err)), waiting)
 			break
 		}
 		if err := keepsRecorded(app, recorded, state); err != nil {
@@ -370,6 +375,11 @@ func (c *clientStep) pocketIDWhere() (string, error) {
 	return site, nil
 }
 
+// unreachable is why an app is held back when Pocket ID did not answer.
+func unreachable(err error) string {
+	return err.Error() + ". A re-run once Pocket ID answers creates the client and starts the app"
+}
+
 // cannotAsk is what happens to apps when Pocket ID cannot be asked about
 // them. An app with a recorded client goes ahead on it: the client was
 // right when it was made, and an outage elsewhere is no reason to hold back
@@ -389,7 +399,7 @@ func (c *clientStep) cannotAsk(apps []string, why string, waiting bool) {
 			continue
 		}
 		c.held[app] = why
-		fmt.Fprintf(os.Stdout, "  %-9s %s: %s. A re-run once Pocket ID answers creates its client and starts it\n", "skip", app, why)
+		fmt.Fprintf(os.Stdout, "  %-9s %s: %s\n", "skip", app, why)
 	}
 }
 
@@ -429,10 +439,18 @@ func (c *clientStep) result() error {
 	if c == nil {
 		return nil
 	}
-	if len(c.refused) == 0 {
-		if len(c.held) > 0 {
-			fmt.Fprintf(os.Stdout, "\nheld back until Pocket ID answers: %s. Re-run apply then\n", strings.Join(c.heldApps(), ", "))
+	if len(c.held) > len(c.refused) || len(c.heldOverwrites) > 0 {
+		fmt.Fprintf(os.Stdout, "\nheld back from this apply:\n")
+		for _, app := range c.heldApps() {
+			if _, refused := c.refused[app]; !refused {
+				fmt.Fprintf(os.Stdout, "  %s: %s\n", app, c.held[app])
+			}
 		}
+		for _, path := range c.heldOverwrites {
+			fmt.Fprintf(os.Stdout, "  --overwrite %s was not applied, because its stack was held back. Name it again on the apply that starts it\n", path)
+		}
+	}
+	if len(c.refused) == 0 {
 		return nil
 	}
 	var names, reasons []string
@@ -443,6 +461,37 @@ func (c *clientStep) result() error {
 		}
 	}
 	return fmt.Errorf("apply: the rest of %s was applied, but %s was refused, and stays held back until its client at Pocket ID is fixed:\n  %s", c.site, strings.Join(names, ", "), strings.Join(reasons, "\n  "))
+}
+
+// planWithClients plans the site for apply, with its identity step when c is
+// not nil. The whole site is planned first and, when the apply will execute,
+// refused there if Execute would refuse it, so a file edited on the host
+// stops the apply before Pocket ID is asked anything or any pass writes, as
+// it stops a single pass apply before its first write. Then the clients are
+// planned, read only, and the site is planned again without the apps the
+// step holds back.
+func planWithClients(c *clientStep, plan func(hold []string) (*apply.Plan, error), execute bool) (*apply.Plan, error) {
+	full, err := plan(nil)
+	if err != nil {
+		return nil, err
+	}
+	if execute {
+		if err := apply.Refusal(full); err != nil {
+			return nil, err
+		}
+	}
+	if c == nil {
+		return full, nil
+	}
+	if err := c.ensure(false, c.pocketIDHere()); err != nil {
+		return nil, err
+	}
+	fmt.Fprintln(os.Stdout)
+	held := c.heldApps()
+	if len(held) == 0 {
+		return full, nil
+	}
+	return plan(held)
 }
 
 // sitePass is one plan and execute of the site. plan holds the named app
@@ -476,7 +525,7 @@ func executeWithClients(c *clientStep, pass sitePass) ([]*apply.Plan, error) {
 		if err := c.waitForPocketID(); err != nil {
 			c.reset()
 			fmt.Fprintf(os.Stdout, "\nOIDC clients for %s, before they start\n", strings.Join(c.apps, ", "))
-			c.cannotAsk(c.apps, err.Error(), false)
+			c.cannotAsk(c.apps, unreachable(err), false)
 		} else if err := c.ensure(true, false); err != nil {
 			return plans, err
 		}
@@ -487,6 +536,7 @@ func executeWithClients(c *clientStep, pass sitePass) ([]*apply.Plan, error) {
 	if err != nil {
 		return plans, err
 	}
+	c.heldOverwrites = final.HeldOverwrites
 	fmt.Fprintf(os.Stdout, "\nthe site, rendered with the clients in place\n")
 	printPlan(final)
 	if err := pass.execute(final); err != nil {

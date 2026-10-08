@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
@@ -44,6 +47,9 @@ type passLog struct {
 	done [][]*apply.Plan
 	// plans is every plan returned, in order.
 	plans []*apply.Plan
+	// heldOverwrites is put on every plan, as Build reports an --overwrite
+	// in a held stack.
+	heldOverwrites []string
 }
 
 func (l *passLog) pass(t *testing.T, c *clientStep, app string) sitePass {
@@ -63,7 +69,7 @@ func (l *passLog) pass(t *testing.T, c *clientStep, app string) sitePass {
 				}
 			}
 			l.events = append(l.events, fmt.Sprintf("plan hold=%s client=%t", strings.Join(hold, ","), has))
-			p := &apply.Plan{Site: c.site}
+			p := &apply.Plan{Site: c.site, HeldOverwrites: l.heldOverwrites}
 			l.plans = append(l.plans, p)
 			return p, nil
 		},
@@ -251,7 +257,7 @@ func TestApplyHoldsBackOnlyAppsWithoutAClientWhenPocketIDIsUnreachable(t *testin
 			if result != nil {
 				t.Errorf("an unreachable Pocket ID failed the apply: %v", result)
 			}
-			if !tc.recorded && !strings.Contains(after, "held back until Pocket ID answers: status") {
+			if !tc.recorded && !strings.Contains(after, "held back from this apply:\n  status: ") {
 				t.Errorf("the end of the apply does not say what was held back:\n%s", after)
 			}
 		})
@@ -364,7 +370,8 @@ func TestApplyHoldsBackWhenItsOwnPocketIDNeverAnswers(t *testing.T) {
 	if !strings.Contains(stdout, "skip      talk:") || len(fake.commands) != 0 {
 		t.Errorf("Pocket ID was called %d time(s), output:\n%s", len(fake.commands), stdout)
 	}
-	if err := c.result(); err != nil {
+	captureOutput(t, func() { err = c.result() })
+	if err != nil {
 		t.Error(err)
 	}
 }
@@ -453,5 +460,124 @@ func TestAdminSiteNamesItsCaller(t *testing.T) {
 	}
 	if _, err := adminSite(cfg, "talk", "vm", "apply"); err == nil || !strings.HasPrefix(err.Error(), "apply: ") {
 		t.Errorf("got %v", err)
+	}
+}
+
+// fileHost is an empty host with some files already on it and no manifest,
+// so each of them is somebody else's: a conflict.
+type fileHost struct {
+	emptyHost
+	files  map[string]string
+	writes int
+}
+
+func (h *fileHost) ReadFile(path string) (string, bool, error) {
+	content, ok := h.files[path]
+	return content, ok, nil
+}
+func (h *fileHost) WriteFile(string, string, uint32) error { h.writes++; return nil }
+
+// A file edited on the host refuses the apply before Pocket ID is asked
+// anything and before either pass writes, as a single pass apply refuses
+// before its first write.
+func TestApplyRefusesAConflictBeforeContactingPocketID(t *testing.T) {
+	fake := withIDPFake(t)
+	c := stepFor(t, "home-a", secretsWithout(t, "talk"))
+	host := &fileHost{files: map[string]string{"/srv/talk/compose.yaml": "edited on the host\n"}}
+	planFor := func(hold []string) (*apply.Plan, error) {
+		rendered, err := render.Build(c.cfg, c.secrets)
+		if err != nil {
+			return nil, err
+		}
+		return apply.Build("home-a", rendered, acme.Module(c.cfg.ACME.Provider), host, apply.Except(hold...))
+	}
+	var err error
+	captureOutput(t, func() { _, err = planWithClients(c, planFor, true) })
+	if err == nil || !strings.Contains(err.Error(), "/srv/talk/compose.yaml") {
+		t.Fatalf("got %v", err)
+	}
+	if len(fake.commands) != 0 || host.writes != 0 {
+		t.Errorf("Pocket ID was called %d time(s) and %d file(s) written", len(fake.commands), host.writes)
+	}
+
+	// A dry run still shows the plan, conflict and all.
+	captureOutput(t, func() { _, err = planWithClients(c, planFor, false) })
+	if err != nil {
+		t.Errorf("a dry run refused: %v", err)
+	}
+}
+
+// A deployment with no pocket-id app has no identity step: the app is
+// applied as it always was, without sign in.
+func TestApplyHasNoIdentityStepWithoutPocketID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	if err := os.WriteFile(path, []byte(freshSite), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := newClientStep(cfg, "home-a", "", filepath.Join(t.TempDir(), "secrets.yaml"), &config.Secrets{Version: 1}, nil)
+	if err != nil || c != nil {
+		t.Errorf("got %+v, %v", c, err)
+	}
+}
+
+// Without Pocket ID's API key there is nothing to call it with. The app is
+// held back, and the operator is told the key is missing and how to get it,
+// not that Pocket ID is down.
+func TestApplyNamesAMissingAPIKey(t *testing.T) {
+	fake := withIDPFake(t)
+	path := secretsWithout(t, "status")
+	secrets, _ := config.LoadSecrets(path)
+	delete(secrets.Apps["auth"], "static_api_key")
+	if err := config.WriteSecrets(path, secrets, nil); err != nil {
+		t.Fatal(err)
+	}
+	c := stepFor(t, "vm", path)
+	var err error
+	// render refuses a missing key for every site, so the step is driven
+	// directly: this is what it says when it meets one.
+	stdout, _ := captureOutput(t, func() {
+		err = errors.Join(c.ensure(true, false), c.result())
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(c.heldApps(), ","); got != "status" {
+		t.Errorf("held %s", got)
+	}
+	for _, want := range []string{"static_api_key is missing", "paisans init", "held back from this apply:\n  status: "} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("output lacks %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "until Pocket ID answers") {
+		t.Errorf("a missing key is reported as Pocket ID being down:\n%s", stdout)
+	}
+	if len(fake.commands) != 0 {
+		t.Error("Pocket ID was called without a key")
+	}
+}
+
+// An --overwrite in a held stack is not written, and the end of the apply
+// says so rather than dropping it silently.
+func TestApplyReportsAnOverwriteItHeldBack(t *testing.T) {
+	var asked []string
+	lookWith(t, map[string]string{"home-a.local": "down", "home-b.local": "down"}, &asked)
+	withIDPFake(t)
+	c := stepFor(t, "vm", secretsWithout(t, "status"))
+	log := passLog{heldOverwrites: []string{"/srv/status/.env"}}
+	var err error
+	stdout, _ := captureOutput(t, func() {
+		_, err = executeWithClients(c, log.pass(t, c, "status"))
+		err = errors.Join(err, c.result())
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "--overwrite /srv/status/.env was not applied") {
+		t.Errorf("the held overwrite is not reported:\n%s", stdout)
 	}
 }

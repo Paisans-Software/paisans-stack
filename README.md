@@ -2910,16 +2910,23 @@ client lines with the rest of the plan and sends nothing; on a site whose
 Pocket ID is not running yet it says the clients are made once it answers.
 
 **An app is held back rather than started without its client.** When Pocket
-ID cannot be reached, or `apps.<pocket-id>.static_api_key` is not in the
-secrets file yet, an app with no recorded client is skipped with the reason
-and the rest of the site is applied; a re-run once Pocket ID answers finishes
-it, and the apply does not fail for it. An app whose client is already
+ID cannot be reached, an app with no recorded client is skipped with the
+reason and the rest of the site is applied; a re-run once Pocket ID answers
+finishes it, and the apply does not fail for it. The end of the apply lists
+what was held back and why, including any `--overwrite` in a held stack, which
+is not written and has to be named again; a `--recreate` of a held stack is
+remembered and carried out when the stack starts. A deployment that declares
+no `pocket-id` app has no identity step, and its apps are applied as before,
+without sign in. An app whose client is already
 recorded is not held back by an unreachable Pocket ID: its client was right
 when it was made, and an outage elsewhere is no reason to stop an app that can
 already sign people in. An existing client that differs from what the app
 needs refuses that app alone, as the command does; the rest of the site is
 applied and `apply` exits non zero, because a person has to fix the client.
-The secrets file is written through the same recorder, re-encrypted to the
+Everything `--execute` would refuse before writing (a file edited on the host,
+too little disk for the pulls, an unmounted image volume) is checked on the
+whole site before the first pass, so a refusal still leaves the host and
+Pocket ID untouched. The secrets file is written through the same recorder, re-encrypted to the
 recipients in `.sops.yaml`, and a plan that would write an encrypted file with
 no recipient is refused before Pocket ID is sent anything.
 
