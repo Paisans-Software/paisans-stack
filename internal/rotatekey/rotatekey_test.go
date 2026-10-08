@@ -162,7 +162,7 @@ type switcher struct{ w *world }
 func (sw switcher) Pending(name string, secrets *config.Secrets) ([]string, error) {
 	want, _ := secrets.Apps["talk"]["s3_access_key_id"].(string)
 	if sw.w.running[name] != want {
-		return []string{"update srv/talk/.env", "recreate talk"}, nil
+		return []string{"update srv/paisans/f2a9/talk/.env", "recreate talk"}, nil
 	}
 	return nil, nil
 }

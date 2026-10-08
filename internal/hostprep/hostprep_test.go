@@ -57,7 +57,7 @@ const (
 	probePackages = "docker compose version"
 	probeWatchdog = "RuntimeWatchdogUSec"
 	probeDocker   = "is-enabled docker"
-	probeUnit     = "is-enabled paisans-watchdog.service"
+	probeUnit     = "is-enabled paisans-f2a9-watchdog.service"
 	probeFirewall = "ufw show added"
 	probePasswd   = "getent passwd"
 )
@@ -72,7 +72,7 @@ const (
 
 	passwdUbuntu   = "ubuntu:x:1000:1000:Ubuntu:/home/ubuntu:/bin/bash\n"
 	authorizedKeys = "/home/ubuntu/.ssh/authorized_keys"
-	ownedKeys      = "/etc/paisans/authorized_keys.ubuntu.owned"
+	ownedKeys      = "/etc/paisans/authorized_keys.ubuntu.paisans-f2a9.owned"
 )
 
 // keysPrepared is the user's key state after a prepare: alice's key in
@@ -142,7 +142,7 @@ Wants=wg-quick@wg0.service
 After=wg-quick@wg0.service
 `
 
-const dockerDropIn = "/etc/systemd/system/docker.service.d/paisans-after-wg0.conf"
+const dockerDropIn = "/etc/systemd/system/docker.service.d/paisans-f2a9-after-wg0.conf"
 
 func preparedHost(gateway bool) *fakeHost {
 	firewall := "ufw present\nstatus active\n" + owned("allow 22/tcp", "allow 51820/udp", "allow in on wg0")
@@ -176,7 +176,7 @@ func preparedHost(gateway bool) *fakeHost {
 func owned(specs ...string) string {
 	var out string
 	for _, spec := range specs {
-		out += "rule " + spec + " comment 'paisans: test'\n"
+		out += "rule " + spec + " comment 'paisans-f2a9: test'\n"
 	}
 	return out
 }
@@ -267,7 +267,7 @@ func TestAFreshDataSitePlansEveryStep(t *testing.T) {
 		"packages: install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin wireguard-tools ufw",
 		"service: enable and start docker",
 		"watchdog: load softdog now",
-		"watchdog: load softdog at every boot (paisans-watchdog.service)",
+		"watchdog: load softdog at every boot (paisans-f2a9-watchdog.service)",
 		"firewall: allow 22/tcp",
 		"firewall: allow 51820/udp",
 		"firewall: allow all inbound on wg0",
@@ -515,7 +515,7 @@ func TestASoftdogHostReRunsClean(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := preparedHost(false)
-	after.files["/etc/systemd/system/paisans-watchdog.service"] = host.files["/etc/systemd/system/paisans-watchdog.service"]
+	after.files["/etc/systemd/system/paisans-f2a9-watchdog.service"] = host.files["/etc/systemd/system/paisans-f2a9-watchdog.service"]
 	after.responses[probeWatchdog] = "device present\nidentity watchdog0 Software Watchdog\nsystemd 0\ndaemon absent\n"
 	after.responses[probeUnit] = "enabled enabled\nactive active\n"
 	again, err := hostprep.Build("home-a", fixture(t), after)
@@ -603,17 +603,17 @@ func TestAFreshHostAddsCommentedRules(t *testing.T) {
 	}
 	cmds := commands(plan)
 	for _, want := range []string{
-		"ufw allow 22/tcp comment 'paisans: ssh, the bootstrap route'",
-		"ufw allow 51820/udp comment 'paisans: WireGuard, the mesh'",
-		"ufw allow in on wg0 comment 'paisans: the mesh: etcd, Patroni, Garage, HAProxy'",
-		"ufw allow in on br-+ to 10.44.0.1 port 5000 proto tcp comment 'paisans: app containers to the local database proxy'",
+		"ufw allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'",
+		"ufw allow 51820/udp comment 'paisans-f2a9: WireGuard, the mesh'",
+		"ufw allow in on wg0 comment 'paisans-f2a9: the mesh: etcd, Patroni, Garage, HAProxy'",
+		"ufw allow in on br-+ to 10.44.0.1 port 5000 proto tcp comment 'paisans-f2a9: app containers to the local database proxy'",
 	} {
 		if indexOf(cmds, want) < 0 {
 			t.Errorf("missing %q in:\n%s", want, strings.Join(cmds, "\n"))
 		}
 	}
 	for _, c := range cmds {
-		if strings.HasPrefix(c, "ufw allow") && !strings.Contains(c, " comment 'paisans: ") {
+		if strings.HasPrefix(c, "ufw allow") && !strings.Contains(c, " comment 'paisans-f2a9: ") {
 			t.Errorf("an allow without the ownership comment: %s", c)
 		}
 	}
@@ -636,8 +636,8 @@ func TestAStaleOwnedRuleIsRemovedLast(t *testing.T) {
 	cmds := commands(plan)
 	want := []string{
 		"ufw default deny incoming",
-		"ufw delete allow 80/tcp comment 'paisans: test'",
-		"ufw delete allow 443/tcp comment 'paisans: test'",
+		"ufw delete allow 80/tcp comment 'paisans-f2a9: test'",
+		"ufw delete allow 443/tcp comment 'paisans-f2a9: test'",
 	}
 	if strings.Join(cmds, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("got:\n%s\nwant:\n%s", strings.Join(cmds, "\n"), strings.Join(want, "\n"))
@@ -647,8 +647,31 @@ func TestAStaleOwnedRuleIsRemovedLast(t *testing.T) {
 			t.Errorf("a removal is labelled %q: %s", s.Label, s.Describe)
 		}
 	}
-	if !strings.Contains(printed(plan), "  remove    firewall: delete `ufw allow 80/tcp comment 'paisans: test'`") {
+	if !strings.Contains(printed(plan), "  remove    firewall: delete `ufw allow 80/tcp comment 'paisans-f2a9: test'`") {
 		t.Errorf("the plan does not show the removal as remove:\n%s", printed(plan))
+	}
+}
+
+// A rule is host prepare's only under this deployment's tag. One another
+// deployment on the host added, paisans-<its token>:, and one carrying the
+// bare paisans: tag are foreign: neither is removed when no longer derived,
+// and neither satisfies or is rewritten for a derived rule.
+func TestAnotherDeploymentsRuleIsForeign(t *testing.T) {
+	cfg := withoutMonitor(t)
+	vm := cfg.Sites["vm"]
+	vm.Roles = []config.Role{config.RoleWitness}
+	cfg.Sites["vm"] = vm
+	host := preparedHost(false)
+	host.responses[probeFirewall] = "ufw present\nstatus active\n" +
+		owned("allow 22/tcp", "allow 51820/udp", "allow in on wg0") +
+		"rule allow 80/tcp comment 'paisans-0c1d: the gateway'\n" +
+		"rule allow 443/tcp comment 'paisans: the gateway'\n"
+	plan, err := hostprep.Build("vm", cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Steps) != 0 {
+		t.Fatalf("another deployment's rule was planned for:\n%s", printed(plan))
 	}
 }
 
@@ -748,7 +771,7 @@ func TestALegacyRuleIsAdoptedWithoutAGap(t *testing.T) {
 		t.Fatalf("want five adoptions, got:\n%s", out)
 	}
 	for _, s := range plan.Steps {
-		if s.Label != "adopt" || !strings.HasPrefix(s.Command, "ufw allow ") || !strings.Contains(s.Command, " comment 'paisans: ") {
+		if s.Label != "adopt" || !strings.HasPrefix(s.Command, "ufw allow ") || !strings.Contains(s.Command, " comment 'paisans-f2a9: ") {
 			t.Errorf("not an adoption: %s %q", s.Label, s.Command)
 		}
 	}
@@ -830,7 +853,7 @@ func TestTheSSHRuleFollowsTheDeclaredPort(t *testing.T) {
 func TestMovingTheSSHPortKeepsTheOldAllow(t *testing.T) {
 	host := preparedHost(false)
 	host.responses[probeFirewall] = "ufw present\nstatus active\n" +
-		"rule allow 22/tcp comment 'paisans: ssh, the bootstrap route'\n" +
+		"rule allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'\n" +
 		owned("allow 51820/udp", "allow in on wg0", "allow in on br-+ to 10.44.0.1 port 5000 proto tcp", "allow in on br-+ to 10.44.0.1 port 3900 proto tcp")
 	plan, err := hostprep.Build("home-a", withSSHPort(t, "home-a", 2222), host)
 	if err != nil {
@@ -838,10 +861,10 @@ func TestMovingTheSSHPortKeepsTheOldAllow(t *testing.T) {
 	}
 	out := printed(plan)
 	t.Logf("\n%s", out)
-	if got := commands(plan); len(got) != 1 || got[0] != "ufw allow 2222/tcp comment 'paisans: ssh, the bootstrap route'" {
+	if got := commands(plan); len(got) != 1 || got[0] != "ufw allow 2222/tcp comment 'paisans-f2a9: ssh, the bootstrap route'" {
 		t.Fatalf("want only the new allow, got %q", got)
 	}
-	if !strings.Contains(out, "present   firewall: `ufw allow 22/tcp comment 'paisans: ssh, the bootstrap route'` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow. Delete it yourself once SSH on 2222 works") {
+	if !strings.Contains(out, "present   firewall: `ufw allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow. Delete it yourself once SSH on 2222 works") {
 		t.Errorf("the old allow is not noted:\n%s", out)
 	}
 }
@@ -913,7 +936,7 @@ func TestAUserWithoutAuthorizedKeysGetsThem(t *testing.T) {
 		!strings.Contains(last, fingerprint(keyBob)+" bob@example.org\n"+fingerprint(keyAlice)+" alice@example.org") {
 		t.Errorf("the sidecar after the last add does not hold both keys: %s", last)
 	}
-	if !strings.Contains(last, "chmod 600 '/etc/paisans/authorized_keys.ubuntu.owned.paisans-tmp' && mv") {
+	if !strings.Contains(last, "chmod 600 '/etc/paisans/authorized_keys.ubuntu.paisans-f2a9.owned.paisans-tmp' && mv") {
 		t.Errorf("the sidecar is not written 0600 and renamed into place: %s", last)
 	}
 }
@@ -1124,6 +1147,64 @@ func TestDockerIsOrderedAfterWG0(t *testing.T) {
 		}
 		if step.Command != "systemctl daemon-reload" {
 			t.Errorf("installing the drop-in runs %q; it must not restart docker", step.Command)
+		}
+	}
+}
+
+// On a shared host, prepare adds and removes only its own commented rules.
+// The default policy and enabling ufw are host wide, and something else
+// lives there whose traffic they would decide.
+func TestASharedHostNeverSetsTheFirewallsDefaults(t *testing.T) {
+	cfg := fixture(t)
+	host := freshHost()
+	host.responses[probeFirewall] = "ufw present\nstatus inactive\n" + owned("allow 9999/tcp")
+	host.files["/etc/default/ufw"] = "DEFAULT_INPUT_POLICY=\"ACCEPT\"\nDEFAULT_OUTPUT_POLICY=\"DROP\"\n"
+	dedicated, err := hostprep.Build("home-a", cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexOf(commands(dedicated), "ufw --force enable") < 0 || indexOf(commands(dedicated), "ufw default deny incoming") < 0 {
+		t.Fatalf("the dedicated plan does not set the defaults, so this test proves nothing:\n%s", strings.Join(commands(dedicated), "\n"))
+	}
+	shared, err := hostprep.Build("home-a", cfg, host, hostprep.Shared())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := commands(shared)
+	for _, c := range cmds {
+		if strings.HasPrefix(c, "ufw default") || strings.Contains(c, "ufw --force enable") || c == "ufw enable" {
+			t.Errorf("a shared host's plan runs %q", c)
+		}
+	}
+	for _, want := range []string{
+		"ufw allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'",
+		"ufw delete allow 9999/tcp comment 'paisans-f2a9: test'",
+	} {
+		if indexOf(cmds, want) < 0 {
+			t.Errorf("a shared host's plan does not manage its own rules, missing %q:\n%s", want, strings.Join(cmds, "\n"))
+		}
+	}
+	if !strings.Contains(printed(shared), "default policy and enabled state left alone") {
+		t.Errorf("the plan does not say the defaults were left alone:\n%s", printed(shared))
+	}
+}
+
+// Docker installed as a snap is refused, not removed, as Ubuntu's docker.io
+// is, and whether or not `docker compose` works with it: the toolkit runs
+// Docker from Docker's own repository on every host. Removing it would stop
+// whatever runs from it.
+func TestSnapDockerIsRefusedNotRemoved(t *testing.T) {
+	for _, compose := range []string{"compose present", "compose absent"} {
+		host := freshHost()
+		host.responses[probePackages] = compose + "\nsnap docker\npkg ufw install ok installed\nkeyring absent\narch amd64\n"
+		_, err := hostprep.Build("home-a", fixture(t), host)
+		if err == nil || !strings.Contains(err.Error(), "snap") || !strings.Contains(err.Error(), "snap remove docker") {
+			t.Errorf("%s: got %v", compose, err)
+		}
+		for _, c := range host.ran {
+			if strings.Contains(c, "snap remove") || strings.Contains(c, "apt-get") {
+				t.Errorf("%s: prepare changed something: %s", compose, c)
+			}
 		}
 	}
 }

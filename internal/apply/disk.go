@@ -113,7 +113,7 @@ func composeImages(content string) ([]string, error) {
 func siteImages(changes []Change) (map[string][]string, error) {
 	out := map[string][]string{}
 	for _, c := range changes {
-		if c.Stack == "" || c.Path != "/srv/"+c.Stack+"/compose.yaml" {
+		if c.Stack == "" || !isStackCompose(c) {
 			continue
 		}
 		images, err := composeImages(c.content)

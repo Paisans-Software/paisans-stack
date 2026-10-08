@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // What follows is how the Ubuntu profile reads and writes ufw rules. Every
@@ -31,9 +33,11 @@ import (
 // adding ours over someone else's would rewrite theirs. And adopting a rule an
 // earlier prepare added without a comment is one command, not two.
 
-// ownerTag starts the comment on every rule host prepare adds. It is how a
-// later prepare tells its own rules from an operator's.
-const ownerTag = "paisans:"
+// ownerTag starts the comment on every rule host prepare adds for deployment
+// d, paisans-<token>:. It is how a later prepare tells its own rules from an
+// operator's and from another deployment's on the same host: a rule is ours
+// only when its comment starts with exactly this tag.
+func ownerTag(d deployment.Deployment) string { return d.Prefix() + ":" }
 
 // ufwSpec is a rule as ufw prints it back, without the comment.
 func ufwSpec(r Rule) string {
@@ -48,8 +52,8 @@ func ufwSpec(r Rule) string {
 
 // ufwArgs is the ufw command that adds a rule, without the leading `ufw`. It
 // is also exactly how `ufw show added` prints the rule back.
-func ufwArgs(r Rule) string {
-	return fmt.Sprintf("%s comment '%s %s'", ufwSpec(r), ownerTag, r.Why)
+func ufwArgs(tag string, r Rule) string {
+	return fmt.Sprintf("%s comment '%s %s'", ufwSpec(r), tag, r.Why)
 }
 
 // addedRule is one line of `ufw show added`, without its leading `ufw`.
@@ -60,7 +64,7 @@ type addedRule struct {
 	comment string
 }
 
-func (a addedRule) owned() bool { return strings.HasPrefix(a.comment, ownerTag) }
+func (a addedRule) owned(tag string) bool { return strings.HasPrefix(a.comment, tag+" ") }
 
 // commentSuffix is the comment get_command appends. A comment cannot contain a
 // quote, so the last quoted string on the line is the whole of it.
@@ -145,7 +149,7 @@ func overlaps(a addedRule, r Rule) bool {
 // planRules compares the rules a site derives with what ufw holds. It returns
 // the additions, which go before the default policy and enabling, and the
 // removals, which go after everything else.
-func planRules(rules []Rule, added []addedRule) (out Section, removals []Step, err error) {
+func planRules(tag string, rules []Rule, added []addedRule) (out Section, removals []Step, err error) {
 	var ssh *Rule
 	for i := range rules {
 		if rules[i].SSH {
@@ -169,12 +173,12 @@ func planRules(rules []Rule, added []addedRule) (out Section, removals []Step, e
 		a, found := byKey[key]
 		switch {
 		case !found:
-			out.Steps = append(out.Steps, Step{Describe: fmt.Sprintf("firewall: allow %s (%s)", r, r.Why), Command: "ufw " + ufwArgs(r)})
-		case a.owned() && a.action == action:
+			out.Steps = append(out.Steps, Step{Describe: fmt.Sprintf("firewall: allow %s (%s)", r, r.Why), Command: "ufw " + ufwArgs(tag, r)})
+		case a.owned(tag) && a.action == action:
 			out.Present = append(out.Present, fmt.Sprintf("firewall: %s allowed", r))
-		case a.owned():
+		case a.owned(tag):
 			// Ours, changed by hand since. Adding it again replaces it.
-			out.Steps = append(out.Steps, Step{Describe: fmt.Sprintf("firewall: allow %s (%s), replacing `ufw %s`", r, r.Why, a.line), Command: "ufw " + ufwArgs(r)})
+			out.Steps = append(out.Steps, Step{Describe: fmt.Sprintf("firewall: allow %s (%s), replacing `ufw %s`", r, r.Why, a.line), Command: "ufw " + ufwArgs(tag, r)})
 		case a.comment == "" && a.action == action:
 			// What an earlier version of host prepare added, before rules
 			// carried a comment. ufw replaces it in place when the commented
@@ -185,7 +189,7 @@ func planRules(rules []Rule, added []addedRule) (out Section, removals []Step, e
 			out.Steps = append(out.Steps, Step{
 				Label:    "adopt",
 				Describe: fmt.Sprintf("firewall: mark `ufw %s` as host prepare's (%s); ufw rewrites it in place", a.line, r.Why),
-				Command:  "ufw " + ufwArgs(r),
+				Command:  "ufw " + ufwArgs(tag, r),
 			})
 		case a.action == action:
 			out.Foreign = append(out.Foreign, fmt.Sprintf("firewall: %s allowed by `ufw %s`", r, a.line))
@@ -210,7 +214,7 @@ func planRules(rules []Rule, added []addedRule) (out Section, removals []Step, e
 		if derived[a.key] {
 			continue
 		}
-		if !a.owned() {
+		if !a.owned(tag) {
 			for _, r := range rules {
 				if overlaps(a, r) {
 					out.Foreign = append(out.Foreign, fmt.Sprintf("firewall: `ufw %s` (bears on %s)", a.line, r))
@@ -233,7 +237,7 @@ func planRules(rules []Rule, added []addedRule) (out Section, removals []Step, e
 		// and leaves the old one: host prepare cannot know that sshd already
 		// listens on the new port, and if it does not, the old allow is the
 		// only way back in. The operator deletes it once the new port works.
-		if a.comment == ownerTag+" "+sshWhy {
+		if a.comment == tag+" "+sshWhy {
 			note := fmt.Sprintf("firewall: `ufw %s` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow", a.line)
 			if ssh != nil {
 				note += fmt.Sprintf(". Delete it yourself once SSH on %d works", ssh.Port)

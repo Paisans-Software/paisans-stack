@@ -1,0 +1,51 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# This is the writefreely-wisp fork, not upstream WriteFreely. The fork keeps
+# its data in Postgres and its uploads in Garage, so it joins the same cluster
+# and the same object store as everything else instead of a SQLite file and a
+# local disk nothing else can reach.
+# blog is pinned to home-a: app, database and media
+# together. A half pinned app needs both its own location and the cluster site
+# to be reachable, which makes it less available than either alone.
+name: paisans-f2a9-blog
+
+services:
+  app:
+    labels:
+      community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"
+    image: ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea
+    restart: unless-stopped
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says. The
+    # gateway, over the mesh, is the only thing that should reach it.
+    ports:
+      - "10.44.0.1:8081:8081"
+    volumes:
+      - /srv/paisans/f2a9/blog/data:/data
+      # WriteFreely reads a file, not an environment. Its SSO client secret is
+      # in here, which is why it is bind mounted at 0600 rather than passed as
+      # environment: `docker inspect` and /proc/<pid>/environ would show the
+      # latter.
+      - /srv/paisans/f2a9/blog/config.ini:/data/config.ini:ro
+    depends_on:
+      - postgres
+
+  postgres:
+    labels:
+      community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: blog
+      POSTGRES_USER: blog
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - /srv/paisans/f2a9/blog/postgres:/var/lib/postgresql
+
+# Every network carries the deployment label too, so that what owns it is
+# read from the label rather than guessed from its name.
+networks:
+  default:
+    labels:
+      community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"

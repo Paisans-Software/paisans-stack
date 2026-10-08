@@ -3,6 +3,8 @@ package hostprep
 import (
 	"fmt"
 	"strings"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // ubuntu is the profile for Ubuntu releases. Its shell lives in
@@ -44,6 +46,7 @@ type packageFacts struct {
 	installed    map[string]bool
 	keyring      bool
 	arch         string
+	snapDocker   bool
 }
 
 func (u ubuntu) probePackages(t Transport) (packageFacts, error) {
@@ -71,6 +74,8 @@ func (u ubuntu) probePackages(t Transport) (packageFacts, error) {
 			facts.keyring = rest == "present"
 		case "arch":
 			facts.arch = strings.TrimSpace(rest)
+		case "snap":
+			facts.snapDocker = strings.TrimSpace(rest) == "docker"
 		}
 	}
 	return facts, nil
@@ -86,6 +91,14 @@ func (u ubuntu) Packages(t Transport, host OSRelease) (Section, error) {
 	facts, err := u.probePackages(t)
 	if err != nil {
 		return out, err
+	}
+
+	// Refused, not removed, for the docker.io reason below, and whether or
+	// not compose works with it: every host runs Docker from Docker's own
+	// repository, which is what the toolkit is tested against, and a snap
+	// beside those packages would be a second engine.
+	if facts.snapDocker {
+		return out, fmt.Errorf("docker: Docker is installed as a snap, and every host here runs Docker Engine from Docker's own apt repository. Remove it yourself (snap remove docker), after checking nothing running depends on it, and prepare again")
 	}
 
 	var install []string
@@ -185,8 +198,11 @@ func (u ubuntu) unitState(t Transport, unit string) (enabled, active bool, err e
 	return enabled, active, nil
 }
 
-// dockerAfterWG0 is the drop-in that orders Docker after the mesh interface.
-const dockerAfterWG0 = "/etc/systemd/system/docker.service.d/paisans-after-wg0.conf"
+// dockerAfterWG0 is the drop-in that orders Docker after the mesh interface,
+// named for the deployment that wrote it.
+func dockerAfterWG0(d deployment.Deployment) string {
+	return "/etc/systemd/system/docker.service.d/" + d.Prefix() + "-after-wg0.conf"
+}
 
 // Services makes Docker start at boot and now, and after wg0 at boot. Docker's
 // packages enable it on install, so on a freshly installed host enabling it is
@@ -197,13 +213,14 @@ const dockerAfterWG0 = "/etc/systemd/system/docker.service.d/paisans-after-wg0.c
 // package upgrade replaces. Writing it needs only a daemon-reload: it takes
 // effect at the next boot, which is the only moment it matters, so Docker and
 // every container on the host keep running.
-func (u ubuntu) Services(t Transport) (Section, error) {
+func (u ubuntu) Services(t Transport, d deployment.Deployment) (Section, error) {
+	dropInPath := dockerAfterWG0(d)
 	var out Section
 	dropIn, err := snippet(u.tmpl("docker-after-wg0.conf.tmpl"), nil)
 	if err != nil {
 		return out, err
 	}
-	current, found, err := t.ReadFile(dockerAfterWG0)
+	current, found, err := t.ReadFile(dropInPath)
 	if err != nil {
 		return out, err
 	}
@@ -211,8 +228,8 @@ func (u ubuntu) Services(t Transport) (Section, error) {
 		out.Present = append(out.Present, "service: docker starts after wg0 at boot")
 	} else {
 		out.Steps = append(out.Steps, Step{
-			Describe: "service: start docker after wg0 at boot, so containers can bind the mesh address (" + dockerAfterWG0 + ")",
-			File:     &File{Path: dockerAfterWG0, Content: dropIn, Mode: 0o644},
+			Describe: "service: start docker after wg0 at boot, so containers can bind the mesh address (" + dropInPath + ")",
+			File:     &File{Path: dropInPath, Content: dropIn, Mode: 0o644},
 			Command:  "systemctl daemon-reload",
 		})
 	}
@@ -228,8 +245,9 @@ func (u ubuntu) Services(t Transport) (Section, error) {
 	return out, nil
 }
 
-// watchdogUnit is the unit that loads the watchdog module at boot.
-const watchdogUnit = "paisans-watchdog.service"
+// watchdogUnit is the unit that loads the watchdog module at boot, named for
+// the deployment that wrote it.
+func watchdogUnit(d deployment.Deployment) string { return d.Prefix() + "-watchdog.service" }
 
 // WatchdogModule loads the module now with modprobe and at boot with a unit,
 // not a modules-load.d entry. Ubuntu's kernel package ships a modprobe
@@ -238,8 +256,9 @@ const watchdogUnit = "paisans-watchdog.service"
 // module_load_and_warn probes with KMOD_PROBE_APPLY_BLACKLIST), so a
 // modules-load.d file would be skipped at every boot while looking correct.
 // modprobe named on a command line does not apply the blacklist.
-func (u ubuntu) WatchdogModule(t Transport, module string, loaded bool) (Section, error) {
+func (u ubuntu) WatchdogModule(t Transport, d deployment.Deployment, module string, loaded bool) (Section, error) {
 	var out Section
+	unitName := watchdogUnit(d)
 	if !loaded {
 		out.Steps = append(out.Steps, Step{Describe: "watchdog: load " + module + " now", Command: "modprobe " + module})
 	}
@@ -247,29 +266,29 @@ func (u ubuntu) WatchdogModule(t Transport, module string, loaded bool) (Section
 	if err != nil {
 		return out, err
 	}
-	path := "/etc/systemd/system/" + watchdogUnit
+	path := "/etc/systemd/system/" + unitName
 	current, found, err := t.ReadFile(path)
 	if err != nil {
 		return out, err
 	}
-	enabled, _, err := u.unitState(t, watchdogUnit)
+	enabled, _, err := u.unitState(t, unitName)
 	if err != nil {
 		return out, err
 	}
 	switch {
 	case !found || current != unit:
 		out.Steps = append(out.Steps, Step{
-			Describe: fmt.Sprintf("watchdog: load %s at every boot (%s)", module, watchdogUnit),
+			Describe: fmt.Sprintf("watchdog: load %s at every boot (%s)", module, unitName),
 			File:     &File{Path: path, Content: unit, Mode: 0o644},
-			Command:  "systemctl daemon-reload && systemctl enable " + watchdogUnit,
+			Command:  "systemctl daemon-reload && systemctl enable " + unitName,
 		})
 	case !enabled:
 		out.Steps = append(out.Steps, Step{
-			Describe: fmt.Sprintf("watchdog: enable %s so %s loads at every boot", watchdogUnit, module),
-			Command:  "systemctl enable " + watchdogUnit,
+			Describe: fmt.Sprintf("watchdog: enable %s so %s loads at every boot", unitName, module),
+			Command:  "systemctl enable " + unitName,
 		})
 	default:
-		out.Present = append(out.Present, fmt.Sprintf("watchdog: %s loads %s at every boot", watchdogUnit, module))
+		out.Present = append(out.Present, fmt.Sprintf("watchdog: %s loads %s at every boot", unitName, module))
 	}
 	return out, nil
 }
@@ -281,8 +300,10 @@ func (u ubuntu) WatchdogModule(t Transport, module string, loaded bool) (Section
 // stood in for is in place. `--force` is what stops `ufw enable` asking
 // whether to disrupt existing connections, a prompt that would hang a
 // non-interactive run. Which rules are added, adopted, removed or left alone
-// is planRules, in ufw.go.
-func (u ubuntu) Firewall(t Transport, rules []Rule) (Section, error) {
+// is planRules, in ufw.go. On a shared host (hostWide false) only the rules
+// are planned: the default policy and enabling belong to the host, not to
+// the deployment.
+func (u ubuntu) Firewall(t Transport, d deployment.Deployment, rules []Rule, hostWide bool) (Section, error) {
 	var out Section
 	script, err := snippet(u.tmpl("firewall-probe.sh.tmpl"), nil)
 	if err != nil {
@@ -308,11 +329,17 @@ func (u ubuntu) Firewall(t Transport, rules []Rule) (Section, error) {
 		}
 	}
 
-	planned, removals, err := planRules(rules, added)
+	planned, removals, err := planRules(ownerTag(d), rules, added)
 	if err != nil {
 		return out, err
 	}
 	out.add(planned)
+
+	if !hostWide {
+		out.Present = append(out.Present, "firewall: default policy and enabled state left alone, since the host is shared")
+		out.Steps = append(out.Steps, removals...)
+		return out, nil
+	}
 
 	input, output := "", ""
 	if present {

@@ -5,7 +5,12 @@ import (
 	"io"
 	"os/exec"
 	"time"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
+
+// Fixture is the fixture deployment's identity.
+var Fixture = deployment.Deployment{ID: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}
 
 // SetPrimaryWait shortens the wait for a Patroni primary and replaces the
 // sleep between polls, so a test of the timeout neither sleeps three minutes
@@ -54,8 +59,8 @@ func SetStandbyWait(wait, poll time.Duration, sleeper func(time.Duration)) func(
 }
 
 // InstanceCommand exposes what a site is asked.
-func InstanceCommand(app, address string, port int) string {
-	return instanceCommand(app, address, port)
+func InstanceCommand(d deployment.Deployment, app, address string, port int) string {
+	return instanceCommand(d, app, address, port)
 }
 
 // FakeSSH stands in for the ssh binary: each call gets the command's

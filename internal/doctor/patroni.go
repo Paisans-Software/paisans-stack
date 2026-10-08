@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
 )
 
@@ -19,13 +20,18 @@ const maxLag = 16 << 20
 // last lines of its Patroni log that speak of its health, lag, timeline or
 // the leader lock. `|| true` because grep exits 1 when nothing matches, and
 // "nothing matched" is an answer.
-const PatroniLogCommand = "docker compose -f /srv/infra/compose.yaml logs --tail 200 patroni 2>&1 | grep -iE 'healthiest|lag|timeline|lock' | tail -n 5 || true"
+func PatroniLogCommand(d deployment.Deployment) string {
+	return d.ComposeCmd("infra") + " logs --tail 200 patroni 2>&1 | grep -iE 'healthiest|lag|timeline|lock' | tail -n 5 || true"
+}
+
+// infraCompose is the infrastructure stack's compose command, for advice.
+func infraCompose(cfg *config.Config) string { return cfg.Deployment().ComposeCmd("infra") }
 
 // failoverCommand is the forced failover a human may choose to run. It is
 // never run by doctor. The config path is the one the failover test uses,
 // the file Spilo runs Patroni with (see failover.SwitchoverCommand).
-func failoverCommand(candidate string) string {
-	return "docker compose -f /srv/infra/compose.yaml exec patroni patronictl -c /home/postgres/postgres.yml failover --candidate " + candidate + " --force"
+func failoverCommand(d deployment.Deployment, candidate string) string {
+	return d.ComposeCmd("infra") + " exec patroni patronictl -c /home/postgres/postgres.yml failover --candidate " + candidate + " --force"
 }
 
 // PatroniProbe is what each database site's Patroni said.
@@ -147,7 +153,7 @@ func Patroni(cfg *config.Config, in Input) []Finding {
 	c, from, problems := firstCluster(in.Patroni, askable)
 	if from == "" {
 		return []Finding{{Section: SectionPatroni, Level: Fail, Line: "Patroni did not answer on any database site",
-			More: append(problems, "Its container may be stopped or restarting: see the containers section, and `docker compose -f /srv/infra/compose.yaml logs patroni` on each site.")}}
+			More: append(problems, "Its container may be stopped or restarting: see the containers section, and `"+infraCompose(cfg)+" logs patroni` on each site.")}}
 	}
 	sync, syncErr := ParseSync(in.Patroni.Sync)
 	if in.Patroni.SyncErr != "" {
@@ -201,7 +207,7 @@ func withLeader(cfg *config.Config, in Input, c patroni.Cluster, leader patroni.
 		switch {
 		case m.State != "streaming" && m.State != "running":
 			out = append(out, Finding{Section: SectionPatroni, Level: Warn, Line: line + ": not streaming from the leader",
-				More: []string{fmt.Sprintf("Read `docker compose -f /srv/infra/compose.yaml logs patroni` on %s.", m.Name)}})
+				More: []string{fmt.Sprintf("Read `%s logs patroni` on %s.", infraCompose(cfg), m.Name)}})
 		case !known || lag > maxLag:
 			out = append(out, Finding{Section: SectionPatroni, Level: Warn, Line: line + ": more than 16 MiB behind, or unknown",
 				More: []string{"A replica this far behind may lose writes if it is promoted now, and Patroni will not promote it past maximum_lag_on_failover."}})
@@ -235,7 +241,7 @@ func noLeader(cfg *config.Config, in Input, c patroni.Cluster, sync SyncState, s
 		if len(states) > 0 {
 			more = append(more, "members: "+strings.Join(states, "; "))
 		}
-		more = append(more, "See the containers section, and `docker compose -f /srv/infra/compose.yaml logs patroni` on each database site.")
+		more = append(more, "See the containers section, and `"+infraCompose(cfg)+" logs patroni` on each database site.")
 		return []Finding{{Section: SectionPatroni, Level: Fail, Line: "no primary, and no member running", More: more}}
 	}
 
@@ -298,7 +304,7 @@ func stuckFinding(cfg *config.Config, in Input, sync SyncState, stuck []patroni.
 	more = append(more, startAdvice(cfg, in, x, all)...)
 	more = append(more,
 		fmt.Sprintf("  2. Only if %s is lost for good: promote %s by hand. On %s%s:", x, r, r, via(in, r)),
-		"       "+failoverCommand(r),
+		"       "+failoverCommand(cfg.Deployment(), r),
 		"     Patroni promotes the candidate a failover names even when /sync does not (Patroni v4.1.0, patroni/ha.py, manual_failover_process_no_leader: `if failover.candidate == self.state_handler.name: return True`), and --force skips patronictl's \"Are you sure you want to failover to the asynchronous node\" (patroni/ctl.py).",
 	)
 	if len(stuck) > 1 {
@@ -333,7 +339,7 @@ func startAdvice(cfg *config.Config, in Input, x, all string) []string {
 	case !declared:
 		how = fmt.Sprintf("Start the Patroni member %s, which no site in this configuration is named", x)
 	case in.Reached()[x]:
-		how = fmt.Sprintf("Start %s's Patroni: its host answers ssh, but its Patroni is not in the cluster. `docker compose -f /srv/infra/compose.yaml up -d patroni` on %s%s starts it; the containers section says why it stopped", x, x, via(in, x))
+		how = fmt.Sprintf("Start %s's Patroni: its host answers ssh, but its Patroni is not in the cluster. `%s up -d patroni` on %s%s starts it; the containers section says why it stopped", x, infraCompose(cfg), x, via(in, x))
 	case in.destination(x) != "":
 		how = fmt.Sprintf("Start %s (ssh %s)", x, in.destination(x))
 	}
@@ -406,7 +412,7 @@ func genericNoLeader(cfg *config.Config, in Input, c patroni.Cluster, replicas [
 		}
 		more = append(more, fmt.Sprintf("  1. Start the members that are not in the cluster: %s. A replica that is behind catches up from a returning leader, and no data is lost.", strings.Join(hosts, ", ")))
 	} else {
-		more = append(more, "  1. Read the evidence below, and `docker compose -f /srv/infra/compose.yaml logs patroni` on each database site, for why each replica holds back.")
+		more = append(more, "  1. Read the evidence below, and `"+infraCompose(cfg)+" logs patroni` on each database site, for why each replica holds back.")
 	}
 	r := replicas[0].Name
 	old := "the old primary"
@@ -415,7 +421,7 @@ func genericNoLeader(cfg *config.Config, in Input, c patroni.Cluster, replicas [
 	}
 	more = append(more,
 		fmt.Sprintf("  2. Only if %s is lost for good and none of the above helps: promote %s by hand. On %s%s:", old, r, r, via(in, r)),
-		"       "+failoverCommand(r),
+		"       "+failoverCommand(cfg.Deployment(), r),
 	)
 	more = append(more, warnings(old, r)...)
 	more = append(more, evidence(in, names(replicas))...)

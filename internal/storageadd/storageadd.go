@@ -26,6 +26,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -68,6 +69,22 @@ type Options struct {
 	// to prove reads and uploads survive it, then starts it again. Refused
 	// unless uploads survive one node down.
 	StopTest bool
+	// SharedSites are the sites the host check found shared. Every apply
+	// storage add runs on one keeps its images, as apply itself does there,
+	// because an image the toolkit renders may be what something else runs
+	// from.
+	SharedSites map[string]bool
+}
+
+// keepImages is whether the applies on site keep superseded images.
+func (p *Plan) keepImages(site string) bool { return p.opts.SharedSites[site] }
+
+// applyOptions are opts, plus KeepImages on a shared site.
+func (p *Plan) applyOptions(site string, opts ...apply.Option) []apply.Option {
+	if p.keepImages(site) {
+		opts = append(opts, apply.KeepImages())
+	}
+	return opts
 }
 
 // Plan is a whole join, decided from the live deployment.
@@ -216,7 +233,7 @@ func Build(cfg *config.Config, secrets *config.Secrets, transports map[string]ap
 		// A reset that stopped the nodes and rewrote every garage.toml, but
 		// was interrupted before starting them all, leaves no factor that
 		// differs. Its counts file is what says it is unfinished.
-		_, counted, err := transports[p.anchor].ReadFile(countsFile)
+		_, counted, err := transports[p.anchor].ReadFile(countsFile(p.dep()))
 		if err != nil {
 			// An unread counts file is not an absent one: reading it as
 			// absent would skip resuming a reset that is half done.
@@ -307,7 +324,7 @@ func (p *Plan) noteOwed() error {
 		if !ok || len(files) == 0 {
 			continue
 		}
-		sp, err := apply.Build(name, p.rendered, acme.Module(p.cfg.ACME.Provider), t, apply.Scope(files...))
+		sp, err := apply.Build(name, p.rendered, acme.Module(p.cfg.ACME.Provider), t, p.applyOptions(name, apply.Scope(files...))...)
 		if err != nil {
 			return err
 		}
@@ -325,7 +342,7 @@ func (p *Plan) appEnvFiles(site string) []string {
 	prefix := site + "/"
 	for _, f := range p.rendered.Files {
 		rel, ok := strings.CutPrefix(f.Path, prefix)
-		if !ok || !strings.HasPrefix(rel, "srv/") || strings.HasPrefix(rel, "srv/infra/") {
+		if !ok || !strings.HasPrefix(rel, p.dep().Rel()+"/") || strings.HasPrefix(rel, p.dep().RelPath("infra")+"/") {
 			continue
 		}
 		if strings.HasSuffix(rel, "/.env") {
@@ -434,7 +451,10 @@ func (p *Plan) consistency() string {
 }
 
 // gcmd is one garage CLI command, run in the site's own Garage container.
-func gcmd(args string) string { return garage.Command + " " + args }
+func gcmd(d deployment.Deployment, args string) string { return garage.Command(d) + " " + args }
+
+// dep is the deployment every path and command here belongs to.
+func (p *Plan) dep() deployment.Deployment { return p.cfg.Deployment() }
 
 func lastLines(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")

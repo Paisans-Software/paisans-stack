@@ -11,6 +11,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/oidcclient"
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
@@ -78,6 +79,14 @@ func runOIDCClientCreate(args []string) error {
 	where, err := pocketIDSite(cfg, idp, *site, "oidc client create")
 	if err != nil {
 		return err
+	}
+	// The calls need no root and a dry run reaches the host without sudo,
+	// so only a run that will change something claims it, through sudo,
+	// since the registry is root's.
+	if *execute {
+		if err := claimHosts(cfg, true, map[string]registry.Runner{where: registryHost(cfg.Sites[where], *destination, true)}); err != nil {
+			return err
+		}
 	}
 
 	if *secretsPath == "" {

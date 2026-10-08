@@ -46,6 +46,7 @@ func (emptyHost) ReadFile(string) (string, bool, error)   { return "", false, ni
 func (emptyHost) WriteFile(string, string, uint32) error  { return nil }
 
 const freshSite = `version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 community:
   name: Example
   domain: example.org

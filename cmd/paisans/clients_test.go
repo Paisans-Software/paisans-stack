@@ -64,7 +64,7 @@ func (l *passLog) pass(t *testing.T, c *clientStep, app string) sitePass {
 			id := c.secrets.OIDCClients[app].ClientID
 			has := false
 			for _, f := range rendered.Files {
-				if f.Path == c.site+"/srv/"+app+"/.env" && id != "" && strings.Contains(f.Content, id) {
+				if f.Path == c.site+"/srv/paisans/f2a9/"+app+"/.env" && id != "" && strings.Contains(f.Content, id) {
 					has = true
 				}
 			}
@@ -483,7 +483,7 @@ func (h *fileHost) WriteFile(string, string, uint32) error { h.writes++; return 
 func TestApplyRefusesAConflictBeforeContactingPocketID(t *testing.T) {
 	fake := withIDPFake(t)
 	c := stepFor(t, "home-a", secretsWithout(t, "talk"))
-	host := &fileHost{files: map[string]string{"/srv/talk/compose.yaml": "edited on the host\n"}}
+	host := &fileHost{files: map[string]string{"/srv/paisans/f2a9/talk/compose.yaml": "edited on the host\n"}}
 	planFor := func(hold []string) (*apply.Plan, error) {
 		rendered, err := render.Build(c.cfg, c.secrets)
 		if err != nil {
@@ -493,7 +493,7 @@ func TestApplyRefusesAConflictBeforeContactingPocketID(t *testing.T) {
 	}
 	var err error
 	captureOutput(t, func() { _, err = planWithClients(c, planFor, true) })
-	if err == nil || !strings.Contains(err.Error(), "/srv/talk/compose.yaml") {
+	if err == nil || !strings.Contains(err.Error(), "/srv/paisans/f2a9/talk/compose.yaml") {
 		t.Fatalf("got %v", err)
 	}
 	if len(fake.commands) != 0 || host.writes != 0 {
@@ -568,7 +568,7 @@ func TestApplyReportsAnOverwriteItHeldBack(t *testing.T) {
 	lookWith(t, map[string]string{"home-a.local": "down", "home-b.local": "down"}, &asked)
 	withIDPFake(t)
 	c := stepFor(t, "vm", secretsWithout(t, "status"))
-	log := passLog{heldOverwrites: []string{"/srv/status/.env"}}
+	log := passLog{heldOverwrites: []string{"/srv/paisans/f2a9/status/.env"}}
 	var err error
 	stdout, _ := captureOutput(t, func() {
 		_, err = executeWithClients(c, log.pass(t, c, "status"))
@@ -577,7 +577,7 @@ func TestApplyReportsAnOverwriteItHeldBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout, "--overwrite /srv/status/.env was not applied") {
+	if !strings.Contains(stdout, "--overwrite /srv/paisans/f2a9/status/.env was not applied") {
 		t.Errorf("the held overwrite is not reported:\n%s", stdout)
 	}
 }

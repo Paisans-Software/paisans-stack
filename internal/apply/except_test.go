@@ -32,10 +32,10 @@ func TestExceptHoldsAStackBackAndAppliesTheRest(t *testing.T) {
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	if host.ran("/srv/talk/compose.yaml") {
+	if host.ran("/srv/paisans/f2a9/talk/compose.yaml") {
 		t.Error("talk's stack was acted on")
 	}
-	if _, ok := host.files["/srv/talk/.env"]; ok {
+	if _, ok := host.files["/srv/paisans/f2a9/talk/.env"]; ok {
 		t.Error("talk's files were written")
 	}
 
@@ -55,7 +55,7 @@ func TestExceptHoldsAStackBackAndAppliesTheRest(t *testing.T) {
 // releases it force-recreates it.
 func TestExceptKeepsAHeldStackOwed(t *testing.T) {
 	host := applied(t, "home-a")
-	host.files["/srv/.paisans-pending.json"] = `{"version":1,"actions":[{"stack":"docs","recreate":true},{"stack":"talk","recreate":true}]}`
+	host.files["/srv/paisans/f2a9/.paisans-pending.json"] = `{"version":1,"actions":[{"stack":"docs","recreate":true},{"stack":"talk","recreate":true}]}`
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Except("talk"))
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +63,7 @@ func TestExceptKeepsAHeldStackOwed(t *testing.T) {
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	record, ok := host.files["/srv/.paisans-pending.json"]
+	record, ok := host.files["/srv/paisans/f2a9/.paisans-pending.json"]
 	if !ok || !strings.Contains(record, `"talk"`) || strings.Contains(record, `"docs"`) {
 		t.Fatalf("after holding talk back the record of owed actions is %q, want talk alone", record)
 	}
@@ -81,10 +81,10 @@ func TestExceptKeepsAHeldStackOwed(t *testing.T) {
 // carried out, and still carries out those it held back.
 func TestAfterDoesNotRepeatAnOverwriteOrARecreate(t *testing.T) {
 	host := applied(t, "home-a")
-	host.files["/srv/infra/compose.yaml"] += "# edited on the host\n"
-	host.files["/srv/talk/.env"] += "# edited on the host\n"
+	host.files["/srv/paisans/f2a9/infra/compose.yaml"] += "# edited on the host\n"
+	host.files["/srv/paisans/f2a9/talk/.env"] += "# edited on the host\n"
 	options := []apply.Option{
-		apply.Overwrite("/srv/infra/compose.yaml", "/srv/talk/.env"),
+		apply.Overwrite("/srv/paisans/f2a9/infra/compose.yaml", "/srv/paisans/f2a9/talk/.env"),
 		apply.Recreate("infra", "talk"),
 	}
 	first, err := apply.Build("home-a", plan(t), acmeModule(t), host, append(options, apply.Except("talk"))...)
@@ -107,10 +107,10 @@ func TestAfterDoesNotRepeatAnOverwriteOrARecreate(t *testing.T) {
 	}
 	overwritten := false
 	for _, c := range second.Changes {
-		if c.Path == "/srv/talk/.env" && c.Overwritten {
+		if c.Path == "/srv/paisans/f2a9/talk/.env" && c.Overwritten {
 			overwritten = true
 		}
-		if c.Path == "/srv/infra/compose.yaml" && c.Kind != apply.Unchanged {
+		if c.Path == "/srv/paisans/f2a9/infra/compose.yaml" && c.Kind != apply.Unchanged {
 			t.Errorf("the second pass plans infra's compose file again: %v", c.Kind)
 		}
 	}
@@ -124,7 +124,7 @@ func TestAfterDoesNotRepeatAnOverwriteOrARecreate(t *testing.T) {
 // when it is released.
 func TestADatabasePathMoveRestartsAHeldAppOnceItIsReleased(t *testing.T) {
 	host := applied(t, "home-a")
-	changed := planChanging(t, "srv/infra/haproxy/haproxy.cfg")
+	changed := planChanging(t, "srv/paisans/f2a9/infra/haproxy/haproxy.cfg")
 	first, err := apply.Build("home-a", changed, acmeModule(t), host, databaseApps(t), apply.Except("talk"))
 	if err != nil {
 		t.Fatal(err)
@@ -135,10 +135,10 @@ func TestADatabasePathMoveRestartsAHeldAppOnceItIsReleased(t *testing.T) {
 	if err := apply.Execute(first, host); err != nil {
 		t.Fatal(err)
 	}
-	if host.ran("/srv/talk/compose.yaml") {
+	if host.ran("/srv/paisans/f2a9/talk/compose.yaml") {
 		t.Error("a held app was acted on")
 	}
-	if record := host.files["/srv/.paisans-pending.json"]; !strings.Contains(record, `"talk"`) {
+	if record := host.files["/srv/paisans/f2a9/.paisans-pending.json"]; !strings.Contains(record, `"talk"`) {
 		t.Fatalf("the held restart is not owed: %q", record)
 	}
 
@@ -156,10 +156,10 @@ func TestADatabasePathMoveRestartsAHeldAppOnceItIsReleased(t *testing.T) {
 	if err := apply.Execute(second, host); err != nil {
 		t.Fatal(err)
 	}
-	if n := countRan(host, "/srv/talk/compose.yaml restart"); n != 1 {
+	if n := countRan(host, "/srv/paisans/f2a9/talk/compose.yaml restart"); n != 1 {
 		t.Errorf("talk was restarted %d time(s)", n)
 	}
-	if _, owed := host.files["/srv/.paisans-pending.json"]; owed {
+	if _, owed := host.files["/srv/paisans/f2a9/.paisans-pending.json"]; owed {
 		t.Error("the restart is still owed after it ran")
 	}
 }
@@ -168,7 +168,7 @@ func TestADatabasePathMoveRestartsAHeldAppOnceItIsReleased(t *testing.T) {
 // pass, and its restart stays owed until it is released.
 func TestAHeldAppKeepsItsOwedRestartWhileHeld(t *testing.T) {
 	host := applied(t, "home-a")
-	changed := planChanging(t, "srv/infra/haproxy/haproxy.cfg")
+	changed := planChanging(t, "srv/paisans/f2a9/infra/haproxy/haproxy.cfg")
 	first, err := apply.Build("home-a", changed, acmeModule(t), host, databaseApps(t), apply.Except("talk"))
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +183,7 @@ func TestAHeldAppKeepsItsOwedRestartWhileHeld(t *testing.T) {
 	if err := apply.Execute(second, host); err != nil {
 		t.Fatal(err)
 	}
-	if record := host.files["/srv/.paisans-pending.json"]; !strings.Contains(record, `"talk"`) {
+	if record := host.files["/srv/paisans/f2a9/.paisans-pending.json"]; !strings.Contains(record, `"talk"`) {
 		t.Fatalf("a still held app lost its owed restart: %q", record)
 	}
 }
@@ -194,7 +194,7 @@ func TestPruneKeepsTheImagesAHeldStackRenders(t *testing.T) {
 	host := supersededHost()
 	rendered := plan(t)
 	for i, file := range rendered.Files {
-		if file.Path == "home-a/srv/docs/compose.yaml" {
+		if file.Path == "home-a/srv/paisans/f2a9/docs/compose.yaml" {
 			rendered.Files[i].Content = strings.Replace(file.Content, "outlinewiki/outline:1.10.0", "ghcr.io/example-org/mbin:v1.9.0", 1)
 		}
 	}
@@ -223,12 +223,12 @@ func countRan(h *fakeHost, sub string) int {
 // runs several passes can ask it of the whole plan before the first one.
 func TestRefusalNamesAConflictBeforeAnythingIsWritten(t *testing.T) {
 	host := applied(t, "home-a")
-	host.files["/srv/talk/compose.yaml"] += "# edited on the host\n"
+	host.files["/srv/paisans/f2a9/talk/compose.yaml"] += "# edited on the host\n"
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := apply.Refusal(p); err == nil || !strings.Contains(err.Error(), "/srv/talk/compose.yaml") {
+	if err := apply.Refusal(p); err == nil || !strings.Contains(err.Error(), "/srv/paisans/f2a9/talk/compose.yaml") {
 		t.Errorf("Refusal gave %v", err)
 	}
 	host.commands = nil
@@ -244,21 +244,21 @@ func TestRefusalNamesAConflictBeforeAnythingIsWritten(t *testing.T) {
 // and a held --overwrite is reported rather than silently left undone.
 func TestAHeldStackKeepsTheOperatorsRecreateAndReportsItsOverwrite(t *testing.T) {
 	host := applied(t, "home-a")
-	host.files["/srv/talk/.env"] += "# edited on the host\n"
-	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/talk/.env"), apply.Recreate("talk", "docs"), apply.Except("talk"))
+	host.files["/srv/paisans/f2a9/talk/.env"] += "# edited on the host\n"
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/paisans/f2a9/talk/.env"), apply.Recreate("talk", "docs"), apply.Except("talk"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(p.HeldOverwrites, ",") != "/srv/talk/.env" {
+	if strings.Join(p.HeldOverwrites, ",") != "/srv/paisans/f2a9/talk/.env" {
 		t.Errorf("held overwrites %v", p.HeldOverwrites)
 	}
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	if record := host.files["/srv/.paisans-pending.json"]; !strings.Contains(record, `"talk"`) {
+	if record := host.files["/srv/paisans/f2a9/.paisans-pending.json"]; !strings.Contains(record, `"talk"`) {
 		t.Fatalf("the held --recreate is not owed: %q", record)
 	}
-	next, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/talk/.env"))
+	next, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/paisans/f2a9/talk/.env"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestAHeldStackKeepsTheOperatorsRecreateAndReportsItsOverwrite(t *testing.T)
 // database path restarts included.
 func TestOnlyKeepsWhatIsOwedOutsideIt(t *testing.T) {
 	host := applied(t, "home-a")
-	host.files["/srv/.paisans-pending.json"] = `{"version":1,"actions":[{"stack":"docs","recreate":true},{"stack":"talk","database_path":true}]}`
+	host.files["/srv/paisans/f2a9/.paisans-pending.json"] = `{"version":1,"actions":[{"stack":"docs","recreate":true},{"stack":"talk","database_path":true}]}`
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Only("auth"), apply.Recreate("auth"))
 	if err != nil {
 		t.Fatal(err)
@@ -279,7 +279,7 @@ func TestOnlyKeepsWhatIsOwedOutsideIt(t *testing.T) {
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
-	record := host.files["/srv/.paisans-pending.json"]
+	record := host.files["/srv/paisans/f2a9/.paisans-pending.json"]
 	if !strings.Contains(record, `"docs"`) || !strings.Contains(record, `"database_path": true`) {
 		t.Errorf("an --only run dropped what is owed outside it: %q", record)
 	}
@@ -289,7 +289,7 @@ func TestOnlyKeepsWhatIsOwedOutsideIt(t *testing.T) {
 // removed from the configuration cannot wedge every later apply.
 func TestAnOwedStackNoLongerRenderedIsDropped(t *testing.T) {
 	host := applied(t, "home-a")
-	host.files["/srv/.paisans-pending.json"] = `{"version":1,"actions":[{"stack":"gone","recreate":true}]}`
+	host.files["/srv/paisans/f2a9/.paisans-pending.json"] = `{"version":1,"actions":[{"stack":"gone","recreate":true}]}`
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // Role is a capability a site provides. Sites declare roles; apps declare
@@ -72,7 +74,12 @@ func Kinds() []Kind {
 // Config is a whole deployment, declared. It records intent and never status:
 // which node is primary lives in etcd, not here.
 type Config struct {
-	Version   int       `yaml:"version"`
+	Version int `yaml:"version"`
+	// ID is the deployment's identity, a version 4 UUID that `paisans init`
+	// writes once and nothing changes afterwards. Every name and path on a host
+	// is derived from it (see internal/deployment), and the host registry is
+	// keyed by it, so changing it would orphan everything already deployed.
+	ID        string    `yaml:"id"`
 	Community Community `yaml:"community"`
 	Mesh      Mesh      `yaml:"mesh"`
 	// ACME is how certificates are obtained. It is deployment wide rather than
@@ -498,6 +505,12 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// Deployment is this configuration's identity and every name and path
+// derived from it.
+func (c *Config) Deployment() deployment.Deployment {
+	return deployment.Deployment{ID: c.ID}
+}
+
 // SiteNames returns declared site names in sorted order. Rendering and
 // reporting both iterate sites, and both must be deterministic.
 func (c *Config) SiteNames() []string {
@@ -574,6 +587,12 @@ func (c *Config) structural() error {
 
 	if c.Version != 1 {
 		add("version: expected 1, got %d. This toolkit reads version 1 files.", c.Version)
+	}
+	switch {
+	case c.ID == "":
+		add("id: required. It is this deployment's identity, a random UUID every name and path on a host is derived from. Run `paisans init`, which adds one and never changes it afterwards.")
+	case !deployment.ValidID(c.ID):
+		add("id: %q is not a lowercase version 4 UUID in canonical form (8-4-4-4-12 hex digits). It is written once by `paisans init`; remove the line and run `paisans init` to generate one, unless this deployment already runs somewhere, in which case restore the id it was deployed with.", c.ID)
 	}
 	if c.Community.Domain == "" {
 		add("community.domain: required. It is the community's federation identity and cannot be changed later.")

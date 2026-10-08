@@ -9,6 +9,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 )
 
 // rule answers any command containing match. The first matching rule wins,
@@ -76,6 +77,17 @@ func healthy(name string) *fakeHost {
 			{match: "/dev/tcp", out: "11800\n12000\n12500\n"},
 			{match: "docker info", out: "/var/lib/docker\n"},
 			{match: "findmnt", out: "ext4 /dev/sda1\n"},
+			// The host check's inventory: Docker and nothing run on it.
+			{match: "id -u", out: "0\n"},
+			{match: "docker version", out: "27.3.1\n"},
+			{match: "dpkg-query", out: "docker-ce install ok installed\n"},
+			{match: "docker inspect", out: ""},
+			{match: "docker volume inspect", out: ""},
+			{match: "docker network inspect", out: ""},
+			{match: "ip -o link", out: "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n"},
+			{match: "ufw status verbose", out: "Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n"},
+			{match: "is-active firewalld", out: "inactive\n"},
+			{match: "/proc/", out: ""},
 		},
 	}
 }
@@ -93,13 +105,17 @@ func hosts() map[string]*fakeHost {
 	return map[string]*fakeHost{"home-a": healthy("home-a"), "home-b": healthy("home-b"), "vm": healthy("vm")}
 }
 
-func run(t *testing.T, cfg *config.Config, h map[string]*fakeHost) Report {
-	t.Helper()
+func transportsOf(h map[string]*fakeHost) map[string]apply.Transport {
 	transports := map[string]apply.Transport{}
 	for name, host := range h {
 		transports[name] = host
 	}
-	report, err := Run(cfg, "home-b", transports)
+	return transports
+}
+
+func run(t *testing.T, cfg *config.Config, h map[string]*fakeHost) Report {
+	t.Helper()
+	report, err := Run(cfg, "home-b", transportsOf(h))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +125,7 @@ func run(t *testing.T, cfg *config.Config, h map[string]*fakeHost) Report {
 // prepared stubs host prepare's plan, which hostprep's own tests cover.
 func prepared(t *testing.T, steps ...string) {
 	old := buildHostPrep
-	buildHostPrep = func(site string, _ *config.Config, _ hostprep.Transport) (*hostprep.Plan, error) {
+	buildHostPrep = func(site string, _ *config.Config, _ hostprep.Transport, _ ...hostprep.Option) (*hostprep.Plan, error) {
 		plan := &hostprep.Plan{Site: site, Profile: "ubuntu 24.04"}
 		for _, s := range steps {
 			plan.Steps = append(plan.Steps, hostprep.Step{Describe: s})
@@ -165,7 +181,7 @@ func TestAHealthyJoinPassesEveryCheck(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"prepared", "platform", "wireguard", "watchdog", "ports", "routes", "disk", "storage"} {
+	for _, name := range []string{"host", "prepared", "platform", "wireguard", "watchdog", "ports", "routes", "disk", "storage"} {
 		if len(find(r, "home-b", name)) == 0 {
 			t.Errorf("%s not checked on the new site", name)
 		}
@@ -254,9 +270,9 @@ func TestPreflightRefuses(t *testing.T) {
 			setup: func(h map[string]*fakeHost) {
 				h["home-b"].override(rule{match: "df -B1", out: "Avail\n1073741824\n"})
 			}},
-		{name: "postgres on nfs", site: "home-b", check: "storage", want: "/srv on nfs4 (nas:/export/srv) is network attached",
+		{name: "postgres on nfs", site: "home-b", check: "storage", want: "/srv/paisans/f2a9 on nfs4 (nas:/export/srv) is network attached",
 			setup: func(h map[string]*fakeHost) {
-				h["home-b"].override(rule{match: "d='/srv'", out: "nfs4 nas:/export/srv\n"})
+				h["home-b"].override(rule{match: "d='/srv/paisans/f2a9'", out: "nfs4 nas:/export/srv\n"})
 			}},
 		{name: "docker root on cifs", site: "home-b", check: "storage", want: "/mnt/share/docker on cifs",
 			setup: func(h map[string]*fakeHost) {
@@ -319,10 +335,10 @@ func TestUnknownFilesystemWarns(t *testing.T) {
 	}
 	var walked bool
 	for _, c := range h["home-b"].ran {
-		walked = walked || (strings.Contains(c, "d='/srv'") && strings.Contains(c, "dirname") && strings.Contains(c, "findmnt -no FSTYPE,SOURCE --target"))
+		walked = walked || (strings.Contains(c, "d='/srv/paisans/f2a9'") && strings.Contains(c, "dirname") && strings.Contains(c, "findmnt -no FSTYPE,SOURCE --target"))
 	}
 	if !walked {
-		t.Errorf("/srv was not probed by walking up to a directory that exists: %q", h["home-b"].ran)
+		t.Errorf("the deployment root was not probed by walking up to a directory that exists: %q", h["home-b"].ran)
 	}
 }
 
@@ -441,5 +457,69 @@ func TestMedianAndGlibc(t *testing.T) {
 	}
 	if got := glibcRelease("2.35.1"); got != "2.35" {
 		t.Errorf("glibcRelease(2.35.1) = %q", got)
+	}
+}
+
+// A gateway being added is checked for 80 and 443, which come from the host
+// check's claims like every other port. Something foreign on one is also a
+// host check conflict, naming what holds it.
+func TestAGatewaysWebPortsAreChecked(t *testing.T) {
+	prepared(t)
+	h := hosts()
+	h["vm"].override(rule{match: "ss -Hltnu", out: "tcp LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=900,fd=6))\n"})
+	r, err := Run(fixture(t), "vm", transportsOf(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := refusedDetail(t, r, "vm", "ports"); !strings.Contains(got, "80/tcp (Caddy)") {
+		t.Errorf("ports detail %q", got)
+	}
+	if got := refusedDetail(t, r, "vm", "host"); !strings.Contains(got, "process nginx (pid 900)") {
+		t.Errorf("host detail %q", got)
+	}
+}
+
+// A shared host is prepared without the firewall's defaults, so preflight
+// asks host prepare for that plan rather than one it would never run.
+func TestASharedHostIsPreparedAsShared(t *testing.T) {
+	var shared bool
+	old := buildHostPrep
+	buildHostPrep = func(site string, _ *config.Config, _ hostprep.Transport, opts ...hostprep.Option) (*hostprep.Plan, error) {
+		shared = len(opts) > 0
+		return &hostprep.Plan{Site: site, Profile: "ubuntu 24.04"}, nil
+	}
+	t.Cleanup(func() { buildHostPrep = old })
+	h := hosts()
+	h["home-b"].override(rule{match: "docker inspect", out: `{"id":"` + strings.Repeat("d", 64) + `","name":"/shop-app-1","pid":0,"labels":{"com.docker.compose.project":"shop"},"ports":{}}` + "\n"})
+	r := run(t, fixture(t), h)
+	if !shared {
+		t.Error("host prepare was planned as for a dedicated host")
+	}
+	if c := find(r, "home-b", "host"); len(c) != 1 || c[0].Refused || !strings.Contains(c[0].Detail, "shared") {
+		t.Errorf("host check %+v", c)
+	}
+}
+
+// A host another deployment with the same token has claimed is refused, by
+// reading its registry; preflight never claims.
+func TestARegistryConflictIsRefused(t *testing.T) {
+	prepared(t)
+	h := hosts()
+	if h["home-b"].files == nil {
+		h["home-b"].files = map[string]string{}
+	}
+	h["home-b"].files[registry.Path] = `{"version":1,"deployments":{
+"f2a91111-2222-4333-8444-555566667777":{"token":"f2a9","root":"/srv/paisans/f2a9","domain":"example.net","site":"vm","claimed_at":"2026-10-01T00:00:00Z"}
+}}
+`
+	r := run(t, fixture(t), h)
+	got := refusedDetail(t, r, "home-b", "registry")
+	if !strings.Contains(got, "f2a91111-2222-4333-8444-555566667777") || !strings.Contains(got, "example.net") {
+		t.Errorf("the refusal does not name the other deployment: %q", got)
+	}
+	for _, c := range h["home-b"].ran {
+		if strings.Contains(c, "flock") {
+			t.Errorf("preflight claimed the host: %s", c)
+		}
 	}
 }

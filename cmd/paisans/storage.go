@@ -8,6 +8,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
 	"github.com/paisans-software/paisans-stack/internal/validate"
@@ -64,10 +65,22 @@ func runStorageAdd(args []string) error {
 	for _, name := range cfg.SiteNames() {
 		transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
 	}
+	// storage add applies files on every Garage site and on the gateway, so
+	// each is host checked before any changes.
+	sites := union(cfg.Storage.Garage.Sites, cfg.GatewaySites())
+	shared, err := gateSites(os.Stdout, cfg, sites, func(site string) hostcheck.Transport { return transports[site] })
+	if err != nil {
+		return err
+	}
+	// Every Garage site, and the gateway, which takes the media routes.
+	if err := claimSites(cfg, *execute, *sudo, sites...); err != nil {
+		return err
+	}
 	plan, err := storageadd.Build(cfg, secrets, transports, storageadd.Options{
 		ChangeReplication: *changeReplication,
 		Wait:              *wait,
 		StopTest:          *stopTest,
+		SharedSites:       shared,
 	})
 	if err != nil {
 		return err

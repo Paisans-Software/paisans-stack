@@ -73,10 +73,26 @@ func runSiteAdd(args []string) error {
 	for _, name := range cfg.SiteNames() {
 		transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
 	}
+	// The site being added is the one whose host the join changes from
+	// nothing; every other site already runs the deployment, and each is
+	// checked when it is applied.
+	if _, ok := cfg.Sites[site]; !ok {
+		return fmt.Errorf("site add: %s declares no site %q. Declared sites are %s", *configPath, site, strings.Join(cfg.SiteNames(), ", "))
+	}
+	host, err := hostGate(os.Stdout, cfg, site, transports[site])
+	if err != nil {
+		return err
+	}
+	// Site add writes to every site: the mesh, HAProxy and etcd change on
+	// each, not only on the new one.
+	if err := claimSites(cfg, *execute, *sudo, cfg.SiteNames()...); err != nil {
+		return err
+	}
 	plan, err := siteadd.Build(cfg, secrets, site, transports)
 	if err != nil {
 		return err
 	}
+	plan.KeepImages = host.Shared()
 	plan.Print(os.Stdout)
 
 	if !*execute {

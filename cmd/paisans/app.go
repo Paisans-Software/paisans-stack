@@ -14,6 +14,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
@@ -103,6 +104,14 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	where, err := pocketIDSite(cfg, *appName, *site, "app admin create")
 	if err != nil {
 		return err
+	}
+	// The calls need no root and a dry run reaches the host without sudo,
+	// so only a run that will change something claims it, through sudo,
+	// since the registry is root's.
+	if *execute {
+		if err := claimHosts(cfg, true, map[string]registry.Runner{where: registryHost(cfg.Sites[where], *destination, true)}); err != nil {
+			return err
+		}
 	}
 	key, err := pocketIDKey(cfg, *configPath, *secretsPath, *appName)
 	if err != nil {
@@ -287,7 +296,7 @@ func activeInstance(cfg *config.Config, appName, site, destination string) (stri
 		transports[name] = standbyLook(siteTransport(cfg.Sites[name], override, false))
 	}
 	list := apply.LookAtInstances(cfg, appName, transports)
-	if _, err := apply.OneActive(appName, list); err != nil {
+	if _, err := apply.OneActive(cfg.Deployment(), appName, list); err != nil {
 		return "", list, err
 	}
 	for _, in := range list {

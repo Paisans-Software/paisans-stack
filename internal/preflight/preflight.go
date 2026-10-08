@@ -14,14 +14,18 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -71,6 +75,10 @@ const diskHeadroom = 2 << 30
 // are tested in hostprep, and repeating them here would test them twice.
 var buildHostPrep = hostprep.Build
 
+// inspectHost is hostcheck.Run: what the new site's host already runs, and
+// whether that leaves it clean, shared or in conflict.
+var inspectHost = hostcheck.Run
+
 // Run makes every check. transports holds one transport per site, keyed by
 // site name; a site without one is refused, since it cannot be read.
 //
@@ -93,11 +101,13 @@ func Run(cfg *config.Config, newSite string, transports map[string]apply.Transpo
 	}
 	if r.reachable[newSite] {
 		t := transports[newSite]
+		r.host(t)
 		r.hostPrepare(t)
+		r.registry(t)
 		r.osMatch(t)
 		r.wireguard(t)
 		r.watchdog(t)
-		r.ports(t)
+		r.ports()
 		r.routes(t)
 		r.disk(t)
 		r.storage(t)
@@ -113,6 +123,9 @@ type runner struct {
 	transports map[string]apply.Transport
 	reachable  map[string]bool
 	checks     []Check
+	// hostReport is the host check's finding on the new site, nil when it
+	// could not be made.
+	hostReport *hostcheck.Report
 }
 
 func (r *runner) pass(site, name, format string, args ...any) {
@@ -185,12 +198,46 @@ func (r *runner) clock(name string) {
 	}
 }
 
+// host is the host check on the new site: what already runs there, and
+// whether any of it holds something the site claims. A conflict is refused,
+// and so is a shared host without a firewall that is up and denying by
+// default, exactly as `host prepare` and `apply` would refuse them.
+func (r *runner) host(t apply.Transport) {
+	report, err := inspectHost(r.cfg, r.newSite, t)
+	if err != nil {
+		r.refuse(r.newSite, "host", "%v", err)
+		return
+	}
+	r.hostReport = report
+	if err := report.Refusal(); err != nil {
+		var lines []string
+		for _, c := range report.Conflicts {
+			lines = append(lines, c.String())
+		}
+		detail := err.Error()
+		if len(lines) > 0 {
+			detail = strings.Join(lines, "; ") + ". " + detail
+		}
+		r.refuse(r.newSite, "host", "%s", detail)
+		return
+	}
+	if report.Shared() {
+		r.pass(r.newSite, "host", "shared with %s; the toolkit will touch only what is its own", strings.Join(report.Foreign, ", "))
+		return
+	}
+	r.pass(r.newSite, "host", "clean: nothing found that the deployment does not own")
+}
+
 // hostPrepare requires that `host prepare` would do nothing. Every check
 // below assumes a prepared host (WireGuard tools, Docker, the firewall), and
 // reusing the plan rather than re-checking each part keeps one definition of
 // "prepared".
 func (r *runner) hostPrepare(t apply.Transport) {
-	plan, err := buildHostPrep(r.newSite, r.cfg, t)
+	var opts []hostprep.Option
+	if r.hostReport != nil && r.hostReport.Shared() {
+		opts = append(opts, hostprep.Shared())
+	}
+	plan, err := buildHostPrep(r.newSite, r.cfg, t, opts...)
 	if err != nil {
 		r.refuse(r.newSite, "prepared", "host prepare could not plan: %v", err)
 		return
@@ -315,66 +362,35 @@ func (r *runner) watchdog(t apply.Transport) {
 	r.pass(r.newSite, "watchdog", "mode %s, /dev/watchdog present", mode)
 }
 
-// port is one listener the new site will need.
-type port struct {
-	proto  string
-	number int
-	what   string
-}
-
-// wanted is every port the site will bind, by role.
-func (r *runner) wanted() []port {
-	ports := []port{{"udp", render.WireGuardPort, "WireGuard"}}
-	for _, m := range r.cfg.Etcd.Members {
-		if m == r.newSite {
-			ports = append(ports, port{"tcp", render.EtcdClientPort, "etcd client"}, port{"tcp", render.EtcdPeerPort, "etcd peer"})
-		}
-	}
-	if r.site.Has(config.RoleData) {
-		ports = append(ports,
-			port{"tcp", render.PostgresPort, "Postgres"},
-			port{"tcp", render.PatroniAPIPort, "Patroni API"},
-			port{"tcp", render.BgMonPort, "bg_mon"})
-	}
-	if render.RunsHAProxy(r.cfg, r.newSite) {
-		ports = append(ports, port{"tcp", render.ClusterPort(r.cfg), "HAProxy cluster port"})
-	}
-	return ports
-}
-
-// listening parses `ss -Hltnu`: Netid, State, Recv-Q, Send-Q, Local
-// Address:Port, Peer Address:Port. The port is after the last colon, which
-// holds for "*:22", "0.0.0.0:22", "[::]:22" and "127.0.0.53%lo:53".
-func listening(out string) map[string]bool {
-	in := map[string]bool{}
-	for _, line := range strings.Split(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) < 5 {
-			continue
-		}
-		local := f[4]
-		i := strings.LastIndex(local, ":")
-		if i < 0 {
-			continue
-		}
-		in[f[0]+"/"+local[i+1:]] = true
-	}
-	return in
-}
-
-// ports checks nothing already listens where the site's services will.
-func (r *runner) ports(t apply.Transport) {
-	out, err := t.Run("ss -Hltnu")
-	if err != nil {
-		r.refuse(r.newSite, "ports", "could not list listeners: %s", firstLine(errText(out, err)))
+// ports checks nothing already listens where the site's services will. The
+// ports are the host check's claims, render.SiteListeners, so a gateway's 80
+// and 443 are checked like every other. Every listener counts, whoever owns
+// it: the host being joined is blank, and anything on a claimed port stops a
+// bind.
+func (r *runner) ports() {
+	if r.hostReport == nil {
+		r.refuse(r.newSite, "ports", "could not list listeners: the host check did not complete")
 		return
 	}
-	in := listening(out)
+	var names []string
+	owner := map[string]string{}
+	busy := map[string]bool{}
+	for _, claim := range render.SiteListeners(r.cfg, r.newSite) {
+		name := fmt.Sprintf("%d/%s", claim.Port, claim.Proto)
+		if _, ok := owner[name]; !ok {
+			names = append(names, name)
+			owner[name] = claim.Owner
+		}
+		for _, s := range r.hostReport.Inventory.Sockets {
+			if claim.Overlaps(s.Listener()) {
+				busy[name] = true
+			}
+		}
+	}
 	var taken, free []string
-	for _, p := range r.wanted() {
-		name := fmt.Sprintf("%d/%s", p.number, p.proto)
-		if in[p.proto+"/"+strconv.Itoa(p.number)] {
-			taken = append(taken, fmt.Sprintf("%s (%s)", name, p.what))
+	for _, name := range names {
+		if busy[name] {
+			taken = append(taken, fmt.Sprintf("%s (%s)", name, owner[name]))
 		} else {
 			free = append(free, name)
 		}
@@ -433,10 +449,29 @@ func (r *runner) routes(t apply.Transport) {
 	r.pass(r.newSite, "routes", "no route overlaps the mesh subnet %s", r.cfg.Mesh.Subnet)
 }
 
+// registry checks the new site's host can be claimed for this deployment: no
+// other deployment in its registry holds this one's token or root. It reads
+// and never claims; site add claims when it runs. See internal/registry.
+func (r *runner) registry(t apply.Transport) {
+	if err := registry.Check(t, r.cfg, r.newSite); err != nil {
+		r.refuse(r.newSite, "registry", "%v", err)
+		return
+	}
+	d := r.cfg.Deployment()
+	r.pass(r.newSite, "registry", "no other deployment on the host holds token %s or %s", d.Token(), d.Root())
+}
+
 // diskProbe reads free bytes on the deepest directory that exists on the way
-// to Spilo's data directory, which apply bind mounts from /srv/infra/postgres.
-// On a blank host none of it exists yet, and / is where it will be made.
-const diskProbe = `for d in /srv/infra/postgres /srv/infra /srv /; do if [ -d "$d" ]; then df -B1 --output=avail "$d"; exit; fi; done`
+// to Spilo's data directory, which apply bind mounts from infra/postgres
+// under the deployment's root. On a blank host none of it exists yet, and /
+// is where it will be made.
+func diskProbe(dep deployment.Deployment) string {
+	var dirs []string
+	for p := dep.Path("infra", "postgres"); p != "/"; p = path.Dir(p) {
+		dirs = append(dirs, quote(p))
+	}
+	return `for d in ` + strings.Join(dirs, " ") + ` /; do if [ -d "$d" ]; then df -B1 --output=avail "$d"; exit; fi; done`
+}
 
 // disk checks the new data site has room for a copy of the leader's
 // databases. pg_basebackup copies all of them, and running out partway leaves
@@ -450,7 +485,7 @@ func (r *runner) disk(t apply.Transport) {
 		r.refuse(r.newSite, "disk", "could not read the leader's database size: %v", err)
 		return
 	}
-	out, err := t.Run(diskProbe)
+	out, err := t.Run(diskProbe(r.cfg.Deployment()))
 	if err != nil {
 		r.refuse(r.newSite, "disk", "could not read free space: %s", firstLine(errText(out, err)))
 		return
@@ -503,15 +538,15 @@ var localFilesystems = map[string]bool{
 const dockerRootProbe = `docker info --format '{{.DockerRootDir}}'`
 
 // fsProbe names the filesystem holding path, or the deepest directory on the
-// way to it that exists: on a blank host /srv may not exist yet, and its
-// parent is where it will be made.
+// way to it that exists: on a blank host the deployment's root may not exist
+// yet, and its nearest existing parent is where it will be made.
 func fsProbe(path string) string {
 	return fmt.Sprintf(`d=%s; while [ ! -d "$d" ]; do d=$(dirname "$d"); done; findmnt -no FSTYPE,SOURCE --target "$d"`, quote(path))
 }
 
 // storage checks the new site keeps its state on a local filesystem: Docker's
-// root, which holds every container's writable layer, and /srv, where every
-// stack bind mounts its data. A
+// root, which holds every container's writable layer, and the deployment's
+// root, where every stack bind mounts its data. A
 // network filesystem is refused; a type in neither list is warned about,
 // since it is not known to be wrong and refusing it would stop a join over a
 // filesystem this list has not heard of.
@@ -524,7 +559,7 @@ func (r *runner) storage(t apply.Transport) {
 	}
 	var found []string
 	var unknown []string
-	for _, path := range []string{root, "/srv"} {
+	for _, path := range []string{root, r.cfg.Deployment().Root()} {
 		out, err := t.Run(fsProbe(path))
 		fields := strings.Fields(out)
 		if err != nil || len(fields) < 1 {
@@ -561,7 +596,7 @@ func (r *runner) leaderSize() (int64, string, error) {
 			continue
 		}
 		api := fmt.Sprintf("%s:%d", r.cfg.Sites[name].Address, render.PatroniAPIPort)
-		out, err := r.transports[name].Run(patroni.ClusterCommand(api))
+		out, err := r.transports[name].Run(patroni.ClusterCommand(r.cfg.Deployment(), api))
 		if err != nil {
 			asked = append(asked, fmt.Sprintf("%s: %s", name, firstLine(errText(out, err))))
 			continue
@@ -579,7 +614,7 @@ func (r *runner) leaderSize() (int64, string, error) {
 		if !ok || !r.reachable[leader.Name] {
 			return 0, "", fmt.Errorf("the leader is %s, which could not be reached", leader.Name)
 		}
-		out, err = t.Run(patroni.DatabaseSizeCommand)
+		out, err = t.Run(patroni.DatabaseSizeCommand(r.cfg.Deployment()))
 		if err != nil {
 			return 0, "", fmt.Errorf("%s: %s", leader.Name, firstLine(errText(out, err)))
 		}

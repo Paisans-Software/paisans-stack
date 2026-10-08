@@ -21,6 +21,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/preflight"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -57,6 +58,11 @@ type Plan struct {
 	// Progress receives each stage as it starts and each gate as it passes.
 	// Nil discards it.
 	Progress io.Writer
+	// KeepImages leaves superseded images on the new site, as apply's
+	// --keep-images does. It is set for a host the host check found shared,
+	// where an image the toolkit renders may be what something else runs
+	// from.
+	KeepImages bool
 
 	cfg        *config.Config
 	secrets    *config.Secrets
@@ -148,7 +154,7 @@ func Build(cfg *config.Config, secrets *config.Secrets, newSite string, transpor
 	}
 
 	for _, name := range cfg.Etcd.Members {
-		in, found, err := apply.ReadEtcdInitial(transports[name])
+		in, found, err := apply.ReadEtcdInitial(transports[name], cfg.Deployment())
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
@@ -330,8 +336,8 @@ func (p *Plan) noteOwed(rendered *render.Plan) error {
 		if name == p.Site {
 			continue
 		}
-		want := renderedFile(rendered, name, "srv/infra/patroni.env")
-		have, found, err := p.transports[name].ReadFile("/srv/infra/patroni.env")
+		want := renderedFile(rendered, name, p.dep().RelPath("infra", "patroni.env"))
+		have, found, err := p.transports[name].ReadFile(p.dep().Path("infra", "patroni.env"))
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -416,6 +422,9 @@ func (p *Plan) Pending() bool {
 
 // acmeModule is what a whole apply of the new site is handed. It runs no
 // gateway, so the module is never asked for.
+// dep is the deployment every path and command here belongs to.
+func (p *Plan) dep() deployment.Deployment { return p.cfg.Deployment() }
+
 func (p *Plan) acmeModule() string { return acme.Module(p.cfg.ACME.Provider) }
 
 func contains(list []string, s string) bool {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -119,7 +120,9 @@ var (
 
 // patroniCompose is how every Patroni command reaches the container: the
 // infrastructure stack's compose file, which is where apply put it.
-const patroniCompose = "docker compose -f /srv/infra/compose.yaml exec -T patroni"
+func patroniCompose(d deployment.Deployment) string {
+	return d.ComposeCmd(infraStack) + " exec -T patroni"
+}
 
 // errReplica means this site's Patroni is not the leader, and names who is.
 type errReplica struct{ leader string }
@@ -145,7 +148,8 @@ func (e errReplica) Error() string { return "replica of " + e.leader }
 // which installs it (zalando/spilo, postgres-appliance/build_scripts/
 // prepare.sh), so the host needs nothing beyond Docker.
 func waitForPrimary(plan *Plan, t Transport) error {
-	command := fmt.Sprintf("%s curl -s --max-time 5 http://%s/cluster", patroniCompose, plan.Bootstrap.Patroni)
+	command := fmt.Sprintf("%s curl -s --max-time 5 http://%s/cluster", patroniCompose(plan.Deployment), plan.Bootstrap.Patroni)
+	infra := plan.Deployment.ComposeCmd(infraStack)
 	attempts := int(primaryWait / primaryPoll)
 	if attempts < 1 {
 		attempts = 1
@@ -162,8 +166,8 @@ func waitForPrimary(plan *Plan, t Transport) error {
 				return errReplica{leader: leader}
 			case leader != "":
 				return fmt.Errorf(
-					"%s: Patroni's leader is %q, which is not one of cluster.sites (%s), so no app database was created and no app stack was started. Each Patroni member's name must equal its site's name; read PATRONI_NAME in /srv/infra/patroni.env and `docker compose -f /srv/infra/compose.yaml logs patroni` on the leader's host",
-					plan.Site, leader, strings.Join(plan.Bootstrap.ClusterSites, ", "))
+					"%s: Patroni's leader is %q, which is not one of cluster.sites (%s), so no app database was created and no app stack was started. Each Patroni member's name must equal its site's name; read PATRONI_NAME in %s and `%s logs patroni` on the leader's host",
+					plan.Site, leader, strings.Join(plan.Bootstrap.ClusterSites, ", "), plan.Deployment.Path(infraStack, "patroni.env"), infra)
 			}
 			last = strings.TrimSpace(out)
 		} else {
@@ -174,8 +178,8 @@ func waitForPrimary(plan *Plan, t Transport) error {
 		}
 	}
 	return fmt.Errorf(
-		"%s: no Patroni primary after %s, so no app database was created and no app stack was started. Last answer from %s:\n%s\nRead `docker compose -f /srv/infra/compose.yaml logs patroni` on the host; \"waiting on etcd\" on a new deployment means a member of etcd.members has not been applied yet. Then apply again: it resumes here",
-		plan.Site, primaryWait, plan.Bootstrap.Patroni, last)
+		"%s: no Patroni primary after %s, so no app database was created and no app stack was started. Last answer from %s:\n%s\nRead `%s logs patroni` on the host; \"waiting on etcd\" on a new deployment means a member of etcd.members has not been applied yet. Then apply again: it resumes here",
+		plan.Site, primaryWait, plan.Bootstrap.Patroni, last, infra)
 }
 
 func contains(list []string, s string) bool {
@@ -214,7 +218,9 @@ func patroniLeader(document string) string {
 // configure_spilo.py, `local all all trust`), so no password is needed here
 // and none is passed. -X skips any psqlrc, and ON_ERROR_STOP makes the first
 // failure the exit status rather than a line in the output.
-const psql = patroniCompose + " psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1"
+func psql(d deployment.Deployment) string {
+	return patroniCompose(d) + " psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1"
+}
 
 // bootstrapSQL is the whole script for one site, sent on stdin.
 //
@@ -274,7 +280,7 @@ func runBootstrap(plan *Plan, t Transport) error {
 		}
 		return err
 	}
-	if out, err := t.RunInput(psql, bootstrapSQL(plan.Bootstrap)); err != nil {
+	if out, err := t.RunInput(psql(plan.Deployment), bootstrapSQL(plan.Bootstrap)); err != nil {
 		// psql quotes the failing line back for a syntax error, and that line
 		// can be the one carrying a password.
 		for _, db := range plan.Bootstrap.Databases {
