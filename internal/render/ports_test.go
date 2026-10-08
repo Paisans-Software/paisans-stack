@@ -13,7 +13,7 @@ import (
 func TestEveryListenerNamesTheKeyThatClaimsIt(t *testing.T) {
 	cfg := fixture(t)
 	want := map[string]map[string]string{
-		"home-a": {"WireGuard": "mesh", "etcd client": "etcd.members", "Postgres": "sites.home-a.roles (data)", "Garage S3 API": "storage.garage.sites"},
+		"home-a": {"WireGuard": "mesh", "etcd client": "etcd.members", "Postgres": "sites.home-a.roles (data)", "Garage S3 API": "storage.garage.sites", "HAProxy cluster port": "cluster.port", "HAProxy stats": "sites.home-a.roles (apps)"},
 		"vm":     {"Caddy": "sites.vm.roles (gateway)"},
 	}
 	for site, owners := range want {

@@ -102,10 +102,13 @@ func SiteListeners(cfg *config.Config, site string) []Listener {
 		add("bg_mon", roles(config.RoleData), "tcp", addr, bgMonPort)
 	}
 	if RunsHAProxy(cfg, site) {
+		// HAProxy runs on an apps site whenever an app is clustered. The
+		// cluster port is the number cluster.port sets; the stats port is
+		// fixed, so what claims it is the role that runs HAProxy at all.
 		port := ClusterPort(cfg)
 		add("HAProxy cluster port", "cluster.port", "tcp", addr, port)
 		add("HAProxy cluster port", "cluster.port", "tcp", loopback, port)
-		add("HAProxy stats", "cluster.port", "tcp", loopback, haproxyStatsPort)
+		add("HAProxy stats", roles(config.RoleApps), "tcp", loopback, haproxyStatsPort)
 	}
 	if contains(cfg.Storage.Garage.Sites, site) {
 		add("Garage S3 API", "storage.garage.sites", "tcp", addr, garageS3Port)
