@@ -3,7 +3,7 @@ package apply
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
+	"net/netip"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -54,14 +54,20 @@ func composePools(content string) ([]pool, error) {
 }
 
 // networkProbe asks the host for each network's address pools in one round
-// trip. Like imageProbe it prints a line for every network rather than exiting
-// non zero, so that "absent" cannot be confused with ssh failing.
+// trip. Whether a network exists is read from `docker network ls`, whose
+// listing is empty for a name Docker does not have, rather than from an
+// inspect failing, because an inspect also fails when the daemon, its socket
+// or the caller's permission to use it does. Any such failure exits non zero
+// with Docker's message, so it stops the plan instead of reading as "no
+// network", which would let a stale network through unnoticed. The name
+// filter matches by pattern, hence the anchors: a bare name would also match
+// any network whose name merely contains it.
 func networkProbe(names []string) string {
 	quoted := make([]string, len(names))
 	for i, name := range names {
 		quoted[i] = shellQuote(name)
 	}
-	return fmt.Sprintf(`for n in %s; do if c=$(docker network inspect --format '{{json .IPAM.Config}}' "$n" 2>/dev/null); then echo "present $n $c"; else echo "absent $n"; fi; done`,
+	return fmt.Sprintf(`for n in %s; do id=$(docker network ls -q --no-trunc --filter "name=^$n\$") || exit 1; if [ -z "$id" ]; then echo "absent $n"; continue; fi; c=$(docker network inspect --format '{{json .IPAM.Config}}' "$id") || exit 1; echo "present $n $c"; done`,
 		strings.Join(quoted, " "))
 }
 
@@ -74,7 +80,7 @@ func probeNetworks(names []string, t Transport) (map[string][]pool, map[string]b
 	}
 	text, err := t.Run(networkProbe(names))
 	if err != nil {
-		return nil, nil, fmt.Errorf("asking how the host's compose networks are addressed: %w", err)
+		return nil, nil, fmt.Errorf("asking how the host's compose networks are addressed: %w\n%s", err, strings.TrimSpace(text))
 	}
 	answered := map[string]bool{}
 	for _, line := range strings.Split(text, "\n") {
@@ -98,13 +104,30 @@ func probeNetworks(names []string, t Transport) (map[string][]pool, map[string]b
 	return pools, present, nil
 }
 
+// ipv4 keeps the pools whose subnet is IPv4. Only IPv4 is ever pinned, and a
+// network Docker also gave an IPv6 pool (a daemon with default IPv6 pools)
+// is no different for what TRUST_PROXY names, so an IPv6 pool must not make
+// a network look stale on every apply.
+func ipv4(ps []pool) []pool {
+	var out []pool
+	for _, p := range ps {
+		if prefix, err := netip.ParsePrefix(p.Subnet); err == nil && prefix.Addr().Is4() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // staleNetwork reports why a network on the host does not match the pools its
-// compose file declares, empty when it does. A declared pin must be what the
-// network has, gateway included. A file that pins nothing leaves the pool to
-// Docker, which never allocates render.IngressNetwork, since that subnet is
-// outside its default pools; a network still on it was pinned by an earlier
-// render and keeps that render's gateway.
+// compose file declares, empty when it does. Only IPv4 subnets are compared,
+// and a gateway only where the file declares one, so that what Docker fills
+// in for itself never reads as a difference. A declared pin must be among
+// the network's subnets, with its gateway. A file that pins nothing leaves
+// the pool to Docker, which never allocates render.IngressNetwork, since that
+// subnet is outside its default pools; a network still on it was pinned by
+// an earlier render and keeps that render's gateway.
 func staleNetwork(declared, live []pool) string {
+	declared, live = ipv4(declared), ipv4(live)
 	if len(declared) == 0 {
 		for _, p := range live {
 			if p.Subnet == render.IngressNetwork {
@@ -113,22 +136,17 @@ func staleNetwork(declared, live []pool) string {
 		}
 		return ""
 	}
-	key := func(ps []pool) string {
-		var parts []string
-		for _, p := range ps {
-			parts = append(parts, p.Subnet+" "+p.Gateway)
+	gateways := map[string]string{}
+	for _, p := range live {
+		gateways[p.Subnet] = p.Gateway
+	}
+	for _, want := range declared {
+		gateway, ok := gateways[want.Subnet]
+		if !ok || (want.Gateway != "" && gateway != want.Gateway) {
+			return fmt.Sprintf("its compose network is not on %s, which the compose file pins", want.Subnet)
 		}
-		sort.Strings(parts)
-		return strings.Join(parts, ", ")
 	}
-	if key(declared) == key(live) {
-		return ""
-	}
-	var want []string
-	for _, p := range declared {
-		want = append(want, p.Subnet)
-	}
-	return fmt.Sprintf("its compose network is not on %s, which the compose file pins", strings.Join(want, ", "))
+	return ""
 }
 
 // probeStaleNetworks marks each recreated stack whose default network on the
@@ -163,10 +181,20 @@ func (p *Plan) probeStaleNetworks(t Transport) error {
 		if !a.Recreate || !present[name] {
 			continue
 		}
-		if why := staleNetwork(declared[a.Stack], live[name]); why != "" {
-			p.Actions[i].Down = true
-			p.Actions[i].Reason += "; " + why + ", so the stack is taken down first, which removes the network, and `up` creates it as declared"
+		why := staleNetwork(declared[a.Stack], live[name])
+		if why == "" {
+			continue
 		}
+		// Never the infrastructure stack: a down there stops Patroni, etcd,
+		// HAProxy and the gateway together, which is a site outage and, on
+		// the primary, a failover. That is the operator's to schedule, so
+		// the plan says what to do and leaves the stack running.
+		if a.Stack == infraStack {
+			p.Notes = append(p.Notes, fmt.Sprintf("the infrastructure stack's network %s does not match its compose file: %s. It was left as it is, because taking that stack down stops the database and the gateway on this site. At a time this site can be out, run `%s down`, then apply again with `--recreate infra`, which starts it on a network created as declared", name, why, p.Deployment.ComposeCmd(a.Stack)))
+			continue
+		}
+		p.Actions[i].Down = true
+		p.Actions[i].Reason += "; " + why + ", so the stack is taken down first, which removes the network, and `up` creates it as declared"
 	}
 	return nil
 }

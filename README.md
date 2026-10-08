@@ -532,7 +532,15 @@ how each stack it recreates has its compose network addressed, and where that
 differs from the compose file (a pin the file declares and the network lacks,
 or `10.255.255.0/29` left on a network the file no longer pins), it plans a
 `docker compose down` before the `up`, shown in the plan with the reason.
-`down` removes the network, and `up` creates it as declared. Compose 2.31 and
+`down` removes the network, and `up` creates it as declared. Only IPv4
+subnets are compared, and a gateway only where the file declares one, so
+what Docker fills in for itself never takes a stack down. The old
+containers' anonymous volumes are kept, since the new containers start on
+fresh ones and the old may hold data. The infrastructure stack is never
+taken down this way, because that stops the database and the gateway
+together; a mismatch there is a note in the plan telling the operator to
+take it down at a time the site can be out and apply with `--recreate
+infra`. A probe Docker cannot answer stops the plan. Compose 2.31 and
 later recreates a network whose recorded configuration changed, but leaves
 one with no record alone (created by an older Compose or by hand), so `apply`
 reads the network itself rather than relying on that. A dry run only reads.

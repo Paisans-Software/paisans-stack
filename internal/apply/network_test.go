@@ -113,6 +113,9 @@ func TestAMatchingNetworkIsLeftUp(t *testing.T) {
 	}{
 		"pinned":   {external(t), pinnedPool},
 		"unpinned": {plan(t), unpinnedPool},
+		// An IPv6 pool Docker added beside the IPv4 one is not a difference.
+		"pinned with ipv6":   {external(t), `[{"Subnet":"10.255.255.0/29","Gateway":"10.255.255.1"},{"Subnet":"fd00:1::/64","Gateway":"fd00:1::1"}]`},
+		"unpinned with ipv6": {plan(t), `[{"Subnet":"172.18.0.0/16","Gateway":"172.18.0.1"},{"Subnet":"fd00:1::/64"}]`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			host := appliedFrom(t, "watch", tc.rendered)
@@ -131,5 +134,65 @@ func TestAMatchingNetworkIsLeftUp(t *testing.T) {
 				t.Fatalf("a matching network was taken down: %v", host.commands)
 			}
 		})
+	}
+}
+
+// A stack taken down starts on fresh anonymous volumes, so the old ones are
+// dangling afterwards, and they may hold the stack's data. They are kept.
+func TestATakenDownStackKeepsItsAnonymousVolumes(t *testing.T) {
+	const old = "3a37a98261c4f658850d43b3d0ddc746ae25d9ec6bb58e83132662b7ea646191"
+	host := appliedFrom(t, "watch", plan(t))
+	host.networks = map[string]string{statusNetwork: unpinnedPool}
+	host.stackVolumes = map[string]string{"status": old + "\n"}
+	host.dangling = old + "\n"
+
+	p, err := apply.Build("watch", external(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !statusAction(t, p).Down {
+		t.Fatal("the test needs a stack taken down")
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.removedVolumes) != 0 {
+		t.Errorf("a taken down stack's old anonymous volumes were removed: %v", host.removedVolumes)
+	}
+}
+
+// The infrastructure stack is never taken down: that stops the database and
+// the gateway together. A mismatch is a note telling the operator what to do.
+func TestTheInfrastructureStackIsNeverTakenDown(t *testing.T) {
+	host := newHost()
+	host.networks = map[string]string{"paisans-f2a9-infra_default": pinnedPool}
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range p.Actions {
+		if a.Down {
+			t.Errorf("%s is taken down", a.Stack)
+		}
+	}
+	var noted bool
+	for _, note := range p.Notes {
+		if strings.Contains(note, "paisans-f2a9-infra_default") && strings.Contains(note, "--recreate infra") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Errorf("no note tells the operator about the infrastructure network: %v", p.Notes)
+	}
+}
+
+// A Docker that cannot answer is not a host without the network: the plan
+// stops with Docker's error rather than missing a stale network.
+func TestAFailedNetworkProbeStopsThePlan(t *testing.T) {
+	host := appliedFrom(t, "watch", plan(t))
+	host.fail = "docker network ls"
+	_, err := apply.Build("watch", external(t), acmeModule(t), host)
+	if err == nil || !strings.Contains(err.Error(), "compose networks") {
+		t.Fatalf("got %v, want the probe's failure", err)
 	}
 }

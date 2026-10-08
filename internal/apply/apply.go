@@ -1061,9 +1061,13 @@ func execute(plan *Plan, t Transport) error {
 			bootstrapped = true
 		}
 		// The anonymous volumes the containers about to be replaced mount,
-		// read before they are gone. See removeAbandonedVolumes.
+		// read before they are gone. See removeAbandonedVolumes. Not for a
+		// stack taken down first: `up -d` hands a replaced container's
+		// anonymous volumes to its successor, but after a `down` the new
+		// containers start on fresh ones, so the old volumes are dangling
+		// yet may hold the stack's data. They are kept for the operator.
 		var previous []string
-		if action.Recreate {
+		if action.Recreate && !action.Down {
 			previous = recordAnonymousVolumes(plan, action.Stack, t)
 		}
 		if err := runAction(plan.Deployment, action, action.Stack == infraStack && plan.GatewayReload, t); err != nil {
