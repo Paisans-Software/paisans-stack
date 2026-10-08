@@ -19,6 +19,9 @@ type emptyHost struct{}
 
 func (emptyHost) Describe() string { return "home-a.local" }
 func (emptyHost) Run(command string) (string, error) {
+	if out, ok := absentNetworks(command); ok {
+		return out, nil
+	}
 	// Every image is present, so the plan carries no disk check; apply's
 	// own tests cover that.
 	if list, ok := strings.CutPrefix(command, "for r in "); ok {
@@ -41,6 +44,22 @@ func (emptyHost) Run(command string) (string, error) {
 	}
 	return "down\n", nil
 }
+
+// absentNetworks answers apply's probe of the stacks' compose networks for a
+// host that has none of them, false for any other command.
+func absentNetworks(command string) (string, bool) {
+	list, ok := strings.CutPrefix(command, "for n in ")
+	if !ok {
+		return "", false
+	}
+	list, _, _ = strings.Cut(list, "; do")
+	var out strings.Builder
+	for _, name := range strings.Fields(list) {
+		out.WriteString("absent " + strings.Trim(name, "'") + "\n")
+	}
+	return out.String(), true
+}
+
 func (emptyHost) RunInput(string, string) (string, error) { return "", nil }
 func (emptyHost) ReadFile(string) (string, bool, error)   { return "", false, nil }
 func (emptyHost) WriteFile(string, string, uint32) error  { return nil }

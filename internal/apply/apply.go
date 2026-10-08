@@ -82,6 +82,14 @@ type Action struct {
 	// over a container that an earlier `up -d` left half built only starts
 	// it, network and all missing, because its configuration matches.
 	Force bool
+	// Down means `docker compose down` before the `up`, which removes the
+	// stack's containers and its default network. It is set only when that
+	// network on the host is addressed differently from what the compose file
+	// declares, since `up` then creates the network afresh as declared, and
+	// an app trusting the network's gateway as its proxy (TRUST_PROXY) would
+	// otherwise name an address its connections do not come from. See
+	// probeStaleNetworks.
+	Down bool
 	// Reason is quoted back to the operator, so that "why is it recreating"
 	// never needs guessing.
 	Reason string
@@ -779,6 +787,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 
 	sort.Slice(out.Changes, func(i, j int) bool { return out.Changes[i].Path < out.Changes[j].Path })
 
+	if err := out.probeStaleNetworks(t); err != nil {
+		return nil, fmt.Errorf("%s: %w", site, err)
+	}
+
 	need := DefaultMinFree
 	if o.minFreeSet {
 		need = o.minFree
@@ -1051,9 +1063,13 @@ func execute(plan *Plan, t Transport) error {
 			bootstrapped = true
 		}
 		// The anonymous volumes the containers about to be replaced mount,
-		// read before they are gone. See removeAbandonedVolumes.
+		// read before they are gone. See removeAbandonedVolumes. Not for a
+		// stack taken down first: `up -d` hands a replaced container's
+		// anonymous volumes to its successor, but after a `down` the new
+		// containers start on fresh ones, so the old volumes are dangling
+		// yet may hold the stack's data. They are kept for the operator.
 		var previous []string
-		if action.Recreate {
+		if action.Recreate && !action.Down {
 			previous = recordAnonymousVolumes(plan, action.Stack, t)
 		}
 		if err := runAction(plan.Deployment, action, action.Stack == infraStack && plan.GatewayReload, t); err != nil {

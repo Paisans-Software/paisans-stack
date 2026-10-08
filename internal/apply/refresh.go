@@ -43,6 +43,13 @@ func infraRecreate(plan *Plan) (up, forced bool) {
 // (moby/moby#15793), and only a restart mounts the new one. Caddy's routing
 // is a directory mount, which sees the new files, so a reload is enough.
 func runAction(d deployment.Deployment, action Action, reload bool, t Transport) error {
+	// A stale network goes before anything else, so that the `up` below
+	// creates it as the compose file declares. See Action.Down.
+	if action.Down {
+		if out, err := t.Run(d.ComposeCmd(action.Stack) + " down"); err != nil {
+			return fmt.Errorf("stack %s: taking it down to recreate its network: %w\n%s", action.Stack, err, out)
+		}
+	}
 	if !action.Recreate || action.Force || (len(action.Refresh) == 0 && !reload) {
 		_, err := t.Run(action.Command(d))
 		return err
