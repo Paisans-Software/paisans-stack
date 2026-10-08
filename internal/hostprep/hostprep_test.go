@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
 )
 
@@ -1228,5 +1229,35 @@ func TestSnapDockerIsRefusedNotRemoved(t *testing.T) {
 				t.Errorf("%s: prepare changed something: %s", compose, c)
 			}
 		}
+	}
+}
+
+// site remove takes away exactly the rules planRules calls host prepare's,
+// and knows the SSH allow among them.
+func TestParseAddedRulesTellsOursFromTheirs(t *testing.T) {
+	d := deployment.Deployment{ID: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}
+	out := "ufw present\nrule allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'\n" +
+		"rule allow 51820/udp comment 'paisans-f2a9: wireguard'\n" +
+		"rule allow 51821/udp comment 'paisans-0c1d: wireguard'\n" +
+		"rule allow 8080/tcp comment 'paisans-f2a9x: not ours'\n" +
+		"rule allow 443/tcp\n"
+	rules, absent := hostprep.ParseAddedRules(d, out)
+	if absent || len(rules) != 5 {
+		t.Fatalf("rules = %+v, absent %v", rules, absent)
+	}
+	owned := 0
+	for _, r := range rules {
+		if r.Owned {
+			owned++
+		}
+	}
+	if owned != 2 || !rules[0].SSH || rules[1].SSH || rules[0].Line != "allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'" {
+		t.Errorf("rules = %+v", rules)
+	}
+	if _, absent := hostprep.ParseAddedRules(d, "ufw absent\n"); !absent {
+		t.Error("a host without ufw was not reported")
+	}
+	if got := hostprep.ParseOwnedKeys("# header\nSHA256:abc alice@example.org\n\nSHA256:def\n"); strings.Join(got, ",") != "SHA256:abc,SHA256:def" {
+		t.Errorf("ParseOwnedKeys = %v", got)
 	}
 }

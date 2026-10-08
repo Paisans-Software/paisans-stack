@@ -15,8 +15,8 @@ Go 1.26 or newer. There is no code generation step and no Makefile.
 
 validate and render touch nothing outside the working directory. init writes
 only local files, and reads every site over ssh to settle the mesh subnet.
-`host prepare`, `apply`, `prune`, `site add`, `storage init`, `storage add`,
-`storage rotate-key`, `app admin create`, `app remove` and `oidc client
+`host prepare`, `apply`, `prune`, `site add`, `site remove`, `storage init`,
+`storage add`, `storage rotate-key`, `app admin create`, `app remove` and `oidc client
 create` reach a machine, and each changes
 it only with `--execute`. `preflight` and `doctor`
 reach every site and never change one; `failover test` changes which site
@@ -60,6 +60,7 @@ paisans preflight --site home-b           # site add's read only checks
 paisans storage add                       # every Garage stage, from live state
 paisans storage rotate-key --app talk     # replaces one app's S3 key, staged
 paisans app remove docs                   # an app out of paisans.yaml, off every host
+paisans site remove home-b                # a site out of the deployment, staged
 paisans failover test                     # checks, and prints the plan
 paisans doctor                            # what is stuck, and how to recover
 paisans dns init                          # shows which records it would create
@@ -557,6 +558,54 @@ a whole join leaving nothing to do, the mesh rollback, the promotion retry and
 its limit, resuming after a stopped learner and after a failed replica gate,
 and the stage 5 and 6 gates failing.
 
+## `site remove`, and what each removal is proven by
+
+```
+paisans site remove home-b             # refusals, then every stage, its steps and its gate
+paisans site remove home-b --execute
+```
+
+`internal/siteremove` builds the removal from live state and runs it stage by
+stage, the way `internal/siteadd` builds a join; README.md's *`site remove`
+takes a site out* has the design, and `docs/specs/2026-10-08-site-remove.md`
+the approved specification. What the code relies on, and what is easy to
+undo:
+
+* **The end state is `config.WithoutSite`**, and stage 4 writes exactly that
+  with `config.RemoveSite`, which edits `paisans.yaml` in place the way
+  `config.SetMesh` does: the site's block and the comment lines directly
+  above it, one item in each list, one capacity line, every other byte kept.
+  `Refusal` validates the end state, so a removal never writes a file
+  `validate` would refuse.
+* **Remaining sites move only what names the removed site.** Stage 2 renders
+  the configuration with and without the site (each etcd member with the
+  flags its host records) and diffs the two per site. The mesh file,
+  `haproxy.cfg` and Caddy's routing files go through a scoped `apply` and the
+  one command each needs; every other changed file, `patroni.env` first among
+  them, is reported for a later `apply`.
+* **Every host removal is selected by its proof, at the moment it runs.**
+  Docker objects by the label filter, files by `appremove.FilesCommand`
+  (hash checked on the host), units by the `paisans-<token>-` glob, ufw rules
+  by `hostprep.ParseAddedRules` read again before deleting, the registry by
+  `registry.RemoveCommand` under the claim's lock. A re-run therefore does
+  only what is left. The keys go last, after `verifyHost`, the stage's gate,
+  because they may be how the host is reached.
+* **The registry removal has a Go counterpart**, `registry.Remove`, and the
+  tests run the awk program against `Encode` of its result.
+* **`inspect` is a variable** standing in for `hostcheck.Inspect`, so the tests
+  hand in a fake host's Docker objects and manifest.
+
+The tests in `internal/siteremove` run a world in maps (`world_test.go`):
+etcd's membership and health, Patroni's members, Garage's layout and resync,
+each HAProxy's served configuration, and per host its files, Docker objects,
+units, ufw rules, keys and registry. They cover the dry run changing nothing,
+a whole removal keeping every foreign container, file, unit and rule and an
+edited file, every refusal, resuming from each stage, the leader switched
+over first, synchronous mode turned off, `--host-gone`, `--delete-data`, the
+key rules, and the gateway hand over: done, not needed, undone on a failed
+gate, stopped by an invalid configuration, and refused into a `/srv/caddy`
+that is somebody else's.
+
 ## `storage add`, and what lives where
 
 `internal/storageadd` is shaped like `internal/siteadd`: Build reads every
@@ -858,6 +907,7 @@ installed, on a workstation or anywhere else.
 | `internal/dns` | which public records a deployment needs, creating the missing ones at the DNS provider, and pruning the ones it created that nothing wants |
 | `internal/apply` | what to push to a host, what to restart, and the gates before either |
 | `internal/siteadd` | joining a new data site: six staged, gated, resumable stages |
+| `internal/siteremove` | taking a site out: its refusals, four staged, gated, resumable stages, the host's cleaning with each removal proven, and the gateway's Caddy hand over |
 | `internal/appadmin` | an app's first administrator: probe, plan, and the per kind API calls |
 | `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin, or over HTTP from beside it |
 | `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
@@ -1082,13 +1132,14 @@ before.
 No `backup`. `site add` exists for sites that all declare an endpoint; the
 relay for sites behind NAT is still design. `storage add` joins Garage nodes,
 changes the replication factor, sizes each node and can stop one to prove
-failover, and has run against containers; removing or replacing a Garage node
-is not built. Its first stage is `preflight`, and
+failover, and has run against containers; replacing a Garage node is not
+built, and removing one goes with its site, in `site remove`. Its first stage is `preflight`, and
 `failover test` exists; both are described above. `apply`
 pushes files, brings up the mesh interface, creates clustered apps' roles and databases, and
 takes the narrowest action that makes the rest live. `site add` has never been
 run against a real host, so every command it sends is reasoned from upstream
-source and documentation, not observed.
+source and documentation, not observed. Nor has `site remove`, whose commands are reasoned
+the same way.
 
 Pocket ID on more than one apps site has run only in containers on one
 machine: two real instances against one Postgres, through the rendered

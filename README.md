@@ -790,8 +790,9 @@ root's and 0600, listing every deployment that has claimed it:
 
 Every command that writes to a host **claims it first**: `apply`,
 `host prepare`, `storage init`, `storage add`, `storage rotate-key`,
-`site add`, `prune`, `app admin create`, `app remove`, `oidc client create`
-and `failover test`, each with `--execute`, on every site it will write to. The
+`site add`, `site remove`, `prune`, `app admin create`, `app remove`, `oidc
+client create` and `failover test`, each with `--execute`, on every site it
+will write to. The
 claim is one remote shell command run under `flock` on
 `/var/lib/paisans/registry.lock`: it reads the registry, refuses if another
 id already holds this deployment's token or root (or its WireGuard interface,
@@ -805,7 +806,9 @@ operators claiming one host at once, and the move is what keeps a registry
 from ever being half written. The merge is done with awk, which a host has
 before `host prepare` has installed anything, so the file keeps one
 deployment per line, and a registry in any other layout is refused rather
-than guessed at.
+than guessed at. An entry leaves the registry one way: `site remove` deletes
+this deployment's line from a host it has cleaned, under the same lock and
+with the same kind of awk program, and every other line stays as it was.
 
 **A host runs one deployment's gateway and one deployment's data site.** The
 gateway binds ports 80 and 443, and its Caddy imports `/srv/caddy.d`; a data
@@ -3798,7 +3801,7 @@ with `roles: [data]` joining a running cluster of one, an existing site gaining
 the witness role in the same join, and **every site declaring an `endpoint`**.
 A site without one is refused, naming the relay design above, which is still a
 design: the first deployment that needs it builds it. A second Garage node
-and removing a site are out of scope too, each refused or left alone. Apps on
+is out of scope too, and removing a site is `site remove`'s (below). Apps on
 the new site come after the join rather than in it, since no stage starts an
 app stack: give the site the `apps` role, `host prepare` and `apply` it, then
 `apply` the gateway, whose routes gain the site.
@@ -3901,6 +3904,122 @@ pinned app has its own Postgres and is left alone. This is one instance of a
 rule the toolkit owns: whatever changes the database path restarts the apps
 that depend on it (see "`apply` restarts the apps whose database path
 changed").
+
+### `site remove` takes a site out
+
+The reverse of `site add`, for one site by name. The site stays declared in
+`paisans.yaml` while the command runs, because its `ssh` section is how its
+host is reached and its roles say what it holds; everything else is computed
+from the configuration with the site taken out, the end state, and the last
+stage writes that back to the file. `docs/specs/2026-10-08-site-remove.md` is
+the approved specification.
+
+```sh
+paisans site remove home-b                             # refusals, then every stage and its gate
+paisans site remove home-b --execute                   # runs them, stopping at the first failed gate
+paisans site remove home-b --delete-data --execute     # and deletes its data, after asking
+paisans site remove home-b --host-gone --execute       # the host is never coming back
+```
+
+**It refuses before anything changes**, with the evidence and what to do:
+
+| Refused | Because |
+|---|---|
+| the only gateway | nothing else would answer for the community's hostnames; move the gateway first |
+| the only apps site while an app is placed `cluster`, or a site an app is pinned to | the app would run nowhere; give another site the role, or move the app, first |
+| the only data site | the database would have nowhere to live |
+| the first site in `storage.garage.sites` while apps are declared | every app writes its objects through that node; put another Garage site first and apply every site running an app |
+| a Garage site whose removal leaves fewer nodes than `storage.garage.replication`, or another Garage node unhealthy | the objects on it would have nowhere to go |
+| an end state `validate` refuses | Eg: two etcd voters, which is why one data site cannot leave two data sites and a witness: the witness would have to leave etcd too, which is a change to a site that stays |
+| any other etcd member unhealthy, or too few healthy members left for a quorum | a membership change on a limping cluster is how it stops |
+| any other Patroni member not running or streaming | the cluster changes under the stages below |
+| the site holds the leader and no member is a streaming `Sync Standby` | only a synchronous standby takes over without losing writes the leader acknowledged |
+| a host that does not answer over ssh | what is on it cannot be read; fix ssh, or say `--host-gone` |
+| `--delete-data` without a terminal, or with `--host-gone` | the same rule as `app remove`; and nothing is deleted on a host that is not reached |
+
+**Four stages, each ending at a gate.** Each is planned from live state, so a
+stage already done plans no steps, its gate is still checked, and a re-run
+after a fixed problem resumes at the first stage with anything left to do.
+
+| Stage | What runs | Gate |
+|-------|-----------|------|
+| 1. Data out of the site | the leader switched over to the `Sync Standby` when the site holds it; `synchronous_mode` turned off when one data site remains, since a leader waiting on a standby that is leaving stops taking writes; Patroni stopped on the site and its member key deleted from etcd; its Garage node removed from the layout and the layout applied | another site leads and `patronictl list` no longer lists the site, with a `Sync Standby` when the end state wants one; no layout row for the site, and every remaining node settled (one live layout version, an empty resync queue) within an hour, and a run that times out resumes at this gate while Garage carries on copying |
+| 2. Out of the cluster | `etcdctl member remove`, then the site's etcd stopped; on every remaining site, the files whose render changes with the site gone, by scoped `apply`: `psns-<token>.conf` (`wg syncconf`), `haproxy.cfg` (HAProxy restarted with its database apps stopped around it, as `site add` does) and the gateway's routes (validated, then Caddy reloaded) | the voters are exactly the end state's and all healthy; no remaining site has the site's key as a WireGuard peer; HAProxy lists exactly the end state's cluster sites with the leader `UP` |
+| 3. Clean the host | below; skipped with `--host-gone` | checked before the keys go: nothing of this deployment's left but what the plan said it keeps |
+| 4. Config | the site taken out of `paisans.yaml`: its block, its name in `cluster.sites`, `etcd.members` and `storage.garage.sites`, its capacity; every other byte as it was | the file loads and no longer declares it |
+
+**What stage 2 does not move.** A remaining data site's `patroni.env` names
+every etcd member, and applying it recreates its Patroni, which on the primary
+is a failover. Nothing needs it: every member it names but the removed one
+stays a voter. The report lists it, with `paisans apply --site <site>` for when
+a failover is acceptable, as `site add` does. Any other file whose render
+changes is listed the same way. etcd's `--initial-cluster` flags are not among
+them: each member's are rendered from what its host records (see *A member
+keeps the flags it was born with*).
+
+**The host keeps everything that is not provably this deployment's.** Each
+removal is proven a different way, because each is recorded in a different
+place, and everything else found is listed as kept:
+
+| What | Proven by | Removed |
+|---|---|---|
+| containers and networks | the deployment label carrying this id, by Docker's own filter | stopped and removed; with `--delete-data` their anonymous volumes too |
+| named volumes | the same label | only with `--delete-data` |
+| rendered files | an entry in this deployment's manifest whose hash the file still has | deleted, then the manifest; a file edited on the host is kept and named |
+| the mesh interface | `wg-quick@psns-<token>`, named for the token, and its file hashing to its manifest entry | the unit disabled and stopped; the file deleted with the rendered files |
+| units and drop-ins | named `paisans-<token>-*` under `/etc/systemd/system` and its drop-in directories | disabled, stopped, deleted; systemd reloaded |
+| ufw rules | a comment starting with exactly `paisans-<token>:` | deleted, except the SSH allow, which `host prepare` never removes either: with incoming denied, deleting it cuts the next connection |
+| authorized keys | a fingerprint in `/etc/paisans/authorized_keys.<user>.paisans-<token>.owned` | the key's plain lines deleted, last, then the record. A key another deployment's record lists stays, because both added it as one line; so do the keys when deleting them would leave the user with none |
+| the deployment's directory | its path, `/srv/paisans/<token>` | empty directories removed; what apply did not write, the data in its bind mounts, is kept, and `--delete-data` deletes it all unless a file in it was edited |
+| the registry entry | this id's line in `/var/lib/paisans/registry.json` | deleted under the same lock as a claim, by the same kind of awk program |
+
+The keys go last, after the registry entry and the check that nothing else is
+left, because they may be what the command reaches the host with.
+
+**A gateway's Caddy is handed over when somebody else relies on it.** The
+host owner's site blocks in `/srv/caddy.d` (see *The gateway host's own sites
+live in `/srv/caddy.d`*) go dark if the gateway's Caddy simply stops. So when
+`internal/ownership` finds a foreign user of it, a `*.caddy` file there or a
+foreign container on one of its networks, the Caddy is handed over to the
+host's owner:
+
+1. `/srv/caddy/compose.yaml` (project `caddy`, no deployment label, the same
+   image, host networking, mounting `/srv/caddy.d` read only) and a
+   `/srv/caddy/Caddyfile` holding only the global options ACME needs, the
+   snippets a file in `/srv/caddy.d` may import, and `import
+   /etc/caddy.d/*.caddy`.
+2. The DNS provider's token is copied, on the host, into
+   `/srv/caddy/caddy.env`: the owner's certificates were issued and renew
+   through DNS-01. The report says plainly that it is a credential this
+   deployment no longer controls, left on the host for the owner, and that it
+   should be rotated once the owner has a token of their own.
+3. The configuration is validated in a one-off container before anything
+   stops. Then this deployment's Caddy is stopped, its `data` and `config`
+   directories moved to `/srv/caddy/`, so the certificates survive, and the new
+   Caddy started.
+4. The gate: it runs, and `caddy validate` passes inside it. A failed gate
+   stops it, moves the directories back and starts this deployment's Caddy
+   again, and the next run tries again.
+5. `/srv/caddy/HANDED-OVER` records the deployment id, domain, site and time.
+
+**From then on paisans never touches `/srv/caddy`.** A run that finds the
+marker with this id treats the hand over as done, and a `/srv/caddy` holding
+anything the hand over did not write, a marker by another deployment, or a
+compose project named `caddy` already on the host is refused. The moved data
+directory holds the certificates and keys of every hostname this deployment's
+Caddy served, the community's included, and the report says so. With no
+foreign user, the Caddy goes like every other container.
+
+**`--host-gone` is for a host that is never coming back.** The host is not
+reached at all: stages 1, 2 and 4 run and stage 3 is skipped. The report lists
+what the host still holds if it ever returns, by name, and nothing it runs can
+reach the cluster again, since no remaining site has it as a WireGuard peer
+and its etcd member is gone.
+
+**It leaves three things and says so,** as `app remove` does: the site's
+WireGuard key in the secrets file, which it never edits; the DNS records `dns
+init` made for the host's public address, until `paisans dns prune
+--execute` deletes them; and everything kept above, with why.
 
 ### Preflight
 
@@ -4314,7 +4433,10 @@ fine: Caddy logs a warning for an import glob that matches no file and starts
 (Caddy v2.11.7, `caddyconfig/caddyfile/parse.go`, `doImport`). The directory
 stays on the host when the gateway role moves, and its files move by hand.
 `doctor` lists each file there, so whoever moves or stops the gateway can see
-what else depends on it.
+what else depends on it. When `site remove` takes a gateway off a host whose
+`/srv/caddy.d` is in use, it hands the Caddy over to `/srv/caddy`, so those
+sites stay served, and paisans never touches `/srv/caddy` again (see *`site
+remove` takes a site out*).
 
 ### It is a config change
 
