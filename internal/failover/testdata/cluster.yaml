@@ -1,6 +1,7 @@
 # Two data sites after a join: home-a runs the apps, home-b is a replica,
 # vm is the gateway and witness. Addresses are documentation ranges.
 version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 
 community:
   name: "Fixture Community"

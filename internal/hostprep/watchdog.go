@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
 // softdogIdentity is the identity softdog reports in sysfs. Read from the
@@ -110,7 +111,7 @@ func (f watchdogFacts) softdogLoaded() bool {
 // process can open /dev/watchdog, and if systemd or a watchdog daemon already
 // has it, Patroni fails to open it at its first start, on a host that a plan
 // had just called prepared.
-func planWatchdog(t Transport, profile Profile, site config.Site) (Section, error) {
+func planWatchdog(t Transport, d deployment.Deployment, profile Profile, site config.Site) (Section, error) {
 	var out Section
 	mode := site.WatchdogMode()
 	if !site.Has(config.RoleData) {
@@ -150,7 +151,7 @@ func planWatchdog(t Transport, profile Profile, site config.Site) (Section, erro
 		if len(hardware) > 0 {
 			out.Warnings = append(out.Warnings, fmt.Sprintf("watchdog: softdog was declared, but %s already provides /dev/watchdog and Patroni will open that one, not softdog. Declare auto to say so.", hardware[0].Identity))
 		}
-		module, err := profile.WatchdogModule(t, "softdog", facts.softdogLoaded())
+		module, err := profile.WatchdogModule(t, d, "softdog", facts.softdogLoaded())
 		if err != nil {
 			return out, err
 		}
@@ -166,7 +167,7 @@ func planWatchdog(t Transport, profile Profile, site config.Site) (Section, erro
 	if facts.softdogLoaded() {
 		out.Present = append(out.Present, "watchdog: "+facts.describe())
 	}
-	module, err := profile.WatchdogModule(t, "softdog", facts.softdogLoaded())
+	module, err := profile.WatchdogModule(t, d, "softdog", facts.softdogLoaded())
 	if err != nil {
 		return out, err
 	}

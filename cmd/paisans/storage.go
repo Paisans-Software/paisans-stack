@@ -67,14 +67,13 @@ func runStorageAdd(args []string) error {
 	}
 	// storage add applies files on every Garage site and on the gateway, so
 	// each is host checked before any changes.
-	var sites []string
-	for _, name := range cfg.SiteNames() {
-		if contains(cfg.Storage.Garage.Sites, name) || cfg.Sites[name].Has(config.RoleGateway) {
-			sites = append(sites, name)
-		}
-	}
+	sites := union(cfg.Storage.Garage.Sites, cfg.GatewaySites())
 	shared, err := gateSites(os.Stdout, cfg, sites, func(site string) hostcheck.Transport { return transports[site] })
 	if err != nil {
+		return err
+	}
+	// Every Garage site, and the gateway, which takes the media routes.
+	if err := claimSites(cfg, *execute, *sudo, sites...); err != nil {
 		return err
 	}
 	plan, err := storageadd.Build(cfg, secrets, transports, storageadd.Options{

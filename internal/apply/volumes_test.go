@@ -58,7 +58,7 @@ func TestAnUncoveredDeclaredVolumeRefusesBeforeAnyWrite(t *testing.T) {
 	if err == nil {
 		t.Fatal("an apply went ahead with a declared volume nothing mounts")
 	}
-	for _, want := range []string{"talk/app runs " + talkImage, "talk/messenger", "VOLUME /app/uploads", "bind under /srv/talk/ for state, a tmpfs for throwaway", "nothing was written"} {
+	for _, want := range []string{"talk/app runs " + talkImage, "talk/messenger", "VOLUME /app/uploads", "a bind under the stack's own directory for state, a tmpfs for throwaway", "nothing was written"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not say %q:\n%v", want, err)
 		}
@@ -74,7 +74,7 @@ func TestAnAbsentImageIsPulledAndCheckedBeforeAnyWrite(t *testing.T) {
 	host := newHost()
 	host.absent = map[string]bool{talkImage: true}
 	host.free = 10 << 30
-	host.volumes = map[string]string{talkImage: `{"/srv/elsewhere":{}}`}
+	host.volumes = map[string]string{talkImage: `{"/srv/paisans/f2a9/elsewhere":{}}`}
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +83,7 @@ func TestAnAbsentImageIsPulledAndCheckedBeforeAnyWrite(t *testing.T) {
 		t.Fatalf("the absent image is not owed: %+v", p.Volumes)
 	}
 	err = apply.Execute(p, host)
-	if err == nil || !strings.Contains(err.Error(), "VOLUME /srv/elsewhere") {
+	if err == nil || !strings.Contains(err.Error(), "VOLUME /srv/paisans/f2a9/elsewhere") {
 		t.Fatalf("a pulled image declaring an unmounted path was not refused: %v", err)
 	}
 	if len(host.pulled) != 1 || host.pulled[0] != talkImage {
@@ -170,11 +170,11 @@ func TestARecreateRemovesTheVolumesItsOldContainersLeft(t *testing.T) {
 	var record, up, health, rm int
 	for i, c := range host.commands {
 		switch {
-		case strings.Contains(c, "/srv/talk/compose.yaml ps -aq"):
+		case strings.Contains(c, "/srv/paisans/f2a9/talk/compose.yaml ps -aq"):
 			record = i
-		case c == "docker compose -f /srv/talk/compose.yaml up -d":
+		case c == "docker compose -f /srv/paisans/f2a9/talk/compose.yaml up -d":
 			up = i
-		case strings.Contains(c, "/srv/talk/compose.yaml ps --all --format json"):
+		case strings.Contains(c, "/srv/paisans/f2a9/talk/compose.yaml ps --all --format json"):
 			health = i
 		case strings.HasPrefix(c, "docker volume rm "):
 			rm = i

@@ -9,10 +9,12 @@
 # carries the SMTP password. The fork's entrypoint (from 1.1.0-oidc.2) hands
 # both to `node` and drops to it for good. An older image ignores the seed and
 # simply runs as root.
-name: paisans-{{ .App.Name }}
+name: {{ .Project }}
 
 services:
   app:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
     image: {{ .Image "app" }}
     restart: unless-stopped
     user: "0:0"
@@ -31,3 +33,10 @@ services:
     volumes:
       - {{ .DataPath }}/data:/data
       - {{ .DataPath }}/monitors.json:/seed/monitors.json:ro
+
+# Every network carries the deployment label too, so that what owns it is
+# read from the label rather than guessed from its name.
+networks:
+  default:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"

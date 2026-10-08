@@ -22,6 +22,14 @@ reach every site and never change one; `failover test` changes which site
 is primary, only with `--execute`. `dns init` and `dns prune` reach no
 machine, only the DNS provider's API, and change it only with `--execute`.
 
+Each command that changes a host first claims it in the host registry,
+`/var/lib/paisans/registry.json`, and its dry run only reads that registry;
+`cmd/paisans/claim.go` is the one place that happens, and `internal/registry`
+holds the decision and the locked shell command. Every name and path those
+commands use comes from `internal/deployment`, derived from the `id` in
+`paisans.yaml`. README.md "A deployment has an id, and a host knows every
+deployment on it" has the reasoning.
+
 ```
 paisans validate --config examples/paisans.example.yaml
 paisans init     --config examples/paisans.example.yaml
@@ -46,11 +54,13 @@ security find-generic-password -s acme -w \
 stopping at the first, because fixing a file one error per run is miserable. It
 exits non zero when anything was refused.
 
-`init` generates the secrets a declaration needs and writes them, encrypted to
-the age recipients named in a `.sops.yaml` beside the file. It prints names and
-never values, because a secret printed to a terminal is in a scrollback buffer
-and often in a multiplexer's log as well. Three things about it are load
-bearing:
+`init` first gives the declaration an `id` if it has none, written as one line
+after `version:` with every other byte left as it was, and never changes one
+that is there. Then it generates the secrets a declaration needs and writes
+them, encrypted to the age recipients named in a `.sops.yaml` beside the file.
+It prints names and never values, because a secret printed to a terminal is
+in a scrollback buffer and often in a multiplexer's log as well. Three things
+about it are load bearing:
 
 * **It never replaces a value that exists.** Regenerating a WireGuard key breaks
   every peer that trusted the old one; regenerating a database password locks an
@@ -186,12 +196,11 @@ What "shared" changes, and where:
 
 | Command | On a shared host |
 |---|---|
-| `host prepare` | `hostprep.Shared()`: the profile's `Firewall` gets `hostWide` false and plans only `paisans:` rules, never `ufw default` or `ufw --force enable` |
+| `host prepare` | `hostprep.Shared()`: the profile's `Firewall` gets `hostWide` false and plans only its own `paisans-<token>:` rules, never `ufw default` or `ufw --force enable` |
 | `apply` | `apply.KeepImages()`, as `--keep-images` |
 | `site add` | `siteadd.Plan.KeepImages`, passed to the replica stage's whole apply |
 | `storage rotate-key` | `apply.KeepImages()` in the switch's apply on that site |
 | `storage add` | `storageadd.Options.SharedSites`: `apply.KeepImages()` in every scoped apply on that site |
-| `prune` | `apply.BuildVolumePrune(site, t, true)`: only `paisans-*` labelled volumes go, and `SharedPruneHeader` says so |
 | `preflight` | a `host` check line; the `prepared` check asks for the shared plan |
 
 A conflict, and a shared host whose ufw is not active with incoming denied or
@@ -213,7 +222,7 @@ refuse.
 **A file edited on the host is a conflict, and a conflict stops the whole
 apply.** Rendered files are build artifacts and nothing edits them in place, so
 a file that differs from what the last apply recorded is a change somebody made
-on the machine. The record is a manifest at `/srv/.paisans-manifest.json`,
+on the machine. The record is a manifest at `/srv/paisans/<token>/.paisans-manifest.json`,
 written after every successful apply; without it, every apply would be a blind
 overwrite. A file present on the host that no apply ever wrote is somebody
 else's too, and is a conflict rather than something to adopt, which is the case
@@ -255,7 +264,7 @@ and databases; see "Every app has its own database credential" below.
 
 **A stopped apply resumes.** Files written before a gate stopped the apply
 already match the render, so the next apply would otherwise see nothing to do.
-`/srv/.paisans-pending.json` records the owed stack actions and gateway checks
+`/srv/paisans/<token>/.paisans-pending.json` records the owed stack actions and gateway checks
 before the first write, drops each stack as its action finishes (the last one
 stays until the end, so a bootstrap failing after it is still owed), and is
 removed on success; `Build` folds it into the next plan.
@@ -339,10 +348,9 @@ under Mbin's `/app/var/`. Three pieces, each easy to undo by accident:
   gate.
 
 `prune --site <s>` (`internal/apply/volumeprune.go`) lists every dangling
-volume with size and top level entries and removes, with `--execute`, the
-anonymous ones and those of a `paisans-*` compose project; another project's,
-or a named one, is kept. On a host the host check found shared, an anonymous
-volume is kept as well, since it may be another project's. The listing ends with an `end` marker, so a cut
+volume with size and top level entries and removes, with `--execute`, only
+those labelled `community.paisans.deployment` with this deployment's id;
+another id's, an unlabelled one, an anonymous one and a named one are kept. The listing ends with an `end` marker, so a cut
 short answer is an error rather than a shorter list. README.md "Every volume
 an image declares is mounted, and `apply` checks it" has the audit table and
 the reasoning.
@@ -405,7 +413,7 @@ design. What the code relies on, and what is easy to undo:
   new `ETCD3_HOSTS`, a failover in the middle of a join. A scoped plan records
   its files in the same manifest, keeping every other entry, so the next whole
   apply sees them as its own, and `apply.Rollback` restores what one updated.
-* **Every etcd host has `/srv/infra/etcd-initial`**, the flags its member was
+* **Every etcd host has `/srv/paisans/<token>/infra/etcd-initial`**, the flags its member was
   born with. `apply` and `site add` read it (`apply.ReadEtcdInitial`, falling
   back to the compose file's own flags) and hand it to `render.Build` with
   `render.WithEtcdInitial`; without it a member renders as a founder of
@@ -441,7 +449,7 @@ accident:
   failure makes them wait for ever. Pick deliberately.
 * **Every piece of resume state is on a host.** The deployed factor in
   `garage.toml`, `meta/cluster_layout.rf<N>` beside a set aside layout, and
-  the object counts in `/srv/infra/garage/replication-change.counts` on the
+  the object counts in `/srv/paisans/<token>/infra/garage/replication-change.counts` on the
   anchor's host. Nothing is kept on the operator's machine, so a run resumed
   from another machine sees the same state.
 * **The reset stops every node at the old factor before it changes any.**
@@ -702,6 +710,8 @@ installed, on a workstation or anywhere else.
 |------|-------|
 | `cmd/paisans` | the command, flag parsing, and how findings are printed |
 | `internal/config` | loading `paisans.yaml`, and decrypting `secrets.enc.yaml` |
+| `internal/deployment` | a deployment's id and token, and every name, path and label derived from them |
+| `internal/registry` | a host's record of the deployments on it, and the locked claim every writing command makes |
 | `internal/validate` | the rules, and nothing else |
 | `internal/secretsgen` | what a deployment's secrets are, and which of them the toolkit may invent |
 | `internal/kinds` | what an application kind is: its compose services, and the image each runs by default |
@@ -730,7 +740,7 @@ Two conventions make a set need no code of its own.
 
 **A template's path is its destination.** `templates/synapse/initdb.d/
 01-mas-database.sql.tmpl` lands at
-`/srv/<stack>/initdb.d/01-mas-database.sql`, so where a file goes is
+`/srv/paisans/<token>/<stack>/initdb.d/01-mas-database.sql`, so where a file goes is
 read off the tree rather than held in a mapping somewhere else. Adding a file
 to a set is adding a file.
 
@@ -748,7 +758,7 @@ configuration.** That is why two of the five kinds can be configured by files
 rather than environment at all.
 
 One file in a set is not rendered beside the app: `caddy.snippet.tmpl` lands on
-every gateway, at `/srv/infra/caddy/snippets/<app>.caddy`, because that is where
+every gateway, at `/srv/paisans/<token>/infra/caddy/snippets/<app>.caddy`, because that is where
 it is read. The gateway's own `Caddyfile` keeps only what is cross cutting,
 certificates and the trusted proxy range, and gives each app a host block that
 imports its snippet. A snippet never hardcodes where its application runs: it
@@ -861,7 +871,7 @@ before.
   port added to `appPort` without a look at the others, escapes the check.
   `TestPublishedPortsAreDistinctPerSite` in `internal/render` catches the
   second against the fixture; nothing catches the first.
-* **A pinned stack uses bind mounts under `/srv/<stack>/`**, never named
+* **A pinned stack uses bind mounts under `/srv/paisans/<token>/<stack>/`**, never named
   volumes, so relocating it is one `tar`. A test walks every rendered compose
   file to confirm it.
 * **A clustered app has no Postgres service of its own** and connects to the
@@ -914,7 +924,7 @@ before.
   against the fixture's placeholder credentials.
 * **Output is deterministic.** Sort before you iterate a map.
 * **host prepare removes only authorized keys it added**, as recorded in
-  `/etc/paisans/authorized_keys.<user>.owned`, and never rewrites a key's
+  `/etc/paisans/authorized_keys.<user>.paisans-<token>.owned`, and never rewrites a key's
   comment to mark it. Removals run last, and a plan that would leave the user
   with none of the listed keys is refused. Tests in
   `internal/hostprep/hostprep_test.go` cover add, adopt, forget, remove, a
@@ -947,7 +957,7 @@ and the gateway gives each such app a site block for its own
 `<label>-media.<domain>`. See rule 3 in `README.md`.
 
 Mbin's own OAuth2 server keypair, which API clients and mobile apps need, is
-generated by `init` and rendered to `/srv/<app>/oauth/` on every site running
+generated by `init` and rendered to `/srv/paisans/<token>/<app>/oauth/` on every site running
 Mbin; README's *Three kinds of secret* says why it is 0644. Nothing chowns any
 of the stack's bind mounted directories; the header of
 `templates/mbin/compose.yaml.tmpl` says which containers cope with a root

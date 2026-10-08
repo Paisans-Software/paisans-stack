@@ -22,7 +22,7 @@ func Run(cfg *config.Config, site string, t Transport) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	inv, err := Inspect(t)
+	inv, err := Inspect(t, cfg.Deployment())
 	if err != nil {
 		return nil, err
 	}

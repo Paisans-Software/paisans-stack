@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
@@ -42,7 +43,9 @@ type Transport interface {
 // Garage binary inside its own container, on the infra stack this toolkit
 // renders. It matches how apply reaches into the same stack for other
 // commands, so an operator reading a transcript sees one shape throughout.
-const Command = "docker compose -f /srv/infra/compose.yaml exec -T garage /garage"
+func Command(d deployment.Deployment) string {
+	return d.ComposeCmd("infra") + " exec -T garage /garage"
+}
 
 // Step is one command this plan still needs to run, in order.
 type Step struct {
@@ -171,9 +174,10 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		return nil, fmt.Errorf("garage: %s holds no Garage role. Sites with one are %s", site, strings.Join(cfg.Storage.Garage.Sites, ", "))
 	}
 
+	d := cfg.Deployment()
 	plan := &Plan{Site: site}
 
-	out, err := t.Run(Command + " layout show")
+	out, err := t.Run(Command(d) + " layout show")
 	if err != nil {
 		return nil, fmt.Errorf("checking the layout on %s: %w: %s", t.Describe(), err, strings.TrimSpace(out))
 	}
@@ -187,7 +191,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 	// running it during Build (rather than deferring it into a closure run at
 	// Execute time) is safe, and it is what lets Build decide, right now,
 	// whether this node's ID is already a row in the layout.
-	nodeOut, err := t.Run(Command + " node id -q")
+	nodeOut, err := t.Run(Command(d) + " node id -q")
 	if err != nil {
 		return nil, fmt.Errorf("reading the node ID on %s: %w: %s", t.Describe(), err, strings.TrimSpace(nodeOut))
 	}
@@ -227,11 +231,11 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		capacity := cfg.Storage.Garage.CapacityFor(site)
 		plan.Steps = append(plan.Steps, Step{
 			Describe: fmt.Sprintf("assign %s a role in the cluster layout", site),
-			Command:  fmt.Sprintf("%s layout assign -z %s -c %s %s", Command, site, capacity, nodeID),
+			Command:  fmt.Sprintf("%s layout assign -z %s -c %s %s", Command(d), site, capacity, nodeID),
 		})
 		plan.Steps = append(plan.Steps, Step{
 			Describe: fmt.Sprintf("apply the layout at version %d", version+1),
-			Command:  fmt.Sprintf("%s layout apply --version %d", Command, version+1),
+			Command:  fmt.Sprintf("%s layout apply --version %d", Command(d), version+1),
 		})
 	}
 
@@ -244,17 +248,17 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		secretKey, _ := SecretString(secrets, name, "s3_secret_access_key")
 		bucket := BucketName(app, name)
 
-		missing, err := keyAbsent(t, keyID)
+		missing, err := keyAbsent(t, d, keyID)
 		if err != nil {
 			return nil, err
 		}
 		if missing {
-			plan.Steps = append(plan.Steps, ImportStep(name, keyID, secretKey))
+			plan.Steps = append(plan.Steps, ImportStep(d, name, keyID, secretKey))
 		} else {
 			plan.Present = append(plan.Present, fmt.Sprintf("key: %s already has an S3 key", name))
 		}
 
-		state, err := ReadBucket(t, bucket)
+		state, err := ReadBucket(t, d, bucket)
 		if err != nil {
 			return nil, err
 		}
@@ -262,7 +266,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		if bucketAbsent {
 			plan.Steps = append(plan.Steps, Step{
 				Describe: fmt.Sprintf("create the bucket for %s", name),
-				Command:  fmt.Sprintf("%s bucket create %s", Command, bucket),
+				Command:  fmt.Sprintf("%s bucket create %s", Command(d), bucket),
 			})
 		} else {
 			plan.Present = append(plan.Present, fmt.Sprintf("bucket: %s already exists", bucket))
@@ -288,7 +292,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		if info.parsed && info.grants(keyID) {
 			plan.Present = append(plan.Present, fmt.Sprintf("grant: %s's key already has read/write/owner on %s", name, bucket))
 		} else {
-			step := GrantStep(name, bucket, keyID)
+			step := GrantStep(d, name, bucket, keyID)
 			step.Describe += unread
 			plan.Steps = append(plan.Steps, step)
 		}
@@ -310,7 +314,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 			} else {
 				plan.Steps = append(plan.Steps, Step{
 					Describe: fmt.Sprintf("allow website access on %s's bucket%s", name, unread),
-					Command:  fmt.Sprintf("%s bucket website --allow %s", Command, bucket),
+					Command:  fmt.Sprintf("%s bucket website --allow %s", Command(d), bucket),
 				})
 			}
 		}
@@ -323,8 +327,8 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 // argument against every key's ID by prefix and against its name exactly
 // (src/model/key_table.rs, KeyFilter::MatchesAndNotDeleted, at v1.0.1), so a
 // full ID matches only its own key, and a deleted key is absent.
-func keyAbsent(t Transport, keyID string) (bool, error) {
-	out, err := t.Run(Command + " key info " + keyID)
+func keyAbsent(t Transport, d deployment.Deployment, keyID string) (bool, error) {
+	out, err := t.Run(Command(d) + " key info " + keyID)
 	absentNow, err := absent(out, err, "0 matching keys")
 	if err != nil {
 		return false, fmt.Errorf("checking key %s on %s: %w", keyID, t.Describe(), err)
@@ -335,8 +339,8 @@ func keyAbsent(t Transport, keyID string) (bool, error) {
 // KeyPresent reports whether Garage holds a live key with this ID. Exported
 // for storage rotate-key, which checks both the key it retires and the one
 // replacing it.
-func KeyPresent(t Transport, keyID string) (bool, error) {
-	gone, err := keyAbsent(t, keyID)
+func KeyPresent(t Transport, d deployment.Deployment, keyID string) (bool, error) {
+	gone, err := keyAbsent(t, d, keyID)
 	return !gone, err
 }
 
@@ -363,10 +367,10 @@ func KeyPresent(t Transport, keyID string) (bool, error) {
 // route it takes to get there, so stdin would move the same string through a
 // shell and leave the `ps` exposure exactly where it was, while fixing only the
 // error text that Secret already fixes.
-func ImportStep(app, keyID, secretKey string) Step {
+func ImportStep(d deployment.Deployment, app, keyID, secretKey string) Step {
 	return Step{
 		Describe: fmt.Sprintf("import the S3 key %s for %s", keyID, app),
-		Command:  fmt.Sprintf("%s key import %s %s --yes -n %s", Command, keyID, secretKey, app),
+		Command:  fmt.Sprintf("%s key import %s %s --yes -n %s", Command(d), keyID, secretKey, app),
 		Secret:   secretKey,
 	}
 }
@@ -374,10 +378,10 @@ func ImportStep(app, keyID, secretKey string) Step {
 // GrantStep grants one key read, write and owner on an app's bucket. The
 // command is a set, so running it on a key that already holds the grant
 // changes nothing.
-func GrantStep(app, bucket, keyID string) Step {
+func GrantStep(d deployment.Deployment, app, bucket, keyID string) Step {
 	return Step{
 		Describe: fmt.Sprintf("grant %s's key %s read/write/owner on its bucket", app, keyID),
-		Command:  fmt.Sprintf("%s bucket allow --read --write --owner %s --key %s", Command, bucket, keyID),
+		Command:  fmt.Sprintf("%s bucket allow --read --write --owner %s --key %s", Command(d), bucket, keyID),
 	}
 }
 
@@ -391,10 +395,10 @@ func GrantStep(app, bucket, keyID string) Step {
 // imported again (handle_import_key refuses any ID the key table holds, even
 // deleted), which is why storage rotate-key only ever deletes the key it is
 // retiring, and only after the new one is proven.
-func DeleteKeyStep(keyID string) Step {
+func DeleteKeyStep(d deployment.Deployment, keyID string) Step {
 	return Step{
 		Describe: fmt.Sprintf("delete the S3 key %s from Garage", keyID),
-		Command:  fmt.Sprintf("%s key delete --yes %s", Command, keyID),
+		Command:  fmt.Sprintf("%s key delete --yes %s", Command(d), keyID),
 	}
 }
 
@@ -414,8 +418,8 @@ func (b Bucket) Readable() bool { return b.info.parsed }
 func (b Bucket) Grants(keyID string) bool { return b.info.parsed && b.info.grants(keyID) }
 
 // ReadBucket asks Garage about one bucket.
-func ReadBucket(t Transport, bucket string) (Bucket, error) {
-	out, err := t.Run(Command + " bucket info " + bucket)
+func ReadBucket(t Transport, d deployment.Deployment, bucket string) (Bucket, error) {
+	out, err := t.Run(Command(d) + " bucket info " + bucket)
 	gone, err := absent(out, err, "Bucket not found")
 	if err != nil {
 		return Bucket{}, fmt.Errorf("checking bucket %s on %s: %w", bucket, t.Describe(), err)

@@ -180,7 +180,7 @@ sudo because `ss -p` needs it to name another user's process:
 | Listeners | `ss -Hltnup` |
 | Interfaces and routes | `ip -o link`, `ip route` |
 | Firewall | `ufw status verbose`, `systemctl is-active firewalld` |
-| Toolkit state | whether `/srv/.paisans-manifest.json` exists |
+| Toolkit state | whether the deployment's manifest, `/srv/paisans/<token>/.paisans-manifest.json`, exists |
 
 **Ownership.** A container is the toolkit's when its
 `com.docker.compose.project` label starts `paisans-`. A listener is the

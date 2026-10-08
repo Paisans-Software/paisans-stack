@@ -9,26 +9,32 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 )
 
-// Paths on a Garage site, as infra-compose.yaml.tmpl mounts them.
-const (
-	garageToml = "/" + apply.GarageConfig
-	metaDir    = "/srv/infra/garage/meta"
-	// layoutFile is where Garage keeps its stored layout
-	// (src/rpc/layout/manager.rs:43-44). The reset sets it aside rather
-	// than deleting it, so a reset that went wrong can be undone by hand.
-	layoutFile = metaDir + "/cluster_layout"
-	// countsFile holds each bucket's object count from before a reset, on
-	// the anchor's host, until the provision gate has compared it.
-	countsFile = "/srv/infra/garage/replication-change.counts"
+// Paths on a Garage site, as infra-compose.yaml.tmpl mounts them, under the
+// deployment's root.
+func garageToml(d deployment.Deployment) string { return "/" + apply.GarageConfig(d) }
 
-	stopGarage  = "docker compose -f /srv/infra/compose.yaml stop garage"
-	startGarage = "docker compose -f /srv/infra/compose.yaml up -d garage"
-)
+func metaDir(d deployment.Deployment) string { return d.Path("infra", "garage", "meta") }
+
+// layoutFile is where Garage keeps its stored layout
+// (src/rpc/layout/manager.rs:43-44). The reset sets it aside rather than
+// deleting it, so a reset that went wrong can be undone by hand.
+func layoutFile(d deployment.Deployment) string { return metaDir(d) + "/cluster_layout" }
+
+// countsFile holds each bucket's object count from before a reset, on the
+// anchor's host, until the provision gate has compared it.
+func countsFile(d deployment.Deployment) string {
+	return d.Path("infra", "garage", "replication-change.counts")
+}
+
+func stopGarage(d deployment.Deployment) string  { return d.ComposeCmd("infra") + " stop garage" }
+func startGarage(d deployment.Deployment) string { return d.ComposeCmd("infra") + " up -d garage" }
 
 // node is what one Garage site's node said when Build read it.
 type node struct {
+	dep     deployment.Deployment
 	site    string
 	address string
 	// id is the full node ID `node id -q` prints, without its address. Empty
@@ -61,9 +67,9 @@ func (n *node) answers() bool { return n.id != "" }
 
 func (p *Plan) readNode(site string) (*node, error) {
 	t := p.transports[site]
-	n := &node{site: site, address: p.cfg.Sites[site].Address}
+	n := &node{dep: p.dep(), site: site, address: p.cfg.Sites[site].Address}
 
-	toml, found, err := t.ReadFile(garageToml)
+	toml, found, err := t.ReadFile(garageToml(p.dep()))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", site, err)
 	}
@@ -75,9 +81,9 @@ func (p *Plan) readNode(site string) (*node, error) {
 	// A missing directory is an answer, an empty listing; any failure is
 	// not one. Ignoring a failed listing read as "no stored layout" and
 	// planned no set aside for a node that has one.
-	listing, err := t.Run(fmt.Sprintf("if [ -d %[1]s ]; then ls -1 %[1]s; fi", metaDir))
+	listing, err := t.Run(fmt.Sprintf("if [ -d %[1]s ]; then ls -1 %[1]s; fi", metaDir(p.dep())))
 	if err != nil {
-		return nil, fmt.Errorf("%s: could not read host state (the listing of %s): %w", site, metaDir, err)
+		return nil, fmt.Errorf("%s: could not read host state (the listing of %s): %w", site, metaDir(p.dep()), err)
 	}
 	for _, name := range strings.Fields(listing) {
 		switch {
@@ -105,7 +111,7 @@ func (p *Plan) readNode(site string) (*node, error) {
 
 // refresh reads the node's ID and its view of the layout.
 func (n *node) refresh(t apply.Transport) error {
-	out, err := t.Run(gcmd("node id -q"))
+	out, err := t.Run(gcmd(n.dep, "node id -q"))
 	if err != nil {
 		n.id = ""
 		if errors.Is(err, apply.ErrUnreachable) {
@@ -130,7 +136,7 @@ func (n *node) refresh(t apply.Transport) error {
 		return fmt.Errorf("`garage node id` printed no node ID: %s", lastLines(out, 3))
 	}
 	n.id = id
-	layout, err := t.Run(gcmd("layout show"))
+	layout, err := t.Run(gcmd(n.dep, "layout show"))
 	if err != nil {
 		return fmt.Errorf("`garage layout show` failed: %s", lastLines(layout, 3))
 	}

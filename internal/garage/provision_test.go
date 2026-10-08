@@ -327,9 +327,9 @@ func TestExecuteStopsAtTheFirstFailingStepAndNamesIt(t *testing.T) {
 	plan := &garage.Plan{
 		Site: "home-a",
 		Steps: []garage.Step{
-			{Describe: "first step", Command: "docker compose -f /srv/infra/compose.yaml exec -T garage /garage layout assign"},
-			{Describe: "second step", Command: "docker compose -f /srv/infra/compose.yaml exec -T garage /garage layout apply"},
-			{Describe: "third step", Command: "docker compose -f /srv/infra/compose.yaml exec -T garage /garage bucket create"},
+			{Describe: "first step", Command: "docker compose -f /srv/paisans/f2a9/infra/compose.yaml exec -T garage /garage layout assign"},
+			{Describe: "second step", Command: "docker compose -f /srv/paisans/f2a9/infra/compose.yaml exec -T garage /garage layout apply"},
+			{Describe: "third step", Command: "docker compose -f /srv/paisans/f2a9/infra/compose.yaml exec -T garage /garage bucket create"},
 		},
 	}
 	transport := &fakeTransport{responses: map[string]response{

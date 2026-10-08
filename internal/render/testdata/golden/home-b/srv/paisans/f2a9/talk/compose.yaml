@@ -1,0 +1,160 @@
+# Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
+#
+# The whole Mbin stack, in the shape upstream's own compose.yaml has (read at
+# the paisans fork's tag v1.13.3+paisans): the web application, its messenger
+# consumers, a message broker behind an AMQP proxy, and a cache. Only `app`
+# publishes a port. Every other service is on this project's own network and
+# reachable from nothing else.
+#
+# talk has cluster placement: no Postgres service of its own, and a
+# connection to the local HAProxy on 10.44.0.2:5000, this site's own
+# mesh address. Every apps site runs this same stack with its own broker and
+# cache. Sessions are in Postgres (the image's framework.yaml uses
+# PdoSessionHandler), so a member keeps their session when the gateway moves
+# to another site; the queue and the cache are per site and are not. Each
+# site's consumers also run Mbin's scheduled tasks (the scheduler_default
+# transport), so with two apps sites each task runs once per site. Whether
+# every task tolerates that has not been checked.
+#
+# OWNERSHIP. Every directory below is a bind mount under /srv/paisans/f2a9/talk, and
+# whoever creates a missing one owns it: Docker creates it as root. The
+# containers cope with that as follows, and nothing here chowns anything:
+#
+#   app, messenger  start as root; the image's entrypoint chowns var/, /data
+#                   and /config to MBIN_USER (1000:1000, set in .env) and then
+#                   drops to it. media/ and oauth/ are NOT chowned. media/ is
+#                   unused while uploads go to S3; oauth/ holds two rendered
+#                   0644 files, which uid 1000 reads as they are (see below).
+#   rabbitmq        starts as root; its entrypoint chowns /var/lib/rabbitmq to
+#                   its own user and drops to it. No `user:` here for that
+#                   reason, which is a deliberate difference from upstream.
+#   valkey          mounts only valkey.conf, read only, so owns nothing.
+#   amqproxy        mounts nothing.
+name: paisans-f2a9-talk
+
+services:
+  app:
+    labels:
+      community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"
+    image: ghcr.io/example-org/mbin:v1.10.1-fork
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # The image is FrankenPHP, which is Caddy, and by default it terminates
+      # TLS itself and asks for a certificate for SERVER_NAME. The gateway
+      # terminates TLS, so this listens plainly on the port it publishes and
+      # never attempts ACME. Upstream's documented pattern for running behind a
+      # reverse proxy (docs/02-admin/01-installation/02-docker.md, "Running
+      # behind a reverse proxy") is these two settings with ":80"; the port
+      # here is the one the gateway routes to instead.
+      SERVER_NAME: ":8080"
+      CADDY_GLOBAL_OPTIONS: "auto_https off"
+      # The image's Caddyfile configures Mercure with publisher_jwt and
+      # subscriber_jwt, which the Mercure module in 1.13.3-paisans accepts only
+      # in compatibility mode: without this the app's Caddy refuses its own
+      # configuration and the container restarts forever, which is what the
+      # first real host did. The Caddyfile reads this variable inside its
+      # mercure block (docker/Caddyfile, "Extra directives", at the fork's tag
+      # v1.13.3+paisans). From 1.14.0-paisans the image sets the directive
+      # itself; it is kept here for an operator who declares an older image,
+      # and a second copy was checked to be harmless (frankenphp validate on
+      # 1.14.0-paisans accepts the Caddyfile with and without it).
+      MERCURE_EXTRA_DIRECTIVES: "protocol_version_compatibility 8"
+    # The mesh address only. Docker's own iptables rules bypass a host
+    # firewall, so a port published on every interface of a host with a
+    # public address is reachable from the internet whatever ufw says. The
+    # gateway, over the mesh, is the only thing that should reach it.
+    ports:
+      - "10.44.0.2:8080:8080"
+    # The image declares VOLUME /app/var/ (docker/Dockerfile:9 at the fork's
+    # tag v1.13.3+paisans). Left unmounted, Docker gives every new container a
+    # fresh anonymous volume there and abandons the old one when the container
+    # is replaced: a real apps site collected 18 of them, about 830 MB, each
+    # holding cache/ and log/. What lives there is Symfony's compiled cache,
+    # which the entrypoint rebuilds with `cache:clear` on every start, so
+    # memory is the right place for it. The application cache is in Valkey
+    # (config/packages/cache.yaml), not here. 53 MB after a cache:clear, so
+    # 256m is room to grow, and tmpfs takes memory only as it fills. Owned by
+    # MBIN_USER's default, though the entrypoint chowns var/ to MBIN_USER
+    # anyway. The log bind mount below sits inside it: Docker mounts in path
+    # order, so /app/var/log lands on top of the tmpfs, which was checked with
+    # a probe container writing through both. A bind at /srv/paisans/f2a9/talk/var was
+    # rejected because the two messenger replicas would share, and race, one
+    # cache directory.
+    tmpfs:
+      - /app/var:size=256m,mode=0755,uid=1000,gid=1000
+    volumes:
+      # Caddy's own state, including the Mercure hub's bolt database.
+      - /srv/paisans/f2a9/talk/caddy_data:/data
+      - /srv/paisans/f2a9/talk/caddy_config:/config
+      - /srv/paisans/f2a9/talk/media:/app/public/media
+      # Mbin's own OAuth2 server keypair, for API clients. Not the identity
+      # provider's client secret. Generated at `paisans init`, kept in the
+      # secrets file and rendered here as oauth/private.pem and public.pem, so
+      # every apps site under cluster placement has the same pair and a token
+      # one site issues verifies on another. Both are 0644 so uid 1000 can read
+      # them without a chown; private.pem is encrypted with OAUTH_PASSPHRASE,
+      # which is only in the 0600 .env. Read only, so the application cannot
+      # rewrite its own signing key.
+      - /srv/paisans/f2a9/talk/oauth:/app/config/oauth2:ro
+      - /srv/paisans/f2a9/talk/php_logs:/app/var/log
+      # Nothing is mounted over config/packages/. The image's entrypoint edits
+      # three files there in place at every start (liip_imagine.yaml,
+      # monolog.yaml, and oneup_flysystem.yaml, which it switches to the S3
+      # adapter because S3_KEY is set in .env), and `sed -i` over a bind mount
+      # fails and stops the container.
+    depends_on:
+      valkey:
+        condition: service_healthy
+
+  messenger:
+    labels:
+      community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"
+    # The same image as app, always: the consumers run the application's own
+    # code, so they are not a service with an image of their own to declare.
+    image: ghcr.io/example-org/mbin:v1.10.1-fork
+    restart: unless-stopped
+    command: bin/console messenger:consume scheduler_default old async outbox deliver inbox resolve receive failed --time-limit=3600
+    # Two, not upstream's six: one consumer restarting does not stop
+    # federation delivery, at a third of the memory. Raise it when the queue
+    # is seen to back up, not before.
+    deploy:
+      replicas: 2
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep 'messenger[:]consume' || exit 1"]
+    env_file:
+      - .env
+    # Per container, so each replica has its own cache. See app.
+    tmpfs:
+      - /app/var:size=256m,mode=0755,uid=1000,gid=1000
+    volumes:
+      - /srv/paisans/f2a9/talk/media:/app/public/media
+      - /srv/paisans/f2a9/talk/messenger_logs:/app/var/log
+      # The same keypair as app, so that nothing the consumers run differs from
+      # the web container in which keys it can see.
+      - /srv/paisans/f2a9/talk/oauth:/app/config/oauth2:ro
+    depends_on:
+      valkey:
+        condition: service_healthy
+
+  valkey:
+    labels:
+      community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"
+    image: docker.io/valkey/valkey:9.1.2-trixie
+    restart: unless-stopped
+    # The password is on the command line, as upstream has it, so it is
+    # visible to `ps` on the host. valkey.conf is not secret and is rendered
+    # 0644 for that reason; the password stays out of it.
+    command: valkey-server /valkey.conf --requirepass ${VALKEY_PASSWORD:?set in .env}
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+    volumes:
+      - /srv/paisans/f2a9/talk/valkey.conf:/valkey.conf:ro
+
+# Every network carries the deployment label too, so that what owns it is
+# read from the label rather than guessed from its name.
+networks:
+  default:
+    labels:
+      community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"
