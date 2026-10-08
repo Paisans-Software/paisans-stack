@@ -24,6 +24,11 @@ type inventoryHost struct {
 func (h *inventoryHost) Describe() string { return "ubuntu@host.example.org" }
 func (h *inventoryHost) Run(command string) (string, error) {
 	h.ran = append(h.ran, command)
+	// Asked before the answers, whose "docker network inspect" is the
+	// inventory's probe and would also match apply's.
+	if out, ok := absentNetworks(command); ok {
+		return out, nil
+	}
 	for key, out := range h.answers {
 		if strings.Contains(command, key) {
 			return out, nil

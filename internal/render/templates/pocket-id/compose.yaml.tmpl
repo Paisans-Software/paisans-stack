@@ -51,9 +51,33 @@ services:
     volumes:
       - {{ .DataPath }}/data:/app/data
       - {{ .DataPath }}/paisans-standby.sh:/paisans/pocket-id-standby.sh:ro
+      # Where the standby wrapper mirrors its marker for the reconciler.
+      - {{ .DataPath }}/run:/paisans/run
 {{- if .App.Pinned }}
     depends_on:
       - postgres
+{{- end }}
+
+  # The admin reconciler (docs/specs/2026-10-08-admin-reconciler.md): keeps Pocket ID's
+  # administrators in the admins group, and fails /healthz while that group
+  # has fewer than two members. It reaches Pocket ID as `app` on this stack's
+  # own network with the STATIC_API_KEY above, so the key goes nowhere it was
+  # not already. Beside a standby it reads the marker and does nothing.
+  reconciler:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
+    image: {{ .Image "reconciler" }}
+    restart: unless-stopped
+    env_file:
+      - .env
+    # The mesh address only, for the uptime monitor's check.
+    ports:
+      - "{{ .MeshAddress }}:1412:1412"
+    volumes:
+      - {{ .DataPath }}/run:/paisans/run:ro
+    depends_on:
+      - app
+{{- if .App.Pinned }}
 
   postgres:
     labels:

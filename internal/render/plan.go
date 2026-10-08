@@ -20,6 +20,12 @@ type File struct {
 	Path    string
 	Content string
 	Mode    uint32
+	// App is the app a file belongs to when it lies outside that app's own
+	// stack directory, as a route snippet on a site running Caddy does, and
+	// empty otherwise. apply holds such a file back with its app (see
+	// apply.Except), which its path alone does not say: it sits in the
+	// infrastructure stack's directory.
+	App string
 }
 
 // Plan is every file a configuration renders to, sorted by path so that two
@@ -61,6 +67,12 @@ func AppPort(kind config.Kind) int { return appPort[kind] }
 // nothing computes a port at render time that those files did not already
 // name.
 const gateMembersPort = 4181
+
+// reconcilerPort is the pocket-id kind's admin reconciler, which publishes /healthz on
+// the mesh address for the uptime monitor. A literal, like gateMembersPort:
+// the reconciler's own binary and the kind's compose template name the same
+// number.
+const reconcilerPort = 1412
 
 // masPort is where Matrix Authentication Service listens, one port above the
 // homeserver's 8008. MAS's own documented example binds 8080, and that is not

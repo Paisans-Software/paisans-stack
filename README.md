@@ -525,6 +525,26 @@ is reached by the web server's own address, which Docker's forwarding keeps
 and which the toolkit knows only by its network, so it is that private block
 or the mesh subnet.
 
+Switching an existing site between the two modes moves that pin, and the
+network on the host has to move with it, or `TRUST_PROXY` names a gateway the
+web server's connections no longer come from. `apply` therefore asks the host
+how each stack it recreates has its compose network addressed, and where that
+differs from the compose file (a pin the file declares and the network lacks,
+or `10.255.255.0/29` left on a network the file no longer pins), it plans a
+`docker compose down` before the `up`, shown in the plan with the reason.
+`down` removes the network, and `up` creates it as declared. Only IPv4
+subnets are compared, and a gateway only where the file declares one, so
+what Docker fills in for itself never takes a stack down. The old
+containers' anonymous volumes are kept, since the new containers start on
+fresh ones and the old may hold data. The infrastructure stack is never
+taken down this way, because that stops the database and the gateway
+together; a mismatch there is a note in the plan telling the operator to
+take it down at a time the site can be out and apply with `--recreate
+infra`. A probe Docker cannot answer stops the plan. Compose 2.31 and
+later recreates a network whose recorded configuration changed, but leaves
+one with no record alone (created by an older Compose or by hand), so `apply`
+reads the network itself rather than relying on that. A dry run only reads.
+
 **Helping an operator behind their own web server.** Two commands, neither of
 which reaches a host or changes anything:
 
@@ -571,12 +591,21 @@ from this configuration and the fork reconciles it at every start:
   app's public check expects the gate's `401` to a request with no session:
   it proves the edge and the gate, and the direct check proves the app.
 * every site but the monitor's own gets a **ping** over the mesh.
+* every site Pocket ID runs on gets a check on its **admin reconciler**, which
+  fails while the `admins` group has fewer than two members (see *The admin
+  reconciler keeps two administrators in `admins`*).
 * the monitor checks no container of its own, which could only ever pass,
   but it does check its own public URL, `https://<hostname>/healthz`: it is
   alive whenever it can run that check, so what the check proves is the path
   in front of it, DNS, the web server and the certificate. Behind an
   operator's web server it is the only thing that notices a renewal that
   silently stopped.
+* every `uptime` app pinned to a different `monitor` site gets the same
+  check of its public URL, `https://<hostname>/healthz` expecting 200. A
+  monitor cannot report its own death, so a monitor on a separate site is
+  what notices one that died, and the ping of its site, above, says whether
+  it was the host. A monitor on the same site is not checked: it shares the
+  host, so it would go down with it and could say nothing about losing it.
 
 Every other app's public check now runs from a machine that is not the
 gateway, so a dead gateway shows as every public check failing while the
@@ -2945,7 +2974,8 @@ entrypoint, with the image's own entrypoint and command as its arguments:
   `/tmp/paisans-standby`, waits `PAISANS_STANDBY_RETRY` seconds (15 by
   default) and tries again;
 * on any other exit, it exits with the child's status;
-* it keeps the state file through each retry, so a waiting standby never
+* it keeps the state file, and its copy at `/paisans/run/standby` that the
+  admin reconciler reads, through each retry, so a waiting standby never
   reads as down while its retry is being refused, and removes it once the
   retried instance is admitted: when the image's healthcheck first passes,
   asked every second, or after `PAISANS_STANDBY_HOLD` seconds (10 by default)
@@ -3003,6 +3033,59 @@ limits of its own, recorded in `docs/specs/2026-10-07-pocket-id-standby.md`:
 its cache is per site, its scheduled tasks run per site until the fork's
 scheduler lock lands, and the second site's web workers serve only during a
 failover. Its sessions are in Postgres and survive one.
+
+### The admin reconciler keeps two administrators in `admins`
+
+A community whose identity provider has one administrator is one lost passkey
+away from nobody being able to run it. So the `pocket-id` kind runs a second
+service beside Pocket ID on every site it runs on, `reconciler`, built from
+`cmd/admin-reconciler` and published as `ghcr.io/paisans-software/admin-reconciler`. The
+design is in `docs/specs/2026-10-08-admin-reconciler.md`.
+
+Every two hours, and once when it starts, the reconciler reads Pocket ID's users
+and the group named `admins` (after one minute instead when it could not reach
+Pocket ID, which starts alongside it), and:
+
+* **adds every Pocket ID administrator to `admins`**, unless the user is
+  disabled, is managed by an LDAP sync (which owns that user's groups), or is
+  the static API key's own user (`00000000-0000-0000-0000-000000000000`). The
+  write is `PUT /api/users/:id/user-groups`, which replaces the user's whole
+  set, so the reconciler reads the user again just before it and sends the groups
+  it finds plus `admins`;
+* **counts the members of `admins`**, disabled users and the static key's
+  user left out.
+
+`/healthz`, published on the site's mesh address at port 1412, serves the
+last pass: 200 with two or more members, 503 with fewer, on a failed write,
+with no group named `admins`, when Pocket ID does not answer, before the first
+pass, and once the last pass is more than two and a half hours old. The body
+is one line naming users by username. The uptime kind checks every site's
+reconciler, so a community down to one administrator gets an incident while that
+administrator can still fix it. Docker's healthcheck asks `/livez` instead,
+which fails only when the pass loop has hung: a new deployment has no `admins`
+group until someone makes one, and `apply`'s health gate must not hold the
+Pocket ID stack back on it.
+
+**The reconciler's one write is approved once, not per write.** An agent
+needs a human for every change to Pocket ID's groups; the reconciler is a
+service the deployment runs, approved as a whole when its design was
+(`docs/deployment-agent-rules.md`, *Services the deployment runs*).
+Pocket ID administrators are the community's administrators, so putting them
+in `admins` changes nobody's power, only which apps recognise it. The reconciler
+never removes anyone, never changes a user, and never creates or deletes a
+group, and its tests fail on any other request that writes. Founder decision,
+recorded in `docs/decisions.md`.
+
+**It reaches Pocket ID as `app` on the stack's own network**, with the
+`STATIC_API_KEY` the same `.env` already carries, so the key is on no host and
+in no stack it was not already. **Beside a standby it does nothing:** the
+standby wrapper writes its marker to `/srv/paisans/<token>/<app>/run/standby` as well as to
+`/tmp`, the reconciler mounts that directory read only, and a reconciler that finds the
+marker reports `standby` with a 200.
+
+**The group is always `admins`.** `validate` warns
+(`admin-group-not-admins`) about an app in a deployment running Pocket ID
+whose admin group is another one, since the reconciler does not watch it.
 
 ### `apply` checks free space before it pulls
 
@@ -3331,7 +3414,16 @@ reason and the rest of the site is applied; a re-run once Pocket ID answers
 finishes it, and the apply does not fail for it. The end of the apply lists
 what was held back and why, including any `--overwrite` in a held stack, which
 is not written and has to be named again; a `--recreate` of a held stack is
-remembered and carried out when the stack starts. A deployment that declares
+remembered and carried out when the stack starts. A held app's route on the
+site's own Caddy (a gateway, or a monitor serving its own apps) is held with
+it and written by the pass that starts the app, because a route reloaded
+first would point at the app as it was, or at one still without its client.
+The one exception is a route the host does not have yet: the Caddyfile
+imports every route by path and Caddy will not load an import of a missing
+file, so a new app's route is written in the first pass and goes live then,
+pointing wherever the app runs. A gateway routes to apps on other sites as
+well, so the app may already be serving there; it gets its client in the
+second pass of its own site's apply. A deployment that declares
 no `pocket-id` app has no identity step, and its apps are applied as before,
 without sign in. An app whose client is already
 recorded is not held back by an unreachable Pocket ID: its client was right

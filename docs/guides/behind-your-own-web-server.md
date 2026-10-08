@@ -148,7 +148,9 @@ Run it again after every change until every line says `PASS`.
 The monitor checks its own public URL, `https://<hostname>/healthz`, every
 minute, and the fork warns 14 days before the certificate there expires. In
 this mode that check is the only thing that notices a renewal that silently
-stopped, so keep the monitor's email channel working.
+stopped, so keep the monitor's email channel working. Where the deployment
+has a second monitor on a second `monitor` site, that one checks this URL
+too, so a monitor whose host has died is still reported.
 
 Changing your web server, its certificate or its address needs nothing from
 the toolkit. Changing `listen` does: edit `paisans.yaml`, apply the site, and

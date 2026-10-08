@@ -433,7 +433,12 @@ step; `oidc client create` calls the same helpers there, and
 `internal/oidcclient` does the planning and sending, unchanged. The step plans
 read only before the site plan, so a dry run shows it. On `--execute`, a site
 running Pocket ID applies in two passes (`executeWithClients`): the first
-holds every other app stack back with `apply.Except`, then `CheckOneActive`
+holds every other app stack back with `apply.Except`, and with it each held
+app's Caddy route on that site (`render.File.App` names the app a file
+outside its stack directory belongs to; `heldRoute` holds it unless it is
+not on the host yet, since the Caddyfile imports it by path; a held file
+edited on the host stays in the plan as a conflict, so the pass refuses on
+it), then `CheckOneActive`
 waits for Pocket ID's `/healthz`, then the clients are ensured, then the site
 is planned again with the new credentials and executed. Any other site
 ensures first and applies once. An app with no recorded client is held back
@@ -754,6 +759,18 @@ it whenever the Pocket ID image is bumped: it is what proves the marker
 against the binary. The image is `linux/amd64`, emulated on an arm64
 workstation.
 
+The admin reconciler has a Docker test of its own, behind its own tag:
+
+```
+go test -tags pocketid_integration ./internal/adminreconciler/
+```
+
+It starts the pinned Pocket ID image with a static API key, makes one
+administrator in `admins` and one outside it, runs one pass, and reads the
+groups back. Rerun it whenever the Pocket ID image is bumped: it proves what
+the reconciler assumes about the API, and the static key's user, against the real
+thing.
+
 ## Fixtures and secrets
 
 `internal/render/testdata/secrets.fixture.yaml` is plaintext on purpose. Every
@@ -775,6 +792,8 @@ installed, on a workstation or anywhere else.
 | Path | Holds |
 |------|-------|
 | `cmd/paisans` | the command, flag parsing, and how findings are printed |
+| `cmd/admin-reconciler` | the admin reconciler's binary and its image's Dockerfile: the pass loop, `/healthz`, and `healthcheck` |
+| `internal/adminreconciler` | one admin reconciler pass: who to add to `admins`, the one write, and what `/healthz` says |
 | `internal/config` | loading `paisans.yaml`, and decrypting `secrets.enc.yaml` |
 | `internal/deployment` | a deployment's id and token, and every name, path and label derived from them |
 | `internal/registry` | a host's record of the deployments on it, and the locked claim every writing command makes |
@@ -787,7 +806,7 @@ installed, on a workstation or anywhere else.
 | `internal/apply` | what to push to a host, what to restart, and the gates before either |
 | `internal/siteadd` | joining a new data site: six staged, gated, resumable stages |
 | `internal/appadmin` | an app's first administrator: probe, plan, and the per kind API calls |
-| `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin |
+| `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin, or over HTTP from beside it |
 | `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |
 | `internal/ingress` | a monitor's ingress: the hand-off sheet for an operator's own web server, and the read only checks run from the workstation |
 | `internal/hostcheck` | what a site claims on its host, what the host already runs, and whether that is clean, shared or a conflict |

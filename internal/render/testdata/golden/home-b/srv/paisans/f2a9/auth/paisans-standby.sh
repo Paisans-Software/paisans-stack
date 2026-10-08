@@ -15,14 +15,19 @@
 # waits $PAISANS_STANDBY_RETRY seconds and tries again. Any other exit is
 # passed on, so Docker's restart policy and apply's gate see it as before.
 #
-# The state file stays through each retry, so the toolkit's instance probe
-# reads a waiting standby as standby for the whole wait, not as down while the
-# retry is being refused. It goes as soon as a retried instance is admitted:
-# when the image's healthcheck first passes (asked every second), or after
-# $PAISANS_STANDBY_HOLD seconds (10 by default) if the instance is still
+# The same marker is written to /paisans/run/standby, a directory the admin
+# reconciler beside this container mounts read only, so the reconciler can tell a
+# standby from a Pocket ID that is down. Both copies are removed whenever this
+# script exits.
+#
+# The markers stay through each retry, so the toolkit's instance probe and the
+# reconciler read a waiting standby as standby for the whole wait, not as down
+# while the retry is being refused. They go as soon as a retried instance is
+# admitted: when the image's healthcheck first passes (asked every second), or
+# after $PAISANS_STANDBY_HOLD seconds (10 by default) if the instance is still
 # running without passing it, which is longer than a refusal takes. So an
-# active instance loses the file within a second of serving, and an admitted
-# one that never serves reads as down instead of hiding behind the standby's
+# active instance loses them within a second of serving, and an admitted one
+# that never serves reads as down instead of hiding behind the standby's
 # healthy healthcheck.
 #
 # A stop is forwarded to the child as SIGTERM, so an active instance shuts
@@ -36,6 +41,7 @@
 set -u
 
 state=/tmp/paisans-standby
+shared=/paisans/run/standby
 fifo=/tmp/paisans-standby.fifo
 kept=/tmp/paisans-standby.tail
 marker='already one instance of Pocket ID running'
@@ -46,6 +52,13 @@ ready='/app/pocket-id healthcheck'
 
 child=
 stopping=
+
+# finish removes both markers, the shared one outliving the container on the
+# host, and exits.
+finish() {
+	rm -f "$state" "$shared"
+	exit "$1"
+}
 
 stop() {
 	stopping=1
@@ -69,14 +82,14 @@ reap() {
 	return "$code"
 }
 
-# watch removes the state file once the retried child ($1) is admitted: when
-# it is ready, or once it has outlived a refusal by $hold seconds. It returns
-# when the child is gone, leaving the file for the loop to keep or remove.
+# watch removes the markers once the retried child ($1) is admitted: when it
+# is ready, or once it has outlived a refusal by $hold seconds. It returns
+# when the child is gone, leaving the markers for the loop to keep or remove.
 watch() {
 	waited=0
 	while kill -0 "$1" 2>/dev/null; do
 		if $ready >/dev/null 2>&1 || [ "$waited" -ge "$hold" ]; then
-			rm -f "$state"
+			rm -f "$state" "$shared"
 			return
 		fi
 		sleep 1
@@ -84,12 +97,13 @@ watch() {
 	done
 }
 
-# A restarted container keeps its /tmp, so a state file from before the
-# restart would make this first attempt read as standby.
-rm -f "$state"
+# A restarted container keeps its /tmp, and the shared marker outlives the
+# container, so markers from before the restart would make this first attempt
+# read as standby.
+rm -f "$state" "$shared"
 while :; do
 	rm -f "$fifo" "$kept"
-	mkfifo "$fifo" || exit 1
+	mkfifo "$fifo" || finish 1
 	# Every line goes straight to the container's log; only the last 50 are
 	# held, in a ring, and written to $kept when the child closes its output.
 	awk -v kept="$kept" '
@@ -116,28 +130,27 @@ while :; do
 	child=
 	reap "$reader"
 	# The watcher sees the child gone within a second; wait for it, so it
-	# cannot remove a state file the loop is about to keep.
+	# cannot remove markers the loop is about to keep.
 	if [ -n "$watcher" ]; then
 		reap "$watcher"
 	fi
 	rm -f "$fifo"
 
 	if [ "$status" -eq 0 ] || [ -n "$stopping" ]; then
-		rm -f "$state"
-		exit "$status"
+		finish "$status"
 	fi
 	if ! grep -qF -e "$marker" "$kept" 2>/dev/null; then
-		rm -f "$state"
-		exit "$status"
+		finish "$status"
 	fi
 
 	: > "$state"
+	: > "$shared"
 	echo "paisans-standby: another Pocket ID instance is active on this database; standing by, next attempt in ${retry}s"
 	sleep "$retry" &
 	child=$!
 	reap "$child"
 	child=
 	if [ -n "$stopping" ]; then
-		exit 0
+		finish 0
 	fi
 done

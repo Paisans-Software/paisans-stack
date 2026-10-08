@@ -47,6 +47,28 @@ services:
     volumes:
       - /srv/paisans/f2a9/auth/data:/app/data
       - /srv/paisans/f2a9/auth/paisans-standby.sh:/paisans/pocket-id-standby.sh:ro
+      # Where the standby wrapper mirrors its marker for the reconciler.
+      - /srv/paisans/f2a9/auth/run:/paisans/run
+
+  # The admin reconciler (docs/specs/2026-10-08-admin-reconciler.md): keeps Pocket ID's
+  # administrators in the admins group, and fails /healthz while that group
+  # has fewer than two members. It reaches Pocket ID as `app` on this stack's
+  # own network with the STATIC_API_KEY above, so the key goes nowhere it was
+  # not already. Beside a standby it reads the marker and does nothing.
+  reconciler:
+    labels:
+      community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"
+    image: ghcr.io/paisans-software/admin-reconciler:0.1.0
+    restart: unless-stopped
+    env_file:
+      - .env
+    # The mesh address only, for the uptime monitor's check.
+    ports:
+      - "10.44.0.2:1412:1412"
+    volumes:
+      - /srv/paisans/f2a9/auth/run:/paisans/run:ro
+    depends_on:
+      - app
 
 # Every network carries the deployment label too, so that what owns it is
 # read from the label rather than guessed from its name.

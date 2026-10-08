@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/acme"
+	"github.com/paisans-software/paisans-stack/internal/adminreconciler"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -143,6 +144,7 @@ func Check(cfg *config.Config) Result {
 	c.gatedMatrixHostname()
 	c.homeserverMustBePinned()
 	c.uptimeNeedsAnAdminGroup()
+	c.adminGroupNotAdmins()
 	c.monitorRoles()
 	c.ingress()
 	c.smtpOnAKindWithoutMail()
@@ -1338,6 +1340,38 @@ func (c *checker) uptimeNeedsAnAdminGroup() {
 		}
 		c.refuse("uptime-needs-an-admin-group", fmt.Sprintf("apps.%s.settings.admin_group", name),
 			"is required. Name the identity provider group whose members may sign in to the monitor, for example admins. Only that group is admitted, and group names are this community's own, so there is no default.")
+	}
+}
+
+// adminGroupNotAdmins warns about an app that reads its administrators from a
+// group other than admins in a deployment that runs Pocket ID. The admin
+// reconciler beside Pocket ID keeps every Pocket ID administrator in admins and
+// fails its health check while admins has fewer than two members
+// (docs/specs/2026-10-08-admin-reconciler.md), so an app reading another group is
+// one the reconciler does not reconcile or report on.
+func (c *checker) adminGroupNotAdmins() {
+	runsPocketID := false
+	for _, app := range c.cfg.Apps {
+		if app.Kind == config.KindPocketID {
+			runsPocketID = true
+		}
+	}
+	if !runsPocketID {
+		return
+	}
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		spec, ok := kinds.OIDCClient(app.Kind, app.Hostname)
+		if !ok {
+			continue
+		}
+		admin, _ := spec.Groups(app)
+		if admin == "" || admin == adminreconciler.Group {
+			continue
+		}
+		c.warn("admin-group-not-admins", spec.AdminGroupSource(name),
+			"is %s. The admin reconciler keeps Pocket ID's administrators in %s and alerts while it has fewer than two members, so %s's administrators are a group nobody is watching. Name %s here, or accept that this app's admin group is unwatched.",
+			admin, adminreconciler.Group, name, adminreconciler.Group)
 	}
 }
 
