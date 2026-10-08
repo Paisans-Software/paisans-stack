@@ -3,7 +3,7 @@
   "files": [
     {
       "path": "etc/wireguard/wg0.conf",
-      "sha256": "b69d4095c543fbfe4bc0192d77e5956848a8739c13ebe74c307553cb8eefd3ce",
+      "sha256": "f2b990afacd7d4fd12ac106cad52e3054c7b035082e8d596852014ada4b3a942",
       "mode": "0600"
     },
     {

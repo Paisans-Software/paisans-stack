@@ -10,6 +10,8 @@
 # exists, which under this toolkit is always.
 @refused path /status* /badge/* /metrics /api/v1/*
 respond @refused 404
-reverse_proxy 10.44.0.3:3001 {
+reverse_proxy 10.44.0.4:3001 {
+	# One site, not the gateway's machine; see upstream_single in the Caddyfile.
+	import upstream_single
 	header_up X-Forwarded-Proto https
 }

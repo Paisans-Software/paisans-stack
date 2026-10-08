@@ -259,6 +259,14 @@
       "interval_seconds": 60,
       "timeout_ms": 10000,
       "failure_threshold": 2
+    },
+    {
+      "name": "vm — ping",
+      "monitor_type": "ping",
+      "ping_host": "10.44.0.3",
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
     }
   ],
   "settings": {

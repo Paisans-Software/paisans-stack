@@ -73,11 +73,17 @@ func losses(cfg *config.Config, site string) string {
 	declared := cfg.Sites[site]
 	var lost []string
 	if declared.Has(config.RoleGateway) {
-		if len(cfg.GatewaySites()) == 1 {
+		switch {
+		case len(cfg.GatewaySites()) == 1 && len(cfg.MonitorSites()) > 0:
+			lost = append(lost, "its gateway, which every public hostname but the monitor's goes through")
+		case len(cfg.GatewaySites()) == 1:
 			lost = append(lost, "its gateway, which every public hostname goes through")
-		} else {
+		default:
 			lost = append(lost, "its gateway, and every public hostname whose DNS points only at it")
 		}
+	}
+	if declared.Has(config.RoleMonitor) {
+		lost = append(lost, "the uptime monitor, so nothing reports the other sites' failures while it is gone")
 	}
 	if contains(cfg.Etcd.Members, site) {
 		lost = append(lost, fmt.Sprintf("one of %d etcd votes (quorum needs %d)", len(cfg.Etcd.Members), len(cfg.Etcd.Members)/2+1))

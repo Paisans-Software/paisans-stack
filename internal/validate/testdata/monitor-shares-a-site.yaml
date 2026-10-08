@@ -1,4 +1,4 @@
-# valid.yaml with an uptime app and no smtp anywhere.
+# valid.yaml with the monitor role on home-a, beside data and apps.
 # A coherent three site deployment. Every fixture in this directory is a
 # variation on this one, so that a test names exactly the thing it breaks.
 version: 1
@@ -15,8 +15,9 @@ acme:
 
 sites:
   home-a:
-    roles: [data, apps]
+    roles: [data, apps, monitor]
     address: 10.44.0.1
+    public_address: 203.0.113.20
     ssh:
       host: home-a.local
       user: ubuntu
@@ -36,15 +37,6 @@ sites:
     endpoint: vm.example.org:51820
     ssh:
       host: vm.example.org
-      user: ubuntu
-      public_key: |
-        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
-  watch:
-    roles: [monitor]
-    address: 10.44.0.4
-    public_address: 203.0.113.20
-    ssh:
-      host: watch.local
       user: ubuntu
       public_key: |
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
@@ -82,6 +74,12 @@ apps:
   status:
     kind: uptime
     hostname: status.example.org
-    placement: { pinned: watch }
+    placement: { pinned: home-a }
     settings:
       admin_group: admins
+
+smtp:
+  host: smtp.example.org
+  security: starttls
+  username: status@example.org
+  from_address: status@example.org

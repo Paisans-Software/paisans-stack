@@ -1,6 +1,6 @@
 # Rendered by paisans. Do not edit: `paisans apply` overwrites this file.
 #
-# The uptime monitor, pinned to vm. Its monitors are not configured
+# The uptime monitor, pinned to watch. Its monitors are not configured
 # here or in its UI: they are seeded from monitors.json, which `apply` renders
 # from paisans.yaml, at every start.
 #
@@ -27,7 +27,7 @@ services:
     # firewall, so a port published on every interface of a host with a
     # public address is reachable from the internet whatever ufw says.
     ports:
-      - "10.44.0.3:3001:3001"
+      - "10.44.0.4:3001:3001"
     volumes:
       - /srv/status/data:/data
       - /srv/status/monitors.json:/seed/monitors.json:ro

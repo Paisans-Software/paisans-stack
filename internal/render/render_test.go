@@ -2709,8 +2709,17 @@ func TestRoutesBoundTheWaitOnAnotherMachine(t *testing.T) {
 	if s := snippet("talk"); !strings.Contains(s, "import upstream_failover") || strings.Contains(s, "upstream_single") {
 		t.Errorf("talk, on two apps sites, should import upstream_failover only:\n%s", s)
 	}
-	if strings.Contains(snippet("status"), "upstream_single") { // pinned to vm, the gateway
-		t.Error("status, on the gateway itself, imports upstream_single")
+	// web moved onto vm, the gateway's own machine.
+	cfg := fixture(t)
+	web := cfg.Apps["web"]
+	web.Placement = config.Placement{Mode: config.PlacementPinned, Site: "vm"}
+	cfg.Apps["web"] = web
+	plan, err := render.Build(cfg, fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(planFiles(plan)["vm/srv/infra/caddy/snippets/web.caddy"], "upstream_single") {
+		t.Error("web, on the gateway itself, imports upstream_single")
 	}
 	caddyfile := files["vm/srv/infra/caddy/Caddyfile"]
 	for _, name := range []string{"(upstream_failover) {", "(upstream_single) {"} {

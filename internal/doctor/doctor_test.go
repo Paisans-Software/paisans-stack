@@ -132,13 +132,27 @@ func TestUnreachableSiteSaysWhatIsLost(t *testing.T) {
 		}
 	}
 	vm := strings.Join(find(t, findings, SectionReach, "vm:").More, "\n")
-	for _, want := range []string{"its gateway, which every public hostname goes through", "one of 3 etcd votes", "chat, status, pinned here"} {
+	for _, want := range []string{"its gateway, which every public hostname but the monitor's goes through", "one of 3 etcd votes", "chat, pinned here"} {
 		if !strings.Contains(vm, want) {
 			t.Errorf("vm's loss lacks %q:\n%s", want, vm)
 		}
 	}
 	if find(t, findings, SectionReach, "home-a:").Level != OK {
 		t.Error("home-a answered")
+	}
+}
+
+// A monitor's absence is the one loss nothing else reports.
+func TestAnUnreachableMonitorSaysNothingReportsFailures(t *testing.T) {
+	cfg := fixture(t)
+	findings := Reach(cfg, []SiteReach{
+		{Site: "watch", Destination: "ubuntu@watch.example.org", Err: "ssh: connect to host watch.example.org port 22: Connection refused"},
+	})
+	text := strings.Join(find(t, findings, SectionReach, "watch:").More, "\n")
+	for _, want := range []string{"the uptime monitor, so nothing reports the other sites' failures while it is gone", "status, pinned here"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("watch's loss lacks %q:\n%s", want, text)
+		}
 	}
 }
 

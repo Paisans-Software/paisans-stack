@@ -1,4 +1,4 @@
-# valid.yaml with an uptime app and no smtp anywhere.
+# valid.yaml with a monitor site that nothing is pinned to.
 # A coherent three site deployment. Every fixture in this directory is a
 # variation on this one, so that a test names exactly the thing it breaks.
 version: 1
@@ -79,9 +79,3 @@ apps:
     placement: cluster
     settings:
       file_backend: database
-  status:
-    kind: uptime
-    hostname: status.example.org
-    placement: { pinned: watch }
-    settings:
-      admin_group: admins

@@ -143,6 +143,7 @@ func Check(cfg *config.Config) Result {
 	c.gatedMatrixHostname()
 	c.homeserverMustBePinned()
 	c.uptimeNeedsAnAdminGroup()
+	c.monitorRoles()
 	c.smtpOnAKindWithoutMail()
 	c.mediaHostnameShape()
 	c.mediaHostnameUnderAnAppHostname()

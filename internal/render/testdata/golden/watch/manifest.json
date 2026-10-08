@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "etc/wireguard/wg0.conf",
+      "sha256": "76517937cd270261544337add5df148db8b8fd30879319187619dcbbd1679a98",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/status/.env",
+      "sha256": "ae9b7befff81ab44a5df619bfad87d3e60478e4a923b6f5b5852f4f6ece4b970",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/status/compose.yaml",
+      "sha256": "d2df4c300cab6440e1d608e6306fadc65f6287db3292097445567133d9b7429f",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/status/monitors.json",
+      "sha256": "edc7600b35b6ef560f3a0c7b90fd5a31771ae1debfc0dfc7a78e14a33cf7b20e",
+      "mode": "0600"
+    }
+  ]
+}

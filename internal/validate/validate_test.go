@@ -78,6 +78,12 @@ func TestRulesFire(t *testing.T) {
 		{"uptime-needs-an-admin-group", "uptime-needs-an-admin-group", validate.Refuse},
 		{"smtp-on-a-kind-without-mail", "smtp-on-a-kind-without-mail", validate.Refuse},
 		{"uptime-without-smtp", "uptime-without-smtp", validate.Warn},
+		{"monitor-on-gateway", "monitor-on-gateway", validate.Refuse},
+		{"monitor-on-witness", "monitor-on-witness", validate.Refuse},
+		{"monitor-shares-a-site", "monitor-shares-a-site", validate.Warn},
+		{"monitor-without-uptime", "monitor-without-uptime", validate.Refuse},
+		{"uptime-needs-a-monitor-site", "uptime-needs-a-monitor-site", validate.Refuse},
+		{"monitor-without-public-address", "monitor-without-public-address", validate.Refuse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
@@ -218,11 +224,10 @@ func TestPocketIDOnTwoAppsSitesIsAllowed(t *testing.T) {
 	}
 }
 
-// The shipped example must validate. It deliberately demonstrates three
-// warnings: its Synapse stack and its uptime monitor are both pinned to the
-// site that also holds the witness role (the monitor with VACUUM off, which is
-// what makes that a reasonable neighbour), and its two Garage sites at
-// replication 2 stop uploads while either is down.
+// The shipped example must validate. It deliberately demonstrates two
+// warnings: its Synapse stack is pinned to the site that also holds the
+// witness role, and its two Garage sites at replication 2 stop uploads while
+// either is down. The monitor has a site of its own and adds none.
 func TestExampleValidates(t *testing.T) {
 	cfg, err := config.Load(filepath.Join("..", "..", "examples", "paisans.example.yaml"))
 	if err != nil {
@@ -238,7 +243,7 @@ func TestExampleValidates(t *testing.T) {
 		rules = append(rules, w.Rule)
 	}
 	sort.Strings(rules)
-	if strings.Join(rules, ",") != "garage-two-sites-stop-uploads,pinned-app-on-witness,pinned-app-on-witness" {
+	if strings.Join(rules, ",") != "garage-two-sites-stop-uploads,pinned-app-on-witness" {
 		t.Fatalf("unexpected warnings on the example: %v", warnings)
 	}
 }
@@ -366,5 +371,35 @@ func TestAMediaHostnameCannotBeAnotherAppsHostname(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("a clash with a derived media hostname must say the name was derived, got %v", result.Findings)
+	}
+}
+
+// A site holding nothing but the monitor role, with the monitor pinned to it,
+// draws no finding of its own: it needs no other role.
+func TestAMonitorOnlySiteIsQuiet(t *testing.T) {
+	result := validate.Check(load(t, "uptime-without-smtp"))
+	for _, f := range result.Findings {
+		if f.Rule != "uptime-without-smtp" {
+			t.Errorf("unexpected finding: %s", f)
+		}
+	}
+}
+
+// A role-less site stays legal for any kind but uptime, which needs a site
+// holding the monitor role.
+func TestARolelessSiteStillHostsOtherKinds(t *testing.T) {
+	cfg := load(t, "uptime-without-smtp")
+	watch := cfg.Sites["watch"]
+	watch.Roles = nil
+	cfg.Sites["watch"] = watch
+	web := config.App{Kind: config.KindElement, Hostname: "web.example.org", Placement: config.Placement{Mode: config.PlacementPinned, Site: "watch"}}
+	cfg.Apps["web"] = web
+	result := validate.Check(cfg)
+	if !refusedFor(result, "uptime-needs-a-monitor-site", "apps.status.placement") {
+		t.Fatalf("uptime on a role-less site: %v", result.Findings)
+	}
+	delete(cfg.Apps, "status")
+	for _, f := range validate.Check(cfg).Refusals() {
+		t.Errorf("a role-less site hosting element was refused: %s", f)
 	}
 }
