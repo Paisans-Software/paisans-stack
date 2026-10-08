@@ -571,6 +571,9 @@ from this configuration and the fork reconciles it at every start:
   app's public check expects the gate's `401` to a request with no session:
   it proves the edge and the gate, and the direct check proves the app.
 * every site but the monitor's own gets a **ping** over the mesh.
+* every site Pocket ID runs on gets a check on its **admin reconciler**, which
+  fails while the `admins` group has fewer than two members (see *The admin
+  reconciler keeps two administrators in `admins`*).
 * the monitor checks no container of its own, which could only ever pass,
   but it does check its own public URL, `https://<hostname>/healthz`: it is
   alive whenever it can run that check, so what the check proves is the path
@@ -2997,6 +3000,59 @@ limits of its own, recorded in `docs/specs/2026-10-07-pocket-id-standby.md`:
 its cache is per site, its scheduled tasks run per site until the fork's
 scheduler lock lands, and the second site's web workers serve only during a
 failover. Its sessions are in Postgres and survive one.
+
+### The admin reconciler keeps two administrators in `admins`
+
+A community whose identity provider has one administrator is one lost passkey
+away from nobody being able to run it. So the `pocket-id` kind runs a second
+service beside Pocket ID on every site it runs on, `reconciler`, built from
+`cmd/admin-reconciler` and published as `ghcr.io/paisans-software/admin-reconciler`. The
+design is in `docs/specs/2026-10-08-admin-reconciler.md`.
+
+Every two hours, and once when it starts, the reconciler reads Pocket ID's users
+and the group named `admins` (after one minute instead when it could not reach
+Pocket ID, which starts alongside it), and:
+
+* **adds every Pocket ID administrator to `admins`**, unless the user is
+  disabled, is managed by an LDAP sync (which owns that user's groups), or is
+  the static API key's own user (`00000000-0000-0000-0000-000000000000`). The
+  write is `PUT /api/users/:id/user-groups`, which replaces the user's whole
+  set, so the reconciler reads the user again just before it and sends the groups
+  it finds plus `admins`;
+* **counts the members of `admins`**, disabled users and the static key's
+  user left out.
+
+`/healthz`, published on the site's mesh address at port 1412, serves the
+last pass: 200 with two or more members, 503 with fewer, on a failed write,
+with no group named `admins`, when Pocket ID does not answer, before the first
+pass, and once the last pass is more than two and a half hours old. The body
+is one line naming users by username. The uptime kind checks every site's
+reconciler, so a community down to one administrator gets an incident while that
+administrator can still fix it. Docker's healthcheck asks `/livez` instead,
+which fails only when the pass loop has hung: a new deployment has no `admins`
+group until someone makes one, and `apply`'s health gate must not hold the
+Pocket ID stack back on it.
+
+**The reconciler's one write is approved once, not per write.** An agent
+needs a human for every change to Pocket ID's groups; the reconciler is a
+service the deployment runs, approved as a whole when its design was
+(`docs/deployment-agent-rules.md`, *Services the deployment runs*).
+Pocket ID administrators are the community's administrators, so putting them
+in `admins` changes nobody's power, only which apps recognise it. The reconciler
+never removes anyone, never changes a user, and never creates or deletes a
+group, and its tests fail on any other request that writes. Founder decision,
+recorded in `docs/decisions.md`.
+
+**It reaches Pocket ID as `app` on the stack's own network**, with the
+`STATIC_API_KEY` the same `.env` already carries, so the key is on no host and
+in no stack it was not already. **Beside a standby it does nothing:** the
+standby wrapper writes its marker to `/srv/paisans/<token>/<app>/run/standby` as well as to
+`/tmp`, the reconciler mounts that directory read only, and a reconciler that finds the
+marker reports `standby` with a 200.
+
+**The group is always `admins`.** `validate` warns
+(`admin-group-not-admins`) about an app in a deployment running Pocket ID
+whose admin group is another one, since the reconciler does not watch it.
 
 ### `apply` checks free space before it pulls
 

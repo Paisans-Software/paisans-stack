@@ -868,3 +868,76 @@ The Caddy was `ghcr.io/paisans-software/caddy:2.11.4`, through the
 pin: that image is in a registry that needs a login the workstation did not
 have. The snippets use only stock directives, none from the modules that image
 adds, but it was not the pinned bytes.
+
+---
+
+## 2026-10-08: The admin reconciler adds Pocket ID administrators to `admins` on its own
+
+Founder decision. The design is `docs/specs/2026-10-08-admin-reconciler.md`.
+
+### What was decided
+
+The `pocket-id` kind runs an admin reconciler beside every Pocket ID instance. Every
+two hours it adds each enabled, non LDAP Pocket ID administrator who is not in
+the `admins` group to it, and its `/healthz` fails while `admins` has fewer
+than two members. It is always on, in every deployment, and the group is
+always named `admins`.
+
+### Why an unattended write is acceptable here
+
+An agent needs a human's approval for every Pocket ID group change. The
+reconciler is not an agent but a service the deployment runs, and is approved
+once, as a whole, under *Services the deployment runs* in
+`docs/deployment-agent-rules.md`, added in the same change. It qualifies
+because Pocket ID administrators are the community's administrators: putting
+them in `admins` changes nobody's power, only which apps recognise it. The
+approval is exactly that write. The reconciler never removes a member, never
+changes a user and never touches a group, its code is the only thing that
+keeps it so (Pocket ID's API keys carry no scopes), its tests fail on any
+other request that writes, and it logs every write. It gives an agent no
+authority to make the same change by hand.
+
+### What was run
+
+`TestRealPocketIDAdministratorIsAdded`, behind the `pocketid_integration` tag,
+against `ghcr.io/pocket-id/pocket-id:v2.14.0`: one administrator in `admins`,
+one in `editors` only. One pass left the second in both groups, reported two
+members, and left the static API key's user, an administrator with the fixed
+ID `00000000-0000-0000-0000-000000000000`, out of the group and out of the
+count. The standby wrapper's integration tests were run with the shared marker
+added: present on standby, gone after a stop.
+
+The image `ghcr.io/paisans-software/admin-reconciler:0.1.0` was built locally from
+`cmd/admin-reconciler/Dockerfile`; it is published by tagging `admin-reconciler-v0.1.0`,
+and the kind's reference moves to its digest once it exists.
+
+
+---
+
+## 2026-10-08: Services the deployment runs are approved once, not write by write
+
+Founder decision. The rule is *Services the deployment runs* in
+`docs/deployment-agent-rules.md`.
+
+### What was decided
+
+The blast radius tiers govern actions an agent takes. A service the deployment
+runs that makes a change those tiers gate, such as the admin reconciler's
+write to `admins`, is approved once, as a whole, when a human approves its
+design. That approval stands while every kind of write it makes is named in
+its design and a decision record, its tests fail on any other write, and it
+logs every write. Adding or widening a write is a new decision, in the tier
+of the strictest write it would make.
+
+### Why
+
+The context differs. An agent decides at run time, from whatever it was told,
+so each gated change needs a human at that moment. A service decides nothing:
+what it may change is fixed in reviewed code before it runs, and the same
+change happens the same way every time. Asking for approval per write would
+put a human in front of a decision that was already made, and would make an
+unattended service impossible.
+
+The service grants an agent nothing. An agent making the same change by hand,
+with the service's credential, or by changing what the service reads, is an
+agent's action and is in the tier of the change itself.

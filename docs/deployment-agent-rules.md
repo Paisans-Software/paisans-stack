@@ -31,13 +31,15 @@
 
 ## What this covers
 
-Two things, chosen because they are the ones that transfer between communities
+Three things, chosen because they are the ones that transfer between communities
 without alteration:
 
 * **Decision authority**: what an agent may settle alone, and what belongs to a
   human.
 * **Blast radius**: how dangerous an action is, and how much human involvement
   it therefore requires.
+* **Services the deployment runs**: how software the deployment runs may make
+  a change the blast radius tiers gate for an agent.
 
 Everything a community decides for itself is out of scope here, starting with
 its values. Those live in its Charter.
@@ -92,6 +94,35 @@ The distinction between the last two tiers matters and is easy to blur.
 *Approved* means a human said yes to this specific action. *Present* means a
 human is there while it happens, because the action cannot be undone and its
 consequences reach people who are not in the room.
+
+## Services the deployment runs
+
+The tiers above govern actions: what an agent, or a person at a keyboard,
+does to a running deployment. Some changes the tiers gate are instead made by
+a service the deployment runs, on its own schedule, with no agent involved.
+The admin reconciler is one: it adds every identity provider administrator to
+the admin group. That is a different context, and the tiers do not apply to it
+write by write.
+
+**A service is approved once, as a whole.** A human approves its design, and
+it is deployed. What it may change is then fixed in its code rather than
+decided at run time. That approval stands only while:
+
+* every kind of write it makes is named in its design and in a decision record
+* its tests fail if it makes any other write
+* it logs every write it makes, so that what it did can be audited afterwards
+
+**The approval covers the service, not the change.** So:
+
+* Deploying a new such service, or adding or widening a write in one that
+  exists, is a decision for a human, in the tier of the strictest write it
+  would make. Approving the design is that approval.
+* Running the service as approved (restarting it, or redeploying it
+  unchanged) is in the tier of restarting any sanctioned service.
+* An agent gains no authority from the service. It may not make the service's
+  change by hand, use the service's credential to make it, or change what the
+  service reads in order to steer what it writes. Each of those is an agent's
+  action, in the tier of the change itself.
 
 ## If you are an agent reading this because the wiki is unreachable
 
