@@ -3,10 +3,15 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/hostcheck"
+	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 )
 
 // inventoryHost answers only the host check's probes, and records every
@@ -93,5 +98,51 @@ func TestTheGateNeedsASharedHostsFirewall(t *testing.T) {
 	}
 	if !report.Shared() {
 		t.Error("a host with a foreign web server is not shared")
+	}
+}
+
+// A command that changes several sites checks each before any changes,
+// and learns which are shared.
+func TestGateSitesChecksEachAndNamesTheShared(t *testing.T) {
+	cfg := hostCheckFixture(t)
+	hosts := map[string]*inventoryHost{"home-a": webHost(ufwUp), "edge": webHost(ufwUp)}
+	reach := func(site string) hostcheck.Transport { return hosts[site] }
+	if _, err := gateSites(&bytes.Buffer{}, cfg, []string{"home-a", "edge"}, reach); err == nil {
+		t.Fatal("a conflict on edge was not refused")
+	}
+	shared, err := gateSites(&bytes.Buffer{}, cfg, []string{"home-a"}, reach)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !shared["home-a"] {
+		t.Errorf("shared %v", shared)
+	}
+}
+
+// rotate-key's switch is an apply, and on a shared site it keeps images as
+// apply does there.
+func TestTheRotateKeySwitchKeepsImagesOnASharedSite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	if err := os.WriteFile(path, []byte(freshSite), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := &config.Secrets{Version: 1}
+	if _, err := secretsgen.Fill(cfg, secrets); err != nil {
+		t.Fatal(err)
+	}
+	transports := map[string]apply.Transport{"home-a": emptyHost{}}
+	for shared, want := range map[bool]bool{true: true, false: false} {
+		s := applySwitch{cfg: cfg, app: "talk", transports: transports, shared: map[string]bool{"home-a": shared}}
+		plan, err := s.plan("home-a", secrets)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.KeepImages != want {
+			t.Errorf("shared %v: keep images %v", shared, plan.KeepImages)
+		}
 	}
 }

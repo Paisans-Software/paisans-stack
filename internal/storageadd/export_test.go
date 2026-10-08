@@ -29,3 +29,9 @@ const (
 	LayoutFile = layoutFile
 	CountsFile = countsFile
 )
+
+// KeepsImagesOn is whether a plan built with opts passes KeepImages to the
+// applies it runs on site.
+func KeepsImagesOn(opts Options, site string) bool {
+	return (&Plan{opts: opts}).keepImages(site)
+}

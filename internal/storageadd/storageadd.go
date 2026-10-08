@@ -68,6 +68,22 @@ type Options struct {
 	// to prove reads and uploads survive it, then starts it again. Refused
 	// unless uploads survive one node down.
 	StopTest bool
+	// SharedSites are the sites the host check found shared. Every apply
+	// storage add runs on one keeps its images, as apply itself does there,
+	// because an image the toolkit renders may be what something else runs
+	// from.
+	SharedSites map[string]bool
+}
+
+// keepImages is whether the applies on site keep superseded images.
+func (p *Plan) keepImages(site string) bool { return p.opts.SharedSites[site] }
+
+// applyOptions are opts, plus KeepImages on a shared site.
+func (p *Plan) applyOptions(site string, opts ...apply.Option) []apply.Option {
+	if p.keepImages(site) {
+		opts = append(opts, apply.KeepImages())
+	}
+	return opts
 }
 
 // Plan is a whole join, decided from the live deployment.
@@ -307,7 +323,7 @@ func (p *Plan) noteOwed() error {
 		if !ok || len(files) == 0 {
 			continue
 		}
-		sp, err := apply.Build(name, p.rendered, acme.Module(p.cfg.ACME.Provider), t, apply.Scope(files...))
+		sp, err := apply.Build(name, p.rendered, acme.Module(p.cfg.ACME.Provider), t, p.applyOptions(name, apply.Scope(files...))...)
 		if err != nil {
 			return err
 		}

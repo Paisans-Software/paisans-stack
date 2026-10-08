@@ -29,3 +29,18 @@ func hostGate(w io.Writer, cfg *config.Config, site string, t hostcheck.Transpor
 	}
 	return report, nil
 }
+
+// gateSites runs hostGate on each site a command is about to change, before
+// it changes any of them, and returns which the host check found shared. A
+// refusal on any site stops the command with nothing changed anywhere.
+func gateSites(w io.Writer, cfg *config.Config, sites []string, reach func(site string) hostcheck.Transport) (map[string]bool, error) {
+	shared := map[string]bool{}
+	for _, site := range sites {
+		report, err := hostGate(w, cfg, site, reach(site))
+		if err != nil {
+			return nil, err
+		}
+		shared[site] = report.Shared()
+	}
+	return shared, nil
+}
