@@ -22,6 +22,7 @@ type seedMonitor struct {
 	Method           string            `json:"method,omitempty"`
 	CheckType        string            `json:"check_type,omitempty"`
 	ExpectedStatus   string            `json:"expected_status,omitempty"`
+	ExpectedString   string            `json:"expected_string,omitempty"`
 	FollowRedirects  *bool             `json:"follow_redirects,omitempty"`
 	RequestHeaders   map[string]string `json:"request_headers,omitempty"`
 	PingHost         string            `json:"ping_host,omitempty"`
@@ -47,6 +48,13 @@ const (
 // PublicCheckName is the name of an app's check at its public hostname.
 func PublicCheckName(app string) string { return app + " — public" }
 
+// GateCheckName is the name of a gated app's check that the gate answers.
+func GateCheckName(app string) string { return app + " — gate" }
+
+// SignedFetchCheckName is the name of a gated federating app's check that an
+// unsigned ActivityPub read is refused.
+func SignedFetchCheckName(app string) string { return app + " — signed fetch" }
+
 func directCheckName(app, site string) string {
 	return fmt.Sprintf("%s — direct (%s)", app, site)
 }
@@ -71,21 +79,45 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("apps.%s: kind %s has no health route recorded in internal/kinds, so the monitor cannot check it", name, app.Kind)
 		}
-		public := health.Expect
-		if app.Gate != "" && app.Gate != "none" {
-			// The gate answers before the app is asked: oauth2-proxy's
-			// /oauth2/auth refuses a request with no session with 401
-			// (oauthproxy.go:1018-1022 at v7.15.4) and Caddy's forward_auth
-			// copies that back. So this check proves the edge and the gate,
-			// and the direct check below proves the app.
-			public = "401"
+		// A gated app is checked three ways through the edge. The public
+		// check reaches the app only when its health route is one of the
+		// kind's open paths, which a dedicated route is and `/` never is, so a
+		// gated app whose health route is its front page has no public check:
+		// the gate would answer it, not the app. The gate check proves the
+		// edge and the gate are in the path; the signed fetch check proves the
+		// app still refuses an unsigned ActivityPub read, which an admin can
+		// turn off in the app with nothing in this configuration to say so.
+		// See docs/specs/2026-10-08-visibility-gate.md.
+		gated := app.Gate() != ""
+		if !gated || health.Path != "/" {
+			monitors = append(monitors, seedMonitor{
+				Name: PublicCheckName(name), MonitorType: "active", Method: "GET", CheckType: "status",
+				URL: "https://" + app.Hostname + health.Path, ExpectedStatus: health.Expect,
+				FollowRedirects: &noRedirects,
+				IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
+			})
 		}
-		monitors = append(monitors, seedMonitor{
-			Name: PublicCheckName(name), MonitorType: "active", Method: "GET", CheckType: "status",
-			URL: "https://" + app.Hostname + health.Path, ExpectedStatus: public,
-			FollowRedirects: &noRedirects,
-			IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
-		})
+		if gated {
+			// The gate redirects a request with no session to sign in. A
+			// string check passes on any status below 400 whose body holds
+			// the marker, and only the gate's redirect carries it: the app's
+			// own redirect to its sign-in page does not.
+			monitors = append(monitors, seedMonitor{
+				Name: GateCheckName(name), MonitorType: "active", Method: "GET", CheckType: "string",
+				URL: "https://" + app.Hostname + "/", ExpectedString: GateMarker,
+				FollowRedirects: &noRedirects,
+				IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
+			})
+			if sf := kinds.SignedFetchFor(app); sf != nil && kinds.Federates(app) {
+				monitors = append(monitors, seedMonitor{
+					Name: SignedFetchCheckName(name), MonitorType: "active", Method: "GET", CheckType: "status",
+					URL: "https://" + app.Hostname + sf.SignedFetchProbe(app.Hostname), ExpectedStatus: sf.Expect,
+					FollowRedirects: &noRedirects,
+					RequestHeaders:  map[string]string{"Accept": "application/activity+json"},
+					IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
+				})
+			}
+		}
 		sites := append([]string(nil), placed[name]...)
 		sort.Strings(sites)
 		for _, site := range sites {

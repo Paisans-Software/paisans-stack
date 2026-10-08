@@ -141,7 +141,8 @@ func Check(cfg *config.Config) Result {
 	c.hostnameRoles()
 	c.duplicateHostname()
 	c.gateWithoutAGate()
-	c.gatedMatrixHostname()
+	c.visibilityGateOnUngateableKind()
+	c.visibilityGateWithoutSignedFetch()
 	c.homeserverMustBePinned()
 	c.uptimeNeedsAnAdminGroup()
 	c.adminGroupNotAdmins()
@@ -167,6 +168,7 @@ func Check(cfg *config.Config) Result {
 	c.imageForAbsentPostgres()
 	c.publicAddress()
 	c.watchdogOffOnDataSite()
+	c.visibilityGateProvisional()
 
 	sort.SliceStable(c.findings, func(i, j int) bool {
 		if c.findings[i].Level != c.findings[j].Level {
@@ -878,7 +880,7 @@ func (c *checker) floatingACMEImage() {
 func (c *checker) gateWithoutAGate() {
 	gated := false
 	for _, name := range c.cfg.AppNames() {
-		if g := c.cfg.Apps[name].Gate; g != "" && g != "none" {
+		if c.cfg.Apps[name].Gate() != "" {
 			gated = true
 		}
 	}
@@ -891,36 +893,72 @@ func (c *checker) gateWithoutAGate() {
 		}
 	}
 	c.refuse("gate-without-a-gate-app", "apps",
-		"an app declares a gate, but no app of kind oauth2-proxy is declared, so nothing renders the snippet the gateway would import. Caddy fails to load its entire configuration over one missing import, so this would take every hostname down rather than one. Declare the gate app, or set gate: none.")
+		"an app declares a gate, but no app of kind oauth2-proxy is declared, so nothing renders the snippet the gateway would import. Caddy fails to load its entire configuration over one missing import, so this would take every hostname down rather than one. Declare the gate app, or set visibility_gate: public.")
 }
 
-// gatedMatrixHostname refuses a gate on a homeserver.
+// visibilityGateOnUngateableKind refuses a gate on a kind that cannot sit
+// behind one.
 //
-// README: "A Matrix hostname must never be gated." The gate answers an
-// unauthenticated browser navigation with a redirect to a passkey prompt. A
-// Matrix client is not a browser and does not follow it, and neither does a
-// federating server fetching the delegation documents, so a gate here does not
-// restrict access: it ends client login and federation outright. The failure
-// reads as clients mysteriously unable to sign in, with nothing in the
-// configuration saying why, which is the case the declared gate exists to make
-// visible.
+// README: "A Matrix hostname must never be gated." The gate answers a request
+// with no session with a redirect to a passkey prompt. A Matrix client is not
+// a browser and does not follow it, and neither does a federating server
+// fetching the delegation documents, so a gate on a homeserver does not
+// restrict access: it ends client login and federation outright. Pocket ID and
+// the gate itself are the sign-in flow, so gating either gates the login. The
+// failure in every case reads as something mysteriously unable
+// to sign in, with nothing in the configuration saying why.
 //
-// Access control for a homeserver lives at the identity provider instead,
-// where the group restriction decides who may be provisioned an account at
-// all. That is why this is a refusal and not a warning: there is no reading of
-// a gated homeserver that works.
-func (c *checker) gatedMatrixHostname() {
+// Access control for these lives elsewhere: for a homeserver at the identity
+// provider, where the group restriction decides who may be provisioned an
+// account at all. That is why this is a refusal and not a warning: there is no
+// reading of a gated one that works.
+func (c *checker) visibilityGateOnUngateableKind() {
 	for _, name := range c.cfg.AppNames() {
 		app := c.cfg.Apps[name]
-		if app.Kind != config.KindSynapse {
+		if app.Gate() == "" || kinds.GateFor(app.Kind).Gateable {
 			continue
 		}
-		if app.Gate == "" || app.Gate == "none" {
+		c.refuse("visibility-gate-on-ungateable-kind", fmt.Sprintf("apps.%s.visibility_gate", name),
+			"is %q on an app of kind %s, which cannot sit behind the gate. The gate redirects a request with no session to a passkey prompt: a Matrix client or a federating server will not follow it, and Pocket ID and the gate are the sign-in flow itself. Set visibility_gate: public.",
+			app.VisibilityGate, app.Kind)
+	}
+}
+
+// visibilityGateWithoutSignedFetch refuses a gate on a federating app whose
+// kind records no way to refuse an unsigned ActivityPub read.
+//
+// The gate sends every ActivityPub request to the app without asking for a
+// session, because a federating peer has none and proves who it is by
+// signature instead. Anyone can send an ActivityPub Accept header, so that is
+// only safe when the app refuses a read that is not signed by an instance on
+// its allow list. A kind with no such setting would serve its whole read
+// surface to anyone who asked for JSON.
+func (c *checker) visibilityGateWithoutSignedFetch() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Gate() == "" || !kinds.Federates(app) || kinds.SignedFetchFor(app) != nil {
 			continue
 		}
-		c.refuse("gated-matrix-hostname", fmt.Sprintf("apps.%s.gate", name),
-			"is %q, and a Matrix hostname must never be gated. The gate redirects an unauthenticated browser to a passkey prompt; a Matrix client is not a browser and will not follow it, and neither will a federating server fetching the delegation documents, so this breaks every client login and federation rather than protecting anything. Access control for a homeserver belongs at the identity provider, where the group restriction decides who may be provisioned at all. Set gate: none.",
-			app.Gate)
+		c.refuse("visibility-gate-without-signed-fetch", fmt.Sprintf("apps.%s.visibility_gate", name),
+			"is %q, but this %s app federates and the toolkit records no way for it to refuse an unsigned ActivityPub read. The gate leaves ActivityPub requests to the app, and anyone can send an ActivityPub Accept header, so every page would be readable as JSON by anyone. Turn federation off for this app, or set visibility_gate: public. A WriteFreely checks signatures only in private mode, so for one this also means private is not false.",
+			app.VisibilityGate, app.Kind)
+	}
+}
+
+// visibilityGateProvisional warns about an app gated on provisional.
+//
+// The provisional instance admits everyone signed in to Pocket ID, including
+// people not yet accepted into the community. That is the right gate for a
+// surface whose audience is exactly those people, and the wrong one for
+// anything member facing, where it reads as protected while admitting anyone
+// who made an account.
+func (c *checker) visibilityGateProvisional() {
+	for _, name := range c.cfg.AppNames() {
+		if c.cfg.Apps[name].Gate() != config.GateProvisional {
+			continue
+		}
+		c.warn("visibility-gate-provisional", fmt.Sprintf("apps.%s.visibility_gate", name),
+			"is provisional, which admits everyone signed in to Pocket ID, including people who are not yet members. Use member for anything only the community should read.")
 	}
 }
 

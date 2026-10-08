@@ -197,13 +197,28 @@
       "failure_threshold": 2
     },
     {
-      "name": "talk — public",
+      "name": "talk — gate",
+      "monitor_type": "active",
+      "url": "https://talk.example.org/",
+      "method": "GET",
+      "check_type": "string",
+      "expected_string": "Sign in required by the visibility gate.",
+      "follow_redirects": false,
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2
+    },
+    {
+      "name": "talk — signed fetch",
       "monitor_type": "active",
       "url": "https://talk.example.org/",
       "method": "GET",
       "check_type": "status",
       "expected_status": "401",
       "follow_redirects": false,
+      "request_headers": {
+        "Accept": "application/activity+json"
+      },
       "interval_seconds": 60,
       "timeout_ms": 10000,
       "failure_threshold": 2

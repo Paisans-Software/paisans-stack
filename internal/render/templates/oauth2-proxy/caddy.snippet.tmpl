@@ -5,17 +5,49 @@
 # is registered against, and it is NOT gated itself: gating the gate is a
 # redirect loop. Its whole surface is oauth2-proxy's own -
 # /oauth2/start, /oauth2/callback, /oauth2/sign_out, and the /oauth2/auth
-# endpoint that this kind's own gate_provisional and gate_members snippets
+# endpoint that this kind's own gate_provisional and gate_member snippets
 # forward-auth to (see caddy.snippet.gates.tmpl) - so it proxies straight to
 # `provisional`, the permissive instance that owns the login flow, and every
 # authenticated user gets a session cookie regardless of membership.
-reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
-{{- if gt (len .Upstreams) 1 }}
-	# Failover across apps sites; see upstream_failover in the Caddyfile.
-	import upstream_failover
-{{- else if .UpstreamElsewhere }}
-	# One site, not the gateway's machine; see upstream_single in the Caddyfile.
-	import upstream_single
-{{- end }}
-	header_up X-Forwarded-Proto https
+# /pending is where gate_member sends someone signed in who is not yet a
+# member. It is a static page rather than anything oauth2-proxy serves, so it
+# answers the same whichever instance is up, and a later onboarding service
+# can replace it behind the same path.
+#
+# It never echoes rd or any other part of the request. Caddy placeholders are
+# not HTML escaped, so a query parameter written into this page would let
+# anyone put markup on the gate's own hostname. The groups a session carries
+# are refreshed with the cookie (OAUTH2_PROXY_COOKIE_REFRESH, an hour), which
+# is why the page says how long approval can take to arrive.
+@pending path /pending
+handle @pending {
+	header Content-Type "text/html; charset=utf-8"
+	header Cache-Control "no-store"
+	respond <<HTML
+		<!doctype html>
+		<html lang="en">
+		<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<title>Waiting for approval</title>
+		</head>
+		<body style="font-family: system-ui, sans-serif; max-width: 34rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5">
+		<h1>You are signed in</h1>
+		<p>Your account is not a member of {{ caddyhtml .CommunityName }} yet. Once an organiser approves it, open the link you followed again. It can take up to an hour to arrive.</p>
+		</body>
+		</html>
+		HTML 200
+}
+
+handle {
+	reverse_proxy{{ range .Upstreams }} {{ . }}{{ end }} {
+	{{- if gt (len .Upstreams) 1 }}
+		# Failover across apps sites; see upstream_failover in the Caddyfile.
+		import upstream_failover
+	{{- else if .UpstreamElsewhere }}
+		# One site, not the gateway's machine; see upstream_single in the Caddyfile.
+		import upstream_single
+	{{- end }}
+		header_up X-Forwarded-Proto https
+	}
 }

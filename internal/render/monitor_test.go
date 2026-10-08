@@ -167,7 +167,7 @@ func TestAMonitorCarriesTheGateOnlyWhenItsAppIsGated(t *testing.T) {
 	}
 	cfg := fixture(t)
 	status := cfg.Apps["status"]
-	status.Gate = "members"
+	status.VisibilityGate = config.GateMember
 	cfg.Apps["status"] = status
 	files = planFiles(mustBuild(t, cfg))
 	if !strings.Contains(files["watch/srv/paisans/f2a9/infra/caddy/Caddyfile"], "import /etc/caddy/snippets/gate-gates.caddy") || files["watch/srv/paisans/f2a9/infra/caddy/snippets/gate-gates.caddy"] == "" {

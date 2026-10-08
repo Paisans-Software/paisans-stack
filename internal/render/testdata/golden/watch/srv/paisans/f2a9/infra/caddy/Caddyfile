@@ -82,6 +82,7 @@
 	}
 }
 
+
 status.example.org {
 	import upstream_unavailable
 	import /etc/caddy/snippets/status.caddy

@@ -71,22 +71,22 @@ func byName(seed seedFile) map[string]map[string]any {
 	return out
 }
 
-// Every app other than the monitor gets a public check at its hostname and a
-// direct check per site it runs on, both on the kind's health route; every
-// other site gets a ping; the monitor checks neither its own container nor
-// its own site.
+// Every app other than the monitor gets a check at its hostname and a direct
+// check per site it runs on; every other site gets a ping; the monitor checks
+// neither its own container nor its own site. talk is gated, so its check at
+// its hostname is the gate check (see TestAGatedAppIsCheckedThroughTheGate).
 func TestTheSeedChecksEveryAppTwiceAndPingsEveryOtherSite(t *testing.T) {
 	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
 	monitors := byName(renderSeed(t, cfg, secrets))
 
-	talk := monitors["talk — public"]
+	talk := monitors["talk — gate"]
 	if talk == nil || talk["url"] != "https://talk.example.org/" || talk["follow_redirects"] != false {
-		t.Fatalf("talk's public check: %v", talk)
+		t.Fatalf("talk's gate check: %v", talk)
 	}
-	// talk is behind the members gate: forward_auth answers 401 to a request
-	// with no session, before the app is asked.
-	if talk["expected_status"] != "401" {
-		t.Errorf("talk public expects %v", talk["expected_status"])
+	// talk is behind the member gate: it redirects a request with no session
+	// to sign in, before the app is asked, with a body only the gate sends.
+	if talk["expected_string"] != render.GateMarker {
+		t.Errorf("talk gate check expects %v", talk["expected_string"])
 	}
 	auth := monitors["auth — public"]
 	if auth == nil || auth["url"] != "https://"+cfg.Apps["auth"].Hostname+"/healthz" || auth["expected_status"] != "204" {
@@ -123,29 +123,54 @@ func TestTheSeedChecksEveryAppTwiceAndPingsEveryOtherSite(t *testing.T) {
 	}
 }
 
-// A gated app's public check expects the gate's own answer to a request with
-// no session, 401 (oauth2-proxy AuthOnly, oauthproxy.go:1018-1022 at v7.15.4,
-// copied back by Caddy's forward_auth): it proves the edge and the gate, and
-// the direct check proves the app. An ungated app's expects the kind's codes.
-func TestAGatedAppsPublicCheckExpectsTheGatesRefusal(t *testing.T) {
+// A gated app is checked through the edge three ways (docs/specs/
+// 2026-10-08-visibility-gate.md). The gate check expects the gate's redirect
+// to sign in, by its body, because a private app redirects `/` to its own
+// sign-in page too. The public check reaches the app only when its health route is
+// open, which a dedicated route is and `/` never is, so a gated mbin, whose
+// health route is its front page, has none. The signed fetch check expects
+// the app to refuse an unsigned ActivityPub read. An ungated app keeps its
+// public check and gets neither of the others.
+func TestAGatedAppIsCheckedThroughTheGate(t *testing.T) {
 	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
 	monitors := byName(renderSeed(t, cfg, secrets))
-	if got := monitors["talk — public"]["expected_status"]; got != "401" {
-		t.Errorf("gated mbin public expects %v", got)
+	if _, ok := monitors["talk — public"]; ok {
+		t.Error("gated mbin has a public check, which the gate would answer rather than the app")
+	}
+	if gate := monitors["talk — gate"]; gate["check_type"] != "string" || gate["expected_string"] != render.GateMarker {
+		t.Errorf("gated mbin gate check does not assert the gate's own redirect: %v", gate)
+	}
+	signed := monitors["talk — signed fetch"]
+	if signed["expected_status"] != "401" || signed["url"] != "https://talk.example.org/" {
+		t.Errorf("gated mbin signed fetch check is %v", signed)
+	}
+	if headers, _ := signed["request_headers"].(map[string]any); headers["Accept"] != "application/activity+json" {
+		t.Errorf("signed fetch check does not ask for ActivityPub: %v", signed["request_headers"])
 	}
 	if got := monitors["docs — public"]["expected_status"]; got != "200" {
 		t.Errorf("ungated outline public expects %v", got)
 	}
-	docs := cfg.Apps["docs"]
-	docs.Gate = "none"
-	cfg.Apps["docs"] = docs
-	if got := byName(renderSeed(t, cfg, secrets))["docs — public"]["expected_status"]; got != "200" {
-		t.Errorf("gate: none is no gate, yet outline public expects %v", got)
+	if _, ok := monitors["docs — gate"]; ok {
+		t.Error("ungated outline has a gate check")
 	}
-	docs.Gate = "provisional"
+
+	docs := cfg.Apps["docs"]
+	docs.VisibilityGate = config.GatePublic
 	cfg.Apps["docs"] = docs
-	if got := byName(renderSeed(t, cfg, secrets))["docs — public"]["expected_status"]; got != "401" {
-		t.Errorf("gated outline public expects %v", got)
+	if _, ok := byName(renderSeed(t, cfg, secrets))["docs — gate"]; ok {
+		t.Error("visibility_gate: public is no gate, yet outline has a gate check")
+	}
+	docs.VisibilityGate = config.GateProvisional
+	cfg.Apps["docs"] = docs
+	gated := byName(renderSeed(t, cfg, secrets))
+	if got := gated["docs — public"]["expected_status"]; got != "200" {
+		t.Errorf("gated outline's dedicated health route is open, yet its public check expects %v", got)
+	}
+	if got := gated["docs — gate"]["expected_string"]; got != render.GateMarker {
+		t.Errorf("gated outline gate check expects %v", got)
+	}
+	if _, ok := gated["docs — signed fetch"]; ok {
+		t.Error("outline does not federate, yet has a signed fetch check")
 	}
 	if got := monitors["docs — direct (home-a)"]["url"]; got != "http://"+cfg.Sites["home-a"].Address+":3000/_health" {
 		t.Errorf("outline direct url %v", got)
@@ -194,8 +219,8 @@ func TestMonitorNamesSurviveAHostnameChange(t *testing.T) {
 			t.Errorf("%s disappeared", name)
 		}
 	}
-	if after["talk — public"]["url"] != "https://forum.example.org/" {
-		t.Errorf("the renamed check still points at %v", after["talk — public"]["url"])
+	if after["talk — gate"]["url"] != "https://forum.example.org/" {
+		t.Errorf("the renamed check still points at %v", after["talk — gate"]["url"])
 	}
 }
 

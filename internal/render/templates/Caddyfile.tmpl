@@ -86,13 +86,140 @@
 import {{ . }}
 {{ end -}}
 {{ range .Routes }}
+{{- if .Gate }}
+{{- $r := . }}
+
+# Gated: visibility_gate {{ .Gate }}. Every request goes to the gate except the
+# classes that carry their own authentication, which the app verifies. Each is
+# its own handle with a named matcher, and Caddy keeps those in the order they
+# are written, so this is the order they are matched in. See
+# docs/specs/2026-10-08-visibility-gate.md in the toolkit.
 {{ .Hostname }} {
 	import upstream_unavailable
-{{- if .Gate }}
-	import gate_{{ .Gate }}
+	# Nothing upstream of the gate may name a user: these headers are only
+	# ever the gate's verified answer.
+	request_header -X-Auth-Request-*
+{{- if .Bypass.ActivityPub }}
+
+	# ActivityPub reads. Anyone can ask for ActivityPub, so the app's signed
+	# fetch decides whether to answer, and the monitor's signed fetch check
+	# proves it still does. An app can still answer such a request with
+	# something else (Eg: an HTML page on a route with no ActivityPub form, or
+	# its API), so only an ActivityPub, JSON-LD or JRD success is passed back.
+	# Any other success becomes an empty 404, and any other answer keeps its
+	# status, and a redirect its Location, with no body. GET only: a HEAD is
+	# not signature checked by every app, and a read needs nothing else.
+	# Values for one header field are OR'd, so either type matches.
+	@activitypub_read {
+		method GET
+		header Accept *application/activity+json*
+		header Accept *application/ld+json*
+	}
+	handle @activitypub_read {
+		import {{ .Snippet }} {
+			@activitypub_type {
+				status 2xx
+				header Content-Type *application/activity+json*
+				header Content-Type *application/ld+json*
+				header Content-Type *application/jrd+json*
+			}
+			handle_response @activitypub_type {
+				copy_response_headers
+				copy_response
+			}
+			@redirect status 3xx
+			handle_response @redirect {
+				copy_response_headers {
+					include Location
+				}
+				respond "" {http.reverse_proxy.status_code}
+			}
+			@success status 2xx
+			handle_response @success {
+				respond 404
+			}
+			handle_response {
+				respond "" {http.reverse_proxy.status_code}
+			}
+		}
+	}
+{{- if .Bypass.InboxPaths }}
+
+	# ActivityPub deliveries, on the inboxes only: a POST changes state before
+	# any answer could be filtered, so it reaches nothing else. The app
+	# verifies the delivery's signature.
+	@activitypub_delivery {
+		method POST
+		path{{ range .Bypass.InboxPaths }} {{ . }}{{ end }}
+		header Content-Type *application/activity+json*
+		header Content-Type *application/ld+json*
+	}
+	handle @activitypub_delivery {
+		import {{ .Snippet }}
+	}
 {{- end }}
+{{- end }}
+{{- range $i, $rule := .Bypass.AutoLogin }}
+
+	# Auto-login: someone the gate already let through goes straight into the
+	# app's own sign-in, which completes without a prompt. Before the open
+	# paths, because a path can be both and the session holder must take this.
+	# {{ $r.Bypass.LoopBreaker }} stops a user the app refuses from being
+	# redirected again for two minutes.
+	@autologin_{{ $i }} {
+		method GET HEAD
+		header Accept *text/html*
+		not header Authorization *
+		path{{ range $rule.Paths }} {{ . }}{{ end }}
+		header Cookie *{{ gateSessionCookie }}*
+{{- range $rule.AbsentCookies }}
+		not header Cookie *{{ . }}*
+{{- end }}
+		not header Cookie *{{ $r.Bypass.LoopBreaker }}*
+	}
+	handle @autologin_{{ $i }} {
+		header Set-Cookie "{{ $r.Bypass.LoopBreaker }}=1; Path=/; Max-Age=120; Secure; HttpOnly; SameSite=Lax"
+		# The * is required: a first argument starting with / is read as a
+		# path matcher, and the redirect silently becomes an empty 200.
+		redir * {{ $rule.Target }} 302
+	}
+{{- end }}
+{{- if .Bypass.OpenPaths }}
+
+	# Open paths: the sign-in itself, federation discovery and what those
+	# pages load. They hold no private content.
+	@open path{{ range .Bypass.OpenPaths }} {{ . }}{{ end }}
+	handle @open {
+		import {{ .Snippet }}
+	}
+{{- end }}
+{{- if .Bypass.TokenPaths }}
+
+	# Token paths, with a bearer token. The app refuses one it did not
+	# issue. Any other Authorization, and one anywhere else, goes to the gate
+	# like anything else: an app can serve a request it does not read the
+	# header of as an anonymous one.
+	@token {
+		path{{ range .Bypass.TokenPaths }} {{ . }}{{ end }}
+		header Authorization "Bearer *"
+	}
+	handle @token {
+		import {{ .Snippet }}
+	}
+{{- end }}
+
+	handle {
+		import gate_{{ .Gate }}
+		import {{ .Snippet }}
+	}
+}
+{{- else }}
+
+{{ .Hostname }} {
+	import upstream_unavailable
 	import {{ .Snippet }}
 }
+{{- end }}
 {{ end -}}
 {{- if .HostSites }}
 # Site blocks the host's owner adds for things paisans does not run, Eg: a blog

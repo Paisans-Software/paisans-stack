@@ -587,9 +587,16 @@ from this configuration and the fork reconciles it at every start:
   on one site while Caddy routes round it.
 * both ask the kind's own health route (`kinds.HealthFor`), established from
   each pinned image's source and, where possible, by running it, and chosen so
-  the gateway routes it to the same service the direct check reaches. A gated
-  app's public check expects the gate's `401` to a request with no session:
-  it proves the edge and the gate, and the direct check proves the app.
+  the gateway routes it to the same service the direct check reaches.
+* a gated app gets a **gate** check instead, a request for `/` with no
+  session that expects the body only the gate's redirect to sign in carries,
+  proving the edge and the gate: a private app redirects `/` to its own sign-in
+  page, so the status alone would pass with the gate gone. Its public check stays only when its health route is a dedicated one,
+  which is open past the gate; a health route of `/` is the front page and
+  never is. A gated app that federates also gets a **signed fetch** check: an
+  unsigned ActivityPub request for a path the app refuses whatever content
+  exists, expecting the refusal, because an admin can turn signed fetch off
+  inside the app with nothing in this configuration to say so.
 * every site but the monitor's own gets a **ping** over the mesh.
 * every site Pocket ID runs on gets a check on its **admin reconciler**, which
   fails while the `admins` group has fewer than two members (see *The admin
@@ -1496,30 +1503,70 @@ to have. Declaring no `wellknown` hostname is a legitimate choice with the same
 weight: `server_name` is then the app's own hostname, the homeserver serves its
 own delegation documents there, and that name is equally permanent.
 
-#### The gate is a per-app property
+#### The visibility gate is a per-app property
 
 ```yaml
 apps:
   talk:
     kind: mbin
     hostname: talk.example.org
-    gate: members
+    visibility_gate: member
   chat:
     kind: synapse
     hostname: matrix.example.org
-    gate: none
+    visibility_gate: public
 ```
 
-`gate` is `none`, `provisional` or `members`, and it is declared on the app
-rather than implied by which Caddy snippet somebody remembered to import. It is
-access policy, and access policy belongs in the configuration, not in a hand
-edited include.
+`visibility_gate` is `public`, `member` or `provisional`, and it is declared on
+the app rather than implied by which Caddy snippet somebody remembered to
+import. It is access policy, and access policy belongs in the configuration,
+not in a hand edited include. `member` admits a signed-in member of the
+community; `provisional` admits anyone signed in, member or not, and is warned
+about (`visibility-gate-provisional`) because it reads as protected while
+admitting anyone who made an account.
+
+**A gated hostname gates every request except the ones that carry their own
+authentication, which the app verifies.** Gating only browser navigations
+would leave every page readable to a client that did not ask for HTML. So the
+gate covers everything, and three classes go to the app without it:
+
+| Class | Matched by | Who authenticates it |
+|---|---|---|
+| ActivityPub | `Accept` or `Content-Type` naming `application/activity+json` or `application/ld+json` | the app, by signed fetch against its allow list |
+| Open paths | the kind's open paths: its OIDC callback, a native app's OAuth chain, federation discovery, the assets those pages load, a dedicated health route | nothing; they hold no private content |
+| Token paths | the kind's token paths **and** an `Authorization` header | the app, which refuses a token it did not issue |
+
+Everything else is redirected to sign in when there is no session, `curl`
+included, and to the gate's `/pending` page when the session belongs to
+someone who is not yet a member. Which paths a kind needs open is knowledge
+about that application, so it lives in `internal/kinds` beside the rest, read
+off the pinned tag's source with a citation for each. A token path is recorded
+only once the kind's source shows a token that reads content cannot be had
+without a member's sign-in; until then a native app's API calls meet the gate.
+
+**Anyone can send an ActivityPub header, so a gated app that federates must
+refuse an unsigned read.** Caddy cannot verify an HTTP signature without a
+plugin, and the gateway runs no plugin whose failure to build would stop the
+identity provider loading, so the app is where the check lives. A gated
+federating app whose kind records no way to refuse an unsigned read is
+refused (`visibility-gate-without-signed-fetch`), and the monitor proves the
+setting is still on (see *Uptime monitoring*). Reading only from instances on
+an allow list is a federation policy choice, and it is the founder's.
+
+**Auto-login is derived from the kind.** Someone the gate let through already
+holds a session at the identity provider, so the app's own "Log in with"
+button is one pointless click. Where a kind records its sign-in route and the
+cookies that mean "already signed in", a request for its front page or its
+sign-in page goes straight into that route, once every two minutes per browser
+so a user the app's own client refuses is not redirected forever. It never
+fires on a deep link: neither Mbin's nor WriteFreely's sign-in route takes a
+destination, and a deep link sent through one would land on the front page.
 
 **The gate is enforced at the gateway, and only there. An app's published host
 port is not behind it.** The gate renders as `forward_auth` inside the
 gateway's Caddy site block, so it covers requests that arrive through the
 gateway's hostname. It does not cover the port the app's own compose file
-publishes: `talk` above is `gate: members`, and its stack publishes port 8080,
+publishes: `talk` above is `visibility_gate: member`, and its stack publishes port 8080,
 so anything that can open that port reaches Mbin with no gate in front of it at
 all. The same is true of every gated app.
 
@@ -1534,7 +1581,7 @@ A cloud VM holding the apps role is exactly that host.
 
 What remains the operator's is the mesh itself. A port on the mesh address is
 reachable from every mesh peer, so a compromised peer reaches the app ungated.
-`gate: members` is not protection against that, and nothing in this file
+`visibility_gate: member` is not protection against that, and nothing in this file
 claims it is. It also means the mesh interface has to be up before the app stacks start,
 because Docker cannot publish on an address the host does not have yet; that
 is the ordering that step 4 under *`init`, one site, no mesh* already requires.
@@ -1560,22 +1607,26 @@ Some combinations are refused by this today, and a homeserver pinned to a data
 site is the one worth knowing: Synapse's 8008 is the Patroni API's, and MAS's
 8009 is bg_mon's.
 
-**Leaving `gate` out of an app's stanza means the same thing as `gate: none`:
-ungated, reachable by anyone who can resolve the hostname.** That default has
-to be stated here, not only in a doc comment, because it is the one setting
-where forgetting it is indistinguishable from choosing it: an app with no
-`gate` key renders exactly like an app that explicitly opted out, and nothing
-at render time flags the absence as a decision skipped rather than made.
+**Leaving `visibility_gate` out of an app's stanza means the same thing as
+`visibility_gate: public`: ungated, reachable by anyone who can resolve the
+hostname.** That default has to be stated here, not only in a doc comment,
+because it is the one setting where forgetting it is indistinguishable from
+choosing it: an app with no `visibility_gate` key renders exactly like an app
+that explicitly opted out, and nothing at render time flags the absence as a
+decision skipped rather than made.
 
-**A gate on an app of kind `synapse` is refused**, which is the rule below
-enforced rather than merely stated. The case that makes this load bearing is a
-negative one. A Matrix hostname must never be gated: a Matrix client is not a browser and will not follow a redirect
-to a passkey prompt, so gating a homeserver's API or its `.well-known` apex
-breaks federation and every client's login, not just one member's. Leaving
-gating to a hand edited include means that failure shows up as clients
-mysteriously unable to log in, with nothing in the configuration saying why. A
-declared `gate: none` makes the absence of a gate a fact about the app that a
-reviewer can see, rather than an inference from what nobody wrote.
+**A gate on a kind that cannot sit behind one is refused**
+(`visibility-gate-on-ungateable-kind`), which is the rule below enforced rather
+than merely stated. The case that makes this load bearing is a negative one. A
+Matrix hostname must never be gated: a Matrix client is not a browser and will
+not follow a redirect to a passkey prompt, so gating a homeserver's API or its
+`.well-known` apex breaks federation and every client's login, not just one
+member's. Pocket ID and the gate itself are the sign-in flow, so gating either
+gates the login. Leaving gating to a hand edited include means that failure
+shows up as clients mysteriously unable to log in, with nothing in the
+configuration saying why. A declared `visibility_gate: public` makes the
+absence of a gate a fact about the app that a reviewer can see, rather than an
+inference from what nobody wrote.
 
 Declaring a gate when no `oauth2-proxy` app exists is refused, for the same
 reason an unknown hostname role is: the import would name a snippet nothing

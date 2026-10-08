@@ -8,7 +8,7 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/caddy/Caddyfile",
-      "sha256": "b3faad7da0477d84c7e83486c47cee307a12e2ede0c532395c9641f2c7a11fb7",
+      "sha256": "6c8202ecc4f687c9b6561b4f21f96f2dd6f68c3b9681fc7e972d3957f2c50be9",
       "mode": "0644"
     },
     {
@@ -38,7 +38,7 @@
     },
     {
       "path": "srv/paisans/f2a9/status/monitors.json",
-      "sha256": "5aa799a2a4d853ccdf717f17c42321caf8719e5d6bc15e4837f5cc1539b0d708",
+      "sha256": "9e259177e918c9490f6f17818101719919c1fcde9fdd2ef3bc47bf17406d2f2a",
       "mode": "0600"
     }
   ]

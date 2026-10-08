@@ -501,3 +501,41 @@ func TestACMEProviderIsRequiredForAMonitorsOwnCaddy(t *testing.T) {
 		t.Fatalf("external mode needs no provider: %v", err)
 	}
 }
+
+// visibility_gate takes three values, and an absent key and `public` mean the
+// same thing, so nothing downstream compares against both.
+func TestVisibilityGateValues(t *testing.T) {
+	for value, want := range map[string]string{"public": "", "member": "member", "provisional": "provisional"} {
+		cfg, err := config.Load(write(t, minimal+"    visibility_gate: "+value+"\n"))
+		if err != nil {
+			t.Fatalf("visibility_gate: %s did not load: %v", value, err)
+		}
+		if got := cfg.Apps["talk"].Gate(); got != want {
+			t.Errorf("visibility_gate: %s is gate %q, want %q", value, got, want)
+		}
+	}
+	cfg, err := config.Load(write(t, minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Apps["talk"].Gate(); got != "" {
+		t.Errorf("an absent visibility_gate is gate %q, want public", got)
+	}
+	_, err = config.Load(write(t, minimal+"    visibility_gate: members\n"))
+	if err == nil || !strings.Contains(err.Error(), "apps.talk.visibility_gate: unknown value") {
+		t.Errorf("visibility_gate: members loaded, or was refused without naming the key: %v", err)
+	}
+}
+
+// The key this replaced is not read. A deployment is redeployed with the new
+// key rather than converted, and an old file fails loudly instead of loading
+// with its gate silently dropped.
+func TestTheOldGateKeyIsRefused(t *testing.T) {
+	_, err := config.Load(write(t, minimal+"    gate: members\n"))
+	if err == nil {
+		t.Fatal("an app with the old gate key loaded, and would render ungated")
+	}
+	if !strings.Contains(err.Error(), "gate") {
+		t.Fatalf("the error does not name the key:\n%v", err)
+	}
+}
