@@ -784,6 +784,9 @@ func printGaragePlan(plan *garage.Plan) {
 
 func printPlan(plan *apply.Plan) {
 	fmt.Fprintf(os.Stdout, "%s (%s)\n", plan.Site, plan.Transport)
+	for _, note := range plan.Notes {
+		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "note", note)
+	}
 	if plan.Disk != nil {
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "check", plan.Disk.Describe())
 	}

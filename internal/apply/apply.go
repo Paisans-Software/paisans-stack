@@ -180,6 +180,12 @@ type Plan struct {
 	// holds back with Except. Execute keeps it there, so the apply that
 	// releases a held stack still force-recreates it.
 	heldOwed []pendingAction
+	// HeldOverwrites are --overwrite paths in stacks this plan holds back
+	// with Except. They are not written, and the operator is told so.
+	HeldOverwrites []string
+	// Notes are things Build decided that the operator should read and
+	// that change nothing they asked for.
+	Notes []string
 	// renderedChanges is every file this site renders, held back or not,
 	// for the prune keep set: an image a held stack renders is still the
 	// site's.
@@ -587,6 +593,9 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 			continue
 		}
 		if exceptSet[change.Stack] {
+			if change.Overwritten {
+				out.HeldOverwrites = append(out.HeldOverwrites, change.Path)
+			}
 			continue
 		}
 		out.Changes = append(out.Changes, change)
@@ -661,7 +670,15 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	// A restart an earlier pass held back while the database path moved is
 	// owed as a restart, not as a half built stack. See heldOwed.
 	dbOwed := map[string]bool{}
+	var live []pendingAction
 	for _, action := range resumed.Actions {
+		// An app removed from the configuration renders no stack here, and
+		// acting on it would fail every apply from now on.
+		if !rendered[action.Stack] {
+			out.Notes = append(out.Notes, fmt.Sprintf("%s was owed an action by a stopped apply, and this site no longer renders it, so the record of it is dropped", action.Stack))
+			continue
+		}
+		live = append(live, action)
 		if action.DatabasePath {
 			dbOwed[action.Stack] = true
 		} else {
@@ -677,6 +694,11 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		}
 		forced[stack] = true
 		stacks[stack] = true
+		// The operator's --recreate of a held stack is carried to the apply
+		// that releases it, as an owed recreate.
+		if exceptSet[stack] && !owed[stack] {
+			out.heldOwed = append(out.heldOwed, pendingAction{Stack: stack, Recreate: true})
+		}
 	}
 
 	if onlySet != nil {
@@ -692,8 +714,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		}
 		wireguard = nil
 	}
-	for _, action := range resumed.Actions {
-		if exceptSet[action.Stack] {
+	// What is owed outside this plan, held back or outside --only, stays
+	// owed: this plan's own record replaces the one it read.
+	for _, action := range live {
+		if exceptSet[action.Stack] || (onlySet != nil && !onlySet[action.Stack]) {
 			out.heldOwed = append(out.heldOwed, action)
 		}
 	}
@@ -829,6 +853,23 @@ func wgQuickLines(content string) string {
 // Execute carries out a plan. It refuses outright if anything conflicts,
 // because a partial apply across a stack is worse than no apply.
 func Execute(plan *Plan, t Transport) error {
+	if err := Refusal(plan); err != nil {
+		return err
+	}
+	if err := settleOwedVolumes(plan, t); err != nil {
+		return err
+	}
+	if plan.Volumes != nil && len(plan.Volumes.Uncovered) > 0 {
+		return volumeRefusal(plan)
+	}
+	return execute(plan, t)
+}
+
+// Refusal is what Execute refuses before it writes anything: a file edited on
+// the host, too little free space for the pulls, or an image volume its
+// service does not mount. A caller that runs a site in several passes asks it
+// of the whole plan first, so nothing is written when any pass would refuse.
+func Refusal(plan *Plan) error {
 	if conflicts := plan.Conflicts(); len(conflicts) > 0 {
 		var names []string
 		for _, c := range conflicts {
@@ -848,19 +889,17 @@ func Execute(plan *Plan, t Transport) error {
 	}
 
 	// An image declaring a volume its service does not mount leaks an
-	// anonymous volume on every recreate. Refuse before the first write, and
-	// pull what Build could not inspect first, which is the one pull `up -d`
-	// would have made anyway.
+	// anonymous volume on every recreate. Refuse before the first write.
+	// Execute then pulls what Build could not inspect, which is the one pull
+	// `up -d` would have made anyway, and checks those too.
 	if plan.Volumes != nil && len(plan.Volumes.Uncovered) > 0 {
 		return volumeRefusal(plan)
 	}
-	if err := settleOwedVolumes(plan, t); err != nil {
-		return err
-	}
-	if plan.Volumes != nil && len(plan.Volumes.Uncovered) > 0 {
-		return volumeRefusal(plan)
-	}
+	return nil
+}
 
+// execute is Execute once nothing refuses.
+func execute(plan *Plan, t Transport) error {
 	// Record what this apply owes before writing anything. Files that land
 	// before a gate stops the apply already match the render, so without
 	// this record the next apply would see nothing to do, and an app stack

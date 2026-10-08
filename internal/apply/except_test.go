@@ -218,3 +218,86 @@ func countRan(h *fakeHost, sub string) int {
 	}
 	return n
 }
+
+// Refusal is what Execute refuses before writing anything, so a caller that
+// runs several passes can ask it of the whole plan before the first one.
+func TestRefusalNamesAConflictBeforeAnythingIsWritten(t *testing.T) {
+	host := applied(t, "home-a")
+	host.files["/srv/talk/compose.yaml"] += "# edited on the host\n"
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Refusal(p); err == nil || !strings.Contains(err.Error(), "/srv/talk/compose.yaml") {
+		t.Errorf("Refusal gave %v", err)
+	}
+	host.commands = nil
+	if err := apply.Execute(p, host); err == nil {
+		t.Fatal("Execute applied a plan with a conflict")
+	}
+	if len(host.commands) != 0 {
+		t.Errorf("Execute ran %v before refusing", host.commands)
+	}
+}
+
+// An operator's --recreate aimed at a held stack is owed rather than dropped,
+// and a held --overwrite is reported rather than silently left undone.
+func TestAHeldStackKeepsTheOperatorsRecreateAndReportsItsOverwrite(t *testing.T) {
+	host := applied(t, "home-a")
+	host.files["/srv/talk/.env"] += "# edited on the host\n"
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/talk/.env"), apply.Recreate("talk", "docs"), apply.Except("talk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(p.HeldOverwrites, ",") != "/srv/talk/.env" {
+		t.Errorf("held overwrites %v", p.HeldOverwrites)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	if record := host.files["/srv/.paisans-pending.json"]; !strings.Contains(record, `"talk"`) {
+		t.Fatalf("the held --recreate is not owed: %q", record)
+	}
+	next, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Overwrite("/srv/talk/.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, ok := actionOn(next, "talk"); !ok || !a.Force {
+		t.Errorf("releasing talk plans %+v, want it force-recreated", a)
+	}
+}
+
+// An --only run leaves what a stopped apply owes outside its stacks owed,
+// database path restarts included.
+func TestOnlyKeepsWhatIsOwedOutsideIt(t *testing.T) {
+	host := applied(t, "home-a")
+	host.files["/srv/.paisans-pending.json"] = `{"version":1,"actions":[{"stack":"docs","recreate":true},{"stack":"talk","database_path":true}]}`
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host, apply.Only("auth"), apply.Recreate("auth"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(p, host); err != nil {
+		t.Fatal(err)
+	}
+	record := host.files["/srv/.paisans-pending.json"]
+	if !strings.Contains(record, `"docs"`) || !strings.Contains(record, `"database_path": true`) {
+		t.Errorf("an --only run dropped what is owed outside it: %q", record)
+	}
+}
+
+// An owed stack the site no longer renders is dropped with a note, so an app
+// removed from the configuration cannot wedge every later apply.
+func TestAnOwedStackNoLongerRenderedIsDropped(t *testing.T) {
+	host := applied(t, "home-a")
+	host.files["/srv/.paisans-pending.json"] = `{"version":1,"actions":[{"stack":"gone","recreate":true}]}`
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := actionOn(p, "gone"); ok {
+		t.Error("a stack the site no longer renders is acted on")
+	}
+	if !strings.Contains(strings.Join(p.Notes, "\n"), "gone") {
+		t.Errorf("notes %v do not mention the dropped stack", p.Notes)
+	}
+}
