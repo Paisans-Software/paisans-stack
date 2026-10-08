@@ -9,7 +9,6 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
-	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/oidcclient"
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
@@ -68,16 +67,11 @@ func runOIDCClientCreate(args []string) error {
 	if !ok {
 		return fmt.Errorf("oidc client create: %s declares no app %q. Declared apps are %s", *configPath, *appName, strings.Join(cfg.AppNames(), ", "))
 	}
-	spec, ok := kinds.OIDCClient(app.Kind, app.Hostname)
+	desired, ok := clientDesired(*appName, app, *rotate)
 	if !ok {
 		return fmt.Errorf("oidc client create: this toolkit does not know what a %s client looks like yet. Implemented kinds: mbin, uptime", app.Kind)
 	}
-	idp := ""
-	for _, name := range cfg.AppNames() {
-		if cfg.Apps[name].Kind == config.KindPocketID {
-			idp = name
-		}
-	}
+	idp := pocketIDApp(cfg)
 	if idp == "" {
 		return fmt.Errorf("oidc client create: %s declares no pocket-id app to create the client in", *configPath)
 	}
@@ -107,46 +101,12 @@ func runOIDCClientCreate(args []string) error {
 		return fmt.Errorf("oidc client create: secrets apps.%s.static_api_key is empty. Run `paisans init` to generate it and `paisans apply` to render it into Pocket ID, then re-run", idp)
 	}
 
-	adminGroup, memberGroup := spec.Groups(app)
-	desired := oidcclient.Desired{
-		App:               *appName,
-		CallbackURL:       spec.CallbackURL,
-		LaunchURL:         spec.LaunchURL,
-		ToolkitLaunchURLs: kinds.ToolkitLaunchURLs(app.Kind, app.Hostname),
-		PKCE:              spec.PKCE,
-		AdminGroup:        adminGroup,
-		MemberGroup:       memberGroup,
-		RotateSecret:      *rotate,
-	}
-	// validate.Check above has refused a malformed one already.
-	if link, ok := app.Settings[kinds.DashboardLinkSetting].(string); ok {
-		desired.LaunchURL = kinds.LaunchURL(app.Kind, app.Hostname, link)
-		desired.LaunchURLChosen = true
-	}
-	recorded := oidcclient.Recorded{
-		ClientID:     secrets.OIDCClients[*appName].ClientID,
-		ClientSecret: secrets.OIDCClients[*appName].ClientSecret,
-	}
-	api := &pocketid.Client{Transport: oidcTransport(siteTransport(cfg.Sites[where], *destination, false)), BaseURL: pocketIDBase(cfg, where), APIKey: key}
-
-	state, err := oidcclient.Probe(api, desired)
+	api := clientAPI(cfg, where, *destination, key)
+	plan, err := planClient(api, desired, recordedClient(secrets, *appName))
 	if err != nil {
 		return fmt.Errorf("oidc client create: %w", err)
 	}
-	plan, err := oidcclient.Build(desired, recorded, state)
-	if err != nil {
-		return fmt.Errorf("oidc client create: %w", pocketid.Redact(err, recorded.ClientSecret))
-	}
-	fmt.Fprintf(os.Stdout, "%s's client at %s on %s (pocket-id)\n", *appName, idp, where)
-	for _, line := range plan.Present {
-		fmt.Fprintf(os.Stdout, "  %s\n", line)
-	}
-	for _, step := range plan.Steps {
-		fmt.Fprintf(os.Stdout, "  %s\n", step.Line)
-	}
-	for _, w := range plan.Warnings {
-		fmt.Fprintf(os.Stderr, "paisans: warning: %s\n", w)
-	}
+	printClientPlan(*appName, idp, where, plan)
 	if len(plan.Steps) == 0 {
 		return nil
 	}
@@ -180,6 +140,11 @@ type secretsRecorder struct {
 }
 
 func (r *secretsRecorder) Record(clientID, clientSecret string) error {
+	// Written with no recipient, an encrypted file would come back as
+	// plaintext. Callers refuse this before planning; this is the floor.
+	if r.secrets.Encrypted && len(r.recipients) == 0 {
+		return fmt.Errorf("%s is encrypted, but no %s beside it names a recipient, so the client's credentials could not be written back encrypted", r.path, config.SOPSConfigName)
+	}
 	if err := r.secrets.Set("oidc_clients."+r.app+".client_id", clientID); err != nil {
 		return err
 	}
