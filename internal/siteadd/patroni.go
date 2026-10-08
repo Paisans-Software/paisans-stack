@@ -133,7 +133,11 @@ func (p *Plan) buildReplica(members []patroniMember) *Stage {
 			return err
 		}
 		t := p.transports[p.Site]
-		whole, err := apply.Build(p.Site, rendered, p.acmeModule(), t)
+		var opts []apply.Option
+		if p.KeepImages {
+			opts = append(opts, apply.KeepImages())
+		}
+		whole, err := apply.Build(p.Site, rendered, p.acmeModule(), t, opts...)
 		if err != nil {
 			return err
 		}

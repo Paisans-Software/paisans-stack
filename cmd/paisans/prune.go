@@ -50,7 +50,11 @@ func runPrune(args []string) error {
 	}
 
 	transport := siteTransport(declared, *destination, *sudo)
-	plan, err := apply.BuildVolumePrune(*site, transport, false)
+	host, err := hostGate(os.Stdout, cfg, *site, transport)
+	if err != nil {
+		return err
+	}
+	plan, err := apply.BuildVolumePrune(*site, transport, host.Shared())
 	if err != nil {
 		return err
 	}
