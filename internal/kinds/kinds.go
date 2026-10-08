@@ -114,11 +114,12 @@ var catalogue = map[config.Kind][]Service{
 	},
 	config.KindPocketID: {
 		{Name: "app", Image: "ghcr.io/pocket-id/pocket-id:v2.14.0", Purpose: "the application"},
-		// Built from cmd/admin-reconciler by .github/workflows/admin-reconciler-image.yml.
-		// NOT YET PUBLISHED when this line was written: the tag
-		// admin-reconciler-v0.1.0 publishes it, and the reference moves to its
-		// digest once it exists, like every other default here.
-		{Name: "reconciler", Image: "ghcr.io/paisans-software/admin-reconciler:0.1.0", Purpose: "the admin reconciler"},
+		// Built from cmd/admin-reconciler by .github/workflows/admin-reconciler-image.yml
+		// and published by the tag admin-reconciler-v0.1.0. Checked against
+		// ghcr.io on 2026-10-08 with an anonymous pull token, which resolved
+		// the tag to this digest: an OCI image index for linux/amd64 and
+		// linux/arm64.
+		{Name: "reconciler", Image: "ghcr.io/paisans-software/admin-reconciler:0.1.0@sha256:008ca36e1637062bc1bde592b3a3997d9e0642e9fabed6264ce473be6ed6574d", Purpose: "the admin reconciler"},
 		{Name: PostgresService, Purpose: "its own database, when the app is pinned"},
 	},
 	config.KindSynapse: {

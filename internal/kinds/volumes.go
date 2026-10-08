@@ -46,7 +46,7 @@ var ImageVolumes = map[string][]string{
 	"ghcr.io/paisans-software/uptime:1.1.0-oidc.3": {"/data"},
 	// Declares none: cmd/admin-reconciler/Dockerfile has no VOLUME, checked with
 	// `docker image inspect` on a local build on 2026-10-08.
-	"ghcr.io/paisans-software/admin-reconciler:0.1.0": nil,
+	"ghcr.io/paisans-software/admin-reconciler:0.1.0@sha256:008ca36e1637062bc1bde592b3a3997d9e0642e9fabed6264ce473be6ed6574d": nil,
 	// A pinned app's own database, one per postgres_version the toolkit
 	// knows. The path moved in 18; see PostgresDataMount.
 	"postgres:16-alpine": {"/var/lib/postgresql/data"},

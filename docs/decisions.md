@@ -908,8 +908,8 @@ count. The standby wrapper's integration tests were run with the shared marker
 added: present on standby, gone after a stop.
 
 The image `ghcr.io/paisans-software/admin-reconciler:0.1.0` was built locally from
-`cmd/admin-reconciler/Dockerfile`; it is published by tagging `admin-reconciler-v0.1.0`,
-and the kind's reference moves to its digest once it exists.
+`cmd/admin-reconciler/Dockerfile`, then published by tagging `admin-reconciler-v0.1.0`.
+The kind names it by that release's digest.
 
 
 ---
