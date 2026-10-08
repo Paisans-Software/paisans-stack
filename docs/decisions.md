@@ -868,3 +868,44 @@ The Caddy was `ghcr.io/paisans-software/caddy:2.11.4`, through the
 pin: that image is in a registry that needs a login the workstation did not
 have. The snippets use only stock directives, none from the modules that image
 adds, but it was not the pinned bytes.
+
+---
+
+## 2026-10-08: The admin guard adds Pocket ID administrators to `admins` on its own
+
+Founder decision. The design is `docs/specs/2026-10-08-admin-guard.md`.
+
+### What was decided
+
+The `pocket-id` kind runs an admin guard beside every Pocket ID instance. Every
+two hours it adds each enabled, non LDAP Pocket ID administrator who is not in
+the `admins` group to it, and its `/healthz` fails while `admins` has fewer
+than two members. It is always on, in every deployment, and the group is
+always named `admins`.
+
+### Why an unattended write is acceptable here
+
+Every Pocket ID group change otherwise needs a human's approval each time.
+This one does not, because Pocket ID administrators are the community's
+administrators: putting them in `admins` changes nobody's power, only which
+apps recognise it. The exception is exactly that write. The guard never
+removes a member, never changes a user and never touches a group, its code is
+the only thing that keeps it so (Pocket ID's API keys carry no scopes), and
+its tests fail on any other request that writes. `docs/deployment-agent-rules.md`
+names it beside the tier it is an exception to, and says it gives an agent no
+authority to make the same change by hand.
+
+### What was run
+
+`TestRealPocketIDAdministratorIsAdded`, behind the `pocketid_integration` tag,
+against `ghcr.io/pocket-id/pocket-id:v2.14.0`: one administrator in `admins`,
+one in `editors` only. One pass left the second in both groups, reported two
+members, and left the static API key's user, an administrator with the fixed
+ID `00000000-0000-0000-0000-000000000000`, out of the group and out of the
+count. The standby wrapper's integration tests were run with the shared marker
+added: present on standby, gone after a stop.
+
+The image `ghcr.io/paisans-software/admin-guard:0.1.0` was built locally from
+`cmd/admin-guard/Dockerfile`; it is published by tagging `admin-guard-v0.1.0`,
+and the kind's reference moves to its digest once it exists.
+

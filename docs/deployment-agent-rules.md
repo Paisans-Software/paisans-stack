@@ -75,7 +75,11 @@ stricter one.
 * Reverse-proxy changes touching live routes
 * Bringing up a new container or stack on a shared host — a first deployment,
   not a restart of something already sanctioned
-* Any mutation of the identity provider's clients, groups or users
+* Any mutation of the identity provider's clients, groups or users. One
+  such change is made by the deployment itself, unattended: the admin guard
+  adds every identity provider administrator to the admin group. That is
+  software the deployment runs, not an action an agent takes, and it does
+  not let an agent make the same change by hand
 * Deleting documentation
 
 **Never without the human present**
