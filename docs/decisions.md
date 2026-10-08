@@ -941,3 +941,59 @@ unattended service impossible.
 The service grants an agent nothing. An agent making the same change by hand,
 with the service's credential, or by changing what the service reads, is an
 agent's action and is in the tier of the change itself.
+
+---
+
+## 2026-10-08: The visibility gate gates everything but what authenticates itself
+
+Founder decision. The design is `docs/specs/2026-10-08-visibility-gate.md`.
+
+### What was decided
+
+An app's `visibility_gate` is `public`, `member` or `provisional`, replacing
+`gate`. On a gated hostname every request goes to the gate except ActivityPub
+reads, whose answers Caddy filters, ActivityPub deliveries to the kind's
+inboxes, the kind's open paths, and its token paths carrying a bearer token.
+What each kind needs past the gate, and how it auto-logs a member in, is
+recorded in `internal/kinds` with a citation into the pinned tag's source.
+
+A gated app that federates refuses every unsigned ActivityPub read and reads
+only from instances on its allow list. That changes who can read the instance,
+which is why it is the founder's decision and not a rendering detail.
+
+### Why the gate is inverted
+
+The gate used to match browser navigations only, which is the shape the
+deployment it was modelled on settled on as a convenience boundary. It left
+every page readable to any client that did not ask for HTML. The founder asked
+for an app to be readable only by people signed in, and a gate a scraper walks
+past does not do that.
+
+### Why the ActivityPub answers are filtered
+
+Anyone can ask for ActivityPub, and an app can answer that request with
+something else. Read off Mbin v1.14.0+paisans: it picks a route by the first
+acceptable type, a route with no ActivityPub form serves HTML whatever is asked
+for, and its API read endpoints answer anonymous callers. Its signed fetch
+checks only its ActivityPub routes. So Caddy passes back an ActivityPub,
+JSON-LD or JRD success, turns any other success into an empty 404, and keeps
+only the status of anything else. Deliveries are POSTs, which change state
+before an answer could be filtered, so they reach the inboxes and nothing else.
+
+### What was run
+
+`caddy adapt` on the rendered gateway Caddyfile, with every gateable kind
+gated, in `ghcr.io/paisans-software/caddy:2.11.7`. The filter and the
+matchers were run against a stub upstream in the same image: an ActivityPub or
+JRD answer passed through, HTML and JSON answers became empty 404s, a mixed
+`Accept: text/html, application/activity+json` too, a 401 kept its status and
+a 302 its `Location` with no body; `/u/*/inbox` matched one segment and not
+two; `Authorization: Bearer` matched and `Basic` did not.
+
+### What is still open
+
+Mbin's token paths are empty, so its native apps meet the gate after signing
+in, until its API is shown not to serve anonymous reads to a token minted
+without a member. Mbin and WriteFreely keep `/` as their health route, so a
+gated one has no public check through the edge, until the pinned images carry
+the forks' `/healthz`.

@@ -179,12 +179,13 @@ apps:
     kind: mbin
     hostname: talk.example.org
     placement: cluster
-    # gate is access policy, and access policy belongs in configuration, not
-    # in a hand edited Caddy include somebody has to remember exists. members
-    # is the enforcing instance: it answers 403 for anyone signed in who is
-    # not yet a member of the community, which is what makes this app member
-    # only. The gate app itself is declared below.
-    gate: members
+    # visibility_gate is access policy, and access policy belongs in
+    # configuration, not in a hand edited Caddy include somebody has to
+    # remember exists. member sends anyone signed in who is not yet a member
+    # of the community to the gate's pending page, which is what makes this
+    # app member only. Federation still works: ActivityPub goes to Mbin, which
+    # this turns signed fetch on for. The gate app itself is declared below.
+    visibility_gate: member
     # Optional. Keys are service names in the kind's compose template; any key
     # left out takes the default that kind ships. Declaring the reference is
     # what makes running a fork, or holding a version back, a config edit.
@@ -232,7 +233,8 @@ apps:
     # The gate itself: one kind, two containers. provisional owns the login
     # flow and admits anyone signed in; members carries the group restriction
     # and enforces it. Which applications sit behind which instance is each
-    # app's own gate: setting, declared where that app is declared, not here.
+    # app's own visibility_gate setting, declared where that app is declared,
+    # not here.
 
   chat:
     kind: synapse

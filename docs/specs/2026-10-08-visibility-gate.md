@@ -1,23 +1,24 @@
 # The visibility gate
 
-Status: approved in session on 2026-10-08, being implemented. Founder
-decisions throughout; the federation part is called out where it lands.
+Status: approved in session on 2026-10-08, implemented on
+`feat/visibility-gate`. Founder decisions throughout; the federation part is
+called out where it lands, and recorded in `docs/decisions.md`.
 
 An app can be made readable only by people signed in to the community. Mbin
-and WriteFreely both serve every page to anonymous visitors and neither has a
-private mode, so the toolkit puts the gate in front of them at Caddy and
-derives everything else the app needs from its kind.
+and WriteFreely both serve every page to anonymous visitors and Mbin has no
+private mode the toolkit can set, so the toolkit puts the gate in front of
+them at Caddy and derives everything else the app needs from its kind.
 
-This replaces the per-app `gate:` key. Four things change:
+Four parts:
 
-1. **The key** becomes `visibility_gate: public | member | provisional`.
-2. **The gate is inverted.** It gates every request on a gated hostname except
-   the classes that carry their own authentication, which the app verifies.
-   It used to gate browser navigations only, which left every page readable
-   to any client that did not ask for HTML.
+1. **The key**, `visibility_gate: public | member | provisional`, replacing
+   `gate:`.
+2. **The gate covers everything** on a gated hostname except the classes that
+   carry their own authentication, which the app verifies.
 3. **Each kind declares what it needs around the gate** in `internal/kinds`:
-   the paths that must stay open, its auto-login, its signed fetch setting and
-   its token paths. One generic template renders that for every kind.
+   the paths that must stay open, its inboxes, its token paths, its auto-login
+   and its signed fetch setting. One generic template renders that for every
+   kind.
 4. **The monitor proves the gate, the edge and signed fetch** with checks of
    their own.
 
@@ -40,200 +41,207 @@ apps:
 | `member` | a signed-in member of the community | `members`, which carries the group restriction |
 | `provisional` | anyone signed in, member or not | `provisional`, which admits every signed-in user |
 
-Absent means `public`. The old `gate:` key is not read: `KnownFields` refuses
-it as an unknown key, and a deployment is redeployed rather than converted.
+Absent means `public`. The `gate:` key is not read: `KnownFields` refuses it as
+an unknown key, and a deployment is redeployed rather than converted.
 
 `provisional` is accepted on any gateable kind and warned about
 (`visibility-gate-provisional`), because it admits every signed-in visitor,
-including people who have not been accepted into the community. It exists for
-surfaces whose audience is exactly that.
+including people who have not been accepted into the community.
 
-## What reaches the app without a gate cookie
+## What reaches the app without a gate session
 
-On a hostname whose app is gated, Caddy sends a request to the app without
-asking the gate only when it is one of these:
+On a gated hostname, Caddy sends a request to the app without asking the gate
+only when it is one of these, matched in this order:
 
 | Class | Matched by | Who authenticates it |
 |---|---|---|
-| ActivityPub | `Accept` or `Content-Type` naming `application/activity+json` or `application/ld+json` | the app, by signed fetch against its allow list |
+| ActivityPub read | `GET` whose `Accept` names `application/activity+json` or `application/ld+json` | the app, by signed fetch; Caddy filters the answer |
+| ActivityPub delivery | `POST` whose `Content-Type` names either, on the kind's `InboxPaths` | the app, which verifies the delivery's signature |
+| Auto-login | see *Auto-login* | the gate, whose session it requires |
 | Open paths | the kind's `OpenPaths` | nothing; these hold no private content |
-| Token paths | the kind's `TokenPaths` **and** an `Authorization` header | the app, which validates the token |
+| Token paths | the kind's `TokenPaths` **and** `Authorization: Bearer` | the app, which refuses a token it did not issue |
 
-Everything else goes to the gate. A request with no session is redirected to
-sign in, and that includes `curl`, a JSON request with no token, and a request
-asking for `*/*`. The redirect carries no body from the app.
+Everything else goes to the gate: `curl`, a JSON request with no token, a
+request asking for `*/*`, a `HEAD`. With no session the gate redirects to sign
+in; with a session that is not a member's, to the pending page. The redirect
+carries no body from the app.
 
-The classes are matched in that order, then auto-login, then the gate, each in
-its own `handle` with a named matcher. Caddy keeps named-matcher `handle`
-blocks in the order they are written, so the order in the template is the
-order of evaluation.
+Each class is its own `handle` with a named matcher, and Caddy keeps those in
+the order they are written. Every handle strips `X-Auth-Request-*` from the
+inbound request first, so nothing upstream of the gate can name a user.
+
+### ActivityPub reads are filtered
+
+Anyone can send `Accept: application/activity+json`, and an app can answer it
+with something that is not ActivityPub. Read off Mbin v1.14.0+paisans: it
+picks a route by the first acceptable type (services.yaml:38), so `Accept:
+text/html, application/activity+json` gets the HTML page; a route with no
+ActivityPub form serves HTML whatever is asked for; and its `/api/*` read
+endpoints answer anonymous callers (EntriesRetrieveApi.php:72-80,
+security.yaml:148). Its signed fetch checks only its `ap_*` routes.
+
+So the read handle passes a block into the app's own `reverse_proxy`, through
+the snippet's `{block}`, that decides what comes back:
+
+| Upstream answer | What the client gets |
+|---|---|
+| 2xx, `Content-Type` ActivityPub, JSON-LD or JRD | the answer, unchanged |
+| 3xx | the status and `Location`, no body |
+| any other 2xx | an empty 404 |
+| anything else | the status, no body |
+
+A signed peer gets what it asked for; an unsigned one gets the app's 401; a
+request that reached an HTML or API route by asking for ActivityPub gets
+nothing. `HEAD` is not in the class: Mbin does not check a `HEAD`'s signature
+(AuthorizedFetchSubscriber.php:83), and a read needs only `GET`.
+
+### Deliveries reach the inboxes only
+
+A `POST` changes state before any answer could be filtered, so an ActivityPub
+`Content-Type` is honoured only on the kind's inboxes. Elsewhere it goes to
+the gate. Without this, anonymous `POST /api/client` with an ActivityPub
+`Content-Type` would register an OAuth client on Mbin
+(CreateClientApi.php:103).
 
 ### Why spoofing a header does not open anything
 
-Anyone can send `Accept: application/activity+json`. The request then reaches
-the app, and the app refuses it unless it carries a valid HTTP signature from
-an instance on its allow list. Caddy cannot verify a signature without a
-plugin, and the gateway runs no plugin that could stop the identity provider
-loading if it failed to build, so the app is where the check lives.
+A spoofed `Accept` reaches the app, which refuses it unless it carries a valid
+HTTP signature from an instance on its allow list, and the filter returns
+nothing the app answered with that is not ActivityPub. Caddy cannot verify a
+signature without a plugin, and the gateway runs no plugin whose failure to
+build would stop the identity provider loading, so the app is where the check
+lives. **That only holds while signed fetch is on in the app**, so the gate
+value drives it (see *Signed fetch*), and the monitor proves it.
 
-**That only holds while signed fetch is on in the app**, so the gate value
-drives it. See *Signed fetch*.
-
-`Authorization` is honoured only on a kind's `TokenPaths`, never on its own.
-An HTML route does not read a bearer token, so an `Authorization: x` header
-on `/m/anything` would otherwise be served as an anonymous visitor's page. On
-a token path the app refuses a token it did not issue.
-
-### What `OpenPaths` holds
-
-Browser navigations and machine requests that must reach the app ungated,
-because they are the sign-in itself or because a federating peer needs them
-before it can sign anything:
-
-* the app's own OIDC callback, which the browser reaches mid-login;
-* a native app's OAuth chain, which runs in a WebView with no gate cookie;
-* federation discovery (Eg: webfinger, host-meta, nodeinfo, the instance
-  actor), which serves ActivityPub whatever the `Accept` header says;
-* static assets the open pages load;
-* the kind's health route, when it is a dedicated route rather than `/`.
-
-Each entry is read off the pinned tag's source and cited beside it.
-
-### What `TokenPaths` holds, and why Mbin's is empty
-
-A token path is safe to leave open only if getting a token that reads content
-needs a member's sign-in. A kind's `TokenPaths` stays empty until that is
-shown from its source, or until the toolkit gates or disables whatever mints a
-token without one.
-
-Mbin's starts empty. Mbin has OAuth client registration and a
-`client_credentials` grant, and until they are shown not to yield a reading
-token without a user, leaving `/api/*` open could hand the read surface to
-anyone. The cost is plain: **Mbin's mobile apps do not work on a gated
-instance until this is resolved**, because after their WebView sign-in they
-call `/api/*` from an HTTP client with no gate cookie. Outline's API keys are
-created by a signed-in user, which makes its `/api/*` a token path.
+A bearer token is honoured only on a kind's `TokenPaths`. An HTML route does
+not read one, and Mbin's API treats any `Authorization` that is not `Bearer`
+as anonymous (OAuth2Authenticator.php:55-58), so the header alone would let a
+request past the gate to be served as an anonymous visitor.
 
 ## The kind catalogue
-
-`internal/kinds` gains one record per kind:
 
 ```go
 type GateSpec struct {
 	Gateable    bool
 	OpenPaths   []string
+	InboxPaths  []string
 	TokenPaths  []string
 	AutoLogin   []AutoLoginRule
 	SignedFetch *SignedFetch
 }
-
-type AutoLoginRule struct {
-	Paths         []string
-	Target        string
-	AbsentCookies []string
-}
 ```
 
-`Gateable` is false for kinds whose clients will not follow a redirect to a
-passkey prompt, or that are the sign-in flow itself: `synapse`, `pocket-id`
-and `oauth2-proxy`. A gate on any of them is refused
-(`visibility-gate-on-ungateable-kind`), which generalises the rule that a
-Matrix hostname is never gated.
+`Gateable` is false for `synapse`, `pocket-id` and `oauth2-proxy`: a Matrix
+client and a federating homeserver will not follow a redirect to a passkey
+prompt, and the other two are the sign-in flow itself. A gate on any of them is
+refused (`visibility-gate-on-ungateable-kind`). Every kind has a record, and a
+test fails for a kind without one.
 
-`SignedFetch` is set for a kind that federates, and names the settings that
-make it refuse an unsigned read. A federating kind with none recorded cannot
-be gated (`visibility-gate-without-signed-fetch`), because the ActivityPub
-class above would then be an open door.
+The kind's health route is added to its open paths when it is a dedicated
+route, never when it is `/`.
+
+| Kind | Open paths | Inboxes | Token paths | Auto-login |
+|---|---|---|---|---|
+| `mbin` | OIDC (`/oauth/*`), the native app's chain (`/authorize /consent /token /login`), discovery (webfinger, host-meta, nodeinfo, `/i/actor`, contexts), the sign-in page's assets | `/i/inbox /f/inbox /u/*/inbox /m/*/inbox` | none | `/` and `/login` to `/oauth/oidc/connect`, unless `PHPSESSID` or `REMEMBERME` |
+| `writefreely` | OIDC (`/oauth/*`), discovery (webfinger, host-meta, nodeinfo), the sign-in page's assets | `/api/collections/*/inbox` | none | `/login` always, `/` unless `wfu`, to `/oauth/generic` |
+| `outline` | OIDC (`/auth/*`), OAuth discovery, registration and token endpoints, `/_health` | none | `/api/*`, `/mcp` | none: its sign-in screen redirects itself when OIDC is the only provider |
+| `element`, `uptime` | the health route | none | none | none |
+
+Each entry is cited in `internal/kinds/gate.go` against the pinned tag.
+
+### Why Mbin's and WriteFreely's token paths are empty
+
+A token path is safe only if a token that reads content cannot be had without
+a member's sign-in, and the app refuses everything else. Mbin's `/api/*` read
+endpoints answer with no token at all, and anonymous `POST /api/client` mints
+a client (CreateClientApi.php:95,122-139). WriteFreely mints tokens only from a
+password sign-in, which `disable_password_auth` closes, but tokens already
+issued keep working and carry no scopes (handle.go:281-292). **Mbin's mobile
+apps do not work on a gated instance**, because after their WebView sign-in
+they call `/api/*` with no gate session. Outline's API keys are created only
+from a signed-in session (apiKeys.ts:23-27), so its API is a token path.
 
 ## Auto-login
 
 A member who has passed the gate holds a Pocket ID session, so the app's own
-sign-in completes without a prompt and its "Log in with" button is one
-pointless click. Each `AutoLoginRule` redirects a request on its `Paths` to the
-app's OIDC start route when:
+sign-in completes without a prompt. Each rule redirects a request on its paths
+to the app's OIDC start route when:
 
 * it is a `GET` or `HEAD` asking for `text/html` with no `Authorization`;
-* the gate's session cookie is present, so only someone the gate already let
-  through is sent on, and an anonymous visitor still meets the gate;
-* none of `AbsentCookies` is present, which is how the kind says "already
-  signed in to the app";
+* the gate's session cookie, `_oauth2_proxy`, is present, so an anonymous
+  visitor still meets the gate;
+* none of the rule's absent cookies is present, which is how the kind says
+  "already signed in here";
 * the loop breaker, `<app>_autologin`, is absent.
 
 The redirect sets `<app>_autologin` for two minutes. It is not optional: an
 app's Pocket ID client can refuse a user the gate admitted, and without it that
 user would bounce between the app's sign-in page and its OIDC route forever.
 
-Rules fire on `/` and the app's sign-in page only, never a deep link. Neither
-Mbin's nor WriteFreely's OIDC start route takes a destination, so a deep link
-sent through it would land on the front page having lost what was clicked.
-
-Auto-login is rendered before the open paths. A path can be both (Eg: Mbin's
-`/login`), and someone holding a gate cookie must take the redirect, while a
-WebView with none falls through to the open page.
-
-A kind with no rule keeps its button. That is a missing convenience, not a
-failure.
+Rules fire on `/` and the sign-in page only. Neither Mbin's nor WriteFreely's
+OIDC start route takes a destination (OidcController.php:14-20, oauth.go:135-
+166), so a deep link sent through one would land on the front page.
 
 ## The gate snippets
 
-`gate_member` and `gate_provisional` keep what the gate already did: strip
-`X-Auth-Request-*` from the inbound request, `forward_auth` to the instance,
-copy the verified identity headers back. They gain the two answers a person
-needs instead of oauth2-proxy's raw status:
+`gate_member` and `gate_provisional` strip `X-Auth-Request-*`, `forward_auth`
+to their instance and copy the verified identity headers back. They answer a
+person with a page rather than oauth2-proxy's raw status:
 
 * **401**, no session: redirect to `https://<gate hostname>/oauth2/start?rd=`
   the original URL.
 * **403**, signed in but not a member (`gate_member` only): redirect to
   `https://<gate hostname>/pending?rd=` the original URL.
 
-They no longer match browser navigations only. Every request that reaches the
-final `handle` is gated.
-
 ### The pending page
 
-The gate app's own hostname serves `/pending`, a static page rendered from a
-template: the community's name and a sentence saying the account is signed in
-but not yet a member. It is the place a future onboarding service would
-replace, behind the same path.
+The gate app's hostname serves `/pending`, a static page: the community's name
+and a sentence saying the account is signed in but not yet a member, and that
+approval can take up to an hour to arrive (the session's groups refresh with
+its cookie). It never echoes `rd` or any other part of the request, because
+Caddy placeholders are not HTML escaped, and it escapes braces in the
+community's name, because Caddy expands a `{placeholder}` in a response body.
 
 ## Signed fetch
 
 **Founder decision, 2026-10-08, and a federation policy change:** a gated app
 that federates refuses every unsigned ActivityPub read, and reads only from
-instances on its allow list. That changes who can read the instance, which is
-why it is recorded as the founder's call rather than a rendering detail.
+instances on its allow list. An empty allow list federates with nobody until an
+admin adds a peer. A gated federating app whose kind records no way to refuse
+an unsigned read is refused (`visibility-gate-without-signed-fetch`).
 
-The toolkit renders the kind's `SignedFetch` settings on whenever its
-`visibility_gate` is not `public`. For Mbin that is `MBIN_AUTHORIZED_FETCH` and
-`MBIN_USE_FEDERATION_ALLOW_LIST`. An empty allow list means the instance
-federates with nobody until an admin adds a peer.
+* **Mbin.** The toolkit renders `MBIN_AUTHORIZED_FETCH=true` and
+  `MBIN_USE_FEDERATION_ALLOW_LIST=true` when the app is gated. Mbin reads them
+  from the environment until an admin saves its settings, after which a
+  database row wins (SettingsManager.php:105-106,136-163).
+* **WriteFreely** checks signatures only in private mode
+  (handle.go:663-690, federation_allowlist.go:493-544), which the kind renders
+  on by default. A gated WriteFreely with `private: false` has no signed fetch,
+  and is refused.
 
-A rendered setting is not proof. Mbin keeps settings in its database and the
-database is believed to override the environment, so an admin turning signed
-fetch off in the UI would reopen the read surface with nothing in the
-configuration to say so. The monitor's signed fetch check is what catches
-that.
+A rendered setting is not proof: an admin can turn either off inside the app
+with nothing in the configuration to say so. The monitor's signed fetch check
+is what catches that.
 
 ## The monitor
-
-Every gated app's checks become:
 
 | Check | Request | Expect | Proves |
 |---|---|---|---|
 | gate | `GET /` with no session | `302` to sign in | the edge, and the gate in the path |
 | public | the kind's health route, with no session | the health route's answer | the edge reaches the app |
-| signed fetch | an unsigned ActivityPub `GET` of the kind's probe path | `401` | the read surface is closed |
+| signed fetch | an unsigned `GET` asking for ActivityPub, of the kind's probe | `401` | the read surface is closed |
 | direct | unchanged | unchanged | the app itself |
 
-The public check reaches the app only when the health route is in
-`OpenPaths`, which is true of a dedicated route and never of `/`. A kind whose
-health route is `/` gets no public check while gated, only the gate check,
-until its fork ships a dedicated one. That is the gap the fork health routes
-close.
+The public check is seeded for a gated app only when its health route is in its
+open paths, which is true of a dedicated route and never of `/`. Until the
+forks' health routes are in the pinned images, a gated Mbin or WriteFreely has
+the gate check and no public check.
 
-The signed fetch check exists only for a kind with `SignedFetch`. Its probe
-path is recorded with the setting, and is one the app refuses unsigned without
-needing any particular content to exist.
+The probes need no content to exist: Mbin's is `/`, which asking for
+ActivityPub is `ap_instance_front` and not one of the routes signed fetch
+leaves open (AuthorizedFetchSubscriber.php:52-59,148-153); WriteFreely's is
+`/api/collections/<hostname>`, the instance actor, which resolves from
+configuration (activitypub.go:108-131) and answers 401 unsigned.
 
 ## Fork health routes
 
@@ -243,23 +251,25 @@ through the edge without opening its front page:
 * **path** `/healthz`, a path the app does not otherwise use, reserved where
   the app lets users claim top-level names;
 * **answer** `200` with an empty body when healthy, `503` with an empty body
-  when a dependency is not: Postgres for both, and Mbin's cache as well;
+  when a dependency is not: the database for both, and Mbin's cache as well;
 * **no detail**: no version, no dependency names, no error text, so the route
-  can sit in `OpenPaths` without telling anyone anything but up or down;
+  can sit in the open paths without telling anyone anything but up or down;
 * **no session, no cookies, no redirect**, so it answers the same to a monitor
   as to anything else.
 
-Each is its own branch and pull request in its fork. The toolkit records the
-route in `internal/kinds/health.go` and adds it to the kind's `OpenPaths` when
-the pinned image carries it. Until then the kind's health route stays `/`.
+Each is its own branch and pull request in its fork. When a pinned image
+carries the route, `internal/kinds/health.go` records it, and it is open past
+the gate from then on with no other change.
 
-## What is verified from source before it is recorded
+## Known limits
 
-Nothing here goes into the catalogue from memory:
-
-* each kind's `OpenPaths`, from its pinned tag's router;
-* Mbin's token minting, which decides whether `TokenPaths` stays empty;
-* WriteFreely's signed fetch setting, if it has one. Without one, a federating
-  WriteFreely cannot be gated;
-* Mbin's settings precedence between the environment and its database;
-* each kind's signed fetch probe path, by running the pinned image.
+* **Webfinger is open to anyone**, because a peer needs it before it can sign,
+  and it answers JRD rather than ActivityPub. It confirms whether a handle
+  exists.
+* **Outline's optional-auth API endpoints** downgrade an unrecognised bearer
+  token to anonymous (authentication.ts:67-71), so a published share is
+  readable through `/api/shares.info` by anyone holding its unguessable ID,
+  although `/s/*` itself stays behind the gate.
+* **`rd` is not URL encoded**, because Caddy has no placeholder that encodes
+  one: a deep link with more than one query parameter loses the extras on the
+  visit that crosses sign-in.
