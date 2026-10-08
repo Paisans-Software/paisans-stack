@@ -56,7 +56,7 @@ only when it is one of these, matched in this order:
 | Class | Matched by | Who authenticates it |
 |---|---|---|
 | ActivityPub read | `GET` whose `Accept` names `application/activity+json` or `application/ld+json` | the app, by signed fetch; Caddy filters the answer |
-| ActivityPub delivery | `POST` whose `Content-Type` names either, on the kind's `InboxPaths` | the app, which verifies the delivery's signature |
+| ActivityPub delivery | `POST` whose `Content-Type` names either, on the kind's `InboxPaths` | the app, which verifies the delivery's signature (WriteFreely only with an allowlist, until `authorized_fetch`; see *Known limits*) |
 | Auto-login | see *Auto-login* | the gate, whose session it requires |
 | Open paths | the kind's `OpenPaths` | nothing; these hold no private content |
 | Token paths | the kind's `TokenPaths` **and** `Authorization: Bearer` | the app, which refuses a token it did not issue |
@@ -270,7 +270,36 @@ Each is its own branch and pull request in its fork. When a pinned image
 carries the route, `internal/kinds/health.go` records it, and it is open past
 the gate from then on with no other change.
 
+## Fork settings the toolkit will render
+
+Two more fork changes, so the app's own checks hold without an admin setting
+anything by hand. Each is rendered by the toolkit once a pinned image carries
+it, and until then is a known limit below.
+
+* **Mbin `MBIN_PRIVATE_INSTANCE` from the environment.** With it on, Mbin's
+  catch-all access rule refuses any request without a signed-in user
+  (security.yaml:148, PrivateInstanceVoter.php), which closes anonymous
+  `/api/*` reads. At v1.14.0+paisans it is read from the database only, with
+  a hard-coded `false` default (SettingsManager.php:96), so nothing rendered
+  can set it. The fork gives it the same environment fallback its siblings
+  have; a gated Mbin renders it on, and a direct check proves an anonymous
+  `/api/entries` is refused. Instance metadata and the admin and moderator
+  lists stay public (security.yaml:137-147).
+* **WriteFreely `authorized_fetch`**, independent of private mode: a valid
+  signature on every ActivityPub read and every inbox delivery, from an
+  allowlisted host when an allowlist is set. A gated WriteFreely renders it on,
+  and its signed fetch record moves from private mode to this setting.
+
 ## Known limits
+
+* **A gated WriteFreely with an empty allowlist accepts unsigned deliveries.**
+  Its inbox verifies a signature only when the allowlist is non-empty
+  (activitypub.go:402-409), so until `authorized_fetch` is pinned anyone can
+  deliver a Follow or Like to a blog's inbox. Nothing becomes readable by it.
+* **Mbin's API answers anonymous reads** that reach it, until
+  `MBIN_PRIVATE_INSTANCE` is pinned. The gate keeps them from reaching it,
+  except through the ActivityPub filter, which returns nothing that is not
+  ActivityPub.
 
 * **Webfinger is open to anyone**, because a peer needs it before it can sign,
   and it answers JRD rather than ActivityPub. It confirms whether a handle
