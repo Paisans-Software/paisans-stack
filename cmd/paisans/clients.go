@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,13 +82,28 @@ type probeError struct{ err error }
 func (e *probeError) Error() string { return e.err.Error() }
 func (e *probeError) Unwrap() error { return e.err }
 
-// planClient probes Pocket ID for one app's client and plans it. The probe
-// only reads. A refusal from the plan has the recorded secret redacted.
+// planClient probes Pocket ID for one app's client and plans it.
 func planClient(api *pocketid.Client, d oidcclient.Desired, rec oidcclient.Recorded) (*oidcclient.Plan, error) {
+	state, err := probeClient(api, d)
+	if err != nil {
+		return nil, err
+	}
+	return buildClient(d, rec, state)
+}
+
+// probeClient reads what Pocket ID holds for one app's client. It only
+// reads, and a failure is a *probeError.
+func probeClient(api *pocketid.Client, d oidcclient.Desired) (oidcclient.State, error) {
 	state, err := oidcclient.Probe(api, d)
 	if err != nil {
-		return nil, &probeError{err}
+		return state, &probeError{err}
 	}
+	return state, nil
+}
+
+// buildClient plans one app's client from a probe. A refusal has the
+// recorded secret redacted.
+func buildClient(d oidcclient.Desired, rec oidcclient.Recorded, state oidcclient.State) (*oidcclient.Plan, error) {
 	plan, err := oidcclient.Build(d, rec, state)
 	if err != nil {
 		return nil, pocketid.Redact(err, rec.ClientSecret)
@@ -165,7 +179,7 @@ func newClientStep(cfg *config.Config, site, destination, secretsPath string, se
 	c.recipients = recipients
 	var missing []string
 	for _, app := range c.apps {
-		if !c.recorded(app) {
+		if r := c.secrets.OIDCClients[app]; r.ClientID == "" && r.ClientSecret == "" {
 			missing = append(missing, app)
 		}
 	}
@@ -219,62 +233,123 @@ func (c *clientStep) heldApps() []string {
 
 // ensure plans every app's client and, with execute, puts it in place and
 // records it, printing each plan as `oidc client create` does. Without
-// execute, Pocket ID is only read.
+// execute, Pocket ID is only read. It returns an error only for a refusal of
+// the whole step, made before Pocket ID is sent anything; a refused app is
+// held back and reported by result.
 //
 // waiting is for a dry run on a site whose Pocket ID this apply starts
 // first: a Pocket ID that does not answer yet is then no reason to hold an
 // app back, since the apply will start it before the clients are made.
-func (c *clientStep) ensure(execute, waiting bool) {
+func (c *clientStep) ensure(execute, waiting bool) error {
 	c.reset()
 	fmt.Fprintf(os.Stdout, "\nOIDC clients for %s, before they start\n", strings.Join(c.apps, ", "))
 	if c.idp == "" {
 		c.cannotAsk(c.apps, "the configuration declares no pocket-id app to create a client in", false)
-		return
+		return nil
 	}
 	key, _ := c.secrets.Apps[c.idp]["static_api_key"].(string)
 	if key == "" {
 		c.cannotAsk(c.apps, fmt.Sprintf("secrets apps.%s.static_api_key is empty, and `paisans init` generates it", c.idp), false)
-		return
+		return nil
 	}
 	where, err := c.pocketIDWhere()
 	if err != nil {
 		c.cannotAsk(c.apps, err.Error(), waiting)
-		return
+		return nil
 	}
 	destination := ""
 	if where == c.site {
 		destination = c.destination
 	}
 	api := clientAPI(c.cfg, where, destination, key)
+
+	type planned struct {
+		app  string
+		plan *oidcclient.Plan
+	}
+	var plans []planned
 	for i, app := range c.apps {
 		desired, _ := clientDesired(app, c.cfg.Apps[app], false)
-		plan, err := planClient(api, desired, recordedClient(c.secrets, app))
-		var probe *probeError
-		if errors.As(err, &probe) {
+		recorded := recordedClient(c.secrets, app)
+		state, err := probeClient(api, desired)
+		if err != nil {
 			c.cannotAsk(c.apps[i:], fmt.Sprintf("Pocket ID on %s could not be asked: %v", where, err), waiting)
-			return
+			break
 		}
+		if err := keepsRecorded(app, recorded, state); err != nil {
+			c.refuse(app, err)
+			continue
+		}
+		plan, err := buildClient(desired, recorded, state)
 		if err != nil {
 			c.refuse(app, err)
 			continue
 		}
 		printClientPlan(app, c.idp, where, plan)
 		c.steps += len(plan.Steps)
-		if !execute || len(plan.Steps) == 0 {
+		plans = append(plans, planned{app, plan})
+	}
+	if !execute {
+		return nil
+	}
+
+	// Every plan is made before any is carried out, so a step that would
+	// write the secrets file is refused before Pocket ID is sent anything,
+	// rather than after another app's client was created.
+	if c.secrets.Encrypted && len(c.recipients) == 0 {
+		var recording []string
+		for _, p := range plans {
+			for _, step := range p.plan.Steps {
+				if step.Kind == oidcclient.AddSecret || step.Kind == oidcclient.RecordClientID {
+					recording = append(recording, p.app)
+					break
+				}
+			}
+		}
+		if len(recording) > 0 {
+			return fmt.Errorf("apply: %s is encrypted, but no %s beside it names a recipient, so the client %s needs could not be written back encrypted. Pocket ID was sent nothing", c.secretsPath, config.SOPSConfigName, strings.Join(recording, ", "))
+		}
+	}
+
+	for _, p := range plans {
+		if len(p.plan.Steps) == 0 {
 			continue
 		}
-		rec := &secretsRecorder{app: app, path: c.secretsPath, secrets: c.secrets, recipients: c.recipients}
-		if err := oidcclient.Execute(plan, api, rec, secretsgen.ClientSecret); err != nil {
-			c.refuse(app, err)
+		rec := &secretsRecorder{app: p.app, path: c.secretsPath, secrets: c.secrets, recipients: c.recipients}
+		if err := oidcclient.Execute(p.plan, api, rec, secretsgen.ClientSecret); err != nil {
+			c.refuse(p.app, err)
 			continue
 		}
 		if rec.wrote {
-			fmt.Fprintf(os.Stdout, "  recorded oidc_clients.%s.client_id and oidc_clients.%s.client_secret\n", app, app)
+			fmt.Fprintf(os.Stdout, "  recorded oidc_clients.%s.client_id and oidc_clients.%s.client_secret\n", p.app, p.app)
 			if len(c.recipients) == 0 {
 				fmt.Fprintf(os.Stderr, "paisans: %s is PLAINTEXT, because no %s beside it names an age recipient.\n", c.secretsPath, config.SOPSConfigName)
 			}
 		}
 	}
+	return nil
+}
+
+// keepsRecorded refuses an app whose recorded credentials Pocket ID does not
+// hold as that app's client. apply creates a client only when nothing is
+// recorded; replacing recorded credentials is the operator's call, made with
+// `oidc client create`, which re-records them. Session owner decision,
+// 2026-10-08.
+func keepsRecorded(app string, rec oidcclient.Recorded, state oidcclient.State) error {
+	var why string
+	switch {
+	case rec.ClientID == "" && rec.ClientSecret == "":
+		return nil
+	case rec.ClientID == "" || rec.ClientSecret == "":
+		why = fmt.Sprintf("oidc_clients.%s is only partly recorded", app)
+	case state.Client == nil:
+		why = fmt.Sprintf("oidc_clients.%s.client_id is %s, and Pocket ID has no client named %s", app, rec.ClientID, app)
+	case state.Client.ID != rec.ClientID:
+		why = fmt.Sprintf("oidc_clients.%s.client_id is %s, and Pocket ID's client %s has ID %s", app, rec.ClientID, app, state.Client.ID)
+	default:
+		return nil
+	}
+	return fmt.Errorf("%s. apply does not replace recorded credentials: run `paisans oidc client create --app %s` to create or re-record the client, then apply again", why, app)
 }
 
 // pocketIDWhere is the site to call Pocket ID on, as `oidc client create`
@@ -282,9 +357,9 @@ func (c *clientStep) ensure(execute, waiting bool) {
 // whose instance is active.
 func (c *clientStep) pocketIDWhere() (string, error) {
 	if !slices.Contains(apply.StandbyApps(c.cfg), c.idp) {
-		return adminSite(c.cfg, c.idp, "")
+		return adminSite(c.cfg, c.idp, "", "apply")
 	}
-	site, list, err := activeInstance(c.cfg, c.idp)
+	site, list, err := activeInstance(c.cfg, c.idp, c.site, c.destination)
 	if err != nil {
 		var states []string
 		for _, in := range list {
@@ -326,6 +401,9 @@ func (c *clientStep) refuse(app string, err error) {
 	fmt.Fprintf(os.Stdout, "  %-9s %s: %v. The rest of the site is applied\n", "refuse", app, err)
 }
 
+// checkOneActive is how apply waits for Pocket ID. Tests replace it.
+var checkOneActive = apply.CheckOneActive
+
 // waitForPocketID waits until the deployment's Pocket ID has exactly one
 // active instance, its /healthz answering on a site's mesh address, as the
 // check after an apply does. The first pass on a site running Pocket ID has
@@ -340,7 +418,7 @@ func (c *clientStep) waitForPocketID() error {
 		}
 		transports[name] = standbyLook(siteTransport(c.cfg.Sites[name], destination, false))
 	}
-	return apply.CheckOneActive(c.cfg, c.idp, transports, os.Stdout)
+	return checkOneActive(c.cfg, c.idp, transports, os.Stdout)
 }
 
 // result is the step's verdict once the rest of the site is applied. An app
@@ -370,7 +448,8 @@ func (c *clientStep) result() error {
 // sitePass is one plan and execute of the site. plan holds the named app
 // stacks back with apply.Except.
 type sitePass struct {
-	plan    func(hold []string) (*apply.Plan, error)
+	// plan is told every earlier pass of this apply, for apply.After.
+	plan    func(hold []string, done []*apply.Plan) (*apply.Plan, error)
 	execute func(*apply.Plan) error
 }
 
@@ -385,7 +464,7 @@ type sitePass struct {
 func executeWithClients(c *clientStep, pass sitePass) ([]*apply.Plan, error) {
 	var plans []*apply.Plan
 	if c.pocketIDHere() {
-		first, err := pass.plan(c.holdForPocketID())
+		first, err := pass.plan(c.holdForPocketID(), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -398,13 +477,13 @@ func executeWithClients(c *clientStep, pass sitePass) ([]*apply.Plan, error) {
 			c.reset()
 			fmt.Fprintf(os.Stdout, "\nOIDC clients for %s, before they start\n", strings.Join(c.apps, ", "))
 			c.cannotAsk(c.apps, err.Error(), false)
-		} else {
-			c.ensure(true, false)
+		} else if err := c.ensure(true, false); err != nil {
+			return plans, err
 		}
-	} else {
-		c.ensure(true, false)
+	} else if err := c.ensure(true, false); err != nil {
+		return plans, err
 	}
-	final, err := pass.plan(c.heldApps())
+	final, err := pass.plan(c.heldApps(), plans)
 	if err != nil {
 		return plans, err
 	}

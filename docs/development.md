@@ -343,7 +343,12 @@ waits for Pocket ID's `/healthz`, then the clients are ensured, then the site
 is planned again with the new credentials and executed. Any other site
 ensures first and applies once. An app with no recorded client is held back
 when Pocket ID cannot be asked, which exits 0; a refused client holds its app
-back and exits 1 once the rest is applied. `apply.Except` keeps a held stack
+back and exits 1 once the rest is applied, and so does an app whose recorded
+client Pocket ID does not hold (`keepsRecorded`): apply creates a client only
+when nothing is recorded. The second pass gets `apply.After(first)`, so an
+`--overwrite` or `--recreate` the first pass carried out is not repeated, and
+a held app's database path restart is owed in the pending record
+(`DatabasePath`) and runs once when the app is released. `apply.Except` keeps a held stack
 owed in the pending record, so the apply that releases it force-recreates it.
 `clients_test.go` drives the passes with a fake `sitePass` that renders and
 records, and the Pocket ID fake from `oidc_test.go`.

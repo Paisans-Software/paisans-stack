@@ -467,7 +467,9 @@ func runApply(args []string) error {
 	}
 	var held []string
 	if clients != nil {
-		clients.ensure(false, clients.pocketIDHere())
+		if err := clients.ensure(false, clients.pocketIDHere()); err != nil {
+			return err
+		}
 		held = clients.heldApps()
 		fmt.Fprintln(os.Stdout)
 	}
@@ -544,8 +546,8 @@ func runApply(args []string) error {
 		}
 	} else {
 		pass := sitePass{
-			plan: func(hold []string) (*apply.Plan, error) {
-				p, err := planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...)})...)
+			plan: func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
+				p, err := planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...)})...)
 				if err != nil {
 					return nil, err
 				}

@@ -2920,8 +2920,15 @@ already sign people in. An existing client that differs from what the app
 needs refuses that app alone, as the command does; the rest of the site is
 applied and `apply` exits non zero, because a person has to fix the client.
 The secrets file is written through the same recorder, re-encrypted to the
-recipients in `.sops.yaml`, and an encrypted file with no recipient is refused
-before Pocket ID is contacted.
+recipients in `.sops.yaml`, and a plan that would write an encrypted file with
+no recipient is refused before Pocket ID is sent anything.
+
+**`apply` creates a client only when nothing is recorded for the app.** If
+the secrets file holds a client ID and secret and Pocket ID has no such client,
+or holds the app's client under another ID, `apply` refuses that app rather
+than replacing what is recorded, and names `oidc client create --app <name>`,
+which creates or re-records it. Recorded credentials may be what a running app
+signs people in with, so replacing them is a decision, not a repair.
 
 `apply` never rotates a secret. The command stays for that and for running the
 step alone:

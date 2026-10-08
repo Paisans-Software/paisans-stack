@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,12 +38,19 @@ func TestSecretsRecorderRefusesAnEncryptedFileWithoutARecipient(t *testing.T) {
 // passLog is a sitePass that renders the site as apply would, records what
 // each pass held back and whether app rendered with its recorded client ID
 // at that moment, and executes nothing.
-type passLog struct{ events []string }
+type passLog struct {
+	events []string
+	// done is what each plan call was told the earlier passes did.
+	done [][]*apply.Plan
+	// plans is every plan returned, in order.
+	plans []*apply.Plan
+}
 
 func (l *passLog) pass(t *testing.T, c *clientStep, app string) sitePass {
 	t.Helper()
 	return sitePass{
-		plan: func(hold []string) (*apply.Plan, error) {
+		plan: func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
+			l.done = append(l.done, done)
 			rendered, err := render.Build(c.cfg, c.secrets)
 			if err != nil {
 				t.Fatal(err)
@@ -55,7 +63,9 @@ func (l *passLog) pass(t *testing.T, c *clientStep, app string) sitePass {
 				}
 			}
 			l.events = append(l.events, fmt.Sprintf("plan hold=%s client=%t", strings.Join(hold, ","), has))
-			return &apply.Plan{Site: c.site}, nil
+			p := &apply.Plan{Site: c.site}
+			l.plans = append(l.plans, p)
+			return p, nil
 		},
 		execute: func(*apply.Plan) error {
 			l.events = append(l.events, "execute")
@@ -252,7 +262,7 @@ func TestApplyHoldsBackOnlyAppsWithoutAClientWhenPocketIDIsUnreachable(t *testin
 // the rest of the site is applied, and the apply fails at the end.
 func TestApplyRefusesOnlyTheAppWhoseClientDiffers(t *testing.T) {
 	fake := withIDPFake(t)
-	fake.client = &pocketid.OIDCClient{ID: "c-9", Name: "talk", CallbackURLs: []string{"https://elsewhere.example.org/callback"}, PkceEnabled: true}
+	fake.client = &pocketid.OIDCClient{ID: "fixture-not-a-secret-talk-id", Name: "talk", CallbackURLs: []string{"https://elsewhere.example.org/callback"}, PkceEnabled: true}
 	c := stepFor(t, "home-a", tempSecrets(t))
 	var log passLog
 	var err error
@@ -312,5 +322,136 @@ func TestApplyHasNoIdentityStepWithoutAnAppThatSignsIn(t *testing.T) {
 	c, err := newClientStep(cfg, "home-a", "", fixtureSecretsPath(), secrets, []string{"docs"})
 	if err != nil || c != nil {
 		t.Errorf("got %+v, %v", c, err)
+	}
+}
+
+// The second pass is told what the first did, so it does not repeat an
+// --overwrite or a --recreate the first carried out (apply.After).
+func TestApplyTellsTheSecondPassWhatTheFirstDid(t *testing.T) {
+	withIDPFake(t)
+	c := stepFor(t, "home-a", secretsWithout(t, "talk"))
+	var log passLog
+	var err error
+	captureOutput(t, func() { _, err = executeWithClients(c, log.pass(t, c, "talk")) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(log.done) != 2 || len(log.done[0]) != 0 || len(log.done[1]) != 1 || log.done[1][0] != log.plans[0] {
+		t.Errorf("the passes were told %v, want nothing and then the first pass", log.done)
+	}
+}
+
+// A Pocket ID on this site that never answers after the first pass holds
+// back the apps without a client, and the rest of the site still applies.
+func TestApplyHoldsBackWhenItsOwnPocketIDNeverAnswers(t *testing.T) {
+	fake := withIDPFake(t)
+	saved := checkOneActive
+	checkOneActive = func(*config.Config, string, map[string]apply.Transport, io.Writer) error {
+		return fmt.Errorf("pocket-id auth: no site has an active instance within 3m0s")
+	}
+	t.Cleanup(func() { checkOneActive = saved })
+	c := stepFor(t, "home-a", secretsWithout(t, "talk"))
+	var log passLog
+	var err error
+	stdout, _ := captureOutput(t, func() { _, err = executeWithClients(c, log.pass(t, c, "talk")) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"plan hold=blog,docs,gate,talk client=false", "execute", "plan hold=talk client=false", "execute"}
+	if strings.Join(log.events, "\n") != strings.Join(want, "\n") {
+		t.Errorf("passes:\n%s", strings.Join(log.events, "\n"))
+	}
+	if !strings.Contains(stdout, "skip      talk:") || len(fake.commands) != 0 {
+		t.Errorf("Pocket ID was called %d time(s), output:\n%s", len(fake.commands), stdout)
+	}
+	if err := c.result(); err != nil {
+		t.Error(err)
+	}
+}
+
+// apply creates a client only when nothing is recorded. Recorded credentials
+// that Pocket ID does not hold, or holds under another client, are refused
+// rather than replaced, and the operator is pointed at the command.
+func TestApplyNeverReplacesRecordedCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		client *pocketid.OIDCClient
+	}{
+		{"no client at Pocket ID", nil},
+		{"another client ID", &pocketid.OIDCClient{ID: "c-other", Name: "talk", CallbackURLs: []string{"https://talk.example.org/oauth/oidc/verify"}, PkceEnabled: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := withIDPFake(t)
+			fake.client = tc.client
+			path := tempSecrets(t)
+			before, _ := os.ReadFile(path)
+			c := stepFor(t, "home-a", path)
+			var err error
+			captureOutput(t, func() { err = c.ensure(true, false) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fake.mutated {
+				t.Error("Pocket ID was changed")
+			}
+			if after, _ := os.ReadFile(path); string(after) != string(before) {
+				t.Error("the recorded credentials were replaced")
+			}
+			result := c.result()
+			if result == nil || !strings.Contains(result.Error(), "paisans oidc client create --app talk") {
+				t.Errorf("result %v, want a refusal naming the command", result)
+			}
+			if got := strings.Join(c.heldApps(), ","); got != "talk" {
+				t.Errorf("held %s", got)
+			}
+		})
+	}
+}
+
+// A plan that would record into a file that cannot be written back
+// encrypted is refused before Pocket ID is sent anything.
+func TestApplyRefusesARecordingStepBeforeAnyMutation(t *testing.T) {
+	fake := withIDPFake(t)
+	c := stepFor(t, "home-a", secretsWithout(t, "talk"))
+	c.secrets.Encrypted = true
+	var err error
+	captureOutput(t, func() { err = c.ensure(true, false) })
+	if err == nil || !strings.Contains(err.Error(), "names a recipient") {
+		t.Fatalf("got %v", err)
+	}
+	if fake.mutated {
+		t.Error("Pocket ID was changed")
+	}
+}
+
+// --ssh replaces the applying site's ssh section for every look at it,
+// including the one that finds the active Pocket ID.
+func TestActiveInstanceReachesTheApplyingSiteThroughSSH(t *testing.T) {
+	var reached []string
+	saved := standbyLook
+	standbyLook = func(tr apply.SSHTransport) apply.Transport {
+		reached = append(reached, tr.Describe())
+		var asked []string
+		return stateHost{"active", &asked, tr.Describe()}
+	}
+	t.Cleanup(func() { standbyLook = saved })
+	cfg, err := config.Load(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = activeInstance(cfg, "auth", "home-a", "operator@jump.example.org")
+	if !slices.Contains(reached, "operator@jump.example.org") || slices.Contains(reached, "ubuntu@home-a.local") {
+		t.Errorf("reached %v", reached)
+	}
+}
+
+// A refusal from the site lookup names the command it came from.
+func TestAdminSiteNamesItsCaller(t *testing.T) {
+	cfg, err := config.Load(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adminSite(cfg, "talk", "vm", "apply"); err == nil || !strings.HasPrefix(err.Error(), "apply: ") {
+		t.Errorf("got %v", err)
 	}
 }
