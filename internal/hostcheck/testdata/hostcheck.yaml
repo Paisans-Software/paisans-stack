@@ -1,0 +1,59 @@
+# A data and apps site and a gateway, for the host check's tests. The mesh is
+# the fixtures' usual private range; every other address is a documentation
+# range.
+version: 1
+
+community:
+  name: "Fixture Community"
+  domain: example.org
+
+mesh:
+  subnet: 10.44.0.0/24
+
+acme:
+  provider: desec
+
+sites:
+  home-a:
+    roles: [data, apps]
+    address: 10.44.0.1
+    public_address: 203.0.113.10
+    endpoint: 203.0.113.10:51820
+    ssh:
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+  edge:
+    roles: [gateway, witness]
+    address: 10.44.0.3
+    public_address: 203.0.113.30
+    endpoint: 203.0.113.30:51820
+    ssh:
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+
+cluster:
+  sites: [home-a]
+  port: 5000
+  postgres_version: "18"
+
+storage:
+  garage:
+    sites: [home-a]
+    replication: 1
+
+etcd:
+  members: [home-a, edge]
+
+apps:
+  auth:
+    kind: pocket-id
+    hostname: id.example.org
+    placement: cluster
+    settings:
+      file_backend: database
+  blog:
+    kind: writefreely
+    hostname: blog.example.org
+    placement: cluster
