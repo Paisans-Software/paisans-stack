@@ -877,6 +877,11 @@ func printPlan(plan *apply.Plan) {
 		if action.Force {
 			stack += " (forced)"
 		}
+		if action.Down {
+			// Its own line, because a down is the one action here that
+			// removes the stack's network as well as its containers.
+			fmt.Fprintf(os.Stdout, "  %-9s %s, so that its compose network is created as declared\n", "down", action.Stack)
+		}
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n      %s\n", verb, stack, action.Reason)
 		fmt.Fprintf(os.Stdout, "  %-9s %s: every container running, and healthy where it has a healthcheck, before anything after it moves\n", "check", action.Stack)
 		for _, prune := range plan.Prunes {

@@ -525,6 +525,18 @@ is reached by the web server's own address, which Docker's forwarding keeps
 and which the toolkit knows only by its network, so it is that private block
 or the mesh subnet.
 
+Switching an existing site between the two modes moves that pin, and the
+network on the host has to move with it, or `TRUST_PROXY` names a gateway the
+web server's connections no longer come from. `apply` therefore asks the host
+how each stack it recreates has its compose network addressed, and where that
+differs from the compose file (a pin the file declares and the network lacks,
+or `10.255.255.0/29` left on a network the file no longer pins), it plans a
+`docker compose down` before the `up`, shown in the plan with the reason.
+`down` removes the network, and `up` creates it as declared. Compose 2.31 and
+later recreates a network whose recorded configuration changed, but leaves
+one with no record alone (created by an older Compose or by hand), so `apply`
+reads the network itself rather than relying on that. A dry run only reads.
+
 **Helping an operator behind their own web server.** Two commands, neither of
 which reaches a host or changes anything:
 

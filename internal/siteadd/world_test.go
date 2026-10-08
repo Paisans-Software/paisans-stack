@@ -106,6 +106,15 @@ func (h *host) Run(command string) (string, error) {
 			fmt.Errorf("%s: %w after 3 attempts: exit status 255", h.name, apply.ErrUnreachable)
 	}
 	switch {
+	case strings.HasPrefix(command, "for n in "):
+		// How each stack's compose network is addressed: no stack has one
+		// yet, in this world.
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for n in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			fmt.Fprintf(&b, "absent %s\n", strings.Trim(q, "'"))
+		}
+		return b.String(), nil
 	case strings.HasPrefix(command, "for r in ") && strings.Contains(command, ".Config.Volumes"):
 		// What each image declares: nothing, for every image in this world.
 		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")

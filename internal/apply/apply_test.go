@@ -68,6 +68,10 @@ type fakeHost struct {
 	dangling string
 	// removedVolumes is every volume `docker volume rm` was asked for.
 	removedVolumes []string
+	// networks is each compose network the host has, by name, as `docker
+	// network inspect --format '{{json .IPAM.Config}}'` prints its address
+	// pools. A network not in it does not exist.
+	networks map[string]string
 }
 
 func newHost() *fakeHost { return &fakeHost{files: map[string]string{}, leader: "home-a"} }
@@ -103,6 +107,9 @@ func (h *fakeHost) Run(command string) (string, error) {
 	}
 	if strings.Contains(command, ".Config.Volumes") {
 		return h.volumeProbe(command), nil
+	}
+	if strings.Contains(command, "docker network inspect") {
+		return h.networkProbe(command), nil
 	}
 	if strings.Contains(command, "docker image inspect") {
 		return h.imageProbe(command), nil
@@ -206,6 +213,22 @@ func (h *fakeHost) volumeProbe(command string) string {
 			declared = "null"
 		}
 		fmt.Fprintf(&b, "volumes %s %s\n", ref, declared)
+	}
+	return b.String()
+}
+
+// networkProbe answers the loop apply sends to ask how each stack's default
+// network is addressed.
+func (h *fakeHost) networkProbe(command string) string {
+	list, _, _ := strings.Cut(strings.TrimPrefix(command, "for n in "), "; do")
+	var b strings.Builder
+	for _, quoted := range strings.Fields(list) {
+		name := strings.Trim(quoted, "'")
+		if ipam, ok := h.networks[name]; ok {
+			fmt.Fprintf(&b, "present %s %s\n", name, ipam)
+			continue
+		}
+		fmt.Fprintf(&b, "absent %s\n", name)
 	}
 	return b.String()
 }
