@@ -11,7 +11,9 @@ uptime monitor raises an incident while there is still someone who can fix it.
 ## What it does
 
 Every two hours, and once when it starts, the guard makes one pass against
-the Pocket ID instance on its own site:
+the Pocket ID instance on its own site. A pass that could not read Pocket ID
+at all is followed by another after one minute instead: the guard and Pocket ID
+start together, and the first pass can find it still starting.
 
 1. **Active or standby.** Pocket ID runs on every apps site and one of them is
    active (README, "Pocket ID runs on every apps site, and one of them is
@@ -65,7 +67,14 @@ nothing.
 | the last pass finished more than two and a half hours ago | 503 | `stale` |
 
 The stale state catches a pass loop that has hung while the HTTP server still
-answers. A failed write is not retried until the next pass, and the guard
+answers.
+
+`GET /livez` is Docker's healthcheck, and it is not `/healthz`: it answers 200
+before the first pass and whatever the last pass found, and 503 only once the
+last pass is stale. `apply`'s health gate reads Docker's health, and a new
+deployment has no `admins` group until an administrator makes one, so a gate on
+`/healthz` would hold the whole Pocket ID stack back on it. The uptime monitor
+reads `/healthz`. A failed write is not retried until the next pass, and the guard
 keeps no state on disk: every pass starts from what Pocket ID says.
 
 The body is plain text, one line, so it reads well in the monitor's incident
@@ -103,7 +112,7 @@ The `pocket-id` kind gains a `guard` service, running
 repository by `.github/workflows/admin-guard-image.yml` and pinned by digest in
 `internal/kinds`. The image is a static Go binary on `distroless/static`, so its
 Docker healthcheck is the binary itself: `admin-guard healthcheck` asks the
-running guard's `/healthz` and exits 0 or 1.
+running guard's `/livez` and exits 0 or 1.
 
 The guard listens on port 1412, one above Pocket ID's 1411, published on the
 mesh address. `render`'s port table records it, so a collision on the site is

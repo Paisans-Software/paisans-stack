@@ -2602,7 +2602,8 @@ service beside Pocket ID on every site it runs on, `guard`, built from
 design is in `docs/specs/2026-10-08-admin-guard.md`.
 
 Every two hours, and once when it starts, the guard reads Pocket ID's users
-and the group named `admins`, and:
+and the group named `admins` (after one minute instead when it could not reach
+Pocket ID, which starts alongside it), and:
 
 * **adds every Pocket ID administrator to `admins`**, unless the user is
   disabled, is managed by an LDAP sync (which owns that user's groups), or is
@@ -2619,7 +2620,10 @@ with no group named `admins`, when Pocket ID does not answer, before the first
 pass, and once the last pass is more than two and a half hours old. The body
 is one line naming users by username. The uptime kind checks every site's
 guard, so a community down to one administrator gets an incident while that
-administrator can still fix it.
+administrator can still fix it. Docker's healthcheck asks `/livez` instead,
+which fails only when the pass loop has hung: a new deployment has no `admins`
+group until someone makes one, and `apply`'s health gate must not hold the
+Pocket ID stack back on it.
 
 **The guard's one write is a standing exception.** Every other change to
 Pocket ID's groups needs a human each time (see `docs/deployment-agent-rules.md`).
