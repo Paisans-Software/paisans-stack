@@ -16,8 +16,8 @@ import (
 )
 
 // apply's plan output ends with a "left over" section naming this
-// deployment's stacks and files the site no longer renders and saying apply
-// does not remove them. A whole plan shows what it is about to mark; a
+// deployment's stacks and files the site no longer renders, saying apply
+// leaves them and naming `paisans app remove` for each app they belong to. A whole plan shows what it is about to mark; a
 // partial one shows the manifest's marks. Nothing left over prints nothing.
 func TestTheApplyPlanListsLeftovers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "paisans.yaml")
@@ -54,8 +54,9 @@ func TestTheApplyPlanListsLeftovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	printed := out.String()
-	if !strings.Contains(printed, "left over: this deployment's, no longer rendered for home-a. apply leaves each one in place and does not remove it.") ||
+	if !strings.Contains(printed, "left over: this deployment's, no longer rendered for home-a. apply leaves each one in place.") ||
 		!strings.Contains(printed, "leftover  stack docs (compose project paisans-f2a9-docs, 1 of 1 running): paisans-f2a9-docs-app-1") ||
+		!strings.Contains(printed, "`paisans app remove docs` takes docs's off every site") ||
 		strings.Contains(printed, "talk") {
 		t.Errorf("whole plan:\n%s", printed)
 	}
@@ -71,7 +72,8 @@ func TestTheApplyPlanListsLeftovers(t *testing.T) {
 	if err := printLeftovers(&out, cfg, "home-a", inv, partial); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "leftover  file /srv/paisans/f2a9/docs/.env, left over since 2026-10-01T00:00:00Z") {
+	if !strings.Contains(out.String(), "leftover  file /srv/paisans/f2a9/docs/.env, left over since 2026-10-01T00:00:00Z") ||
+		!strings.Contains(out.String(), "`paisans app remove docs`") {
 		t.Errorf("partial plan:\n%s", out.String())
 	}
 

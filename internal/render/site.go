@@ -373,7 +373,7 @@ const (
 const snippetMount = "/etc/caddy/snippets/"
 
 // snippetDir is the same directory on the gateway, in the rendered tree.
-func (p *planner) snippetDir() string { return p.dep().RelPath("infra", "caddy", "snippets") + "/" }
+func (p *planner) snippetDir() string { return SnippetsDir(p.dep()) + "/" }
 
 // dep is the deployment every rendered path and name derives from.
 func (p *planner) dep() deployment.Deployment { return p.cfg.Deployment() }
@@ -424,6 +424,14 @@ func (p *planner) renderSnippets(base string, routes []route) ([]File, error) {
 // toolkit generalises imports its single `(pocketid_gate)` snippet by name.
 const gateSnippetTemplate = "caddy.snippet.gates.tmpl"
 
+// GatesSnippet is what an oauth2-proxy app's named gate snippets file is
+// suffixed with on the gateway: <app>-gates.caddy, beside its routes.
+const GatesSnippet = "gates"
+
+// SnippetsDir is where a site's Caddy snippets land, relative to the host's
+// /: <root>/infra/caddy/snippets.
+func SnippetsDir(d deployment.Deployment) string { return d.RelPath("infra", "caddy", "snippets") }
+
 // renderGateSnippets renders every oauth2-proxy app's named gate snippets onto
 // the gateway. It walks every app in the configuration, not just this site's
 // own, for the same reason renderSnippets does: the gateway routes to
@@ -448,7 +456,7 @@ func (p *planner) renderGateSnippets(base string) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: base + p.snippetDir() + name + "-gates.caddy", Content: content, Mode: 0o644, App: name})
+		files = append(files, File{Path: base + p.snippetDir() + name + "-" + GatesSnippet + ".caddy", Content: content, Mode: 0o644, App: name})
 	}
 	return files, nil
 }

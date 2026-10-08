@@ -790,8 +790,8 @@ root's and 0600, listing every deployment that has claimed it:
 
 Every command that writes to a host **claims it first**: `apply`,
 `host prepare`, `storage init`, `storage add`, `storage rotate-key`,
-`site add`, `prune`, `app admin create`, `oidc client create` and
-`failover test`, each with `--execute`, on every site it will write to. The
+`site add`, `prune`, `app admin create`, `app remove`, `oidc client create`
+and `failover test`, each with `--execute`, on every site it will write to. The
 claim is one remote shell command run under `flock` on
 `/var/lib/paisans/registry.lock`: it reads the registry, refuses if another
 id already holds this deployment's token or root (or its WireGuard interface,
@@ -1307,7 +1307,9 @@ each such file, and each of this deployment's compose projects still on the
 host (by the deployment label with this id and a `paisans-<token>-<stack>`
 project) that the site no longer renders, saying that `apply` leaves them in
 place. `doctor` reports the same, as a warning (see *`paisans doctor` reports
-what is stuck and how to recover*).
+what is stuck and how to recover*). Both name `paisans app remove <app>` for
+each app the leftovers belong to, which is the command that takes them off
+(see *`app remove` takes an app off its hosts*).
 
 #### A `kind` ships a template set, not a single `.env`
 
@@ -3654,6 +3656,77 @@ by hand is not this command's to change. A launch URL that is empty or a
 toolkit default is the one exception, set as above, because neither is a
 choice anybody made. After `--execute` it probes again and
 fails unless a fresh plan is empty.
+
+### `app remove` takes an app off its hosts
+
+Taking an app out of `paisans.yaml` and applying stops routing to it and
+leaves the rest on its hosts, as the section on left over files says.
+`app remove` is the decision to take the rest away, made for one app by name:
+
+```sh
+paisans app remove docs                              # shows what it would do
+paisans app remove docs --execute                    # does it, and keeps its data
+paisans app remove docs --delete-data --execute      # and deletes its data, after asking
+```
+
+**It refuses an app still in `paisans.yaml`**, and the infrastructure stack,
+which is never an app. It reads every site before it changes any, and refuses
+when any site still holds a rendered file of the app's that no whole apply has
+marked left over. The mark is the proof the command rests on: a whole apply
+marks the files of an app it no longer renders, so a site whose entries for
+the app are all marked has been applied since the app left, and on the gateway
+that apply took the app's routes out of the Caddyfile. An unmarked entry means
+the gateway may still route to the app, so the answer is `paisans apply` on the
+site named, then this command again. When nothing of the app is found
+anywhere it says so and exits 0.
+
+**It touches only what is provably this deployment's and this app's.** Each
+thing below is proven a different way, because each is recorded in a
+different place:
+
+| What | Proven by | Without `--delete-data` | With it |
+|---|---|---|---|
+| containers and networks | this deployment's label and the `paisans-<token>-<app>` compose project, both | stopped and removed | the same, with the containers' anonymous volumes |
+| rendered files | a manifest entry marked left over, under the app's stack directory or named for one of its routes | deleted when the content still hashes to the entry, which is then dropped; a file edited on the host is kept with its entry | the same |
+| the stack directory | its path, `/srv/paisans/<token>/<app>` | removed only once empty; what the app wrote there is kept | deleted, unless it holds a file edited on the host |
+| named volumes | the label and the project | kept | deleted |
+| its client at Pocket ID | the ID recorded under `oidc_clients.<app>`, held by a client with the app's name | deleted | deleted |
+| its database and role | named `render.DBIdentifier(<app>)` on the cluster's leader, the database owned by that role | kept | dropped |
+| its Garage buckets and keys | the key IDs recorded under `apps.<app>`, and a bucket only those keys are granted on | kept | the bucket emptied and deleted, then the keys |
+
+A container or network without this deployment's label is never selected,
+whatever its name, because the selection is Docker's own label filter. A
+client named after the app with no recorded ID could have been made by hand,
+so it is kept and named for an administrator to delete; nothing is deleted at
+Pocket ID by name alone. A database whose owner is another role, a name a
+declared app still uses, and a bucket another key can reach are kept the same
+way, each with the reason. The client step runs once, from the site `oidc
+client create` calls.
+
+**Deleting member data needs a person at a terminal.** `--delete-data` plans
+the deletions, and on `--execute` asks for the app's name to be typed. With
+`--execute`, stdin that is not a terminal is refused before any host is read,
+and there is no
+flag that answers for the person, because a flag in a script or a shell
+history can be run again by somebody who did not mean it, and nothing brings
+the data back.
+
+**Every step is safe to repeat.** On each site, in order: the containers and
+networks, the files and then their manifest entries, the directory and, with
+`--delete-data`, the named volumes. Then the client at Pocket ID, then the
+database, then each bucket and the keys. Each step reads what is there when it
+runs and does nothing once it is done, and the first failure stops the run, so
+the same command run again resumes where it stopped. The manifest is read
+again just before it is written, and written as `apply` writes it, whole
+through a temporary file moved into place, keeping every entry that is not
+the app's. An entry whose file is already gone is dropped, which is what a
+run stopped between the two leaves.
+
+**It leaves three things and says so.** The app's secrets stay in the secrets
+file, which it never edits, so they are listed for removal with `sops`. Its
+DNS records stay until `paisans dns prune --execute` deletes the ones
+`dns init` made. And everything kept above is listed again at the end, with
+why.
 
 ### `site add` — the gateway and witness
 

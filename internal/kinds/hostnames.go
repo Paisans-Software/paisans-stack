@@ -63,6 +63,25 @@ func HostnameRoles(kind config.Kind) []string {
 	return out
 }
 
+// ExtraRoles is every role beyond the primary that any kind understands,
+// sorted and without duplicates. A route for one of them lands in a snippet
+// named <app>-<role>.caddy, so this is also the set of suffixes an app's
+// routing files can carry.
+func ExtraRoles() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, roles := range extraRoles {
+		for _, role := range roles {
+			if !seen[role] {
+				seen[role] = true
+				out = append(out, role)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // HasHostnameRole reports whether a kind understands a role.
 func HasHostnameRole(kind config.Kind, role string) bool {
 	if role == PrimaryRole {

@@ -62,6 +62,8 @@ Usage:
                [--first-name <f>] [--last-name <l>] [--login-link]
                [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--site <name>] [--ssh <destination>] [--execute]
+  paisans app remove <app> [--config paisans.yaml] [--secrets secrets.enc.yaml]
+               [--delete-data] [--execute]
   paisans oidc client create --app <name> [--rotate-secret]
                [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--site <name>] [--ssh <destination>] [--execute]
@@ -136,6 +138,16 @@ Commands:
              apps signing in through it read. There is no password: a
              created account gets a one-time login link, printed once, to
              register a passkey with. Writes nothing without --execute.
+             remove: take an app that has left paisans.yaml off every
+             host, once a whole apply on each site has marked its files
+             left over: its containers and networks, its rendered files
+             (one edited on the host is kept), its stack directory when
+             nothing else is in it, and its Pocket ID client when the
+             secrets file records that client's ID. --delete-data also
+             deletes its database and role, its Garage bucket and keys,
+             its named volumes and its data directories, after the app's
+             name is typed at a terminal. Leaves its secrets and DNS
+             records, and says so. Writes nothing without --execute.
   oidc       client create: create an app's client at the deployment's
              Pocket ID, with the groups the app reads, and record its ID and
              secret in the secrets file. The secret is never printed.
@@ -152,8 +164,8 @@ Commands:
              paisans), only the first two apply.
 
 host prepare, apply, prune, site add, storage init, storage add, storage
-rotate-key, app admin create, oidc client create, preflight, failover test,
-doctor and init are the only commands that reach a host.
+rotate-key, app admin create, app remove, oidc client create, preflight,
+failover test, doctor and init are the only commands that reach a host.
 Each reads it to plan, and changes it only with --execute; preflight, doctor and
 init have no --execute and never change it. With --execute, a command first
 claims each host it writes to in /var/lib/paisans/registry.json, and refuses if
