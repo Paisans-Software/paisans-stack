@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -215,4 +216,44 @@ func sshProblems(name string, site Site) []string {
 		add("sites.%s.ssh.public_key: required. List at least one public key, one per line; host prepare makes these the user's authorized keys.", name)
 	}
 	return problems
+}
+
+// Destination is where a host is reached: user, host and port. Its string
+// form is user@host:port, with the port always written.
+type Destination struct {
+	User string
+	Host string
+	Port int
+}
+
+func (d Destination) String() string {
+	return d.User + "@" + net.JoinHostPort(d.Host, strconv.Itoa(d.Port))
+}
+
+// ParseDestination reads user@host or user@host:port, with an IPv6 host in
+// brackets. The user is required, because it is whose authorized keys a
+// cleaning reads, so an ssh alias is refused.
+func ParseDestination(s string) (Destination, error) {
+	user, rest, ok := strings.Cut(s, "@")
+	if !ok || user == "" || rest == "" {
+		return Destination{}, fmt.Errorf("%q is not user@host[:port], Eg: admin@203.0.113.9 or admin@203.0.113.9:2222", s)
+	}
+	host, port := rest, DefaultSSHPort
+	if h, p, err := net.SplitHostPort(rest); err == nil {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return Destination{}, fmt.Errorf("%q: the port must be a number from 1 to 65535", s)
+		}
+		host, port = h, n
+	} else if strings.HasPrefix(rest, "[") && strings.HasSuffix(rest, "]") && net.ParseIP(rest[1:len(rest)-1]) != nil {
+		host = rest[1 : len(rest)-1]
+	} else if strings.HasPrefix(rest, "[") || strings.Count(rest, ":") == 1 {
+		return Destination{}, fmt.Errorf("%q is not user@host[:port]: %v", s, err)
+	}
+	return Destination{User: user, Host: host, Port: port}, nil
+}
+
+// Destination is where the site's ssh section reaches it.
+func (s Site) Destination() Destination {
+	return Destination{User: s.SSH.User, Host: s.SSHHost(), Port: s.SSH.PortOrDefault()}
 }
