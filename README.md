@@ -4727,9 +4727,11 @@ An outage is the worst time to remember which container to look at, which etcd
 key holds the answer, or which Patroni log line means what.
 `paisans doctor` reaches every declared site, or only those named with
 `--site` (repeatable), reads its state, and prints one line per finding,
-`ok`, `skip`, `info`, `WARN` or `FAIL`, with what happened and how to recover under
-each one that is not `ok`. It exits 1 when any finding is `FAIL`, so a script
-or a monitor can tell a healthy deployment from one that needs a human.
+`ok`, `WARN` or `FAIL`, with how to recover under each `FAIL`. A check it could
+not make is a `WARN` saying it was skipped and why, never an `ok`: it found
+nothing right, and the closing line counts it apart from the checks that
+passed. It exits 1 when any finding is `FAIL`, so a script or a monitor can
+tell a healthy deployment from one that needs a human.
 
 It **changes nothing**, and it has no `--execute`. Every command it sends is a
 read: a list, a status, a key, a log tail. The recoveries it describes are

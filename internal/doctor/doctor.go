@@ -102,10 +102,12 @@ func (r Report) Count(l Level) int {
 }
 
 // Show reports the findings: each check is a step titled by what it looked
-// at, whose result is the short finding. A check that passed, was skipped or
-// is only worth knowing ends done. A warning is one warning line and a
-// failure one refusal line, each naming the check and the finding with no
-// step of its own, so a problem never shows two marks. A failure carries its
+// at, whose result is the short finding. A check that passed or is only worth
+// knowing ends done. A warning is one warning line and a failure one refusal
+// line, each naming the check and the finding with no step of its own, so a
+// problem never shows two marks. A check that was skipped is a warning too:
+// it found nothing right, and a mark that says it passed would tell the
+// operator something doctor never looked at is fine. A failure carries its
 // recovery as the refusal's explanation, since the operator is reading this
 // in an outage and must have the advice without asking for it. A finding's
 // further lines are details of a step that passed, the detail of a warning
@@ -132,6 +134,8 @@ func (r Report) Show(rep ui.Reporter) {
 func (r Report) show(rep ui.Reporter, f Finding) {
 	title, result := f.Title()
 	switch f.Level {
+	case Skip:
+		rep.Warn(title+" skipped: "+result, strings.Join(f.More, "\n"))
 	case Warn:
 		rep.Warn(title+": "+result, strings.Join(f.More, "\n"))
 	case Fail:
@@ -157,10 +161,14 @@ func (f Finding) Title() (title, result string) {
 	return "check " + f.Section, f.Line
 }
 
-// Summary is the closing line: how many checks passed, warned and failed.
+// Summary is the closing line: how many checks passed, were skipped, warned
+// and failed. A skipped check is not a pass, so it is counted apart.
 func (r Report) Summary() string {
-	passed := r.Count(OK) + r.Count(Info) + r.Count(Skip)
+	passed := r.Count(OK) + r.Count(Info)
 	parts := []string{fmt.Sprintf("%d %s passed", passed, plural(passed, "check"))}
+	if n := r.Count(Skip); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped", n))
+	}
 	if n := r.Count(Warn); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d %s", n, plural(n, "warning")))
 	}

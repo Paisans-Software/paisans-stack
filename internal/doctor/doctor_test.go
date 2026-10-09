@@ -133,6 +133,27 @@ func TestShowShape(t *testing.T) {
 	}
 }
 
+// A check that could not be made found nothing right, so it is not shown or
+// counted as passed: it is a warning naming the check and why it was
+// skipped, and the summary counts it apart.
+func TestSkipIsAWarningNotAPass(t *testing.T) {
+	rec := &ui.Recorder{}
+	Report{Sites: 1, Reached: 1, Findings: []Finding{
+		{Section: SectionReach, Level: OK, Line: "home-a: answers"},
+		{Section: SectionLeftovers, Level: Skip, Line: "home-a: the host's inventory could not be read", More: []string{"sudo: a password is required"}},
+	}}.Show(rec)
+	if rec.Has("done", "check leftovers") {
+		t.Errorf("a skipped check ended as a step that passed:\n%s", rec.Lines())
+	}
+	i := rec.Index("warn", "check leftovers home-a skipped: the host's inventory could not be read")
+	if i < 0 || rec.Events[i].Extra != "sudo: a password is required" {
+		t.Errorf("a skipped check is not a warning with its cause:\n%s", rec.Lines())
+	}
+	if !rec.Has("result", "1 check passed, 1 skipped.") {
+		t.Errorf("summary does not count the skip apart:\n%s", rec.Lines())
+	}
+}
+
 // A site that does not answer is a Fail that says what is missing while it
 // is gone, from its roles and its place in the configuration.
 func TestUnreachableSiteSaysWhatIsLost(t *testing.T) {

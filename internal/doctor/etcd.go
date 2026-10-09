@@ -160,7 +160,7 @@ func etcdVersion(p EtcdProbe, down []string) []Finding {
 	case p.VersionErr != "":
 		return []Finding{{Section: SectionEtcd, Level: Warn, Line: fmt.Sprintf("version: could not read /version on %s", p.Site), More: []string{firstLine(p.VersionErr)}}}
 	case strings.TrimSpace(p.Version) == noCurl:
-		return []Finding{{Section: SectionEtcd, Level: Skip, Line: fmt.Sprintf("version: curl is not installed on %s, so the cluster version was not read", p.Site)}}
+		return []Finding{{Section: SectionEtcd, Level: Skip, Line: fmt.Sprintf("version: curl is not installed on %s", p.Site), More: []string{"so the cluster version was not read"}}}
 	}
 	var v EtcdVersion
 	if err := json.Unmarshal([]byte(strings.TrimSpace(p.Version)), &v); err != nil || v.Server == "" {
