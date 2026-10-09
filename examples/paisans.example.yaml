@@ -49,7 +49,13 @@ sites:
   home-a:
     roles: [data, apps]
     address: 10.44.0.1          # WireGuard address, stable forever
-    endpoint: null              # residential, changing address: dials out
+    # Residential, but dialled: a dynamic DNS name and a forwarded UDP port.
+    # Two sites with no endpoint reach each other only through the first site
+    # that has one, so with this left out home-a and home-b would talk only
+    # through vm, and losing vm would leave each voter alone with no majority:
+    # the database read-only everywhere. One home with an endpoint keeps the
+    # two homes peered directly, and validate refuses the file without it.
+    endpoint: home-a.example.org:51820
     # How the toolkit reaches the site, and who may log in. Every site has
     # one, the gateway included. The keys are public keys, one per line,
     # every admin's: the file is shared, so it never names a private key.
@@ -66,7 +72,7 @@ sites:
   home-b:
     roles: [data, apps]
     address: 10.44.0.2
-    endpoint: null
+    endpoint: null              # residential, changing address: dials out
     ssh:
       host: home-b.local
       user: ubuntu

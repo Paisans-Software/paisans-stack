@@ -119,6 +119,8 @@ func Check(cfg *config.Config) Result {
 
 	c.witnessSharesFailureDomain()
 	c.twoVoters()
+	c.votersShareARelay()
+	c.dataSiteNotInCluster()
 	c.undeclaredSites()
 	c.placementShape()
 	c.outlineBucketName()
@@ -158,6 +160,8 @@ func Check(cfg *config.Config) Result {
 	c.portCollision()
 
 	c.evenVoters()
+	c.oneVoterNoFailover()
+	c.asyncAutomaticFailover()
 	c.meshIsNotPrivate()
 	c.pinnedOntoWitness()
 	c.gatewayOnDataSite()
@@ -212,6 +216,130 @@ func (c *checker) twoVoters() {
 			"exactly two etcd voters (%s and %s). Two voters are strictly worse than one: a majority of two is two, so either failing stops the cluster. Declare one member, or three.",
 			c.cfg.Etcd.Members[0], c.cfg.Etcd.Members[1])
 	}
+}
+
+// votersShareARelay refuses a mesh in which losing one site cuts the voters
+// that would otherwise hold quorum off from each other.
+//
+// Two sites with no endpoint never peer directly (config.Site.PeersDirectly):
+// their traffic relays through the first site that has one, and that path
+// has no fallback. A voter with an endpoint reaches every other voter, so
+// the voters that survive losing any one site still reach each other exactly
+// when at least one of them has an endpoint, which with three or more voters
+// means at least two of them do. With fewer, there is a site whose loss
+// leaves every surviving voter alone, 1 of n and no majority: the database
+// goes read-only on every site, even when the lost site held no data and
+// was "only" the relay. Two voters are refused on their own, and one has
+// nobody to be partitioned from.
+func (c *checker) votersShareARelay() {
+	var voters, dialled []string
+	for _, name := range c.cfg.Etcd.Members {
+		site, ok := c.cfg.Sites[name]
+		if !ok {
+			continue // undeclaredSites reports this
+		}
+		voters = append(voters, name)
+		if site.Endpoint != "" {
+			dialled = append(dialled, name)
+		}
+	}
+	sort.Strings(voters)
+	sort.Strings(dialled)
+	if len(voters) < 3 || len(dialled) >= 2 {
+		return
+	}
+	var relays []string
+	for _, name := range c.cfg.SiteNames() {
+		if c.cfg.Sites[name].Endpoint != "" {
+			relays = append(relays, name)
+		}
+	}
+	stranded := without(voters, dialled)
+	fix := fmt.Sprintf("Give a second voter a stable endpoint (sites.<name>.endpoint; for a home connection a dynamic DNS name and a forwarded UDP port is enough), so that the voters surviving any one loss dial each other directly. Here that is any of %s.", strings.Join(stranded, ", "))
+	switch {
+	case len(dialled) == 1:
+		c.refuse("voters-share-a-relay", "etcd.members",
+			"declares %d voters, and only %s has an endpoint. %s have none, so they reach each other only through %s, and losing %s leaves each of them alone, 1 of %d and no majority: the database goes read-only on every site. %s",
+			len(voters), dialled[0], strings.Join(stranded, " and "), dialled[0], dialled[0], len(voters), fix)
+	case len(relays) > 0:
+		c.refuse("voters-share-a-relay", "etcd.members",
+			"declares %d voters and none of them has an endpoint, so they reach each other only through %s, and losing %s leaves every voter alone, 1 of %d and no majority: the database goes read-only on every site. %s",
+			len(voters), relays[0], relays[0], len(voters), fix)
+	default:
+		c.refuse("voters-share-a-relay", "etcd.members",
+			"declares %d voters and no site has an endpoint, so no two of them can ever peer: WireGuard needs one side to know where to send the first packet. %s",
+			len(voters), fix)
+	}
+}
+
+// without returns the names in all that are not in some, in all's order.
+func without(all, some []string) []string {
+	var out []string
+	for _, name := range all {
+		if !slices.Contains(some, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// dataSiteNotInCluster refuses a data site the cluster list leaves out.
+//
+// The inverse of clusterSiteWithoutData, and incoherent for the same reason:
+// the data role renders Patroni on the site, while cluster.sites is where
+// every HAProxy's backends, apply's wait for a leader, site add's replica
+// list and doctor's membership check come from. A data site missing from it
+// runs a Patroni member that nothing routes to and nothing watches, so the
+// file describes a replica the deployment does not have.
+func (c *checker) dataSiteNotInCluster() {
+	for _, name := range c.cfg.DataSites() {
+		if slices.Contains(c.cfg.Cluster.Sites, name) {
+			continue
+		}
+		c.refuse("data-site-not-in-cluster", fmt.Sprintf("sites.%s.roles", name),
+			"includes data, but cluster.sites does not list %s. The data role runs Patroni on the site, and cluster.sites is what HAProxy's backends, apply's leader wait and doctor are built from, so this would be a replica nothing routes to or watches. List %s in cluster.sites, at the end if the cluster is already running, or drop the role.", name, name)
+	}
+}
+
+// oneVoterNoFailover warns that a replicated cluster with one etcd member
+// cannot fail over.
+//
+// One member elects nobody: when the voter's site is down, Patroni on every
+// other site loses the DCS and stops serving writes, so the replica is a
+// manual promote rather than a failover. That is the mode the design offers
+// for a declined witness, so it is legitimate and a warning. It is only
+// worth saying when a replica exists; one site with one voter is the plain
+// case.
+func (c *checker) oneVoterNoFailover() {
+	if len(c.cfg.Etcd.Members) != 1 || len(c.cfg.Cluster.Sites) < 2 {
+		return
+	}
+	voter := c.cfg.Etcd.Members[0]
+	c.warn("one-voter-no-failover", "etcd.members",
+		"declares one voter, %s, while %d sites share the cluster. One member elects nobody: while %s is down every other site's Patroni loses etcd and stops taking writes, so the database stops rather than failing over, and promoting the replica is a manual step. A witness in a third failure domain makes three voters and restores automatic failover; without one, this is the manual promote mode and the runbook should say so.",
+		voter, len(c.cfg.Cluster.Sites), voter)
+}
+
+// asyncAutomaticFailover warns that automatic failover under asynchronous
+// replication can lose acknowledged commits.
+//
+// With three voters Patroni promotes a replica on its own, and under
+// asynchronous replication that replica may be behind: every commit the old
+// leader acknowledged after the replica's last received WAL is gone with it,
+// and Patroni promotes anyway as long as the lag is within
+// maximum_lag_on_failover ("the maximum bytes a follower may lag to be able
+// to participate in leader election"; "When using asynchronous replication a
+// failover can cause lost transactions", Patroni's dynamic configuration
+// reference). With one voter nothing promotes anyone, so there is nothing
+// to warn about. It is a choice an operator may make for write latency over
+// a slow link, which is why it warns rather than refuses.
+func (c *checker) asyncAutomaticFailover() {
+	if c.cfg.Cluster.Synchronous || len(c.cfg.Cluster.Sites) < 2 || len(c.cfg.Etcd.Members) < 3 {
+		return
+	}
+	c.warn("async-automatic-failover", "cluster.synchronous",
+		"is false while %d sites share the cluster and %d voters can elect a new leader. Patroni then promotes a replica on its own, and under asynchronous replication that replica may be behind: every commit the old leader acknowledged after the replica's last received WAL is lost, up to maximum_lag_on_failover, the lag Patroni still promotes through. Set synchronous: true so a commit is acknowledged only once a standby holds it (synchronous_strict: false keeps a lone leader writing), or accept that a failover can lose acknowledged writes.",
+		len(c.cfg.Cluster.Sites), len(c.cfg.Etcd.Members))
 }
 
 // clusterSiteWithoutData refuses a cluster member that does not hold the data

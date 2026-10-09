@@ -685,6 +685,11 @@ func (p *planner) renderWireGuard(site *siteView) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("secrets sites.%s.wireguard_private_key: %w", name, err)
 		}
+		if !p.cfg.Sites[site.Name].PeersDirectly(p.cfg.Sites[name]) {
+			// Neither side has an endpoint. Nothing to configure: the traffic
+			// goes through a relay.
+			continue
+		}
 		switch {
 		case other.Endpoint != "":
 			// The other side has a stable address, so this side dials it.
@@ -701,16 +706,13 @@ func (p *planner) renderWireGuard(site *siteView) (string, error) {
 				AllowedIPs: allowed,
 				Endpoint:   other.Endpoint,
 			})
-		case isRelay:
+		default:
 			// This side is dialled by the other, so no endpoint is known here.
 			peers = append(peers, peerView{
 				Name:       name,
 				PublicKey:  otherPublic,
 				AllowedIPs: other.Address + "/32",
 			})
-		default:
-			// Neither side has an endpoint. Nothing to configure: the traffic
-			// goes through a relay.
 		}
 	}
 

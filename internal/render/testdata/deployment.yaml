@@ -1,5 +1,5 @@
 # The fixture deployment. It exercises both placements: three clustered apps
-# and five pinned, on four sites with two stable endpoints. It is validated
+# and five pinned, on four sites with three stable endpoints. It is validated
 # before it is rendered (see fixture() in render_test.go), so it is a
 # configuration an operator could actually have written.
 version: 1
@@ -27,6 +27,9 @@ sites:
   home-b:
     roles: [data, apps]
     address: 10.44.0.2
+    # Dialled, so the two homes peer directly and vm is not the one path
+    # between them: validate refuses three voters of which only one is dialled.
+    endpoint: 198.51.100.2:51820
     ssh:
       host: home-b.local
       user: ubuntu

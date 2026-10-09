@@ -1,6 +1,5 @@
-# valid.yaml with an uptime app whose admin group is not admins, beside Pocket ID.
-# A coherent three site deployment. Every fixture in this directory is a
-# variation on this one, so that a test names exactly the thing it breaks.
+# Neither home has an endpoint, so the two reach each other only through vm,
+# and losing vm leaves each of the three voters alone: no quorum anywhere.
 version: 1
 id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
 
@@ -18,7 +17,6 @@ sites:
   home-a:
     roles: [data, apps]
     address: 10.44.0.1
-    endpoint: home-a.example.org:51820
     ssh:
       host: home-a.local
       user: ubuntu
@@ -38,15 +36,6 @@ sites:
     endpoint: vm.example.org:51820
     ssh:
       host: vm.example.org
-      user: ubuntu
-      public_key: |
-        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
-  watch:
-    roles: [monitor]
-    address: 10.44.0.4
-    public_address: 203.0.113.20
-    ssh:
-      host: watch.local
       user: ubuntu
       public_key: |
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
@@ -81,14 +70,3 @@ apps:
     placement: cluster
     settings:
       file_backend: database
-  status:
-    kind: uptime
-    hostname: status.example.org
-    placement: { pinned: watch }
-    settings:
-      admin_group: staff
-
-smtp:
-  host: smtp.example.org
-  security: starttls
-  from_address: status@example.org

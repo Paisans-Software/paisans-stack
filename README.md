@@ -694,6 +694,71 @@ or are both gone at once, breaks no ties.
 configuration, not a compromise awaiting a fix, and the toolkit should not
 pretend otherwise by installing a placeholder.
 
+### The voters that survive one loss must still dial each other
+
+A witness buys the ability to lose one site. That only holds if the voters
+left standing can reach each other, and on this mesh reachability is decided
+by endpoints: two sites peer directly when one of them has an `endpoint` the
+other dials, and two sites with none never peer at all. Their traffic goes
+through the first site that has an endpoint, and that path has no fallback,
+because the configuration is static and WireGuard does not reroute.
+
+So take the obvious shape, two homes without endpoints and a VM as gateway and
+witness. The VM is the only thing either home dials, and every packet between
+the homes goes through it. The VM dying is the exact failure the witness
+exists to survive, and it does the opposite: home-a and home-b lose each
+other as well as the VM, each is one voter of three, neither has a majority,
+Patroni on both loses its DCS, and the database is read-only everywhere.
+The site that held no data took the cluster down.
+
+**The toolkit refuses this** (`voters-share-a-relay`): with three or more
+etcd members, at least two of them must have an endpoint. That is the whole
+rule, and it is exactly the property that matters. A voter with an endpoint
+reaches every other voter, so the voters surviving the loss of any one site
+still reach each other precisely when at least one survivor is dialled, and
+with one dialled voter in the cluster there is a site, that voter, whose loss
+leaves none. Two dialled voters cover every single loss. Two voters are
+refused on their own, and one voter has nobody to be partitioned from.
+
+The fix is to give one home a stable endpoint. A dynamic DNS name kept
+current by the router and one forwarded UDP port is enough: that home is then
+dialled by the other, the two peer directly, and the VM is a tiebreaker again
+rather than a hub. The example declares `home-a` that way. The relay through
+the VM (see *`site add`: a second data site, and the one hard problem*)
+remains how a site with no endpoint reaches another with none, which is fine
+for traffic that can wait out an outage and never fine for quorum.
+
+### `cluster.sites` and the `data` role name the same sites
+
+The `data` role says a site runs Patroni and stores the database.
+`cluster.sites` is the list every HAProxy's backends are rendered from, the
+list `apply` waits on for a leader, and the membership `doctor` and `site
+add` check against. A site in one and not the other is a replica the
+deployment half has: the toolkit already refuses a cluster member without
+the role (`cluster-site-without-data-role`), and it refuses the inverse too
+(`data-site-not-in-cluster`), a data site the list leaves out, which would run
+a Patroni that nothing routes to or watches.
+
+### Asynchronous replication and automatic failover
+
+`cluster.synchronous: true` makes every commit wait for a standby, which is
+what lets a failover keep every write the leader acknowledged (Patroni:
+"Synchronous mode makes sure that successfully committed transactions will
+not be lost at failover"). Turning it off buys write latency over a slow
+link, and the price is paid at the worst moment: with three voters Patroni
+promotes a replica on its own, and under asynchronous replication that
+replica may be behind. Every commit the old leader acknowledged after the
+replica's last received WAL is gone, and Patroni promotes anyway as long as
+the gap is within `maximum_lag_on_failover`, "the maximum bytes a follower
+may lag to be able to participate in leader election" (Patroni's dynamic
+configuration reference, which says plainly that "when using asynchronous
+replication a failover can cause lost transactions").
+
+That is a trade an operator may choose, so `validate` warns rather than
+refuses (`async-automatic-failover`), and only where it applies: a cluster of
+two or more sites with three or more voters. With one voter nothing promotes
+anyone, so there is nothing to lose that way.
+
 ### Nothing here is permanent
 
 A witness holds no data, so relocating one is cheap and scriptable — remove the
@@ -715,7 +780,13 @@ Declining a witness entirely is supported and means **giving up automatic
 failover**: two sites with two voters cannot safely promote anyone, so `site add`
 configures plain streaming replication with a documented manual promote instead.
 That is a legitimate choice. It is a different mode, not a slightly degraded
-version of the same one, and the toolkit should say so plainly.
+version of the same one, and the toolkit should say so plainly. `validate`
+does (`one-voter-no-failover`): a cluster of two or more sites with one etcd
+member gets a warning saying that one member elects nobody, that while the
+voter's site is down every other site's Patroni loses etcd and stops taking
+writes, and that promoting the replica is a manual step. A warning and not a
+refusal, because the mode works as described; what it must not do is pass as
+the automatic one.
 
 ## Configuration
 
@@ -3858,6 +3929,13 @@ daemon and no coordination service, which is why plain WireGuard was chosen.
 The cost is latency: with `synchronous_mode: true` every commit waits a round
 trip, so writes pay home-a → VM → home-b. Siting the VM near the homes largely
 mitigates that and costs nothing, so site it there and then measure.
+
+The relay carries traffic; it must not carry quorum. When both homes are
+voters beside the VM, the VM is the one path between them, and its loss
+leaves every voter alone (see *The voters that survive one loss must still
+dial each other*). `validate` refuses that shape, and the way out is the
+same dynamic DNS name and forwarded port that makes one home dialled: the
+homes then peer directly and the relay is only ever a convenience.
 
 ### The staged gate, and the half-joined site
 
