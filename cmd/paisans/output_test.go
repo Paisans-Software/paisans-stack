@@ -55,7 +55,7 @@ func runDefault(t *testing.T, name string, fn func() error) string {
 	t.Helper()
 	var b strings.Builder
 	reporterOverride = ui.NewPlain(&b, false)
-	defer func() { reporterOverride = nil }()
+	defer func() { reporterOverride = nil; apply.SetRetryLog(nil) }()
 	var err error
 	direct := captureStdout(t, func() { err = fn() })
 	if err != nil {

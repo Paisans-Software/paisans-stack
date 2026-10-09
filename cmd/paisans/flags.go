@@ -21,12 +21,17 @@ func commonFlags(fs *flag.FlagSet) func() ui.Reporter {
 		if r == nil {
 			r = ui.New(os.Stdout, *verbose)
 		}
-		// An ssh retry is the detail of whatever step is open: the error
-		// that ends the command says in full if the retries ran out.
-		apply.SetRetryLog(detailWriter{r})
+		routeRetries(r)
 		return r
 	}
 }
+
+// routeRetries sends an ssh retry to r as a detail of the open step: the
+// error that ends the command says in full if the retries ran out. A command
+// that moves its report to stderr (errReporter) moves the retries with it,
+// because stdout there carries data a script reads and a retry line beside
+// it would corrupt it.
+func routeRetries(r ui.Reporter) { apply.SetRetryLog(detailWriter{r}) }
 
 // detailWriter turns each line written to it into a detail of the reporter.
 type detailWriter struct{ r ui.Reporter }
@@ -47,5 +52,7 @@ func errReporter(r ui.Reporter) ui.Reporter {
 	if reporterOverride != nil {
 		return reporterOverride
 	}
-	return ui.New(os.Stderr, r.Verbose())
+	e := ui.New(os.Stderr, r.Verbose())
+	routeRetries(e)
+	return e
 }

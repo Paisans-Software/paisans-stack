@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
@@ -61,6 +62,59 @@ func withRecorder(t *testing.T, verbose bool) *ui.Recorder {
 	t.Helper()
 	rec := &ui.Recorder{Verbose_: verbose}
 	reporterOverride = rec
-	t.Cleanup(func() { reporterOverride = nil })
+	t.Cleanup(func() { reporterOverride = nil; apply.SetRetryLog(nil) })
 	return rec
+}
+
+// retryOnce makes one ssh retry happen: an ssh on PATH that fails to connect
+// the first time it is run and succeeds the second.
+func retryOnce(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\nif [ ! -e '" + filepath.Join(dir, "seen") + "' ]; then : > '" + filepath.Join(dir, "seen") + "'; echo 'ssh: connect to host x port 22: Connection refused'; exit 255; fi\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := (apply.SSHTransport{Site: "home-a", Destination: "ubuntu@x"}).Run("true"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A retry is shown as a detail when verbose and not at all otherwise.
+func TestRetryLinesFollowVerbosity(t *testing.T) {
+	t.Cleanup(func() { apply.SetRetryLog(nil) })
+	for _, verbose := range []bool{true, false} {
+		var b strings.Builder
+		reporterOverride = ui.NewPlain(&b, verbose)
+		t.Cleanup(func() { reporterOverride = nil })
+		fs := flag.NewFlagSet("x", flag.ContinueOnError)
+		reporter := commonFlags(fs)
+		_ = fs.Parse(nil)
+		reporter()
+		retryOnce(t)
+		if got := strings.Contains(b.String(), "ssh could not connect"); got != verbose {
+			t.Errorf("verbose %t: retry shown %t\n%s", verbose, got, b.String())
+		}
+	}
+}
+
+// A command whose stdout is data sends its retries to stderr with the rest
+// of its report, so -v never writes a line beside the data.
+func TestRetryLinesStayOffAStdoutThatCarriesData(t *testing.T) {
+	t.Cleanup(func() { apply.SetRetryLog(nil) })
+	var err error
+	stdout, stderr := captureOutput(t, func() {
+		err = runIngress([]string{"show", "-v", "--app", "status", "--config", fixtureConfig()})
+		retryOnce(t)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout, "ssh could not connect") || !strings.Contains(stdout, "nothing to hand off") {
+		t.Errorf("stdout is not the sheet alone:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "ssh could not connect") {
+		t.Errorf("the retry did not reach stderr:\n%s", stderr)
+	}
 }
