@@ -96,16 +96,9 @@ func withDoctorHosts(t *testing.T, hosts map[string]doctorHost) {
 	t.Cleanup(func() { doctorTransport, doctorNow = saved, savedNow })
 }
 
-// The stuck case, end to end: home-b led and is switched off, home-a is a
-// replica /sync no longer names. doctor says so, puts starting home-b first
-// and the forced failover second, exits non zero, and every command any host
-// received is a read.
-func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
-	cfg, err := config.Load(fixtureConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sent, writes []string
+// stuckHosts are the four sites of the stuck case: home-b led and is down,
+// home-a is a replica /sync no longer names, and vm overlaps the mesh.
+func stuckHosts(cfg *config.Config, sent, writes *[]string) map[string]doctorHost {
 	inspect := "docker inspect "
 	homeA := map[string]string{
 		doctor.ReachCommand:                                        "",
@@ -138,12 +131,25 @@ func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
 		doctor.ClockCommand:                        "1760000000.000000000\n",
 		doctor.ContainersCommand(cfg.Deployment()): `{"Names":"paisans-f2a9-status-app-1","State":"running","Status":"Up 2 days","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}`,
 	}
-	withDoctorHosts(t, map[string]doctorHost{
-		"home-a.local":      {name: "home-a.local", answers: homeA, sent: &sent, writes: &writes},
-		"home-b.local":      {name: "home-b.local", down: true, sent: &sent, writes: &writes},
-		"vm.example.org":    {name: "vm.example.org", answers: vm, sent: &sent, writes: &writes},
-		"watch.example.org": {name: "watch.example.org", answers: watch, sent: &sent, writes: &writes},
-	})
+	return map[string]doctorHost{
+		"home-a.local":      {name: "home-a.local", answers: homeA, sent: sent, writes: writes},
+		"home-b.local":      {name: "home-b.local", down: true, sent: sent, writes: writes},
+		"vm.example.org":    {name: "vm.example.org", answers: vm, sent: sent, writes: writes},
+		"watch.example.org": {name: "watch.example.org", answers: watch, sent: sent, writes: writes},
+	}
+}
+
+// The stuck case, end to end: home-b led and is switched off, home-a is a
+// replica /sync no longer names. doctor says so, puts starting home-b first
+// and the forced failover second, exits non zero, and every command any host
+// received is a read.
+func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
+	cfg, err := config.Load(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent, writes []string
+	withDoctorHosts(t, stuckHosts(cfg, &sent, &writes))
 
 	rec := withRecorder(t, true)
 	runErr := runDoctor([]string{"--config", fixtureConfig(), "--sudo=false"})
