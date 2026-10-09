@@ -3711,7 +3711,7 @@ admin group `admins`:
 
 ```
 auth on home-a (pocket-id)
-  -    create user founder
+  -    create administrator founder
   -    add founder to admin groups admins
   -    issue login link for founder
 Nothing changed. Re-run with --execute to apply.

@@ -140,7 +140,7 @@ func TestPocketIDAdminDryRunPlansWithoutSudoAndChangesNothing(t *testing.T) {
 	if stdout != "" {
 		t.Errorf("a dry run wrote to stdout, which carries only the login link:\n%s", stdout)
 	}
-	for _, want := range []string{"section: auth on home-a (pocket-id)", "item: create user founder", "item: issue login link for founder", "detail: create user founder as an administrator", "result: Nothing changed"} {
+	for _, want := range []string{"section: auth on home-a (pocket-id)", "item: create administrator founder", "item: issue login link for founder", "detail: create user founder as an administrator", "result: Nothing changed"} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("output lacks %q:\n%s", want, printed)
 		}
@@ -261,7 +261,7 @@ func TestPocketIDAdminDryRunKeepsRequestBodiesForVerbose(t *testing.T) {
 		if got := strings.Contains(out, "POST "); got != verbose {
 			t.Errorf("verbose=%v: output has a POST request: %v\n%s", verbose, got, out)
 		}
-		if !strings.Contains(out, "create user founder") {
+		if !strings.Contains(out, "create administrator founder") {
 			t.Errorf("verbose=%v: no short title:\n%s", verbose, out)
 		}
 	}

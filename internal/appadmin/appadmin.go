@@ -193,7 +193,9 @@ func (p *Plan) Titles() []string {
 	for _, a := range p.Actions {
 		switch a {
 		case ActionCreate:
-			out = append(out, "create user "+p.req.Username)
+			// The user is created as the app's administrator, which is the
+			// point of the command, so the title says so.
+			out = append(out, "create administrator "+p.req.Username)
 		case ActionVerify:
 			out = append(out, "verify "+p.req.Username)
 		case ActionGrantAdmin:
