@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 
 	"github.com/paisans-software/paisans-stack/internal/failover"
 )
@@ -39,7 +38,7 @@ func runFailoverTest(args []string) error {
 	}
 	return failover.Run(cfg, failover.Options{
 		Transports: allSiteTransports(cfg, *sudo),
-		Out:        os.Stdout,
+		Report:     r,
 		Execute:    *execute,
 	})
 }

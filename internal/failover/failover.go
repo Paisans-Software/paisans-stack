@@ -11,6 +11,7 @@ package failover
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Options is everything Run needs besides the configuration.
@@ -35,9 +37,9 @@ type Options struct {
 	// URL builds the URL for an app's hostname and path. Nil is
 	// https://<hostname><path>. Tests point it at a local server.
 	URL func(hostname, path string) string
-	// Out is where the plan and progress go.
-	Out io.Writer
-	// Execute runs the switchovers. Without it Run checks and prints the plan.
+	// Report is where the plan and progress go. Nil reports nothing.
+	Report ui.Reporter
+	// Execute runs the switchovers. Without it Run checks and lists the plan.
 	Execute bool
 }
 
@@ -91,11 +93,11 @@ type runner struct {
 	o   Options
 }
 
-// Run checks, prints the plan, and with Execute switches the primary to the
+// Run checks, lists the plan, and with Execute switches the primary to the
 // candidate and back, gating each switch.
 func Run(cfg *config.Config, o Options) error {
-	if o.Out == nil {
-		o.Out = io.Discard
+	if o.Report == nil {
+		o.Report = ui.Discard
 	}
 	if o.URL == nil {
 		o.URL = func(hostname, path string) string { return "https://" + hostname + path }
@@ -112,25 +114,26 @@ func Run(cfg *config.Config, o Options) error {
 		return fmt.Errorf("failover test: cluster.sites lists %d site(s), and a switchover needs another data site to switch to", len(cfg.Cluster.Sites))
 	}
 
-	fmt.Fprintln(o.Out, "preflight")
+	o.Report.Section("preflight")
 	leader, candidate, err := r.preflight()
 	if err != nil {
 		return err
 	}
 
-	r.printPlan(leader, candidate)
+	steps := []struct{ from, to string }{{leader, candidate}, {candidate, leader}}
 	if !o.Execute {
-		fmt.Fprintf(o.Out, "\nNothing was changed. Re-run with --execute to run the test.\n")
+		r.listPlan(steps[0].from, steps[0].to, steps[1].from, steps[1].to)
+		o.Report.Result("Nothing changed. Re-run with --execute to run the test.")
 		return nil
 	}
 
-	for i, step := range []struct{ from, to string }{{leader, candidate}, {candidate, leader}} {
-		fmt.Fprintf(o.Out, "\nswitchover %d: %s to %s\n", i+1, step.from, step.to)
+	for i, step := range steps {
+		o.Report.Section(fmt.Sprintf("switchover %d: %s to %s", i+1, step.from, step.to))
 		if err := r.switchover(step.from, step.to); err != nil {
 			return err
 		}
 	}
-	fmt.Fprintf(o.Out, "\nfailover test passed: %s is the primary again\n", leader)
+	o.Report.Result("Failover test passed: %s is the primary again.", leader)
 	return nil
 }
 
@@ -210,10 +213,13 @@ func (r *runner) preflight() (leader, candidate string, err error) {
 		}
 		sleep(lagPoll)
 	}
+	s := r.o.Report.Step("check cluster")
 	if len(problems) > 0 {
-		r.line("REFUSED", "cluster", strings.Join(problems, "; "))
+		s.Fail(errors.New(strings.Join(problems, "; ")))
+		r.o.Report.Refuse("cluster is not ready for a switchover", strings.Join(problems, "\n"))
 	} else {
-		r.line("ok", "cluster", r.describeCluster(c))
+		s.Detail("%s", r.describeCluster(c))
+		s.Done(leader + " leads")
 	}
 
 	appProblems := r.appProblems()
@@ -254,8 +260,8 @@ func (r *runner) describeCluster(c patroni.Cluster) string {
 }
 
 // appProblems checks every app stack where it runs, with the same judgement
-// as apply's health gate, and asks every app through the gateway. It prints
-// one line per stack and per app, and returns what failed.
+// as apply's health gate, and asks every app through the gateway. It reports
+// one step per stack and per app, and returns what failed.
 func (r *runner) appProblems() []string {
 	var problems []string
 	sites := render.AppSites(r.cfg)
@@ -263,6 +269,7 @@ func (r *runner) appProblems() []string {
 		for _, site := range sites[app] {
 			t, ok := r.o.Transports[site]
 			var err error
+			s := r.o.Report.Step(fmt.Sprintf("check %s on %s", app, site))
 			if !ok {
 				err = fmt.Errorf("stack %s: no transport for %s", app, site)
 			} else {
@@ -270,19 +277,23 @@ func (r *runner) appProblems() []string {
 			}
 			if err != nil {
 				problems = append(problems, fmt.Sprintf("%s on %s: %v", app, site, err))
-				r.line("REFUSED", "stack", fmt.Sprintf("%s on %s: %v", app, site, err))
+				s.Fail(err)
+				r.o.Report.Refuse(fmt.Sprintf("%s is not healthy on %s", app, site), err.Error())
 			} else {
-				r.line("ok", "stack", fmt.Sprintf("%s on %s healthy", app, site))
+				s.Done("healthy")
 			}
 		}
 	}
 	for _, app := range r.cfg.AppNames() {
+		s := r.o.Report.Step("check " + app + " answers")
 		detail, err := r.answer(app)
 		if err != nil {
 			problems = append(problems, err.Error())
-			r.line("REFUSED", "answers", err.Error())
+			s.Fail(err)
+			r.o.Report.Refuse(app+" does not answer through the gateway", err.Error())
 		} else {
-			r.line("ok", "answers", detail)
+			s.Detail("%s", detail)
+			s.Done("answers")
 		}
 	}
 	// A Pocket ID on more than one apps site passes the stack check above
@@ -291,12 +302,14 @@ func (r *runner) appProblems() []string {
 	// switchover drops the active instance's database connection and the
 	// gate restarts it, so the handover is checked here, every time.
 	for _, app := range apply.StandbyApps(r.cfg) {
+		s := r.o.Report.Step("check " + app + " standby")
 		list := apply.LookAtInstances(r.cfg, app, r.o.Transports)
 		if _, err := apply.OneActive(r.cfg.Deployment(), app, list); err != nil {
 			problems = append(problems, err.Error())
-			r.line("REFUSED", "standby", fmt.Sprintf("%v: %s", err, summary(list)))
+			s.Fail(err)
+			r.o.Report.Refuse(app+" does not have exactly one active instance", fmt.Sprintf("%v: %s", err, summary(list)))
 		} else {
-			r.line("ok", "standby", fmt.Sprintf("pocket-id %s: %s", app, summary(list)))
+			s.Done(summary(list))
 		}
 	}
 	return problems
@@ -329,10 +342,6 @@ func (r *runner) answer(app string) (string, error) {
 	return fmt.Sprintf("%s answered %d", url, resp.StatusCode), nil
 }
 
-func (r *runner) line(label, what, detail string) {
-	fmt.Fprintf(r.o.Out, "  %-8s %-8s %s\n", label, what, detail)
-}
-
 // databaseStack is one app stack on one apps site that reaches the database
 // through that site's HAProxy. that reach the database
 // through that site's HAProxy, as apply.ClusterDatabaseApps names them.
@@ -358,42 +367,42 @@ func restartCommand(d deployment.Deployment, app string) string {
 	return d.ComposeCmd(app) + " restart"
 }
 
-// printPlan is the dry run: what will run, where, and what it costs.
-func (r *runner) printPlan(leader, candidate string) {
-	out := r.o.Out
+// listPlan is the dry run: each switchover as the steps Execute reports,
+// titled alike, with the command it runs and the cost of it as details.
+func (r *runner) listPlan(leader, candidate, back, home string) {
+	rep := r.o.Report
 	stacks := r.databaseStacks()
-	fmt.Fprintf(out, "\nplan\n")
-	n := 0
-	for _, step := range []struct{ from, to string }{{leader, candidate}, {candidate, leader}} {
-		n++
-		fmt.Fprintf(out, "  %d. on %s: %s\n", n, step.from, SwitchoverCommand(r.cfg.Deployment(), step.from, step.to))
-		n++
-		fmt.Fprintf(out, "  %d. gate: %s leads, %s streams from it\n", n, step.to, step.from)
+	for i, step := range []struct{ from, to string }{{leader, candidate}, {back, home}} {
+		rep.Section(fmt.Sprintf("switchover %d: %s to %s", i+1, step.from, step.to))
+		rep.Item("switch primary")
+		rep.Detail("on %s: %s", step.from, SwitchoverCommand(r.cfg.Deployment(), step.from, step.to))
+		rep.Item("wait for cluster")
+		rep.Detail("gate: %s leads, %s streams from it", step.to, step.from)
 		if len(stacks) > 0 {
-			n++
-			fmt.Fprintf(out, "  %d. restart the apps that use the cluster database, on every apps site: the leader change dropped their connections\n", n)
-			for _, st := range stacks {
-				fmt.Fprintf(out, "       on %s: %s\n", st.site, restartCommand(r.cfg.Deployment(), st.app))
-			}
+			rep.Detail("restart the apps that use the cluster database, on every apps site: the leader change dropped their connections")
 		}
-		n++
-		fmt.Fprintf(out, "  %d. gate: every app stack healthy and answering\n", n)
+		for _, st := range stacks {
+			rep.Item(fmt.Sprintf("restart %s on %s", st.app, st.site))
+			rep.Detail("on %s: %s", st.site, restartCommand(r.cfg.Deployment(), st.app))
+		}
+		rep.Item("wait for apps")
+		rep.Detail("gate: every app stack healthy and answering")
 	}
-	fmt.Fprintf(out, "\nexpected interruption, twice: writes fail from the moment the old primary\n")
-	fmt.Fprintf(out, "demotes until the new one is promoted and each site's HAProxy marks it up.\n")
-	fmt.Fprintf(out, "HAProxy asks every member's /primary every 3 s and needs 2 passes (inter 3s,\n")
-	fmt.Fprintf(out, "rise 2 in haproxy.cfg), so allow several seconds after promotion. Connections\n")
-	fmt.Fprintf(out, "to the old primary are closed when it is marked down (on-marked-down\n")
-	fmt.Fprintf(out, "shutdown-sessions), so apps must reconnect. Reads through HAProxy pause too: it\n")
-	fmt.Fprintf(out, "routes only to the primary.\n")
+	rep.Detail("expected interruption, twice: writes fail from the moment the old primary")
+	rep.Detail("demotes until the new one is promoted and each site's HAProxy marks it up.")
+	rep.Detail("HAProxy asks every member's /primary every 3 s and needs 2 passes (inter 3s,")
+	rep.Detail("rise 2 in haproxy.cfg), so allow several seconds after promotion. Connections")
+	rep.Detail("to the old primary are closed when it is marked down (on-marked-down")
+	rep.Detail("shutdown-sessions), so apps must reconnect. Reads through HAProxy pause too: it")
+	rep.Detail("routes only to the primary.")
 	if len(stacks) > 0 {
-		fmt.Fprintf(out, "Not every app reconnects (Mbin's workers do not), so each app above is\n")
-		fmt.Fprintf(out, "restarted after each switch, a further outage of a few seconds per app.\n")
+		rep.Detail("Not every app reconnects (Mbin's workers do not), so each app above is")
+		rep.Detail("restarted after each switch, a further outage of a few seconds per app.")
 	}
 	for _, app := range apply.StandbyApps(r.cfg) {
-		fmt.Fprintf(out, "Restarting %s's active Pocket ID hands it to a standby site, which takes over\n", app)
-		fmt.Fprintf(out, "at its next retry (15 s by default); sign in pauses until then. Each gate\n")
-		fmt.Fprintf(out, "waits for exactly one active instance.\n")
+		rep.Detail("Restarting %s's active Pocket ID hands it to a standby site, which takes over", app)
+		rep.Detail("at its next retry (15 s by default); sign in pauses until then. Each gate")
+		rep.Detail("waits for exactly one active instance.")
 	}
 }
 
@@ -403,11 +412,15 @@ func (r *runner) switchover(from, to string) error {
 	if !ok {
 		return fmt.Errorf("no transport for %s", from)
 	}
+	s := r.o.Report.Step("switch primary")
+	s.Detail("on %s: %s", from, SwitchoverCommand(r.cfg.Deployment(), from, to))
 	out, err := t.Run(SwitchoverCommand(r.cfg.Deployment(), from, to))
-	fmt.Fprintf(r.o.Out, "  %s\n", strings.ReplaceAll(strings.TrimSpace(out), "\n", "\n  "))
+	r.o.Report.Trace("patronictl switchover", out)
 	if err != nil {
+		s.Fail(err)
 		return fmt.Errorf("switchover from %s to %s did not run: %v. Nothing after it was started; read `patronictl list` on %s", from, to, err, from)
 	}
+	s.Done("")
 	return r.gate(from, to)
 }
 
@@ -424,25 +437,36 @@ func (r *runner) switchover(from, to string) error {
 // a container its own healthcheck still calls healthy. It waits for the
 // cluster first, so that the apps start against the new primary.
 func (r *runner) gate(from, to string) error {
+	wait := r.o.Report.Step("wait for cluster")
+	wait.Detail("%s leads, %s streams", to, from)
 	if err := r.poll(from, to, func() []string { return r.clusterGate(from, to) }); err != nil {
+		wait.Fail(err)
 		return err
 	}
-	fmt.Fprintf(r.o.Out, "  cluster settled: %s leads, %s streams\n", to, from)
+	wait.Done("")
 	for _, st := range r.databaseStacks() {
+		s := r.o.Report.Step(fmt.Sprintf("restart %s on %s", st.app, st.site))
 		t, ok := r.o.Transports[st.site]
 		if !ok {
-			return fmt.Errorf("failover test stopped after switching %s to %s: no transport for %s to restart %s, so nothing after it ran", from, to, st.site, st.app)
+			err := fmt.Errorf("failover test stopped after switching %s to %s: no transport for %s to restart %s, so nothing after it ran", from, to, st.site, st.app)
+			s.Fail(err)
+			return err
 		}
+		s.Detail("%s", restartCommand(r.cfg.Deployment(), st.app))
 		out, err := t.Run(restartCommand(r.cfg.Deployment(), st.app))
 		if err != nil {
-			return fmt.Errorf("failover test stopped after switching %s to %s: restarting %s on %s failed, so nothing after it ran: %s", from, to, st.app, st.site, firstLine(out, err))
+			err = fmt.Errorf("failover test stopped after switching %s to %s: restarting %s on %s failed, so nothing after it ran: %s", from, to, st.app, st.site, firstLine(out, err))
+			s.Fail(err)
+			return err
 		}
-		fmt.Fprintf(r.o.Out, "  restarted %s on %s\n", st.app, st.site)
+		s.Done("")
 	}
+	apps := r.o.Report.Step("wait for apps")
 	if err := r.poll(from, to, func() []string { return r.gateProblems(from, to) }); err != nil {
+		apps.Fail(err)
 		return err
 	}
-	fmt.Fprintf(r.o.Out, "  gate passed: %s leads, %s streams, every app healthy and answering\n", to, from)
+	apps.Done("")
 	return nil
 }
 
@@ -472,7 +496,7 @@ func (r *runner) poll(from, to string, problems func() []string) error {
 func (r *runner) gateProblems(from, to string) []string {
 	problems := r.clusterGate(from, to)
 	quiet := *r
-	quiet.o.Out = io.Discard
+	quiet.o.Report = ui.Discard
 	return append(problems, quiet.appProblems()...)
 }
 
