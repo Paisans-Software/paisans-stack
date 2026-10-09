@@ -1,10 +1,16 @@
-# `site remove --force` and the record of a site's hosts: implementation plan
+# `site remove --force` and orphaned secrets: implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `paisans site remove <site> --force` cleans one host of this deployment, ignoring the cluster and leaving `paisans.yaml` alone. `secrets.enc.yaml` records every host each site was deployed to, so the toolkit can name, and clean, hosts the configuration no longer explains. Cleaning also removes images only this deployment's containers used.
+**Goal:**
+- `paisans site remove <site> --force [--ssh user@host[:port]]` cleans one host of this deployment, ignoring the cluster and leaving both files alone.
+- Cleaning also removes images only this deployment's containers ran.
+- `init` and `apply` warn about secrets naming things `paisans.yaml` no longer declares, and `paisans secrets prune` removes them.
 
-**Architecture:** Stage 3 of `internal/siteremove` (`buildHost`, `runHost`, `verifyHost`) is reused unchanged in shape. A new `BuildForced` builds a plan of two stages: that host stage, then a record stage. It runs against a configuration copy in which the site's roles come from the host's registry entry and its ssh section from the chosen destination. The record is `SiteSecrets.Hosts`, a list of `config.Destination` strings. It is written by `apply`/`host prepare` and removed through an `Options.Forget` callback, so `siteremove` never touches the file itself.
+**Architecture:**
+- **Stage 3 reused:** `internal/siteremove`'s stage 3 (`buildHost`, `runHost`, `verifyHost`) is reused as it is.
+- **The forced plan:** a new `BuildForced` builds a plan of that one stage. It runs against a copy of the configuration in which the site's roles come from the host's registry entry and its ssh section from the chosen destination.
+- **Orphans:** they are computed by `secretsgen.Orphans`, which sits beside the code that knows which secrets a configuration needs.
 
 **Tech Stack:** Go, the existing fake `world` in `internal/siteremove/world_test.go`, sops-encrypted secrets via `config.WriteSecrets`.
 
@@ -12,34 +18,32 @@
 
 ## Global Constraints
 
-- The repo is public. Use no real hostnames, IPs or deployment facts; use 203.0.113.0/24, 198.51.100.0/24, and site names from the fixtures (`home-a`, `home-b`, `vm`, `watch`).
-- Docs, comments, commits and PRs never describe rejected alternatives.
-- No migration code. Hosts prepared before the record existed are reached with `--ssh`; nothing back-fills the record.
-- `--force` never edits `paisans.yaml`.
-- `--force` on the declared site's current host asks for the site's name at a terminal at `--execute`. No flag answers it.
-- The record format is `user@host:port` with the port always written; IPv6 is `user@[addr]:port`.
-- The record is written before the first change on a host, and only with `--execute`.
-- Images are removed by ID with `docker image rm` and without `-f`. A Docker refusal is reported as kept, never as a failure.
-- Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- `go test ./...` and `go vet ./...` pass after every task.
+- **Public repo:** use no real hostnames, IPs or deployment facts. Use 203.0.113.0/24, 198.51.100.0/24 and 192.0.2.0/24, and site names from the fixtures (`home-a`, `home-b`, `vm`, `watch`).
+- **No rejected alternatives:** docs, comments, commits and PRs never describe them.
+- **No migration code.**
+- **`--force` never edits files:** neither `paisans.yaml` nor `secrets.enc.yaml`.
+- **`--force --ssh` accepts any host:** nothing on it is touched unless it carries this deployment's id or token.
+- **Confirmation on the site's own host:** `--force` on the declared site's own host asks for the site's name at a terminal at `--execute`. No flag answers it.
+- **Images:** removed by ID with `docker image rm` and without `-f`. A Docker refusal is reported as kept, never as a failure.
+- **Orphaned secrets:** reported by key, never by value, as a warning and never a refusal. Only `secrets prune --execute` removes them.
+- **Commits** end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- **After every task**, `go test ./...` and `go vet ./...` pass.
 
 ## Review Focus
 
-1. **`--force` against a host whose registry has no entry for this deployment** (never deployed, or already cleaned). Expected: a plan with nothing to remove, and the record entry still dropped. Pinned in Task 5, `TestForcedOnACleanHostOnlyForgets`.
-2. **A forced, undeclared gateway site whose host serves the owner's `/srv/caddy.d` sites.** Expected: the Caddy hand-over runs, because roles come from the registry. Pinned in Task 5, `TestForcedUndeclaredGatewayHandsOverCaddy`.
+1. **`--force` against a host whose registry has no entry for this deployment** (never deployed, or already cleaned). Expected: an empty plan and a clean exit. Pinned in Task 4, `TestForcedOnACleanHostPlansNothing`.
+2. **A forced, undeclared gateway site whose host serves the owner's `/srv/caddy.d` sites.** Expected: the Caddy hand-over runs, because roles come from the registry. Pinned in Task 4, `TestForcedUndeclaredGatewayHandsOverCaddy`.
 3. **An image shared between one of our containers and a foreign container.** Expected: kept, with a reason. Pinned in Task 3, `TestImagesSharedWithAForeignContainerStay`.
 4. **`--ssh` without a port, or with an ssh alias.** Expected: `user@host` gets `:22`. A bare alias with no `@` is refused with the expected form. Pinned in Task 1, `TestParseDestination`.
-5. **A full `site remove --host-gone`.** Expected: the declared destination is dropped from the record even though no host was reached. Pinned in Task 4, `TestFullRemovalForgetsTheDeclaredHost`.
+5. **A Pocket ID group still named by a second Pocket ID app.** Expected: not an orphan. Pinned in Task 5, `TestOrphans`.
 
 ---
 
-### Task 1: `config.Destination` and `SiteSecrets.Hosts`
+### Task 1: `config.Destination`
 
 **Files:**
 - Modify: `internal/config/ssh.go` (add `Destination`, `ParseDestination`, `Site.Destination`)
-- Modify: `internal/config/secrets.go:65-71` (`SiteSecrets.Hosts`)
-- Create: `internal/config/hosts.go` (`RecordHost`, `ForgetHost`, `HostsOf`, `RecordedSites`)
-- Test: `internal/config/hosts_test.go`
+- Test: `internal/config/destination_test.go`
 
 **Interfaces:**
 - Produces:
@@ -47,10 +51,6 @@
   - `func ParseDestination(s string) (Destination, error)`
   - `func (d Destination) String() string`
   - `func (s Site) Destination() Destination`
-  - `func (s *Secrets) RecordHost(site string, d Destination) bool`, which is true when the destination was added
-  - `func (s *Secrets) ForgetHost(site string, d Destination) bool`, which is true when it was removed
-  - `func (s *Secrets) HostsOf(site string) []Destination`
-  - `func (s *Secrets) RecordedSites() []string`, sorted, only sites with at least one host
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -58,7 +58,6 @@
 package config_test
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
@@ -66,10 +65,10 @@ import (
 
 func TestParseDestination(t *testing.T) {
 	for in, want := range map[string]string{
-		"admin@203.0.113.9":       "admin@203.0.113.9:22",
-		"admin@203.0.113.9:2222":  "admin@203.0.113.9:2222",
-		"admin@[2001:db8::1]:22":  "admin@[2001:db8::1]:22",
-		"admin@host.example.org":  "admin@host.example.org:22",
+		"admin@203.0.113.9":      "admin@203.0.113.9:22",
+		"admin@203.0.113.9:2222": "admin@203.0.113.9:2222",
+		"admin@[2001:db8::1]:22": "admin@[2001:db8::1]:22",
+		"admin@host.example.org": "admin@host.example.org:22",
 	} {
 		d, err := config.ParseDestination(in)
 		if err != nil || d.String() != want {
@@ -89,80 +88,20 @@ func TestSiteDestinationUsesTheSSHSection(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
-
-func TestRecordAndForgetHosts(t *testing.T) {
-	s := &config.Secrets{}
-	a, _ := config.ParseDestination("admin@203.0.113.9")
-	b, _ := config.ParseDestination("admin@198.51.100.4")
-	if !s.RecordHost("home-b", a) || s.RecordHost("home-b", a) {
-		t.Fatal("RecordHost did not add once and only once")
-	}
-	s.RecordHost("home-b", b)
-	if got := s.HostsOf("home-b"); len(got) != 2 || got[0] != a || got[1] != b {
-		t.Fatalf("HostsOf = %v", got)
-	}
-	if !s.ForgetHost("home-b", a) || s.ForgetHost("home-b", a) {
-		t.Fatal("ForgetHost did not remove once and only once")
-	}
-	if got := s.RecordedSites(); len(got) != 1 || got[0] != "home-b" {
-		t.Errorf("RecordedSites = %v", got)
-	}
-	s.ForgetHost("home-b", b)
-	if len(s.RecordedSites()) != 0 {
-		t.Error("a site with no hosts left is still listed")
-	}
-}
-
-func TestHostsRoundTripAndAreNotADottedKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "secrets.yaml")
-	s := &config.Secrets{}
-	d, _ := config.ParseDestination("admin@203.0.113.9")
-	s.RecordHost("home-b", d)
-	if err := config.WriteSecrets(path, s, nil); err != nil {
-		t.Fatal(err)
-	}
-	back, err := config.LoadSecrets(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := back.HostsOf("home-b"); len(got) != 1 || got[0] != d {
-		t.Fatalf("after a round trip: %v", got)
-	}
-	if err := back.Set("sites.home-b.hosts", "x"); err == nil {
-		t.Error("Set accepted sites.<name>.hosts, which only the toolkit writes")
-	}
-	if _, ok := back.Get("sites.home-b.hosts"); ok {
-		t.Error("Get answered for sites.<name>.hosts")
-	}
-}
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `go test ./internal/config/ -run 'Destination|Hosts' -v`
+Run: `go test ./internal/config/ -run Destination -v`
 Expected: FAIL to compile, with `undefined: config.ParseDestination`.
 
 - [ ] **Step 3: Implement**
 
-Add to `internal/config/secrets.go`, inside `SiteSecrets`, after `HeartbeatToken`:
+Append to `internal/config/ssh.go`, and add `"strconv"` to its imports:
 
 ```go
-	// Hosts is every host the site has been prepared or applied on and not
-	// yet cleaned, as Destination strings, oldest first. host prepare and
-	// apply add the site's declared host before changing it, and site
-	// remove takes out each host it cleans or is told is gone, so a host
-	// the configuration no longer names is still known. It holds no
-	// credential; it is here because this is the one file every admin
-	// shares that the toolkit already writes.
-	Hosts []string `yaml:"hosts,omitempty"`
-```
-
-Append to `internal/config/ssh.go`:
-
-```go
-// Destination is where a site's host is reached: user, host and port. Its
-// string form, user@host:port with the port always written, is what
-// secrets.enc.yaml records under sites.<name>.hosts.
+// Destination is where a host is reached: user, host and port. Its string
+// form is user@host:port, with the port always written.
 type Destination struct {
 	User string
 	Host string
@@ -174,8 +113,8 @@ func (d Destination) String() string {
 }
 
 // ParseDestination reads user@host or user@host:port, with an IPv6 host in
-// brackets. The user is required, because the record has to say who logs in,
-// and an ssh alias is refused for the same reason.
+// brackets. The user is required, because it is whose authorized keys a
+// cleaning reads, so an ssh alias is refused.
 func ParseDestination(s string) (Destination, error) {
 	user, rest, ok := strings.Cut(s, "@")
 	if !ok || user == "" || rest == "" {
@@ -200,90 +139,16 @@ func (s Site) Destination() Destination {
 }
 ```
 
-Add `"strconv"` to `ssh.go`'s imports.
+- [ ] **Step 4: Run tests**
 
-Create `internal/config/hosts.go`:
-
-```go
-package config
-
-import "sort"
-
-// RecordHost adds d to the site's recorded hosts, and reports whether it was
-// not there already.
-func (s *Secrets) RecordHost(site string, d Destination) bool {
-	if s.Sites == nil {
-		s.Sites = map[string]SiteSecrets{}
-	}
-	entry := s.Sites[site]
-	for _, h := range entry.Hosts {
-		if h == d.String() {
-			return false
-		}
-	}
-	entry.Hosts = append(entry.Hosts, d.String())
-	s.Sites[site] = entry
-	return true
-}
-
-// ForgetHost takes d out of the site's recorded hosts, and reports whether it
-// was there. The site's other secrets stay.
-func (s *Secrets) ForgetHost(site string, d Destination) bool {
-	entry, ok := s.Sites[site]
-	if !ok {
-		return false
-	}
-	var kept []string
-	for _, h := range entry.Hosts {
-		if h != d.String() {
-			kept = append(kept, h)
-		}
-	}
-	if len(kept) == len(entry.Hosts) {
-		return false
-	}
-	entry.Hosts = kept
-	s.Sites[site] = entry
-	return true
-}
-
-// HostsOf is the site's recorded hosts, oldest first. An entry that does not
-// parse is skipped: the toolkit wrote every one, so it is a hand edit.
-func (s *Secrets) HostsOf(site string) []Destination {
-	var out []Destination
-	for _, h := range s.Sites[site].Hosts {
-		if d, err := ParseDestination(h); err == nil {
-			out = append(out, d)
-		}
-	}
-	return out
-}
-
-// RecordedSites is every site with at least one recorded host, sorted.
-func (s *Secrets) RecordedSites() []string {
-	var out []string
-	for name, entry := range s.Sites {
-		if len(entry.Hosts) > 0 {
-			out = append(out, name)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-```
-
-`Get` and `Set` need no change: neither has a `hosts` case, so `Set` refuses the key and `Get` returns not set. The test pins that.
-
-- [ ] **Step 4: Run them to verify they pass**
-
-Run: `go test ./internal/config/ -v -run 'Destination|Hosts' && go test ./...`
+Run: `go test ./internal/config/ ./...`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add internal/config
-git commit -m "feat: record the hosts each site was deployed to in the secrets file
+git commit -m "feat: parse a user@host[:port] destination
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -568,140 +433,26 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 4: a full removal forgets the site's declared host
-
-**Files:**
-- Modify: `internal/siteremove/siteremove.go`: `Options.Forget`; `buildConfig`
-- Modify: `internal/siteremove/remains.go` (`secretsLeft` text)
-- Test: `internal/siteremove/record_test.go`
-
-**Interfaces:**
-- Produces: `Options.Forget func(site string, d config.Destination) error`. It is called once the site is out of `paisans.yaml`. A nil `Forget` skips it, which is what the existing tests rely on.
-
-- [ ] **Step 1: Write the failing test**
-
-```go
-package siteremove_test
-
-import (
-	"testing"
-
-	"github.com/paisans-software/paisans-stack/internal/config"
-	"github.com/paisans-software/paisans-stack/internal/siteremove"
-)
-
-func forgetting(got *[]string) func(string, config.Destination) error {
-	return func(site string, d config.Destination) error {
-		*got = append(*got, site+" "+d.String())
-		return nil
-	}
-}
-
-func TestFullRemovalForgetsTheDeclaredHost(t *testing.T) {
-	for _, hostGone := range []bool{false, true} {
-		w := setup(t)
-		if hostGone {
-			w.unreachable["home-b"] = true
-			w.etcdDown["home-b"] = true
-			w.member("home-b")["Role"], w.member("home-b")["State"] = "Replica", "stopped"
-			w.member("home-c")["Role"] = "Sync Standby"
-		}
-		var forgot []string
-		want := "home-b " + w.cfg.Sites["home-b"].Destination().String()
-		p := w.mustBuild("home-b", siteremove.Options{HostGone: hostGone, Forget: forgetting(&forgot)})
-		if err := siteremove.Execute(p); err != nil {
-			t.Fatal(err)
-		}
-		if len(forgot) != 1 || forgot[0] != want {
-			t.Errorf("host-gone=%v: forgot %v, want [%s]", hostGone, forgot, want)
-		}
-	}
-}
-```
-
-- [ ] **Step 2: Run it to verify it fails**
-
-Run: `go test ./internal/siteremove/ -run TestFullRemovalForgets -v`
-Expected: FAIL to compile, with `unknown field Forget`.
-
-- [ ] **Step 3: Implement**
-
-In `Options`:
-
-```go
-	// Forget takes a host out of the site's recorded hosts in the secrets
-	// file. Nil leaves the record alone.
-	Forget func(site string, d config.Destination) error
-```
-
-In `buildConfig`:
-- Add a step: `Step{Site: p.Site, Verb: "forget", Title: "forget " + p.Site + "'s host", Text: fmt.Sprintf("%s from sites.%s.hosts in the secrets file", p.cfg.Sites[p.Site].Destination(), p.Site)}`.
-- At the end of `st.run`, after the config edit succeeds:
-
-```go
-		if p.Forget != nil {
-			p.work("forget " + p.Site + "'s host")
-			return p.Forget(p.Site, p.cfg.Sites[p.Site].Destination())
-		}
-		return nil
-```
-
-Restructure the existing `return config.RemoveSite...` lines into `err := ...; if err != nil { return err }` first.
-
-In `remains.go`, change `secretsLeft` to:
-
-```go
-func secretsLeft(site string) string {
-	return fmt.Sprintf("secrets: remove sites.%s from the secrets file with sops. It is its WireGuard key; this command takes only its host out of sites.%s.hosts, so remove the rest once nothing needs it", site, site)
-}
-```
-
-- [ ] **Step 4: Run tests**
-
-Run: `go test ./internal/siteremove/ ./...`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add internal/siteremove
-git commit -m "feat: site remove takes the cleaned host out of the secrets file's record
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-```
-
----
-
-### Task 5: `siteremove.BuildForced`
+### Task 4: `siteremove.BuildForced`
 
 **Files:**
 - Create: `internal/siteremove/force.go`
-- Modify: `internal/siteremove/host.go`: `buildHost` calls `ownership.Classify` only for a gateway, and reads the key user from `p.cfg`, which `force.go` sets
-- Test: `internal/siteremove/force_test.go`
+- Modify: `internal/siteremove/host.go`: `buildHost` calls `ownership.Classify` only for a gateway
+- Modify: `internal/siteremove/siteremove.go` (`Plan.Current`)
+- Test: `internal/siteremove/force_test.go`; `hasStepIn` and `stageNamed` helpers in `siteremove_test.go`
 
 **Interfaces:**
-- Consumes: `config.Destination`, `Options.Forget` (Tasks 1, 4); `buildHost`, `runHost`, `verifyHost` and `hostGoneLeft` (existing).
+- Consumes: `config.Destination`, `Site.Destination` (Task 1); `buildHost`, `runHost` and `verifyHost` (existing).
 - Produces:
-  - `func BuildForced(cfg *config.Config, secrets *config.Secrets, site string, dest config.Destination, t apply.Transport, o Options) (*Plan, error)`. `t` is nil when `o.HostGone`.
-  - `Plan.Current bool`: true when `dest` is the declared site's own host. The command asks for the site's name when it is.
-  - The plan's stages are `[clean the host (Number 3), record (Number 4)]`.
+  - `func BuildForced(cfg *config.Config, secrets *config.Secrets, site string, dest config.Destination, t apply.Transport, o Options) (*Plan, error)`
+  - `Plan.Current bool`: true when `dest` is the declared site's own host
+  - The plan's `Stages` is exactly `[clean the host]`, with `Number` 3.
 
 - [ ] **Step 1: Write the failing tests**
 
+Add to `siteremove_test.go`:
+
 ```go
-package siteremove_test
-
-import (
-	"strings"
-	"testing"
-
-	"github.com/paisans-software/paisans-stack/internal/apply"
-	"github.com/paisans-software/paisans-stack/internal/config"
-	"github.com/paisans-software/paisans-stack/internal/registry"
-	"github.com/paisans-software/paisans-stack/internal/render"
-	"github.com/paisans-software/paisans-stack/internal/siteremove"
-)
-
 func stageNamed(p *siteremove.Plan, name string) *siteremove.Stage {
 	for _, st := range p.Stages {
 		if st.Name == name {
@@ -711,139 +462,6 @@ func stageNamed(p *siteremove.Plan, name string) *siteremove.Stage {
 	return nil
 }
 
-func forced(t *testing.T, w *world, site string, o siteremove.Options) *siteremove.Plan {
-	t.Helper()
-	dest := w.cfg.Sites[site].Destination()
-	var tr apply.Transport
-	if !o.HostGone {
-		tr = w.hosts[site]
-	}
-	p, err := siteremove.BuildForced(w.cfg, w.secrets, site, dest, tr, o)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-// None of the cluster's refusals stop --force: home-a has apps pinned to it
-// and etcd is unhealthy.
-func TestForcedIgnoresTheClustersRefusals(t *testing.T) {
-	w := setup(t)
-	w.etcdDown["home-c"] = true
-	var forgot []string
-	p := forced(t, w, "home-a", siteremove.Options{Forget: forgetting(&forgot)})
-	if len(p.Stages) != 2 || stageNamed(p, "clean the host") == nil || stageNamed(p, "record") == nil {
-		t.Fatalf("stages:\n%s", printed(p))
-	}
-	if !p.Current {
-		t.Error("home-a's declared host is not marked current")
-	}
-	if err := siteremove.Execute(p); err != nil {
-		t.Fatal(err)
-	}
-	for _, h := range w.hosts {
-		if h.name != "home-a" && len(h.commands) > 0 {
-			t.Errorf("%s was reached: %v", h.name, h.commands)
-		}
-	}
-	if len(forgot) != 1 {
-		t.Errorf("forgot %v", forgot)
-	}
-	cfg, err := config.Load(w.configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := cfg.Sites["home-a"]; !ok {
-		t.Error("--force edited paisans.yaml")
-	}
-}
-
-// The host stage of a forced plan is the unforced plan's host stage.
-func TestForcedHostStageMatchesTheFullRemoval(t *testing.T) {
-	w := setup(t)
-	full := w.mustBuild("home-b", siteremove.Options{})
-	f := forced(t, w, "home-b", siteremove.Options{})
-	a, b := stageNamed(full, "clean the host").Steps, stageNamed(f, "clean the host").Steps
-	if len(a) != len(b) {
-		t.Fatalf("full:\n%s\nforced:\n%s", printed(full), printed(f))
-	}
-	for i := range a {
-		if a[i].Text != b[i].Text {
-			t.Errorf("step %d: %q vs %q", i, a[i].Text, b[i].Text)
-		}
-	}
-}
-
-// A site no longer declared is cleaned from what its host proves, its roles
-// read from the registry entry.
-func TestForcedUndeclaredGatewayHandsOverCaddy(t *testing.T) {
-	w := setup(t)
-	vm := w.hosts["vm"]
-	vm.files[render.HostSitesDir+"/blog.caddy"] = "blog.example.org { respond 200 }\n"
-	dest := w.cfg.Sites["vm"].Destination()
-	cfg := w.cfg.WithoutSite("vm")
-	p, err := siteremove.BuildForced(cfg, w.secrets, "vm", dest, vm, siteremove.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Current {
-		t.Error("an undeclared site's host is marked current")
-	}
-	if !hasStepIn(stageNamed(p, "clean the host"), "vm", "hand over", "Caddy") {
-		t.Fatalf("no hand over:\n%s", printed(p))
-	}
-}
-
-// A host with nothing of this deployment's on it plans nothing and is still
-// forgotten.
-func TestForcedOnACleanHostOnlyForgets(t *testing.T) {
-	w := setup(t)
-	b := w.hosts["home-b"]
-	b.containers, b.networks, b.volumes, b.rules = nil, nil, nil, nil
-	b.files = map[string]string{registry.Path: encode(t, registry.Registry{Version: registry.Version, Deployments: map[string]registry.Entry{}})}
-	b.wgUp = false
-	var forgot []string
-	p := forced(t, w, "home-b", siteremove.Options{Forget: forgetting(&forgot)})
-	if n := len(stageNamed(p, "clean the host").Steps); n != 0 {
-		t.Fatalf("%d step(s) planned:\n%s", n, printed(p))
-	}
-	if err := siteremove.Execute(p); err != nil {
-		t.Fatal(err)
-	}
-	if len(forgot) != 1 {
-		t.Errorf("forgot %v", forgot)
-	}
-}
-
-// --host-gone with --force reaches nothing and only forgets.
-func TestForcedHostGoneOnlyForgets(t *testing.T) {
-	w := setup(t)
-	var forgot []string
-	p := forced(t, w, "home-b", siteremove.Options{HostGone: true, Forget: forgetting(&forgot)})
-	if err := siteremove.Execute(p); err != nil {
-		t.Fatal(err)
-	}
-	if n := len(w.hosts["home-b"].commands); n != 0 {
-		t.Errorf("home-b was sent %d command(s)", n)
-	}
-	if len(forgot) != 1 {
-		t.Errorf("forgot %v", forgot)
-	}
-}
-
-// The plan for the declared site's own host says what the cluster loses.
-func TestForcedCurrentHostSaysWhatTheClusterLoses(t *testing.T) {
-	w := setup(t)
-	p := forced(t, w, "home-b", siteremove.Options{})
-	if !strings.Contains(printed(p), "still declared") {
-		t.Errorf("no warning:\n%s", printed(p))
-	}
-}
-```
-
-Add `hasStepIn` to `siteremove_test.go`:
-
-```go
 func hasStepIn(st *siteremove.Stage, site, verb, text string) bool {
 	if st == nil {
 		return false
@@ -857,12 +475,148 @@ func hasStepIn(st *siteremove.Stage, site, verb, text string) bool {
 }
 ```
 
+Create `force_test.go`:
+
+```go
+package siteremove_test
+
+import (
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/registry"
+	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/siteremove"
+)
+
+func forced(t *testing.T, w *world, cfg *config.Config, site string, dest config.Destination, o siteremove.Options) *siteremove.Plan {
+	t.Helper()
+	p, err := siteremove.BuildForced(cfg, w.secrets, site, dest, w.hosts[site], o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// None of the cluster's refusals stop --force: home-a has apps pinned to it
+// and etcd is unhealthy. Only home-a is reached, and paisans.yaml is not
+// touched.
+func TestForcedIgnoresTheClustersRefusals(t *testing.T) {
+	w := setup(t)
+	w.etcdDown["home-c"] = true
+	before, err := os.ReadFile(w.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := forced(t, w, w.cfg, "home-a", w.cfg.Sites["home-a"].Destination(), siteremove.Options{})
+	if len(p.Stages) != 1 || stageNamed(p, "clean the host") == nil {
+		t.Fatalf("stages:\n%s", printed(p))
+	}
+	if !p.Current {
+		t.Error("home-a's declared host is not marked as its own")
+	}
+	if err := siteremove.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range w.hosts {
+		if h.name != "home-a" && len(h.commands) > 0 {
+			t.Errorf("%s was reached: %v", h.name, h.commands)
+		}
+	}
+	after, _ := os.ReadFile(w.configPath)
+	if string(after) != string(before) {
+		t.Error("--force edited paisans.yaml")
+	}
+}
+
+// The host stage of a forced plan is the unforced plan's host stage.
+func TestForcedHostStageMatchesTheFullRemoval(t *testing.T) {
+	w := setup(t)
+	full := w.mustBuild("home-b", siteremove.Options{})
+	f := forced(t, w, w.cfg, "home-b", w.cfg.Sites["home-b"].Destination(), siteremove.Options{})
+	var a []siteremove.Step
+	for _, s := range stageNamed(full, "clean the host").Steps {
+		if s.Verb != "note" {
+			a = append(a, s)
+		}
+	}
+	var b []siteremove.Step
+	for _, s := range stageNamed(f, "clean the host").Steps {
+		if s.Verb != "note" {
+			b = append(b, s)
+		}
+	}
+	if len(a) != len(b) {
+		t.Fatalf("full:\n%s\nforced:\n%s", printed(full), printed(f))
+	}
+	for i := range a {
+		if a[i].Text != b[i].Text {
+			t.Errorf("step %d: %q vs %q", i, a[i].Text, b[i].Text)
+		}
+	}
+}
+
+// A site no longer declared is cleaned through any destination, its roles
+// read from the registry entry on the host.
+func TestForcedUndeclaredGatewayHandsOverCaddy(t *testing.T) {
+	w := setup(t)
+	vm := w.hosts["vm"]
+	vm.files[render.HostSitesDir+"/blog.caddy"] = "blog.example.org { respond 200 }\n"
+	dest, _ := config.ParseDestination("ubuntu@192.0.2.10")
+	p := forced(t, w, w.cfg.WithoutSite("vm"), "vm", dest, siteremove.Options{})
+	if p.Current {
+		t.Error("an undeclared site's host is marked as its own")
+	}
+	if !hasStepIn(stageNamed(p, "clean the host"), "vm", "hand over", "Caddy") {
+		t.Fatalf("no hand over:\n%s", printed(p))
+	}
+}
+
+// A host with nothing of this deployment's on it plans nothing.
+func TestForcedOnACleanHostPlansNothing(t *testing.T) {
+	w := setup(t)
+	b := w.hosts["home-b"]
+	b.containers, b.networks, b.volumes, b.rules = nil, nil, nil, nil
+	b.files = map[string]string{registry.Path: encode(t, registry.Registry{Version: registry.Version, Deployments: map[string]registry.Entry{}})}
+	b.wgUp = false
+	dest, _ := config.ParseDestination("ubuntu@192.0.2.11")
+	p := forced(t, w, w.cfg, "home-b", dest, siteremove.Options{})
+	if n := len(stageNamed(p, "clean the host").Steps); n != 0 {
+		t.Fatalf("%d step(s) planned:\n%s", n, printed(p))
+	}
+	if err := siteremove.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The plan for the declared site's own host says what the cluster loses.
+func TestForcedOwnHostSaysWhatTheClusterLoses(t *testing.T) {
+	w := setup(t)
+	p := forced(t, w, w.cfg, "home-b", w.cfg.Sites["home-b"].Destination(), siteremove.Options{})
+	if !strings.Contains(printed(p), "still declared") {
+		t.Errorf("no warning:\n%s", printed(p))
+	}
+}
+
+func TestForcedRefusesHostGone(t *testing.T) {
+	w := setup(t)
+	_, err := siteremove.BuildForced(w.cfg, w.secrets, "home-b", w.cfg.Sites["home-b"].Destination(), nil, siteremove.Options{HostGone: true})
+	if err == nil || !strings.Contains(err.Error(), "Drop one of them") {
+		t.Errorf("err = %v", err)
+	}
+}
+```
+
+`TestForcedHostStageMatchesTheFullRemoval` filters out `note` steps: the full plan carries a Pocket ID note, and the forced plan carries the cluster note.
+
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `go test ./internal/siteremove/ -run Forced -v`
 Expected: FAIL to compile, with `undefined: siteremove.BuildForced`.
 
-- [ ] **Step 3: Make `buildHost` independent of declared roles**
+- [ ] **Step 3: Make `buildHost` independent of declared roles for non-gateways**
 
 In `buildHost`, replace:
 
@@ -872,6 +626,10 @@ In `buildHost`, replace:
 		return nil, err
 	}
 	if p.cfg.Sites[p.Site].Has(config.RoleGateway) && report.Foreign() {
+		if hp.handover, err = p.probeHandover(t, inv, report); err != nil {
+			return nil, err
+		}
+	}
 ```
 
 with:
@@ -883,11 +641,25 @@ with:
 			return nil, err
 		}
 		if report.Foreign() {
+			if hp.handover, err = p.probeHandover(t, inv, report); err != nil {
+				return nil, err
+			}
+		}
+	}
 ```
 
-Keep the closing braces balanced. `report` is used nowhere else; check with `grep -n report internal/siteremove/host.go`.
+- [ ] **Step 4: Implement**
 
-- [ ] **Step 4: Implement `force.go`**
+Add to `Plan` in `siteremove.go`, after `Kept`:
+
+```go
+	// Current is set by BuildForced when the host is the declared site's
+	// own, which its cluster still counts on: the command asks for the
+	// site's name before cleaning it.
+	Current bool
+```
+
+Create `force.go`:
 
 ```go
 package siteremove
@@ -903,11 +675,14 @@ import (
 )
 
 // BuildForced plans `site remove --force`: the host at dest cleaned of this
-// deployment, and dest taken out of the site's recorded hosts. Nothing else
-// is read or changed. No other site is reached, the cluster's refusals are
-// not checked, and paisans.yaml is not edited, because --force is for a host
-// the cluster cannot be asked about or no longer counts on
-// (docs/specs/2026-10-09-site-remove-force.md).
+// deployment, and nothing else. No other site is reached, the cluster's
+// refusals are not checked, and neither paisans.yaml nor the secrets file is
+// edited, because --force is for a host the cluster cannot be asked about or
+// no longer counts on (docs/specs/2026-10-09-site-remove-force.md).
+//
+// dest may be any host. What is removed is only what the host proves is this
+// deployment's, by its id or its token, so a host it never used plans
+// nothing.
 //
 // The host stage runs against a copy of the configuration in which the site
 // is declared with dest as its ssh section and the roles its registry entry on
@@ -915,37 +690,34 @@ import (
 // cleaning it needs, for an undeclared site and for a host the site has left
 // alike.
 func BuildForced(cfg *config.Config, secrets *config.Secrets, site string, dest config.Destination, t apply.Transport, o Options) (*Plan, error) {
-	if o.HostGone && o.DeleteData {
-		return nil, fmt.Errorf("site remove %s: --delete-data deletes data on the host, and --host-gone does not reach it. Drop one of them", site)
+	if o.HostGone {
+		return nil, fmt.Errorf("site remove %s: --force cleans one host, and --host-gone reaches none. Drop one of them", site)
 	}
 	declared, isDeclared := cfg.Sites[site]
-	p := &Plan{Site: site, Options: o, secrets: secrets, transports: map[string]apply.Transport{}}
+	p := &Plan{Site: site, Options: o, secrets: secrets, transports: map[string]apply.Transport{site: t}}
 	p.Current = isDeclared && declared.Destination() == dest
 
+	if out, err := t.Run("true"); err != nil {
+		if errors.Is(err, apply.ErrUnreachable) {
+			return nil, fmt.Errorf("site remove %s: %s does not answer over ssh (%v), so what is on it cannot be read or cleaned. Fix ssh and run again", site, dest, err)
+		}
+		return nil, fmt.Errorf("site remove %s: %s answered `true` with an error: %v: %s", site, dest, err, lastLines(out, 2))
+	}
 	s := config.Site{SSH: config.SSH{User: dest.User, Host: dest.Host, Port: dest.Port}}
 	if isDeclared {
 		s.Roles = declared.Roles
 	}
-	if !o.HostGone {
-		if out, err := t.Run("true"); err != nil {
-			if errors.Is(err, apply.ErrUnreachable) {
-				return nil, fmt.Errorf("site remove %s: %s does not answer over ssh (%v), so what is on it cannot be read or cleaned. Fix ssh and run again, or, if the host is never coming back, run with --host-gone: it is taken out of the record and not reached", site, dest, err)
-			}
-			return nil, fmt.Errorf("site remove %s: %s answered `true` with an error: %v: %s", site, dest, err, lastLines(out, 2))
-		}
-		reg, err := registry.Read(t)
-		if err != nil {
-			return nil, fmt.Errorf("site remove %s: %w", site, err)
-		}
-		if e, ok := reg.Deployments[cfg.ID]; ok {
-			s.Roles = nil
-			for _, r := range strings.Split(e.Roles, ",") {
-				if r != "" {
-					s.Roles = append(s.Roles, config.Role(r))
-				}
+	reg, err := registry.Read(t)
+	if err != nil {
+		return nil, fmt.Errorf("site remove %s: %w", site, err)
+	}
+	if e, ok := reg.Deployments[cfg.ID]; ok {
+		s.Roles = nil
+		for _, r := range strings.Split(e.Roles, ",") {
+			if r != "" {
+				s.Roles = append(s.Roles, config.Role(r))
 			}
 		}
-		p.transports[site] = t
 	}
 	forcedCfg := *cfg
 	forcedCfg.Sites = map[string]config.Site{}
@@ -959,58 +731,19 @@ func BuildForced(cfg *config.Config, secrets *config.Secrets, site string, dest 
 	if err != nil {
 		return nil, err
 	}
-	if p.Current && host.Skipped == "" {
+	if p.Current && len(host.Steps) > 0 {
 		host.Steps = append([]Step{{Site: site, Verb: "note", Title: "note the cluster", Text: fmt.Sprintf("%s is still declared and this is its host: its etcd member, Patroni replica and Garage node, and its place in every other site's mesh, stay in the cluster until a full `paisans site remove %s`, and its next `paisans apply --site %s` deploys it again", site, site, site)}}, host.Steps...)
 	}
-	p.Stages = append(p.Stages, host, p.buildRecord(dest))
+	p.Stages = []*Stage{host}
 	return p, nil
 }
-
-// buildRecord is a forced removal's last stage: dest out of the site's
-// recorded hosts.
-func (p *Plan) buildRecord(dest config.Destination) *Stage {
-	st := &Stage{
-		Number: 4,
-		Name:   "record",
-		Short:  "the record no longer lists the host",
-		Gate:   fmt.Sprintf("sites.%s.hosts in the secrets file no longer lists %s", p.Site, dest),
-		Steps:  []Step{{Site: p.Site, Verb: "forget", Title: "forget " + dest.String(), Text: fmt.Sprintf("%s from sites.%s.hosts in the secrets file; paisans.yaml is not edited", dest, p.Site)}},
-	}
-	st.run = func() error {
-		p.work("forget " + dest.String())
-		if p.Forget == nil {
-			return nil
-		}
-		return p.Forget(p.Site, dest)
-	}
-	st.gate = func() error {
-		for _, h := range p.secrets.HostsOf(p.Site) {
-			if h == dest && p.Forget != nil {
-				return fmt.Errorf("sites.%s.hosts still lists %s", p.Site, dest)
-			}
-		}
-		return nil
-	}
-	return st
-}
 ```
 
-Add `Current bool` to `Plan`, after `Kept`:
-
-```go
-	// Current is set by BuildForced when the host is the declared site's
-	// own, which the cluster still counts on: the command asks for the
-	// site's name before cleaning it.
-	Current bool
-```
-
-`p.Show`, `Remains` and `Execute` iterate `p.Stages` and need no change. Check that `Remains` does not dereference `p.end`, `p.full` or `p.rendered` (`grep -n "p.end\|p.full\|p.rendered" internal/siteremove/siteremove.go`). If it does, guard those lines with `if p.end != nil`.
-
-For a forced plan, `Forget` must also update the in-memory `secrets` that the gate reads. The command's `Forget` calls `secrets.ForgetHost` before writing (Task 7). In tests, `forgetting` does not, so the gate checks `p.Forget != nil` and tests that need the gate to bite call `w.secrets.ForgetHost` inside their callback.
+`Show`, `Remains` and `Execute` iterate `p.Stages`. Check whether `Show` or `Remains` read `p.end`, `p.full`, `p.rendered` or `p.witness` (`grep -n "p.end\|p.full\|p.rendered" internal/siteremove/siteremove.go`). Guard any such line with `if p.end != nil`.
 
 - [ ] **Step 5: Run tests**
 
-Run: `go test ./internal/siteremove/ -v -run 'Forced' && go test ./...`
+Run: `go test ./internal/siteremove/ -v -run Forced && go test ./...`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -1024,166 +757,368 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 6: `apply` and `host prepare` record the host; `validate` and `apply` report unexplained hosts
+### Task 5: `secretsgen.Orphans` and `secretsgen.Prune`
 
 **Files:**
-- Create: `cmd/paisans/hosts.go`
-- Modify: `cmd/paisans/main.go`: `runApply` after `claimHosts`; `runHostPrepare` after `claimHosts`; `runValidate` gains `--secrets` and the notes
-- Test: `cmd/paisans/hosts_test.go`
+- Create: `internal/secretsgen/orphans.go`
+- Test: `internal/secretsgen/orphans_test.go`
 
 **Interfaces:**
-- Consumes: `config.Secrets.RecordHost`, `HostsOf`, `RecordedSites`, and `config.Site.Destination` (Task 1).
 - Produces:
-  - `func recordHost(secretsPath string, secrets *config.Secrets, site string, d config.Destination) error`, which writes only when the destination is new
-  - `func hostNotes(cfg *config.Config, secrets *config.Secrets) []string`
+  - `type Orphan struct { Key string; Why string; Leaves string }`. `Key` is a dotted key such as `sites.monitor-a`. `Leaves` is non-empty when pruning leaves something elsewhere: the Pocket ID client.
+  - `func Orphans(cfg *config.Config, secrets *config.Secrets) []Orphan`, sorted by `Key`
+  - `func Prune(secrets *config.Secrets, orphans []Orphan)`
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing test**
 
 ```go
-package main
+package secretsgen_test
 
 import (
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 )
 
-func TestHostNotesNameEveryUnexplainedHost(t *testing.T) {
-	cfg, err := config.Load(fixtureConfig())
-	if err != nil {
-		t.Fatal(err)
+func TestOrphans(t *testing.T) {
+	cfg := &config.Config{
+		Sites: map[string]config.Site{"home-a": {}},
+		Apps: map[string]config.App{
+			"talk": {Kind: config.KindMbin},
+			"auth": {Kind: config.KindPocketID, Settings: map[string]any{"signup_default_groups": []any{"provisional"}}},
+			"auth2": {Kind: config.KindPocketID, Settings: map[string]any{"signup_default_groups": []any{"members"}}},
+		},
 	}
-	s := &config.Secrets{}
-	gone, _ := config.ParseDestination("admin@203.0.113.9")
-	old, _ := config.ParseDestination("admin@198.51.100.4")
-	s.RecordHost("monitor-a", gone)
-	s.RecordHost("home-b", old)
-	s.RecordHost("home-b", cfg.Sites["home-b"].Destination())
-
-	notes := strings.Join(hostNotes(cfg, s), "\n")
-	for _, want := range []string{
-		"monitor-a was deployed to admin@203.0.113.9:22 and is no longer declared: paisans site remove monitor-a --force --execute",
-		"home-b was deployed to admin@198.51.100.4:22 and now names " + cfg.Sites["home-b"].Destination().String() + ": paisans site remove home-b --force --ssh admin@198.51.100.4:22 --execute",
-	} {
-		if !strings.Contains(notes, want) {
-			t.Errorf("missing %q in:\n%s", want, notes)
+	s := &config.Secrets{
+		Sites:          map[string]config.SiteSecrets{"home-a": {}, "monitor-a": {WireGuardPrivateKey: "x"}},
+		Apps:           map[string]map[string]any{"talk": {}, "uptime": {"database_password": "x"}},
+		OIDCClients:    map[string]config.OIDCClient{"talk": {}, "uptime": {ClientID: "c"}},
+		PocketIDGroups: map[string]string{"provisional": "1", "members": "2", "old": "3"},
+	}
+	var keys []string
+	leaves := 0
+	for _, o := range secretsgen.Orphans(cfg, s) {
+		keys = append(keys, o.Key)
+		if o.Leaves != "" {
+			leaves++
 		}
 	}
-	if strings.Count(notes, "\n") != 1 {
-		t.Errorf("want two notes, got:\n%s", notes)
+	want := []string{"apps.uptime", "oidc_clients.uptime", "pocket_id_groups.old", "sites.monitor-a"}
+	if len(keys) != len(want) {
+		t.Fatalf("got %v, want %v", keys, want)
 	}
-}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("got %v, want %v", keys, want)
+		}
+	}
+	if leaves != 1 {
+		t.Errorf("%d orphan(s) say they leave something, want only the OIDC client", leaves)
+	}
 
-func TestRecordHostWritesOnlyANewHost(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "secrets.yaml")
-	s := &config.Secrets{}
-	d, _ := config.ParseDestination("admin@203.0.113.9")
-	if err := recordHost(path, s, "home-b", d); err != nil {
-		t.Fatal(err)
+	secretsgen.Prune(s, secretsgen.Orphans(cfg, s))
+	if len(secretsgen.Orphans(cfg, s)) != 0 {
+		t.Error("orphans left after Prune")
 	}
-	back, err := config.LoadSecrets(path)
-	if err != nil || len(back.HostsOf("home-b")) != 1 {
-		t.Fatalf("not written: %v %v", back, err)
+	if _, ok := s.Sites["home-a"]; !ok {
+		t.Error("Prune removed a declared site's secrets")
 	}
-	if err := recordHost(filepath.Join(t.TempDir(), "missing-dir", "x.yaml"), s, "home-b", d); err != nil {
-		t.Errorf("a host already recorded was written again: %v", err)
+	if s.PocketIDGroups["members"] != "2" {
+		t.Error("Prune removed a group the second Pocket ID app names")
 	}
 }
 ```
 
-The second `recordHost` call points at an unwritable path, so it errors only if it tries to write.
+Check the actual names of `config.App`, `config.KindMbin` and `config.KindPocketID` with `grep -n "Kind[A-Z][a-z]* *Kind\|type App struct" internal/config/*.go`, and adjust the literal.
 
-- [ ] **Step 2: Run them to verify they fail**
+- [ ] **Step 2: Run it to verify it fails**
 
-Run: `go test ./cmd/paisans/ -run 'HostNotes|RecordHost' -v`
+Run: `go test ./internal/secretsgen/ -run TestOrphans -v`
 Expected: FAIL to compile.
 
-- [ ] **Step 3: Implement `cmd/paisans/hosts.go`**
+- [ ] **Step 3: Implement**
 
 ```go
-package main
+package secretsgen
 
 import (
-	"fmt"
-	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/kinds"
 )
 
-// recordHost adds the site's host to sites.<name>.hosts and writes the
-// secrets file, only when the host is not recorded yet. apply and host
-// prepare call it once the host answers and before they change anything on
-// it, so a run that fails part way still leaves the host known to
-// `site remove --force` (docs/specs/2026-10-09-site-remove-force.md).
-func recordHost(secretsPath string, secrets *config.Secrets, site string, d config.Destination) error {
-	if !secrets.RecordHost(site, d) {
-		return nil
-	}
-	recipients, err := config.Recipients(filepath.Dir(secretsPath))
-	if err != nil {
-		return err
-	}
-	if err := config.WriteSecrets(secretsPath, secrets, recipients); err != nil {
-		return fmt.Errorf("recording %s as a host of %s in %s: %w", d, site, secretsPath, err)
-	}
-	return nil
+// Orphan is a secret naming something the configuration no longer declares:
+// a site or an app taken out of paisans.yaml, or a Pocket ID group no
+// signup_default_groups names. Nothing reads it any more. It is reported by
+// key and never by value, and only `paisans secrets prune --execute` removes
+// it.
+type Orphan struct {
+	Key string
+	// Why is what it names that is gone, for the report.
+	Why string
+	// Leaves is what removing it leaves elsewhere, empty when nothing.
+	Leaves string
 }
 
-// hostNotes is one line for each recorded host the configuration no longer
-// explains: a site no longer declared, or a host a declared site has moved
-// away from. Each names the command that cleans it.
-func hostNotes(cfg *config.Config, secrets *config.Secrets) []string {
-	var out []string
-	for _, site := range secrets.RecordedSites() {
-		declared, ok := cfg.Sites[site]
-		for _, d := range secrets.HostsOf(site) {
-			switch {
-			case !ok:
-				out = append(out, fmt.Sprintf("%s was deployed to %s and is no longer declared: paisans site remove %s --force --execute", site, d, site))
-			case d != declared.Destination():
-				out = append(out, fmt.Sprintf("%s was deployed to %s and now names %s: paisans site remove %s --force --ssh %s --execute, or --host-gone if that host no longer exists", site, d, declared.Destination(), site, d))
+// Orphans is every orphaned secret, sorted by key.
+func Orphans(cfg *config.Config, secrets *config.Secrets) []Orphan {
+	var out []Orphan
+	for name := range secrets.Sites {
+		if _, ok := cfg.Sites[name]; !ok {
+			out = append(out, Orphan{Key: "sites." + name, Why: "names a site paisans.yaml does not declare"})
+		}
+	}
+	for name := range secrets.Apps {
+		if _, ok := cfg.Apps[name]; !ok {
+			out = append(out, Orphan{Key: "apps." + name, Why: "names an app paisans.yaml does not declare"})
+		}
+	}
+	for name, client := range secrets.OIDCClients {
+		if _, ok := cfg.Apps[name]; !ok {
+			out = append(out, Orphan{Key: "oidc_clients." + name, Why: "names an app paisans.yaml does not declare",
+				Leaves: "client " + client.ClientID + " still exists at Pocket ID, if that Pocket ID still runs; delete it there"})
+		}
+	}
+	named := map[string]bool{}
+	for _, name := range cfg.AppNames() {
+		if cfg.Apps[name].Kind == config.KindPocketID {
+			for _, g := range kinds.PocketIDSignupGroups(cfg.Apps[name].Settings) {
+				named[g] = true
 			}
 		}
 	}
+	for group := range secrets.PocketIDGroups {
+		if !named[group] {
+			out = append(out, Orphan{Key: "pocket_id_groups." + group, Why: "names a group no signup_default_groups names"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
+}
+
+// Prune removes each orphan from secrets. The caller writes the file.
+func Prune(secrets *config.Secrets, orphans []Orphan) {
+	for _, o := range orphans {
+		kind, name, _ := strings.Cut(o.Key, ".")
+		switch kind {
+		case "sites":
+			delete(secrets.Sites, name)
+		case "apps":
+			delete(secrets.Apps, name)
+		case "oidc_clients":
+			delete(secrets.OIDCClients, name)
+		case "pocket_id_groups":
+			delete(secrets.PocketIDGroups, name)
+		}
+	}
 }
 ```
 
-If an undeclared site has several recorded hosts, its note must name `--ssh`. Make the first case emit `--force --ssh <d> --execute` when `len(secrets.HostsOf(site)) > 1`, and add that case to the test.
+If `cfg.AppNames()` does not exist, range over `cfg.Apps`. A site name can't contain a dot (the config refuses one), so `strings.Cut` is safe; check with `grep -n "siteName\|nameRe" internal/validate/*.go | head`.
 
-- [ ] **Step 4: Wire it in**
+- [ ] **Step 4: Run tests**
 
-In `runApply`, directly after `claimHosts(...)` succeeds:
-
-```go
-	if *execute {
-		if err := recordHost(*secretsPath, secrets, *site, declared.Destination()); err != nil {
-			return err
-		}
-	}
-	for _, line := range hostNotes(cfg, secrets) {
-		r.Note("%s", line)
-	}
-```
-
-Check the reporter's method for a note line: `grep -n "func (.*) Note\|Warn(" internal/ui/*.go`. Use the one `reportFindings` uses for warnings if `Note` does not exist.
-
-In `runHostPrepare`, add a `--secrets` flag like `runApply`'s. After `claimHosts`, with `*execute`, load the secrets only if the file exists (`os.Stat`). A missing file means `init` has not run, so the host is recorded by its first `apply`. Then call `recordHost`.
-
-In `runValidate`, add a `--secrets` flag, defaulting to `secrets.enc.yaml` beside the config. When the file exists, load it. A load error becomes a warning line ("the record of hosts could not be read: …"), never a refusal. Then print `hostNotes` through the same reporter.
-
-- [ ] **Step 5: Run tests**
-
-Run: `go test ./cmd/paisans/ ./...`
+Run: `go test ./internal/secretsgen/ ./...`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/paisans
-git commit -m "feat: apply and host prepare record each site's host, and validate and apply name the ones left behind
+git add internal/secretsgen
+git commit -m "feat: find secrets naming what paisans.yaml no longer declares
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 6: `paisans secrets prune`, and the warning in `init` and `apply`
+
+**Files:**
+- Modify: `cmd/paisans/secrets.go`: dispatch `prune`; `runSecretsPrune`; `warnOrphans`
+- Modify: `cmd/paisans/main.go`: `runInit` and `runApply` call `warnOrphans` after loading secrets
+- Modify: `internal/siteremove/remains.go` (`secretsLeft`)
+- Modify: the usage text in `cmd/paisans/main.go` (`grep -n "secrets set" cmd/paisans/main.go`)
+- Test: `cmd/paisans/secrets_test.go`
+
+**Interfaces:**
+- Consumes: `secretsgen.Orphans`, `secretsgen.Prune` (Task 5).
+- Produces:
+  - `func runSecretsPrune(args []string) error`
+  - `func warnOrphans(r ui.Reporter, cfg *config.Config, secrets *config.Secrets)`
+
+- [ ] **Step 1: Write the failing tests**
+
+Look first at how `secrets_test.go` builds a plaintext secrets file beside `fixtureConfig()`, and reuse that helper. The test below assumes one named `writeFixtureSecrets(t) (dir, configPath, secretsPath string)`. If none exists, write it: copy `fixtureConfig()` into `t.TempDir()`, then write a plaintext secrets file with `config.WriteSecrets(path, s, nil)`.
+
+```go
+func TestSecretsPruneListsThenRemovesOnlyOrphans(t *testing.T) {
+	configPath, secretsPath := writeFixtureSecrets(t, func(s *config.Secrets) {
+		if s.Sites == nil {
+			s.Sites = map[string]config.SiteSecrets{}
+		}
+		s.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "x"}
+		if s.OIDCClients == nil {
+			s.OIDCClients = map[string]config.OIDCClient{}
+		}
+		s.OIDCClients["uptime"] = config.OIDCClient{ClientID: "abc", ClientSecret: "do-not-print"}
+	})
+	out := captureStdout(t, func() {
+		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, want := range []string{"sites.monitor-a", "oidc_clients.uptime", "still exists at Pocket ID"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry run does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "do-not-print") {
+		t.Fatal("a secret value was printed")
+	}
+	if s, _ := config.LoadSecrets(secretsPath); s.Sites["monitor-a"].WireGuardPrivateKey == "" {
+		t.Fatal("the dry run changed the file")
+	}
+	if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := config.LoadSecrets(secretsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Sites["monitor-a"]; ok {
+		t.Error("sites.monitor-a is still there")
+	}
+	if _, ok := s.OIDCClients["uptime"]; ok {
+		t.Error("oidc_clients.uptime is still there")
+	}
+	if _, ok := s.Sites["home-a"]; !ok {
+		t.Error("a declared site's secrets were pruned")
+	}
+}
+```
+
+`home-a` must carry secrets in the fixture; if it does not, use any site the fixture secrets file holds under `sites`.
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `go test ./cmd/paisans/ -run SecretsPrune -v`
+Expected: FAIL to compile.
+
+- [ ] **Step 3: Implement**
+
+Dispatch in `runSecrets`:
+
+```go
+func runSecrets(args []string) error {
+	switch {
+	case len(args) >= 1 && args[0] == "set":
+		return runSecretsSet(args[1:], os.Stdin)
+	case len(args) >= 1 && args[0] == "prune":
+		return runSecretsPrune(args[1:])
+	}
+	return fmt.Errorf("secrets takes one subcommand, set or prune: paisans secrets set <dotted.key> [--secrets path] < value, or paisans secrets prune [--execute]")
+}
+```
+
+```go
+// runSecretsPrune removes the secrets that name something paisans.yaml no
+// longer declares: a removed site's WireGuard key and heartbeat token, a
+// removed app's passwords and sign-in client, a Pocket ID group nothing
+// names. It lists them by key, never by value, and changes nothing without
+// --execute. A sign-in client's secret going does not delete the client at
+// Pocket ID, which it says.
+func runSecretsPrune(args []string) error {
+	fs := flag.NewFlagSet("secrets prune", flag.ContinueOnError)
+	reporter := commonFlags(fs)
+	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
+	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
+	execute := fs.Bool("execute", false, "actually remove them and write the file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	r := reporter()
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	if *secretsPath == "" {
+		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
+	}
+	secrets, err := config.LoadSecrets(*secretsPath)
+	if err != nil {
+		return err
+	}
+	orphans := secretsgen.Orphans(cfg, secrets)
+	if len(orphans) == 0 {
+		r.Result("%s names nothing paisans.yaml does not declare. Nothing to prune.", *secretsPath)
+		return nil
+	}
+	s := r.Step("prune secrets")
+	for _, o := range orphans {
+		s.Detail("- %s: %s", o.Key, o.Why)
+		if o.Leaves != "" {
+			s.Detail("  %s", o.Leaves)
+		}
+	}
+	if !*execute {
+		s.Done(fmt.Sprintf("%d to remove", len(orphans)))
+		r.Result("Nothing changed. Re-run with --execute to remove them.")
+		return nil
+	}
+	secretsgen.Prune(secrets, orphans)
+	recipients, err := config.Recipients(filepath.Dir(*secretsPath))
+	if err != nil {
+		s.Fail(err)
+		return err
+	}
+	if err := config.WriteSecrets(*secretsPath, secrets, recipients); err != nil {
+		s.Fail(err)
+		return err
+	}
+	s.Done(fmt.Sprintf("%d removed", len(orphans)))
+	r.Result("%s no longer names anything paisans.yaml does not declare.", *secretsPath)
+	return nil
+}
+
+// warnOrphans warns, once per orphaned secret, that it names something
+// paisans.yaml does not declare. Never a refusal: nothing reads it.
+func warnOrphans(r ui.Reporter, cfg *config.Config, secrets *config.Secrets) {
+	for _, o := range secretsgen.Orphans(cfg, secrets) {
+		r.Warn("secrets: "+o.Key+" "+o.Why, "`paisans secrets prune` removes it.")
+	}
+}
+```
+
+Check what a `ui.Step` offers (`Detail`, `Done`, `Fail`) in `internal/ui/ui.go`, and match what other commands call.
+
+Call `warnOrphans(r, cfg, secrets)`:
+- in `runApply`, right after `warnUnencrypted`'s `if` block;
+- in `runInit`, after the secrets are loaded (or created empty) and before `secretsgen.Fill`.
+
+In `internal/siteremove/remains.go`:
+
+```go
+func secretsLeft(site string) string {
+	return fmt.Sprintf("secrets: run `paisans secrets prune` once nothing needs sites.%s. It holds its WireGuard key and heartbeat token, and this command never edits the secrets file", site)
+}
+```
+
+Add `secrets prune [--execute]` to the usage text, beside `secrets set`.
+
+- [ ] **Step 4: Run tests**
+
+Run: `go test ./cmd/paisans/ ./internal/siteremove/ ./... && go vet ./...`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add cmd/paisans internal/siteremove
+git commit -m "feat: paisans secrets prune, and a warning for secrets nothing declares
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -1197,10 +1132,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Test: `cmd/paisans/siteremove_test.go`
 
 **Interfaces:**
-- Consumes: `siteremove.BuildForced`, `Plan.Current`, `Options.Forget` (Tasks 4, 5); `recordHost`'s write path (Task 6); `config.ParseDestination` (Task 1).
+- Consumes: `siteremove.BuildForced`, `Plan.Current` (Task 4); `config.ParseDestination`, `Site.Destination` (Task 1).
 - Produces:
-  - `func chooseHost(cfg *config.Config, secrets *config.Secrets, site, ssh string) (config.Destination, error)`
-  - `func forgetHost(secretsPath string, secrets *config.Secrets) func(string, config.Destination) error`
+  - `func chooseHost(cfg *config.Config, site, ssh string) (config.Destination, error)`
+  - `func confirmSiteFor(stdin io.Reader, stdout io.Writer, site, what string) error`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1210,27 +1145,15 @@ func TestChooseHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	declared := cfg.Sites["home-b"].Destination()
-	old, _ := config.ParseDestination("admin@198.51.100.4")
-	other, _ := config.ParseDestination("admin@198.51.100.5")
-	s := &config.Secrets{}
-	s.RecordHost("home-b", old)
-	s.RecordHost("gone", old)
-	s.RecordHost("twice", old)
-	s.RecordHost("twice", other)
-
+	declared := cfg.Sites["home-b"].Destination().String()
 	for _, tc := range []struct{ site, ssh, want, err string }{
-		{site: "home-b", want: declared.String()},
+		{site: "home-b", want: declared},
 		{site: "home-b", ssh: "admin@198.51.100.4", want: "admin@198.51.100.4:22"},
-		{site: "home-b", ssh: "admin@192.0.2.1", err: "neither"},
-		{site: "gone", want: "admin@198.51.100.4:22"},
-		{site: "twice", err: "pass --ssh"},
-		{site: "twice", ssh: "admin@198.51.100.5", want: "admin@198.51.100.5:22"},
+		{site: "never", ssh: "admin@192.0.2.1:2222", want: "admin@192.0.2.1:2222"},
 		{site: "never", err: "name its host with --ssh"},
-		{site: "never", ssh: "admin@192.0.2.1", want: "admin@192.0.2.1:22"},
 		{site: "home-b", ssh: "myalias", err: "not user@host"},
 	} {
-		got, err := chooseHost(cfg, s, tc.site, tc.ssh)
+		got, err := chooseHost(cfg, tc.site, tc.ssh)
 		switch {
 		case tc.err != "" && (err == nil || !strings.Contains(err.Error(), tc.err)):
 			t.Errorf("%s %s: err = %v, want %q", tc.site, tc.ssh, err, tc.err)
@@ -1240,59 +1163,66 @@ func TestChooseHost(t *testing.T) {
 	}
 }
 
-// --force on the declared site's own host asks for its name, and without a
-// terminal is refused before anything changes.
-func TestForcedCurrentHostNeedsATerminal(t *testing.T) {
-	saved := removeSiteHost
-	removeSiteHost = func(string, config.Site, bool) apply.Transport { return answeringHost{} }
-	t.Cleanup(func() { removeSiteHost = saved })
-	err := runSiteRemove([]string{"home-a", "--config", fixtureConfig(), "--force", "--execute"}, strings.NewReader("home-a\n"), &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "terminal") {
-		t.Errorf("err = %v", err)
+// Refusals that need no host reach none.
+func TestSiteRemoveForceRefusesBeforeReachingAHost(t *testing.T) {
+	noSiteHosts(t)
+	for args, want := range map[string]string{
+		"home-b --ssh admin@192.0.2.1":    "only --force takes",
+		"home-b --force --host-gone":      "Drop one of them",
+		"never --force":                   "name its host with --ssh",
+		"home-b --force --execute":        "terminal",
+	} {
+		err := runSiteRemove(append(strings.Fields(args), "--config", fixtureConfig()), strings.NewReader("home-b\n"), &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want %q", args, err, want)
+		}
 	}
 }
 ```
 
-`answeringHost` is a minimal `apply.Transport` that answers `true` and returns an empty registry. Check whether `cmd/paisans/*_test.go` already has one (`grep -n "apply.Transport = \|Transport{}" cmd/paisans/*_test.go`). Write one only if it is missing.
+`home-b --force --execute` is the site's own host with a non-terminal stdin. It must be refused before `removeSiteHost` is called, so `noSiteHosts` holds.
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `go test ./cmd/paisans/ -run 'ChooseHost|ForcedCurrent' -v`
+Run: `go test ./cmd/paisans/ -run 'ChooseHost|ForceRefuses' -v`
 Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement**
 
-Add flags in `runSiteRemove`:
+Flags in `runSiteRemove`:
 
 ```go
-	force := fs.Bool("force", false, "clean this deployment off the site's host and nothing else: no cluster stage, no refusal about the cluster, paisans.yaml left as it is (docs/specs/2026-10-09-site-remove-force.md)")
-	sshFlag := fs.String("ssh", "", "with --force: the host to clean, user@host[:port], when it is not the site's declared one")
+	force := fs.Bool("force", false, "clean this deployment off one host and nothing else: no cluster stage or refusal, and neither paisans.yaml nor the secrets file edited")
+	sshFlag := fs.String("ssh", "", "with --force: the host to clean, user@host[:port], any host; only what carries this deployment's id or token is removed")
 ```
 
-Update the usage string in the extra-argument error to include `[--force [--ssh user@host[:port]]]`.
+Update the extra-argument usage string to `paisans site remove <site> [--execute] [--host-gone] [--delete-data] [--force [--ssh user@host[:port]]]`.
 
-Branch right after the `site == ""` check. That is before `config.Load`'s refusal path for undeclared sites; the validate check still runs on the whole file:
+Right after the `site == ""` check:
 
 ```go
-	if *force {
-		return runSiteRemoveForced(r, site, forcedArgs{config: *configPath, secrets: *secretsPath, ssh: *sshFlag, execute: *execute, hostGone: *hostGone, deleteData: *deleteData, sudo: *sudo}, stdin, stdout)
-	}
-	if *sshFlag != "" {
+	if *sshFlag != "" && !*force {
 		return fmt.Errorf("site remove: --ssh names the host to clean, which only --force takes. A full removal reaches the site through its ssh section")
 	}
+	if *force {
+		return runSiteRemoveForced(r, site, forcedArgs{config: *configPath, ssh: *sshFlag, execute: *execute, hostGone: *hostGone, deleteData: *deleteData, sudo: *sudo, secrets: *secretsPath}, stdin, stdout)
+	}
 ```
 
-Then add:
+Then:
 
 ```go
 type forcedArgs struct {
-	config, secrets, ssh           string
+	config, secrets, ssh                string
 	execute, hostGone, deleteData, sudo bool
 }
 
 // runSiteRemoveForced is `site remove --force`: one host cleaned of this
-// deployment and taken out of the record, nothing else read or changed.
+// deployment, nothing else read or changed.
 func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Reader, stdout io.Writer) error {
+	if a.hostGone {
+		return fmt.Errorf("site remove %s: --force cleans one host, and --host-gone reaches none. Drop one of them", site)
+	}
 	cfg, err := config.Load(a.config)
 	if err != nil {
 		return err
@@ -1302,8 +1232,16 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", a.config, len(result.Refusals()))
 	}
-	if a.execute && a.deleteData && !stdinIsTerminal(stdin) {
-		return fmt.Errorf("site remove: --delete-data deletes member data, which nothing brings back, so it asks for the site's name at a terminal and stdin is not one. Run it from an interactive shell. Nothing was changed")
+	dest, err := chooseHost(cfg, site, a.ssh)
+	if err != nil {
+		return err
+	}
+	own := false
+	if s, ok := cfg.Sites[site]; ok && s.Destination() == dest {
+		own = true
+	}
+	if a.execute && (own || a.deleteData) && !stdinIsTerminal(stdin) {
+		return fmt.Errorf("site remove %s --force: it asks for the site's name at a terminal (%s), and stdin is not one. Run it from an interactive shell. Nothing was changed", site, map[bool]string{true: "this is the host the site runs on", false: "--delete-data deletes member data"}[own])
 	}
 	if a.secrets == "" {
 		a.secrets = filepath.Join(filepath.Dir(a.config), "secrets.enc.yaml")
@@ -1312,22 +1250,8 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 	if err != nil {
 		return err
 	}
-	dest, err := chooseHost(cfg, secrets, site, a.ssh)
-	if err != nil {
-		return err
-	}
-	current := false
-	if s, ok := cfg.Sites[site]; ok && s.Destination() == dest {
-		current = true
-	}
-	if a.execute && current && !a.hostGone && !stdinIsTerminal(stdin) {
-		return fmt.Errorf("site remove %s --force: %s is the declared site's own host, which its cluster still counts on, so it asks for the site's name at a terminal and stdin is not one. Run it from an interactive shell. Nothing was changed", site, dest)
-	}
-	var t apply.Transport
-	if !a.hostGone {
-		t = removeSiteHost(site, config.Site{SSH: config.SSH{User: dest.User, Host: dest.Host, Port: dest.Port}}, a.sudo)
-	}
-	opts := siteremove.Options{HostGone: a.hostGone, DeleteData: a.deleteData, ConfigPath: a.config, Forget: forgetHost(a.secrets, secrets)}
+	t := removeSiteHost(site, config.Site{SSH: config.SSH{User: dest.User, Host: dest.Host, Port: dest.Port}}, a.sudo)
+	opts := siteremove.Options{DeleteData: a.deleteData, ConfigPath: a.config}
 	plan, err := siteremove.BuildForced(cfg, secrets, site, dest, t, opts)
 	if err != nil {
 		return err
@@ -1340,8 +1264,8 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	if plan.Current && !a.hostGone {
-		if err := confirmSiteFor(stdin, stdout, site, fmt.Sprintf("This cleans %s, the host %s still runs on, out from under its cluster.", dest, site)); err != nil {
+	if plan.Current {
+		if err := confirmSiteFor(stdin, stdout, site, fmt.Sprintf("This cleans %s, the host %s runs on, out from under its cluster.", dest, site)); err != nil {
 			return err
 		}
 	}
@@ -1355,70 +1279,56 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 		return err
 	}
 	reportRemains(r, plan.Remains())
-	r.Result("%s is cleaned of this deployment and no longer recorded for %s; %s is unchanged.", dest, site, a.config)
+	r.Result("%s is cleaned of this deployment. %s and the secrets file are unchanged.", dest, a.config)
 	return nil
 }
 
-// chooseHost is the host --force cleans: --ssh when given, else the declared
-// site's own, else the undeclared site's one recorded host. For a declared
-// site, --ssh must be its own host or a recorded one, so a typo cannot clean
-// a host the configuration says nothing about while the site runs elsewhere.
-func chooseHost(cfg *config.Config, secrets *config.Secrets, site, ssh string) (config.Destination, error) {
-	declared, isDeclared := cfg.Sites[site]
-	recorded := secrets.HostsOf(site)
+// chooseHost is the host --force cleans: --ssh when given, any host, else the
+// declared site's own. Any host is safe to name, since only what carries this
+// deployment's id or token is removed.
+func chooseHost(cfg *config.Config, site, ssh string) (config.Destination, error) {
 	if ssh != "" {
 		d, err := config.ParseDestination(ssh)
 		if err != nil {
 			return config.Destination{}, fmt.Errorf("site remove %s: --ssh: %w", site, err)
 		}
-		if !isDeclared || d == declared.Destination() || slices.Contains(recorded, d) {
-			return d, nil
-		}
-		return config.Destination{}, fmt.Errorf("site remove %s: %s is neither its declared host (%s) nor one it was deployed to (%s). Check the address", site, d, declared.Destination(), joinDestinations(recorded))
+		return d, nil
 	}
-	if isDeclared {
-		return declared.Destination(), nil
+	if s, ok := cfg.Sites[site]; ok {
+		return s.Destination(), nil
 	}
-	switch len(recorded) {
-	case 0:
-		return config.Destination{}, fmt.Errorf("site remove %s: it is not declared and no host is recorded for it, so name its host with --ssh user@host[:port]", site)
-	case 1:
-		return recorded[0], nil
-	}
-	return config.Destination{}, fmt.Errorf("site remove %s: it was deployed to %s; pass --ssh with the one to clean", site, joinDestinations(recorded))
-}
-
-func joinDestinations(list []config.Destination) string {
-	if len(list) == 0 {
-		return "none recorded"
-	}
-	out := make([]string, len(list))
-	for i, d := range list {
-		out[i] = d.String()
-	}
-	return strings.Join(out, ", ")
-}
-
-// forgetHost takes a host out of the record and writes the secrets file.
-func forgetHost(secretsPath string, secrets *config.Secrets) func(string, config.Destination) error {
-	return func(site string, d config.Destination) error {
-		if !secrets.ForgetHost(site, d) {
-			return nil
-		}
-		recipients, err := config.Recipients(filepath.Dir(secretsPath))
-		if err != nil {
-			return err
-		}
-		return config.WriteSecrets(secretsPath, secrets, recipients)
-	}
+	return config.Destination{}, fmt.Errorf("site remove %s: it is not declared, so name its host with --ssh user@host[:port]", site)
 }
 ```
 
-Generalise `confirmSite` into `confirmSiteFor(stdin, stdout, site, what string)`, which prints `what`, then `Type <site> to go on: `. Keep `confirmSite` as a call to it with the existing data-deletion sentence, so `TestConfirmSiteWantsTheSitesName` keeps passing.
+`removeSiteHost` builds the transport from a `config.Site` through `siteTransport`, which uses `site.SSH.Keys()`. With no `public_key`, that gives no `-i` keys and ssh uses the operator's agent. Check that `siteTransport` copes with an empty key list; it should, since `Keys()` on an empty section returns none.
 
-Wire `Forget: forgetHost(*secretsPath, secrets)` into the existing non-force `opts`. `secrets` is loaded after `opts` is built, so set `opts.Forget` after `LoadSecrets`.
+Generalise `confirmSite`:
 
-Add `"slices"` and `internal/ui` to the imports as needed.
+```go
+// confirmSiteFor says what is about to happen, asks for the site's name at
+// the terminal, and refuses anything else. There is no flag to answer it.
+func confirmSiteFor(stdin io.Reader, stdout io.Writer, site, what string) error {
+	if !stdinIsTerminal(stdin) {
+		return fmt.Errorf("site remove: it asks for the site's name at a terminal, and stdin is not one. Nothing was changed")
+	}
+	fmt.Fprintf(stdout, "\n%s Type %s to go on: ", what, site)
+	answer, err := bufio.NewReader(stdin).ReadString('\n')
+	if err != nil && answer == "" {
+		return fmt.Errorf("site remove: no answer read. Nothing was changed")
+	}
+	if strings.TrimSpace(answer) != site {
+		return fmt.Errorf("site remove: %q is not %s. Nothing was changed", strings.TrimSpace(answer), site)
+	}
+	return nil
+}
+
+func confirmSite(stdin io.Reader, stdout io.Writer, site string) error {
+	return confirmSiteFor(stdin, stdout, site, fmt.Sprintf("This deletes this deployment's data on %s above, for good.", site))
+}
+```
+
+Run `TestConfirmSiteWantsTheSitesName` and keep the error strings it checks. Add `"github.com/paisans-software/paisans-stack/internal/ui"` to the imports if needed.
 
 - [ ] **Step 4: Run tests**
 
@@ -1439,30 +1349,30 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 8: README
 
 **Files:**
-- Modify: `README.md`, in the section on `site remove` (find it with `grep -n "site remove" README.md | head`)
+- Modify: `README.md`, in the `site remove` section (`grep -n "site remove" README.md | head`) and the secrets section (`grep -n "secrets set" README.md | head`)
 
 - [ ] **Step 1: Document it**
 
-Add a subsection after the existing `--host-gone` text, titled ``### `--force` cleans one host and nothing else``. It covers:
-- what it skips (stages 1 and 2, their refusals, the yaml edit) and what it keeps doing (stage 3 with images, then forgetting the host);
-- the three host-selection rules and `--ssh`;
-- the typed confirmation for the site's current host;
-- `--force --host-gone` for a destroyed host;
-- the `sites.<name>.hosts` record: who writes it, who removes it, and that `validate`/`apply` print a note per unexplained host;
-- the lost-deployment flow from the spec's *Where this leaves a lost deployment*, with documentation-range addresses.
+In the `site remove` section:
+- add one line under stage 3: images only this deployment's containers ran are removed, by ID, without `-f`;
+- add a subsection, ``### `--force` cleans one host and nothing else``, that covers:
+  - what it skips: stages 1 and 2, their refusals, and both file edits;
+  - `--ssh` accepting any host, with the matching table from the spec;
+  - the typed confirmation for the site's own host;
+  - the lost-deployment flow from the spec's *Where this leaves a lost deployment*, with documentation-range addresses.
 
-Add one line under stage 3's description: images only this deployment's containers ran are removed, by ID, without `-f`.
+In the secrets section, add `paisans secrets prune`: what counts as an orphan (the spec's table), the warning from `init`/`apply`, the dry run then `--execute`, and the Pocket ID client it leaves.
 
-- [ ] **Step 2: Check the commands in it are real**
+- [ ] **Step 2: Check the flags are real**
 
-Run: `go run ./cmd/paisans site remove --help 2>&1 | grep -E -- '--force|--ssh'`
-Expected: both flags are listed.
+Run: `go run ./cmd/paisans site remove --help 2>&1 | grep -E -- '--force|--ssh'` and `go run ./cmd/paisans secrets prune --help 2>&1 | grep -- '--execute'`
+Expected: every flag is listed.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add README.md
-git commit -m "docs: site remove --force and the record of hosts
+git commit -m "docs: site remove --force and secrets prune
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
