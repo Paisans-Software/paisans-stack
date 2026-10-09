@@ -6,10 +6,10 @@ import (
 )
 
 // Every line a removal leaves for the operator is written here. The text
-// before its first ". " is what shows without --verbose, so it holds only the
-// names that are short by nature and the action or fact, never an ID, path or
-// list: those follow the first sentence, where a long one cannot push the
-// hint past a line.
+// before its first ". " is the hint, so it holds only the names that are
+// short by nature and the action or fact, never an ID, path or list: those
+// follow the first sentence, on a line of their own under the hint, where a
+// long one cannot push the hint past a line.
 
 func clientKept(app, name, id, provider, why string) string {
 	return fmt.Sprintf("a client kept; delete it in Pocket ID if it served only %s. It is %s (id %s) at %s: %s", app, name, id, provider, why)
@@ -56,7 +56,7 @@ func dirData(site, dir string, files int, bytes string) string {
 }
 
 func fileEdited(site, path string) string {
-	return fmt.Sprintf("%s: an edited file kept; delete it by hand, then run this again. It is %s, edited on the host since apply wrote it, so it stays with its manifest entry", site, path)
+	return fmt.Sprintf("%s: an edited file kept; delete it once nothing needs it, then run this again. It is %s, edited on the host since apply wrote it, so it stays with its manifest entry until it is deleted by hand", site, path)
 }
 
 func secretsLeft(app, keys string) string {

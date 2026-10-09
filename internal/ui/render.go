@@ -219,6 +219,18 @@ func (r *writer) Warn(hint, detail string) {
 	}
 }
 
+func (r *writer) Note(hint, detail string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.interruptLocked()
+	if r.terminal {
+		fmt.Fprintf(r.w, "  %s!%s %s\n", yellow, reset, hint)
+	} else {
+		fmt.Fprintf(r.w, "  WARN %s\n", hint)
+	}
+	r.explainLocked(detail)
+}
+
 func (r *writer) Refuse(hint, explanation string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

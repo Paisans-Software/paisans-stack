@@ -8,6 +8,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/appremove"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // noHosts fails the test if `app remove` reaches for any host.
@@ -70,5 +71,18 @@ func TestConfirmNameWantsTheAppsName(t *testing.T) {
 	isTerminal = func(*os.File) bool { return false }
 	if err := confirmName(os.Stdin, &bytes.Buffer{}, "docs"); err == nil {
 		t.Error("a name was accepted from something that is not a terminal")
+	}
+}
+
+// A removal's leftovers name their object after the hint (which client,
+// which path), and after site remove --execute the configuration no longer
+// declares the site, so the run cannot be repeated with --verbose to learn
+// it. The whole line shows by default.
+func TestRemainsShowTheirObjectWithoutVerbose(t *testing.T) {
+	var b strings.Builder
+	reportRemains(ui.NewPlain(&b, false), []string{"a client kept; delete it in Pocket ID if it served only talk. It is talk (id 0123) at pocket-id on home-a: unrecorded"})
+	want := "  WARN a client kept; delete it in Pocket ID if it served only talk\n       It is talk (id 0123) at pocket-id on home-a: unrecorded\n"
+	if b.String() != want {
+		t.Errorf("got\n%q\nwant\n%q", b.String(), want)
 	}
 }

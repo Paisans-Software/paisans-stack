@@ -234,12 +234,14 @@ func confirmName(stdin io.Reader, stdout io.Writer, app string) error {
 
 // reportRemains tells the operator what a removal leaves for them to see to:
 // a secret still in the secrets file, DNS records, data and whatever was kept
-// on a host. Each is a warning, so it shows without --verbose, with the line's
-// first sentence as the hint and the rest as its detail, since the hint is
-// what an operator scans for and the rest says why or what to run.
+// on a host. Each shows without --verbose, the line's first sentence as the
+// hint an operator scans for and the rest under it, since the rest names the
+// object (which client, which path) and the hint alone cannot be acted on.
+// After site remove --execute the configuration no longer declares the site,
+// so a second run with --verbose could not show it either.
 func reportRemains(r ui.Reporter, lines []string) {
 	for _, l := range lines {
 		hint, detail, _ := strings.Cut(l, ". ")
-		r.Warn(hint, detail)
+		r.Note(hint, detail)
 	}
 }

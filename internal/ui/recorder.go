@@ -8,9 +8,9 @@ import (
 
 // Event is one thing a Recorder was told.
 type Event struct {
-	Kind  string // section step done fail item warn refuse detail trace result
+	Kind  string // section step done fail item warn note refuse detail trace result
 	Text  string // the title, hint or text
-	Extra string // a step's result, a warning's detail, a refusal's explanation, a fail's error
+	Extra string // a step's result, a warning's or note's detail, a refusal's explanation, a fail's error
 }
 
 // Recorder is a Reporter for tests: it keeps what was said, in order, so a
@@ -30,6 +30,7 @@ func (r *Recorder) add(kind, text, extra string) {
 func (r *Recorder) Section(title string)       { r.add("section", title, "") }
 func (r *Recorder) Item(title string)          { r.add("item", title, "") }
 func (r *Recorder) Warn(hint, detail string)   { r.add("warn", hint, detail) }
+func (r *Recorder) Note(hint, detail string)   { r.add("note", hint, detail) }
 func (r *Recorder) Refuse(hint, expl string)   { r.add("refuse", hint, expl) }
 func (r *Recorder) Detail(f string, a ...any)  { r.add("detail", fmt.Sprintf(f, a...), "") }
 func (r *Recorder) Trace(label, output string) { r.add("trace", label, output) }

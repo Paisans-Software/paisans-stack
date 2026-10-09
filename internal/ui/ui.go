@@ -27,6 +27,10 @@ type Reporter interface {
 	Item(title string)
 	// Warn shows hint always and detail only when verbose.
 	Warn(hint, detail string)
+	// Note is a warning whose detail shows at every verbosity: something
+	// left for the operator to see to, whose detail names the object the
+	// hint is about. Without it the hint alone cannot be acted on.
+	Note(hint, detail string)
 	// Refuse shows hint and explanation always: a refusal stops the command,
 	// and the operator needs the reason to fix it.
 	Refuse(hint, explanation string)
@@ -105,6 +109,7 @@ func (discard) Section(string)        {}
 func (discard) Step(string) Step      { return discardStep{} }
 func (discard) Item(string)           {}
 func (discard) Warn(string, string)   {}
+func (discard) Note(string, string)   {}
 func (discard) Refuse(string, string) {}
 func (discard) Detail(string, ...any) {}
 func (discard) Trace(string, string)  {}

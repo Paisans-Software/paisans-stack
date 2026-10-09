@@ -7,9 +7,10 @@ import (
 )
 
 // Every line a removal leaves for the operator is written here. The text
-// before its first ". " is what shows without --verbose, so it holds only the
-// site and the action or fact, never a path, ID or fingerprint: those follow
-// the first sentence, where a long one cannot push the hint past a line.
+// before its first ". " is the hint, so it holds only the site and the action
+// or fact, never a path, ID or fingerprint: those follow the first sentence,
+// on a line of their own under the hint, where a long one cannot push the
+// hint past a line.
 
 func containerKept(site, name string) string {
 	return fmt.Sprintf("%s: container kept; it does not carry this deployment's label. It is %s", site, name)
@@ -73,7 +74,7 @@ func ownedNote(site, owed string) string {
 func handoverKept(site, dir string, env bool) []string {
 	lines := []string{fmt.Sprintf("%s: Caddy handed over to the host's owner; paisans never touches it again. It is in %s for %s, and its data directory holds the certificates and keys of every hostname this deployment's Caddy served", site, dir, render.HostSitesDir)}
 	if env {
-		lines = append(lines, fmt.Sprintf("%s: DNS token left on the host; rotate it once the owner has their own. %s/caddy.env holds a copy (secrets external.acme_dns_token), rotated at the DNS provider: a credential this deployment no longer controls, left for the owner", site, dir))
+		lines = append(lines, fmt.Sprintf("%s: DNS token left on the host; rotate it once the owner has their own. %s/caddy.env holds a copy of secrets external.acme_dns_token, a credential this deployment no longer controls, left for the owner. Rotate it at the DNS provider that issued it", site, dir))
 	}
 	return lines
 }

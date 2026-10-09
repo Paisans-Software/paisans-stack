@@ -298,6 +298,29 @@ func TestHoldIsANoOpWithoutASpinner(t *testing.T) {
 	}
 }
 
+// A note is something left for the operator: its hint and its detail show at
+// every verbosity, since the detail names the object the hint is about.
+func TestNoteAlwaysShowsDetail(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		var b strings.Builder
+		ui.NewForTest(&b, false, terminal, clock()).Note("a client kept; delete it in Pocket ID", "It is talk (id 1234)\nat pocket-id")
+		out := b.String()
+		for _, want := range []string{"a client kept; delete it in Pocket ID", "       It is talk (id 1234)\n", "       at pocket-id\n"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("terminal=%v: missing %q in %q", terminal, want, out)
+			}
+		}
+		if !terminal && !strings.HasPrefix(out, "  WARN ") {
+			t.Errorf("plain note is not a warning line: %q", out)
+		}
+	}
+	rec := &ui.Recorder{}
+	rec.Note("h", "d")
+	if !rec.Has("note", "h") || rec.Events[0].Extra != "d" {
+		t.Errorf("recorder lost the note: %s", rec.Lines())
+	}
+}
+
 // A section or an item said while a step is drawing must not land on the
 // spinner's line.
 func TestSectionAndItemClearTheSpinnerLine(t *testing.T) {
