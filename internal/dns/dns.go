@@ -26,7 +26,6 @@ package dns
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"sort"
 	"strings"
@@ -35,6 +34,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Record is one DNS record as a provider reports it.
@@ -392,36 +392,54 @@ func classify(w Want, records []Record, wanted map[string]bool) (Action, string)
 // It stops at the first failure. Records created before it stay, and a re-run
 // finds them present, so a run that failed partway resumes rather than
 // starting over.
-func Execute(ctx context.Context, provider Provider, plan *Plan) error {
+func Execute(ctx context.Context, provider Provider, plan *Plan, r ui.Reporter) error {
 	if conflicts := plan.Conflicts(); len(conflicts) > 0 {
 		return fmt.Errorf("dns: %d conflicting record(s), listed above. Nothing was created: a partial set of records is a deployment some names reach and others do not", len(conflicts))
 	}
 	for _, e := range plan.Creates() {
+		step := r.Step(fmt.Sprintf("create %s %s", e.Type, e.Name))
+		step.Detail("%s, zone %s", e.Content, e.Zone)
 		record := Record{Type: e.Type, Name: e.Name, Content: e.Content, Comment: plan.comment}
 		if err := provider.Create(ctx, e.zoneID, record); err != nil {
-			return fmt.Errorf("dns: creating %s %s: %w", e.Type, e.Name, err)
+			err = fmt.Errorf("dns: creating %s %s: %w", e.Type, e.Name, err)
+			step.Fail(err)
+			return err
 		}
 		back, err := provider.Records(ctx, e.zoneID, e.Name)
 		if err != nil {
-			return fmt.Errorf("dns: reading back %s %s: %w", e.Type, e.Name, err)
+			err = fmt.Errorf("dns: reading back %s %s: %w", e.Type, e.Name, err)
+			step.Fail(err)
+			return err
 		}
 		if action, _ := classify(e.Want, back, map[string]bool{e.Type: true, "A": true, "AAAA": true}); action != Present {
-			return fmt.Errorf("dns: %s %s was created but does not read back as %s unproxied. Check it in the provider's console before re-running", e.Type, e.Name, e.Content)
+			err := fmt.Errorf("dns: %s %s was created but does not read back as %s unproxied. Check it in the provider's console before re-running", e.Type, e.Name, e.Content)
+			step.Fail(err)
+			return err
 		}
+		step.Detail("read back as %s, unproxied", e.Content)
+		step.Done("")
 	}
 	return nil
 }
 
-// Write prints a plan in the shape the other dry-run commands use.
-func (p *Plan) Write(w io.Writer) {
-	fmt.Fprintf(w, "dns (%s)\n", p.Provider)
+// Show reports a plan the way the other dry-run commands do: each record to
+// create as an item, each one already present as a detail, and a conflict as
+// a refusal, since Execute will not create anything while one stands.
+func (p *Plan) Show(r ui.Reporter) {
+	r.Section("dns " + p.Provider)
 	for _, e := range p.Entries {
-		fmt.Fprintf(w, "  %-9s %-4s %s -> %s  (zone %s)\n", e.Action, e.Type, e.Name, e.Content, e.Zone)
-		if e.Detail != "" {
-			fmt.Fprintf(w, "      %s\n", e.Detail)
+		switch e.Action {
+		case Create:
+			r.Item(fmt.Sprintf("create %s %s", e.Type, e.Name))
+			r.Detail("%s, zone %s", e.Content, e.Zone)
+		case Conflict:
+			r.Refuse(fmt.Sprintf("%s %s conflicts with a record at the provider", e.Type, e.Name),
+				fmt.Sprintf("%s\nwanted: %s -> %s (zone %s)", e.Detail, e.Name, e.Content, e.Zone))
+		default:
+			r.Detail("%-9s %-4s %s -> %s  (zone %s)", e.Action, e.Type, e.Name, e.Content, e.Zone)
 		}
 	}
 	if n := len(p.Conflicts()); n > 0 {
-		fmt.Fprintf(w, "\n%d record(s) conflict with what the provider already holds. Nothing will be created until that is resolved.\n", n)
+		r.Detail("%d record(s) conflict with what the provider already holds. Nothing will be created until that is resolved.", n)
 	}
 }

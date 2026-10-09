@@ -44,11 +44,14 @@ func (l Level) String() string {
 // Finding is one problem, named so it can be looked up in README.md.
 type Finding struct {
 	Level Level
-	// Rule is a stable identifier, quoted in tests and in output.
+	// Rule is a stable identifier, quoted in tests and in verbose output.
 	Rule string
 	// Key is the configuration key the finding is about.
 	Key string
-	// Message says what is wrong and what to do instead.
+	// Hint is one line saying what is wrong, in an operator's words. It is
+	// what a warning shows by default.
+	Hint string
+	// Message says why it matters and what to do instead.
 	Message string
 }
 
@@ -103,12 +106,12 @@ type checker struct {
 	findings []Finding
 }
 
-func (c *checker) refuse(rule, key, format string, args ...any) {
-	c.findings = append(c.findings, Finding{Refuse, rule, key, fmt.Sprintf(format, args...)})
+func (c *checker) refuse(rule, key, hint, format string, args ...any) {
+	c.findings = append(c.findings, Finding{Refuse, rule, key, hint, fmt.Sprintf(format, args...)})
 }
 
-func (c *checker) warn(rule, key, format string, args ...any) {
-	c.findings = append(c.findings, Finding{Warn, rule, key, fmt.Sprintf(format, args...)})
+func (c *checker) warn(rule, key, hint, format string, args ...any) {
+	c.findings = append(c.findings, Finding{Warn, rule, key, hint, fmt.Sprintf(format, args...)})
 }
 
 // Check applies every rule and returns all of them. It never stops at the
@@ -208,6 +211,7 @@ func (c *checker) witnessSharesFailureDomain() {
 		site := c.cfg.Sites[name]
 		if site.Has(config.RoleWitness) && site.Has(config.RoleData) {
 			c.refuse("witness-shares-failure-domain", fmt.Sprintf("sites.%s.roles", name),
+				"witness shares a failure domain with its only voter",
 				"the witness role is on a site that also holds data. Quorum becomes 2 of 2, so losing the witness takes down a healthy database, and losing the machine loses both members at once. Move the witness to a location that fails independently, or drop it: one site correctly runs exactly one etcd member.",
 			)
 		}
@@ -223,6 +227,7 @@ func (c *checker) witnessSharesFailureDomain() {
 func (c *checker) twoVoters() {
 	if len(c.cfg.Etcd.Members) == 2 {
 		c.refuse("two-etcd-voters", "etcd.members",
+			"etcd has exactly two voters",
 			"exactly two etcd voters (%s and %s). Two voters are strictly worse than one: a majority of two is two, so either failing stops the cluster. Declare one member, or three.",
 			c.cfg.Etcd.Members[0], c.cfg.Etcd.Members[1])
 	}
@@ -269,14 +274,17 @@ func (c *checker) votersShareARelay() {
 	switch {
 	case len(dialled) == 1:
 		c.refuse("voters-share-a-relay", "etcd.members",
+			"only one etcd voter has an endpoint",
 			"declares %d voters, and only %s has an endpoint. %s have none, so they reach each other only through %s, and losing %s leaves each of them alone, 1 of %d and no majority: the database goes read-only on every site. %s",
 			len(voters), dialled[0], strings.Join(stranded, " and "), dialled[0], dialled[0], len(voters), fix)
 	case len(relays) > 0:
 		c.refuse("voters-share-a-relay", "etcd.members",
+			"no etcd voter has an endpoint, so they peer through a relay",
 			"declares %d voters and none of them has an endpoint, so they reach each other only through %s, and losing %s leaves every voter alone, 1 of %d and no majority: the database goes read-only on every site. %s",
 			len(voters), relays[0], relays[0], len(voters), fix)
 	default:
 		c.refuse("voters-share-a-relay", "etcd.members",
+			"no etcd voter has an endpoint and no relay exists",
 			"declares %d voters and no site has an endpoint, so no two of them can ever peer: WireGuard needs one side to know where to send the first packet. %s",
 			len(voters), fix)
 	}
@@ -307,6 +315,7 @@ func (c *checker) dataSiteNotInCluster() {
 			continue
 		}
 		c.refuse("data-site-not-in-cluster", fmt.Sprintf("sites.%s.roles", name),
+			"data site is missing from cluster.sites",
 			"includes data, but cluster.sites does not list %s. The data role runs Patroni on the site, and cluster.sites is what HAProxy's backends, apply's leader wait and doctor are built from, so this would be a replica nothing routes to or watches. List %s in cluster.sites, at the end if the cluster is already running, or drop the role.", name, name)
 	}
 }
@@ -326,6 +335,7 @@ func (c *checker) oneVoterNoFailover() {
 	}
 	voter := c.cfg.Etcd.Members[0]
 	c.warn("one-voter-no-failover", "etcd.members",
+		"one etcd voter means no automatic failover",
 		"declares one voter, %s, while %d sites share the cluster. One member elects nobody: while %s is down every other site's Patroni loses etcd and stops taking writes, so the database stops rather than failing over, and promoting the replica is a manual step. A witness in a third failure domain makes three voters and restores automatic failover; without one, this is the manual promote mode and the runbook should say so.",
 		voter, len(c.cfg.Cluster.Sites), voter)
 }
@@ -348,6 +358,7 @@ func (c *checker) asyncAutomaticFailover() {
 		return
 	}
 	c.warn("async-automatic-failover", "cluster.synchronous",
+		"asynchronous replication can lose commits on failover",
 		"is false while %d sites share the cluster and %d voters can elect a new leader. Patroni then promotes a replica on its own, and under asynchronous replication that replica may be behind: every commit the old leader acknowledged after the replica's last received WAL is lost, up to maximum_lag_on_failover, the lag Patroni still promotes through. Set synchronous: true so a commit is acknowledged only once a standby holds it (synchronous_strict: false keeps a lone leader writing), or accept that a failover can lose acknowledged writes.",
 		len(c.cfg.Cluster.Sites), len(c.cfg.Etcd.Members))
 }
@@ -371,6 +382,7 @@ func (c *checker) clusterSiteWithoutData() {
 			continue
 		}
 		c.refuse("cluster-site-without-data-role", fmt.Sprintf("cluster.sites[%d]", i),
+			"cluster site does not hold the data role",
 			"names site %q, which does not hold the data role. A site in the cluster runs Patroni and stores the database. Add the data role to %s, or remove it from the cluster.", name, name)
 	}
 }
@@ -390,6 +402,7 @@ func (c *checker) clusterAppWithoutAppsSite() {
 			continue
 		}
 		c.refuse("cluster-app-without-apps-site", fmt.Sprintf("apps.%s.placement", name),
+			"cluster app has no apps site to run on",
 			"is `cluster`, but no site holds the apps role, so there is nowhere to run it. Give a site the apps role, or pin the app to a site.")
 	}
 }
@@ -409,6 +422,7 @@ func (c *checker) garageReplicationExceedsSites() {
 		return
 	}
 	c.refuse("garage-replication-exceeds-sites", "storage.garage.replication",
+		"garage replication exceeds the number of garage sites",
 		"is %d, but only %d site(s) run Garage. Garage cannot place a copy on a node that does not exist, so every upload fails while everything else looks healthy. Lower the factor, or add a Garage site.",
 		garage.Replication, len(garage.Sites))
 }
@@ -429,15 +443,18 @@ func (c *checker) garageConsistency() {
 	case config.GarageDangerous:
 		if len(garage.Sites) > 1 {
 			c.warn("garage-consistency-dangerous", "storage.garage.consistency",
-				"is dangerous: Garage confirms an upload once one copy exists and sends the rest in the background, so an upload can live on one disk until the other sites catch up, and a read can miss a recent change. Uploads continue while a site is down; that is the trade.")
+				"garage consistency is dangerous",
+				"Garage confirms an upload once one copy exists and sends the rest in the background, so an upload can live on one disk until the other sites catch up, and a read can miss a recent change. Uploads continue while a site is down.")
 		}
 	case config.GarageDegraded:
 		if c.replication() <= 2 {
 			c.warn("garage-consistency-degraded-is-consistent", "storage.garage.consistency",
+				"garage degraded consistency equals consistent here",
 				"is degraded, which at replication %d is identical to consistent: it lowers only the read quorum, which is already one. Use dangerous if uploads must continue while a site is down.", c.replication())
 		}
 	default:
 		c.refuse("garage-consistency-unknown", "storage.garage.consistency",
+			"garage consistency is not a known value",
 			"is %q. Garage accepts consistent, degraded or dangerous, and refuses to start on anything else.", garage.Consistency)
 	}
 }
@@ -452,6 +469,7 @@ func (c *checker) storageRoleWithoutGarage() {
 			continue
 		}
 		c.refuse("storage-role-without-garage", fmt.Sprintf("sites.%s.roles", name),
+			"storage site is missing from storage.garage.sites",
 			"includes storage, but storage.garage.sites does not list %s, so it would run no Garage at all. Add it to storage.garage.sites, at the end if the cluster is already running, or drop the role.", name)
 	}
 }
@@ -468,7 +486,7 @@ func (c *checker) garageCapacities() {
 	garage := c.cfg.Storage.Garage
 	if len(garage.Sites) > 0 {
 		if _, err := config.ParseSize(garage.Capacity); err != nil {
-			c.refuse("garage-capacity-not-a-size", "storage.garage.capacity", "%v. Garage's layout needs a capacity with a unit.", err)
+			c.refuse("garage-capacity-not-a-size", "storage.garage.capacity", "garage capacity is not a size with a unit", "%v. Garage's layout needs a capacity with a unit.", err)
 		}
 	}
 	keys := make([]string, 0, len(garage.Capacities))
@@ -480,11 +498,12 @@ func (c *checker) garageCapacities() {
 		key := "storage.garage.capacities." + site
 		if !slices.Contains(garage.Sites, site) {
 			c.refuse("garage-capacity-for-no-garage-site", key,
+				"garage capacity names a site that runs no garage",
 				"names %s, which storage.garage.sites does not list, so no node would take it. Remove it, or list the site.", site)
 			continue
 		}
 		if _, err := config.ParseSize(garage.Capacities[site]); err != nil {
-			c.refuse("garage-capacity-not-a-size", key, "%v. Garage's layout needs a capacity with a unit.", err)
+			c.refuse("garage-capacity-not-a-size", key, "garage capacity is not a size with a unit", "%v. Garage's layout needs a capacity with a unit.", err)
 		}
 	}
 }
@@ -503,12 +522,15 @@ func (c *checker) garageAvailability() {
 	switch {
 	case n > 1 && rf == 1:
 		c.warn("garage-single-copy", "storage.garage.replication",
+			"garage keeps a single copy of each object",
 			"is 1 across %d sites: each object lives on one site only, and is unreadable while that site is down. Raise it to 2 or more.", n)
 	case rf == 2 && n == 2 && garage.Consistency != config.GarageDangerous:
 		c.warn("garage-two-sites-stop-uploads", "storage.garage.replication",
+			"garage uploads stop while either of two sites is down",
 			"is 2 on two sites at consistency %s: every upload needs both, so uploads stop while either site is down; reads continue. A third Garage site at replication 3 keeps both, or consistency dangerous keeps uploads at a durability cost.", c.consistency())
 	case rf == 2 && n > 2 && garage.Consistency != config.GarageDangerous:
 		c.warn("garage-partial-uploads", "storage.garage.replication",
+			"garage uploads partly fail while one site is down",
 			"is 2 on %d sites: each object lives on two of them, so while any one is down the uploads that would land on it fail, roughly %d in %d. Replication 3 keeps every upload working with one site down.", n, 2, n)
 	}
 }
@@ -540,6 +562,7 @@ func (c *checker) evenVoters() {
 		return
 	}
 	c.warn("even-etcd-voters", "etcd.members",
+		"etcd has an even number of voters",
 		"declares %d voters. A majority of %d is %d, which is the same number of losses %d members tolerate, so the extra member adds a machine that can fail and a vote to collect without improving anything. Prefer %d.",
 		count, count, count/2+1, count-1, count-1)
 }
@@ -560,6 +583,7 @@ func (c *checker) siteOutsideMesh() {
 			continue
 		}
 		c.refuse("site-address-outside-mesh", fmt.Sprintf("sites.%s.address", name),
+			"site address is outside the mesh subnet",
 			"is %s, which is outside mesh.subnet %s. Every site binds its services to a mesh address, and applications trust that subnet for forwarded client addresses. Give the site an address inside it, or widen the mesh.",
 			address, c.cfg.Mesh.Subnet)
 	}
@@ -584,6 +608,7 @@ func (c *checker) meshIsNotPrivate() {
 		return
 	}
 	c.warn("mesh-subnet-is-not-private", "mesh.subnet",
+		"mesh subnet is publicly routable",
 		"is %s, which is publicly routable address space. Every host would route those addresses into the tunnel instead of to whoever owns them. Use RFC 1918 space, for example 10.44.0.0/24, unless this range is genuinely yours.",
 		c.cfg.Mesh.Subnet)
 }
@@ -595,6 +620,7 @@ func (c *checker) undeclaredSites() {
 		for i, name := range names {
 			if _, ok := c.cfg.Sites[name]; !ok {
 				c.refuse("undeclared-site", fmt.Sprintf("%s[%d]", key, i),
+					"site name is not declared under sites",
 					"names site %q, which is not declared under sites. Add the site, or correct the name.", name)
 			}
 		}
@@ -610,6 +636,7 @@ func (c *checker) undeclaredSites() {
 		}
 		if _, ok := c.cfg.Sites[app.Placement.Site]; !ok {
 			c.refuse("undeclared-site", fmt.Sprintf("apps.%s.placement", appName),
+				"site name is not declared under sites",
 				"pins the app to site %q, which is not declared under sites. Add the site, or correct the name.", app.Placement.Site)
 		}
 	}
@@ -625,6 +652,7 @@ func (c *checker) placementShape() {
 			continue
 		}
 		c.refuse("invalid-placement", fmt.Sprintf("apps.%s.placement", name),
+			"app placement is neither cluster nor pinned",
 			"is %q. Placement is either `cluster` or `{ pinned: <site> }`, and nothing else.", app.Placement.Literal)
 	}
 }
@@ -641,6 +669,7 @@ func (c *checker) outlineBucketName() {
 		bucket, _ := app.Settings["s3_bucket"].(string)
 		if bucket == "outline" {
 			c.refuse("outline-bucket-named-outline", fmt.Sprintf("apps.%s.settings.s3_bucket", name),
+				"outline bucket cannot be named outline",
 				"is \"outline\". Upstream Outline cannot use a bucket of that name. Choose another, for example %s-uploads.", name)
 		}
 	}
@@ -657,7 +686,7 @@ func (c *checker) dashboardLinkIsAPath() {
 			continue
 		}
 		if err := kinds.CheckDashboardLink(v); err != nil {
-			c.refuse("sso-dashboard-link-not-a-path", fmt.Sprintf("apps.%s.settings.%s", name, kinds.DashboardLinkSetting), "%s", err.Error())
+			c.refuse("sso-dashboard-link-not-a-path", fmt.Sprintf("apps.%s.settings.%s", name, kinds.DashboardLinkSetting), "dashboard link is not a valid path", "%s", err.Error())
 		}
 	}
 }
@@ -674,6 +703,7 @@ func (c *checker) mbinQueueIsKnown() {
 		case kinds.MbinQueuePostgres, kinds.MbinQueueRabbitMQ:
 		default:
 			c.refuse("mbin-queue-unknown", fmt.Sprintf("apps.%s.settings.%s", name, kinds.MbinQueueSetting),
+				"mbin queue setting is not a known value",
 				"is %q. Choose %s (the default: the queues live in the replicated database) or %s (a broker per site, faster, and lost with its site).",
 				q, kinds.MbinQueuePostgres, kinds.MbinQueueRabbitMQ)
 		}
@@ -697,6 +727,7 @@ func (c *checker) mbinRabbitMQAcrossSites() {
 			continue
 		}
 		c.warn("mbin-rabbitmq-across-sites", fmt.Sprintf("apps.%s.settings.%s", name, kinds.MbinQueueSetting),
+			"mbin runs a separate rabbitmq broker on each apps site",
 			"is %s on %d apps sites. Each site runs its own broker, so work a site has accepted (an inbox delivery already answered, a delivery queued for another server) is lost or stranded with that site. %s keeps the queues in the replicated database, where the other site's consumers take them over.",
 			kinds.MbinQueueRabbitMQ, sites, kinds.MbinQueuePostgres)
 	}
@@ -724,6 +755,7 @@ func (c *checker) clusterPlacementWithoutACluster() {
 			continue
 		}
 		c.refuse("cluster-placement-without-a-cluster", fmt.Sprintf("apps.%s.placement", name),
+			"app has cluster placement but no shared database",
 			"is `cluster`, but %s keeps its data outside the Postgres cluster, so there is nothing for it to join. It would be rendered onto every apps site with its own separate storage, which is two deployments behind one hostname. Pin it to a site instead.",
 			app.Kind)
 	}
@@ -748,6 +780,7 @@ func (c *checker) acmeProviderHasAnImage() {
 		return
 	}
 	c.refuse("acme-provider-needs-an-image", "acme.provider",
+		"acme provider has no published gateway image",
 		"is %q, which this toolkit publishes no image for, and acme.image declares none. A DNS provider is a module compiled into Caddy rather than a setting, and nothing is built on a host, so the gateway would run a binary that cannot load its own configuration. Published providers are %s; for any other, declare acme.image with the module compiled in.",
 		c.cfg.ACME.Provider, strings.Join(acme.Providers(), ", "))
 }
@@ -764,6 +797,7 @@ func (c *checker) acmeImageIsNotStockCaddy() {
 		return
 	}
 	c.refuse("acme-image-is-stock-caddy", "acme.image",
+		"acme image is stock caddy with no dns module",
 		"is %q, which is upstream's own Caddy image and carries no DNS provider module. Caddy would fail to load a configuration using `acme_dns %s`. Remove this key to take the image this toolkit publishes, or declare one with the module compiled in.",
 		c.cfg.ACME.Image, c.cfg.ACME.Provider)
 }
@@ -783,6 +817,7 @@ func (c *checker) imageServices() {
 				continue
 			}
 			c.refuse("unknown-image-service", fmt.Sprintf("apps.%s.images.%s", name, service),
+				"image names a service the template does not define",
 				"names a service %q, which the %s template does not define. Its services are %s. A key that matches nothing renders nothing, so the deployment would keep running the default image while the file says otherwise.",
 				service, app.Kind, strings.Join(kinds.ServiceNames(app.Kind), ", "))
 		}
@@ -810,6 +845,7 @@ func (c *checker) floatingImages() {
 				continue
 			}
 			c.refuse("floating-image-tag", fmt.Sprintf("apps.%s.images.%s", name, service),
+				"image tag is floating",
 				"is %q and %s. Two runs of `apply` would then deploy different builds from the same inputs, so the configuration and the secrets no longer reconstruct the stack. Name a version tag, or a digest, which is stronger.",
 				app.Images[service], why)
 		}
@@ -833,6 +869,7 @@ func (c *checker) imageForAbsentPostgres() {
 			continue
 		}
 		c.warn("image-for-absent-postgres", fmt.Sprintf("apps.%s.images.%s", name, kinds.PostgresService),
+			"database image is declared but nothing uses it",
 			"declares a database image, but the app has cluster placement and runs no database of its own: it connects to the local HAProxy, and the cluster's version comes from cluster.postgres_version. Nothing renders this. Remove it, or pin the app if it was meant to have its own database.")
 	}
 }
@@ -865,6 +902,7 @@ func (c *checker) pinnedOntoWitness() {
 			continue
 		}
 		c.warn("pinned-app-on-witness", fmt.Sprintf("apps.%s.placement", name),
+			"pinned app shares a site with the witness",
 			"pins the app to %s, which holds the witness role. etcd depends on fsync latency and an application with its own database is not a quiet neighbour: the failure mode is the database failing over for no reason. Prefer a separate site for pinned apps, or give etcd its own device there.",
 			app.Placement.Site)
 	}
@@ -884,6 +922,7 @@ func (c *checker) gatewayOnDataSite() {
 		site := c.cfg.Sites[name]
 		if site.Has(config.RoleGateway) && site.Has(config.RoleData) {
 			c.warn("gateway-on-data-site", fmt.Sprintf("sites.%s.roles", name),
+				"gateway shares a site with a data role",
 				"holds both gateway and data while %d data sites are declared. The database would fail over in about a minute, but public DNS would still point here, so nothing is reachable until a record changes and propagates. Move the gateway off both data sites.",
 				len(c.cfg.DataSites()))
 		}
@@ -916,6 +955,7 @@ func (c *checker) portCollision() {
 				}
 				reported[pair] = true
 				c.refuse("port-collision", fmt.Sprintf("sites.%s", name),
+					"two roles on one site bind the same port",
 					"%s binds %s and %s binds %s, so whichever starts second fails at container start. Pin one of them to another site, or move the role that brings the other.",
 					a.Owner, a, b.Owner, b)
 			}
@@ -956,6 +996,7 @@ func (c *checker) pocketIDFileBackend() {
 			shown = "unset, which means filesystem"
 		}
 		c.warn("pocket-id-file-backend", fmt.Sprintf("apps.%s.settings.file_backend", name),
+			"pocket id file backend is not database",
 			"is %s. Prefer `database`: the uploads are about a megabyte of avatars and branding, in Postgres they ride streaming replication with no sync job, and sign in then does not depend on object storage being up. On filesystem, a promoted site serves broken avatars and stock branding mid incident.",
 			shown)
 	}
@@ -983,6 +1024,7 @@ func (c *checker) pocketIDStandbyMarkerUnknown() {
 			continue
 		}
 		c.warn("pocket-id-standby-marker-unknown", fmt.Sprintf("apps.%s.images.app", name),
+			"pocket id image has an unrecorded standby marker",
 			"is %s, whose refusal text is not recorded, on %d apps sites. Every site but one stands by when Pocket ID logs that another instance holds the database, and this image is assumed to log what the default does. If it does not, the standby sites restart in a loop instead of standing by, and apply's health gate fails there. Check its backend/internal/bootstrap/bootstrap.go.",
 			image, sites)
 	}
@@ -1005,6 +1047,7 @@ func (c *checker) floatingACMEImage() {
 		return
 	}
 	c.refuse("acme-image-is-floating", "acme.image",
+		"acme image tag is floating",
 		"is %q and %s. The gateway's image carries the DNS provider module compiled in, so a tag that moves can drop the module the configuration names, and the gateway would then hold no certificate for any hostname. Name a version tag, or a digest, which is stronger.",
 		c.cfg.ACME.Image, why)
 }
@@ -1031,6 +1074,7 @@ func (c *checker) gateWithoutAGate() {
 		}
 	}
 	c.refuse("gate-without-a-gate-app", "apps",
+		"an app declares a gate but no gate app exists",
 		"an app declares a gate, but no app of kind oauth2-proxy is declared, so nothing renders the snippet the gateway would import. Caddy fails to load its entire configuration over one missing import, so this would take every hostname down rather than one. Declare the gate app, or set visibility_gate: public.")
 }
 
@@ -1057,6 +1101,7 @@ func (c *checker) visibilityGateOnUngateableKind() {
 			continue
 		}
 		c.refuse("visibility-gate-on-ungateable-kind", fmt.Sprintf("apps.%s.visibility_gate", name),
+			"visibility gate is set on a kind that cannot sit behind it",
 			"is %q on an app of kind %s, which cannot sit behind the gate. The gate redirects a request with no session to a passkey prompt: a Matrix client or a federating server will not follow it, Pocket ID and the gate are the sign-in flow itself, and the monitor must stay readable while the sites the gate signs in through are down. Set visibility_gate: public.",
 			app.VisibilityGate, app.Kind)
 	}
@@ -1078,6 +1123,7 @@ func (c *checker) visibilityGateWithoutSignedFetch() {
 			continue
 		}
 		c.refuse("visibility-gate-without-signed-fetch", fmt.Sprintf("apps.%s.visibility_gate", name),
+			"gated federating app still answers unsigned reads",
 			"is %q, but this %s app federates and the toolkit records no way for it to refuse an unsigned ActivityPub read. The gate leaves ActivityPub requests to the app, and anyone can send an ActivityPub Accept header, so every page would be readable as JSON by anyone. Turn federation off for this app, or set visibility_gate: public. A WriteFreely checks signatures only in private mode, so for one this also means private is not false.",
 			app.VisibilityGate, app.Kind)
 	}
@@ -1096,6 +1142,7 @@ func (c *checker) visibilityGateProvisional() {
 			continue
 		}
 		c.warn("visibility-gate-provisional", fmt.Sprintf("apps.%s.visibility_gate", name),
+			"provisional gate admits people who are not yet members",
 			"is provisional, which admits everyone signed in to Pocket ID, including people who are not yet members. Use member for anything only the community should read.")
 	}
 }
@@ -1123,6 +1170,7 @@ func (c *checker) homeserverMustBePinned() {
 			continue
 		}
 		c.refuse("homeserver-must-be-pinned", fmt.Sprintf("apps.%s.placement", name),
+			"synapse app must be pinned to a site",
 			"is cluster, and the synapse kind has no clustered form. Its media store cannot follow a failover, because the S3 storage provider supplements a local media directory rather than replacing it, and the kind renders its own Postgres plus the hook that creates the authentication service's database beside it. Pin it: placement: { pinned: <site> }.")
 	}
 }
@@ -1155,10 +1203,12 @@ func (c *checker) mediaHostnameShape() {
 		if problem := hostnameProblem(media); problem != "" {
 			if derived {
 				c.refuse("media-hostname-is-not-a-hostname", key,
+					"media hostname is not a valid hostname",
 					"is not declared, and the name derived from apps.%s.hostname is %q, which is not a hostname: %s. The media hostname is <label>-media.<domain>, a sibling of the app's own hostname. Declare hostnames.media to choose another name under %s.",
 					name, media, problem, c.cfg.Community.Domain)
 			} else {
 				c.refuse("media-hostname-is-not-a-hostname", key,
+					"media hostname is not a valid hostname",
 					"is %q, which is not a hostname: %s. It becomes a site address on the gateway and a URL the app publishes to readers, so it has to be a name a browser can fetch, for example %s.",
 					media, problem, name+kinds.MediaSuffix+"."+c.cfg.Community.Domain)
 			}
@@ -1169,6 +1219,7 @@ func (c *checker) mediaHostnameShape() {
 		}
 		if !strings.HasSuffix(media, "."+domain) {
 			c.refuse("media-hostname-outside-the-domain", key,
+				"media hostname is outside community.domain",
 				"is %q, which is not under community.domain (%s). Its certificate is issued over DNS-01 against the deployment's own zone, so the configured DNS provider cannot answer for a name outside it. Use a name under %s, for example %s.",
 				media, c.cfg.Community.Domain, c.cfg.Community.Domain, name+kinds.MediaSuffix+"."+c.cfg.Community.Domain)
 		}
@@ -1219,6 +1270,7 @@ func (c *checker) mediaHostnameUnderAnAppHostname() {
 				continue
 			}
 			c.refuse("media-hostname-under-an-app-hostname", fmt.Sprintf("apps.%s.hostnames.%s", name, kinds.MediaRole),
+				"media hostname sits under an app hostname",
 				"is %q, a child of %q (%s). Cookies an app scopes to its own host reach every name under it, so a media hostname there shares the cookie scope it exists to be outside of. Use a sibling instead, for example %s.",
 				media, host.hostname, host.key, name+kinds.MediaSuffix+"."+c.cfg.Community.Domain)
 			break
@@ -1257,6 +1309,7 @@ func (c *checker) outlineBucketInMediaURL() {
 			continue
 		}
 		c.refuse("outline-bucket-in-media-url", fmt.Sprintf("apps.%s.hostnames.%s", name, kinds.MediaRole),
+			"media URL contains the outline bucket name",
 			"makes the bucket URL %s, which contains the bucket name %q. Outline reads a bucket name anywhere in that URL as virtual host addressing and stops putting the bucket in the path, while Garage needs it there, so every attachment upload would fail. Rename the bucket (settings.s3_bucket) or choose a media hostname that does not contain it.",
 			url, bucket)
 	}
@@ -1360,6 +1413,7 @@ func (c *checker) duplicateHostname() {
 					said = fmt.Sprintf("is not declared, so it is derived as %q", cl.hostname)
 				}
 				c.refuse("duplicate-hostname", cl.key,
+					"two apps claim the same hostname",
 					"%s, which %s already claims. Every hostname becomes a site address in the gateway's Caddyfile, and Caddy refuses a configuration where two site blocks claim one address rather than choosing between them, so this takes every hostname in the deployment down rather than these two. Give each name to one app and one role; a media hostname can be chosen with hostnames.media.",
 					said, describe(earlier))
 				continue
@@ -1383,6 +1437,7 @@ func (c *checker) hostnameRoles() {
 				continue
 			}
 			c.refuse("unknown-hostname-role", fmt.Sprintf("apps.%s.hostnames.%s", name, role),
+				"hostname role is not known to this kind",
 				"names a hostname role %q, which the %s kind does not understand. A role selects the Caddy snippet that hostname gets, so an unknown one would import a file that does not exist and the gateway would fail to load at all. Roles for this kind: %s.",
 				role, app.Kind, strings.Join(kinds.HostnameRoles(app.Kind), ", "))
 		}
@@ -1408,6 +1463,7 @@ func (c *checker) configKeyIsNestedInAnEnvFile() {
 				continue
 			}
 			c.refuse("config-key-is-nested-in-an-env-file", fmt.Sprintf("apps.%s.config.%s", name, key),
+				"config key has a dot in an env file",
 				"is a dotted key, and %s is an env file. Env has no nesting, so a dot is a typo here rather than a path. Write the variable name the application reads, for example with underscores.",
 				kinds.ConfigFile(app.Kind))
 		}
@@ -1436,6 +1492,7 @@ func (c *checker) configKeyLooksLikeASecret() {
 					continue
 				}
 				c.refuse("config-key-looks-like-a-secret", fmt.Sprintf("apps.%s.config.%s", name, key),
+					"config key is named like a credential",
 					"is named like a credential (it contains %q, ignoring case and the separators _ - and .). paisans.yaml is plaintext and meant to be committed, so a secret does not belong in it: put the value in secrets.enc.yaml. This check is by name and will not catch a credential named something else, so it is no substitute for looking.",
 					word)
 				break
@@ -1474,6 +1531,7 @@ func (c *checker) configKeySteersCompose() {
 					continue
 				}
 				c.refuse("config-key-steers-compose", fmt.Sprintf("apps.%s.config.%s", name, key),
+					"config key would steer compose itself",
 					"starts with %s. When apply runs compose for this stack, compose reads the stack's %s for its own settings as well as handing it to the application, and a variable there can rename the project or change which services are active. That is compose's configuration, not the application's: it belongs in the toolkit, not in config.",
 					prefix, kinds.ConfigFile(app.Kind))
 				break
@@ -1494,6 +1552,7 @@ func (c *checker) watchdogOffOnDataSite() {
 		site := c.cfg.Sites[name]
 		if site.Has(config.RoleData) && site.WatchdogMode() == config.WatchdogOff {
 			c.warn("watchdog-off-on-data-site", fmt.Sprintf("sites.%s.watchdog", name),
+				"watchdog is off on a data site",
 				"is off on a site holding the data role. Patroni is rendered with PATRONI_WATCHDOG_MODE=off, so a Patroni that hangs while it is leader is not fenced and can keep taking writes after another node is promoted. Use auto unless this host genuinely cannot load any watchdog driver.")
 		}
 	}
@@ -1515,6 +1574,7 @@ func (c *checker) uptimeNeedsAnAdminGroup() {
 			continue
 		}
 		c.refuse("uptime-needs-an-admin-group", fmt.Sprintf("apps.%s.settings.admin_group", name),
+			"uptime app has no admin group",
 			"is required. Name the identity provider group whose members may sign in to the monitor, for example admins. Only that group is admitted, and group names are this community's own, so there is no default.")
 	}
 }
@@ -1546,6 +1606,7 @@ func (c *checker) adminGroupNotAdmins() {
 			continue
 		}
 		c.warn("admin-group-not-admins", spec.AdminGroupSource(name),
+			"admin group differs from the watched admins group",
 			"is %s. The admin reconciler keeps Pocket ID's administrators in %s and alerts while it has fewer than two members, so %s's administrators are a group nobody is watching. Name %s here, or accept that this app's admin group is unwatched.",
 			admin, adminreconciler.Group, name, adminreconciler.Group)
 	}
@@ -1577,6 +1638,7 @@ func (c *checker) oidcMemberGroupNotAName() {
 				continue
 			}
 			c.refuse("oidc-member-group-not-a-name", fmt.Sprintf("apps.%s.settings.%s", name, key),
+				"oidc member group is not a group name",
 				"is %v, which is not a group name. Name the identity provider group, or remove the key to take the kind's default. The client at Pocket ID admits exactly the groups named here, so a value that is not a name is a restriction to nothing.", v)
 		}
 	}
@@ -1617,6 +1679,7 @@ func (c *checker) oidcMemberGroupDisagreesWithGate() {
 			continue
 		}
 		c.refuse("oidc-member-group-disagrees-with-gate", fmt.Sprintf("apps.%s.settings.%s", name, spec.MemberGroupSetting),
+			"member group differs between gate and client",
 			"is %s, but apps.%s.settings.%s is %s, and this app is behind the member gate. The gate admits one group and the app's client at Pocket ID admits the other, so the two disagree about who a member is. Name the same group in both.",
 			member, gateApp, kinds.GateMembersGroupSetting, gateGroup)
 	}
@@ -1641,6 +1704,7 @@ func (c *checker) oidcClientUnrestricted() {
 			continue
 		}
 		c.refuse("oidc-client-unrestricted", fmt.Sprintf("apps.%s", name),
+			"oidc client admits anyone with an account",
 			"names no member group, so its client at Pocket ID would admit anyone with an account there. A member facing app's client is restricted to the member group and admins; name one in apps.%s.settings.%s.", name, spec.MemberGroupSetting)
 	}
 }
@@ -1653,6 +1717,7 @@ func (c *checker) smtpOnAKindWithoutMail() {
 			continue
 		}
 		c.refuse("smtp-on-a-kind-without-mail", fmt.Sprintf("apps.%s.smtp", name),
+			"smtp is declared for a kind that sends no mail",
 			"is declared, but %s does not read the toolkit's smtp settings, so this override would be ignored without a word. Remove it, or configure that application's mail where it keeps it.",
 			app.Kind)
 	}
@@ -1665,6 +1730,7 @@ func (c *checker) uptimeWithoutSMTP() {
 			continue
 		}
 		c.warn("uptime-without-smtp", fmt.Sprintf("apps.%s.smtp", name),
+			"uptime monitor has no smtp host",
 			"resolves no SMTP host, so no email channel in the monitor can send. It still checks and records incidents. Declare a top level smtp block, or one on this app, or set SMTP in the monitor's own settings page, which the toolkit then leaves alone.")
 	}
 }

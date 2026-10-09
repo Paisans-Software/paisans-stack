@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -29,6 +30,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -195,6 +197,10 @@ prune reach no host, only the DNS provider's API, and change it only with
 --execute. ingress check reaches no host over ssh and changes nothing: it
 looks at a monitor's public hostname as any visitor could.
 Everything else writes files locally and stops.
+
+Every command takes -v or --verbose. By default each step is one line; with it,
+the reasons, values, request bodies and command output behind each step show
+too. A failure always prints in full, with or without it.
 `
 
 func main() {
@@ -287,16 +293,21 @@ func main() {
 
 func runValidate(args []string) error {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stdout, *configPath, result)
+	reportFindings(r, *configPath, result)
+	if len(result.Findings) == 0 {
+		r.Result("%s: no problems found", *configPath)
+	}
 	if result.Refused() {
 		return fmt.Errorf("%s cannot be rendered: %d refusal(s) above", *configPath, len(result.Refusals()))
 	}
@@ -317,12 +328,14 @@ func runValidate(args []string) error {
 // credentials to stand it up with.
 func runInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	sudo := fs.Bool("sudo", true, "read each site through sudo, since the host registry is root's")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	// The id comes first: everything a host holds is named from it, and a
 	// declaration without one cannot even be loaded. One that exists is never
 	// replaced.
@@ -331,21 +344,23 @@ func runInit(args []string) error {
 		return err
 	}
 	if added {
-		fmt.Fprintf(os.Stdout, "%s: wrote deployment id %s. It never changes; every name and path this deployment holds on a host is derived from it.\n", *configPath, id)
+		s := r.Step("write deployment id")
+		s.Detail("%s: wrote deployment id %s. It never changes; every name and path this deployment holds on a host is derived from it.", *configPath, id)
+		s.Done("")
 	}
 	cfg, err := config.LoadForInit(*configPath)
 	if err != nil {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above. Secrets are not generated for a configuration that cannot be deployed", *configPath, len(result.Refusals()))
 	}
 	// The mesh subnet next, while nothing is deployed: it is the one value
 	// that has to be checked against every host before the first apply,
 	// and cannot change after it.
-	wrote, err := settleMesh(cfg, *configPath, initHosts(cfg, *sudo), meshRandom, initOut)
+	wrote, err := settleMesh(r, cfg, *configPath, initHosts(cfg, *sudo), meshRandom)
 	if err != nil {
 		return err
 	}
@@ -377,53 +392,53 @@ func runInit(args []string) error {
 	}
 
 	if !filled.Changed() {
-		fmt.Fprintf(os.Stdout, "%s already has every generated secret (%d). Nothing written.\n",
-			*secretsPath, len(filled.Kept))
-		reportOwed(filled)
+		r.Detail("%s already has every generated secret (%d)", *secretsPath, len(filled.Kept))
+		reportOwed(r, filled)
+		r.Result("Every generated secret is already present. Nothing written.")
 		return nil
-	}
-
-	if err := config.WriteSecrets(*secretsPath, secrets, recipients); err != nil {
-		return err
 	}
 
 	// Names, never values. A secret printed to a terminal is in a scrollback
 	// buffer, and often in a multiplexer's log as well.
-	fmt.Fprintf(os.Stdout, "%s: generated %d secret(s), kept %d.\n", *secretsPath, len(filled.Generated), len(filled.Kept))
+	write := r.Step("write secrets")
+	write.Detail("%s", *secretsPath)
 	for _, name := range filled.Generated {
-		fmt.Fprintf(os.Stdout, "  + %s\n", name)
+		write.Detail("+ %s", name)
 	}
+	if err := config.WriteSecrets(*secretsPath, secrets, recipients); err != nil {
+		write.Fail(err)
+		return err
+	}
+	write.Done(fmt.Sprintf("%d generated, %d kept", len(filled.Generated), len(filled.Kept)))
 	if len(recipients) == 0 {
-		fmt.Fprintf(os.Stderr, "\npaisans: %s was written in PLAINTEXT, because no %s beside it names an age recipient.\nA real deployment encrypts this file. Add one and re-encrypt before committing anything.\n",
-			*secretsPath, config.SOPSConfigName)
+		warnPlaintext(r, *secretsPath)
 	} else {
-		fmt.Fprintf(os.Stdout, "\nEncrypted to %d age recipient(s) from %s.\n", len(recipients), config.SOPSConfigName)
+		r.Detail("Encrypted to %d age recipient(s) from %s.", len(recipients), config.SOPSConfigName)
 	}
-	reportOwed(filled)
+	reportOwed(r, filled)
+	r.Result("Generated %s, kept %d.", plural(len(filled.Generated), "secret"), len(filled.Kept))
 	return nil
 }
 
-// reportOwed prints what the toolkit will not invent. Leaving these silent
+// reportOwed warns of what the toolkit will not invent. Leaving these silent
 // would let an operator believe an install is finished when sign in and
 // certificates are both still missing.
-func reportOwed(filled secretsgen.Result) {
-	if len(filled.Owed) == 0 {
-		return
-	}
-	fmt.Fprintf(os.Stdout, "\nStill owed, and not generated here:\n")
+func reportOwed(r ui.Reporter, filled secretsgen.Result) {
 	for _, owed := range filled.Owed {
-		fmt.Fprintf(os.Stdout, "  ? %s\n      %s\n", owed.Name, owed.Why)
+		r.Warn(owed.Name+" needs a decision", owed.Why)
 	}
 }
 
 func runRender(args []string) error {
 	fs := flag.NewFlagSet("render", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the sops encrypted secrets (default: secrets.enc.yaml beside the config)")
 	out := fs.String("out", "", "directory to write artifacts into")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	if *out == "" {
 		return fmt.Errorf("render: --out is required. Artifacts are written to a local directory and pushed by a later step")
 	}
@@ -432,7 +447,7 @@ func runRender(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s cannot be rendered: %d refusal(s) above", *configPath, len(result.Refusals()))
 	}
@@ -445,7 +460,7 @@ func runRender(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	// render does not call secretsgen.Fill, so a key hand edited into the file
 	// after the last `init` is never looked at unless this is checked here too.
@@ -463,7 +478,7 @@ func runRender(args []string) error {
 	if err := render.Write(plan, *out); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "rendered %d files to %s\n", len(plan.Files), *out)
+	r.Result("Rendered %s to %s.", plural(len(plan.Files), "file"), *out)
 	return nil
 }
 
@@ -480,6 +495,7 @@ func runRender(args []string) error {
 // its client, so `--execute` creates and records it like any other secret.
 func runApply(args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	site := fs.String("site", "", "the site to apply, by the name it has in the configuration")
@@ -497,6 +513,7 @@ func runApply(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	needFree, err := apply.ParseSize(*minFree)
 	if err != nil {
 		return fmt.Errorf("apply: --min-free: %w", err)
@@ -510,7 +527,7 @@ func runApply(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -527,7 +544,7 @@ func runApply(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	// apply does not call secretsgen.Fill either, and this is the path that
 	// actually reaches a host: a malformed key has to stop here, not just
@@ -540,17 +557,24 @@ func runApply(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
-	done := apply.Step(os.Stdout, "checking", "nothing on %s overlaps the mesh subnet", *site)
+	r.Section(fmt.Sprintf("%s (%s)", *site, transport.Describe()))
+	done := r.Step("check mesh subnet")
 	err = checkMeshLive(cfg, *site, transport)
-	done(err)
+	if err != nil {
+		done.Fail(err)
+	} else {
+		// Only once it is true: a check that could not run found nothing.
+		done.Detail("nothing on %s overlaps the mesh subnet", *site)
+		done.Done("")
+	}
 	if err != nil {
 		return err
 	}
-	host, err := hostGate(os.Stdout, cfg, *site, transport)
+	host, err := hostGate(r, cfg, *site, transport)
 	if err != nil {
 		return err
 	}
-	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+	if err := claimHosts(r, cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
 
@@ -558,7 +582,7 @@ func runApply(args []string) error {
 	// Pocket ID gets its client ensured before it renders. Planned here,
 	// read only, so the dry run shows it and an app it must hold back is
 	// left out of the plan below.
-	clients, err := newClientStep(cfg, *site, *destination, *secretsPath, secrets, only)
+	clients, err := newClientStep(r, cfg, *site, *destination, *secretsPath, secrets, only)
 	if err != nil {
 		return err
 	}
@@ -569,11 +593,20 @@ func runApply(args []string) error {
 		options = append(options, apply.KeepImages())
 	}
 	// planFor plans the site holding back the named app stacks, as a later
-	// pass after the done ones. See executeWithClients. Progress goes to
-	// Build rather than onto the plan it returns, so planning announces what
-	// it reads from the host as Execute announces what it does there.
+	// pass after the done ones. See executeWithClients. The reporter goes to
+	// Build, so planning announces what it reads from the host as Execute
+	// announces what it does there. Only the first plan reports its reads: a
+	// later pass reads the same host again, and saying so twice is noise.
+	// Every plan reports its own Execute.
+	reads := r
 	planFor := func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
-		return planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...), apply.Progress(os.Stdout)})...)
+		p, err := planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...), apply.Report(reads)})...)
+		reads = ui.Discard
+		if err != nil {
+			return nil, err
+		}
+		p.Report = r
+		return p, nil
 	}
 	plan, err := planWithClients(clients, func(hold []string) (*apply.Plan, error) { return planFor(hold, nil) }, *execute)
 	if err != nil {
@@ -612,8 +645,12 @@ func runApply(args []string) error {
 			plan.Bootstrap.EtcdUnstarted = apply.FoundingUnstarted(cfg, *site, running)
 		}
 	}
-	printPlan(plan)
-	if err := printLeftovers(os.Stdout, cfg, *site, host.Inventory, plan); err != nil {
+	// A dry run is the plan. --execute reports progress instead, and shows
+	// the plan first only with --verbose, since its steps say the same.
+	// Either way the plan's notes show, and a later pass's new ones too.
+	noted := map[string]bool{}
+	presentPlan(r, plan, *execute, noted)
+	if err := printLeftovers(r, cfg, *site, host.Inventory, plan); err != nil {
 		return err
 	}
 
@@ -622,11 +659,13 @@ func runApply(args []string) error {
 	}
 
 	if !*execute {
+		err := clients.result()
 		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone && (clients == nil || clients.steps == 0) {
-			return clients.result()
+			r.Result("%s is up to date. Nothing to apply.", *site)
+			return err
 		}
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
-		return clients.result()
+		r.Result("Nothing changed. Re-run with --execute to apply.")
+		return err
 	}
 
 	plans := []*apply.Plan{plan}
@@ -647,6 +686,7 @@ func runApply(args []string) error {
 				return p, nil
 			},
 			execute: func(p *apply.Plan) error { return apply.Execute(p, transport) },
+			notes:   func(p *apply.Plan) { reportNotes(r, p, noted) },
 		}
 		if plans, err = executeWithClients(clients, pass); err != nil {
 			return err
@@ -659,13 +699,14 @@ func runApply(args []string) error {
 		acted.Actions = append(acted.Actions, p.Actions...)
 		written += len(p.Writes())
 	}
-	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", written, plan.Transport)
-	if err := checkStandby(cfg, acted, *site, transport, func(name string) apply.Transport {
+	if err := checkStandby(r, cfg, acted, *site, transport, func(name string) apply.Transport {
 		return siteTransport(name, cfg.Sites[name], "", *sudo)
 	}); err != nil {
 		return err
 	}
-	return clients.result()
+	err = clients.result()
+	r.Result("Applied %s to %s.", plural(written, "file"), *site)
+	return err
 }
 
 // checkStandby is the deployment level gate after an apply that acted on a
@@ -673,7 +714,7 @@ func runApply(args []string) error {
 // gate, active or standing by, and this asks every site that exactly one is
 // active. The applied site is reached as the apply reached it, the others
 // through their ssh sections. See apply.CheckOneActive.
-func checkStandby(cfg *config.Config, plan *apply.Plan, site string, transport apply.Transport, other func(string) apply.Transport) error {
+func checkStandby(r ui.Reporter, cfg *config.Config, plan *apply.Plan, site string, transport apply.Transport, other func(string) apply.Transport) error {
 	acted := map[string]bool{}
 	for _, action := range plan.Actions {
 		acted[action.Stack] = true
@@ -691,10 +732,18 @@ func checkStandby(cfg *config.Config, plan *apply.Plan, site string, transport a
 				transports[name] = other(name)
 			}
 		}
-		fmt.Fprintln(os.Stdout)
-		if err := apply.CheckOneActive(cfg, app, transports, os.Stdout); err != nil {
+		// The sites' states are the check's detail on success. On failure
+		// the table is the evidence the error points at ("each site
+		// above"), so it is shown whatever the verbosity.
+		s := r.Step("check one pocket-id " + app + " is active")
+		var seen bytes.Buffer
+		if err := apply.CheckOneActive(cfg, app, transports, &seen); err != nil {
+			s.Fail(err)
+			r.Refuse("pocket-id "+app+" instances", seen.String())
 			return fmt.Errorf("%w. The apply itself finished; this is the check after it", err)
 		}
+		s.Detail("%s", strings.TrimRight(seen.String(), "\n"))
+		s.Done("")
 	}
 	return nil
 }
@@ -744,6 +793,7 @@ func planSiteApply(cfg *config.Config, secrets *config.Secrets, site string, tra
 // reachable to be asked what it already has.
 func runStorageInit(args []string) error {
 	fs := flag.NewFlagSet("storage init", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	site := fs.String("site", "", "the site to provision, by the name it has in the configuration")
@@ -753,6 +803,7 @@ func runStorageInit(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	if *site == "" {
 		return fmt.Errorf("storage init: --site is required. A site at a time is deliberate, the same reason apply takes one")
 	}
@@ -762,7 +813,7 @@ func runStorageInit(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -779,7 +830,7 @@ func runStorageInit(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	// A malformed key has to stop here, before it reaches `garage key import`
 	// partway through provisioning: earlier keys in the same run would
@@ -789,26 +840,32 @@ func runStorageInit(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
-	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+	r.Section(fmt.Sprintf("%s (%s)", *site, transport.Describe()))
+	if err := claimHosts(r, cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
 	plan, err := garage.Build(*site, cfg, secrets, transport)
 	if err != nil {
 		return err
 	}
-	printGaragePlan(plan)
+	// A dry run is the plan. --execute reports progress instead, and shows
+	// the plan first only with --verbose, since its steps say the same.
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	if !*execute {
 		if len(plan.Steps) == 0 {
+			r.Result("%s is provisioned. Nothing to do.", *site)
 			return nil
 		}
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	if err := garage.Execute(plan, transport); err != nil {
+	if err := garage.Report(plan, transport, r); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\nprovisioned %d step(s) on %s\n", len(plan.Steps), *site)
+	r.Result("Provisioned %s on %s.", plural(len(plan.Steps), "step"), *site)
 	return nil
 }
 
@@ -817,6 +874,7 @@ func runStorageInit(args []string) error {
 // with --execute. It needs no secrets; nothing it installs is a credential.
 func runHostPrepare(args []string) error {
 	fs := flag.NewFlagSet("host prepare", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	site := fs.String("site", "", "the site to prepare, by the name it has in the configuration")
 	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
@@ -825,6 +883,7 @@ func runHostPrepare(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	if *site == "" {
 		return fmt.Errorf("host prepare: --site is required. A site at a time is deliberate, the same reason apply takes one")
 	}
@@ -834,7 +893,7 @@ func runHostPrepare(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -844,17 +903,21 @@ func runHostPrepare(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
-	done := apply.Step(os.Stdout, "checking", "nothing on %s overlaps the mesh subnet", *site)
+	r.Section(fmt.Sprintf("%s (%s)", *site, transport.Describe()))
+	done := r.Step("check mesh subnet")
 	err = checkMeshLive(cfg, *site, transport)
-	done(err)
+	if err != nil {
+		done.Fail(err)
+		return err
+	}
+	// Only once it is true: a check that could not run found nothing.
+	done.Detail("nothing on %s overlaps the mesh subnet", *site)
+	done.Done("")
+	host, err := hostGate(r, cfg, *site, transport)
 	if err != nil {
 		return err
 	}
-	host, err := hostGate(os.Stdout, cfg, *site, transport)
-	if err != nil {
-		return err
-	}
-	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+	if err := claimHosts(r, cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
 	var options []hostprep.Option
@@ -865,119 +928,27 @@ func runHostPrepare(args []string) error {
 	if err != nil {
 		return err
 	}
-	plan.Print(os.Stdout)
+	// A dry run is the plan. --execute reports progress instead, and shows
+	// the plan first only with --verbose, since its steps say the same.
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	} else {
+		plan.Warn(r)
+	}
 
 	if !*execute {
 		if len(plan.Steps) == 0 {
+			r.Result("%s is prepared. Nothing to do.", *site)
 			return nil
 		}
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	if err := hostprep.Execute(plan, transport); err != nil {
+	if err := hostprep.Execute(plan, transport, r); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\nprepared %s: %d step(s) on %s\n", *site, len(plan.Steps), transport.Describe())
+	r.Result("Prepared %s.", *site)
 	return nil
-}
-
-func printGaragePlan(plan *garage.Plan) {
-	fmt.Fprintf(os.Stdout, "%s\n", plan.Site)
-	for _, step := range plan.Steps {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "create", step.Describe)
-	}
-	for _, present := range plan.Present {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "present", present)
-	}
-}
-
-func printPlan(plan *apply.Plan) {
-	fmt.Fprintf(os.Stdout, "%s (%s)\n", plan.Site, plan.Transport)
-	for _, note := range plan.Notes {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "note", note)
-	}
-	if plan.Disk != nil {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "check", plan.Disk.Describe())
-	}
-	if plan.Volumes != nil {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "check", plan.Volumes.Describe())
-		for _, u := range plan.Volumes.Uncovered {
-			fmt.Fprintf(os.Stdout, "  %-9s %s\n", "refuse", u.Describe())
-		}
-	}
-	var unchanged int
-	for _, change := range plan.Changes {
-		if change.Kind == apply.Unchanged {
-			unchanged++
-			continue
-		}
-		kind := change.Kind.String()
-		if change.Overwritten {
-			kind = "overwrite"
-		}
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", kind, change.Path)
-	}
-	if unchanged > 0 {
-		fmt.Fprintf(os.Stdout, "  %-9s %d file(s)\n", "unchanged", unchanged)
-	}
-	if plan.WireGuard != apply.WireGuardNone {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "mesh", plan.WireGuard.Describe(plan.Deployment))
-	}
-	bootstrapped := plan.Bootstrap == nil
-	for _, action := range plan.Actions {
-		if action.Stack != "infra" && !bootstrapped {
-			printBootstrap(plan.Bootstrap)
-			bootstrapped = true
-		}
-		verb, stack := "restart", action.Stack
-		if action.Recreate {
-			verb = "recreate"
-		}
-		if action.Force {
-			stack += " (forced)"
-		}
-		if action.Down {
-			// Its own line, because a down is the one action here that
-			// removes the stack's network as well as its containers.
-			fmt.Fprintf(os.Stdout, "  %-9s %s, so that its compose network is created as declared\n", "down", action.Stack)
-		}
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n      %s\n", verb, stack, action.Reason)
-		fmt.Fprintf(os.Stdout, "  %-9s %s: every container running, and healthy where it has a healthcheck, before anything after it moves\n", "check", action.Stack)
-		for _, prune := range plan.Prunes {
-			if prune.Stack == action.Stack {
-				fmt.Fprintf(os.Stdout, "  %-9s %s, superseded, once %s is healthy and if no container still uses it\n", "prune", prune.Ref, action.Stack)
-			}
-		}
-	}
-	if !bootstrapped {
-		printBootstrap(plan.Bootstrap)
-	}
-	if plan.HostSites {
-		fmt.Fprintf(os.Stdout, "  %-9s %s, if missing, for site blocks the host's owner adds; nothing in it is ever changed\n", "ensure", render.HostSitesDir)
-	}
-	if plan.GatewayChanging && plan.ACMEModule != "" {
-		fmt.Fprintf(os.Stdout, "  %-9s the gateway's Caddy carries %s, before anything moves\n", "check", plan.ACMEModule)
-	}
-	if plan.GatewayReload {
-		fmt.Fprintf(os.Stdout, "  %-9s the gateway, after its assembled configuration validates\n", "reload")
-	} else if plan.GatewayChanging {
-		fmt.Fprintf(os.Stdout, "  %-9s the assembled gateway configuration, before the gateway is replaced\n", "validate")
-	}
-	if conflicts := plan.Conflicts(); len(conflicts) > 0 {
-		fmt.Fprintf(os.Stdout, "\n%d file(s) were edited on the host. Nothing will be applied until that is resolved.\n", len(conflicts))
-	}
-}
-
-func report(w *os.File, path string, result validate.Result) {
-	if len(result.Findings) == 0 {
-		fmt.Fprintf(w, "%s: no problems found\n", path)
-		return
-	}
-	for _, finding := range result.Findings {
-		fmt.Fprintf(w, "%s\n\n", finding)
-	}
-	fmt.Fprintf(w, "%s: %d refusal(s), %d warning(s)\n",
-		path, len(result.Refusals()), len(result.Warnings()))
 }
 
 // runDNSInit creates the public DNS records a deployment needs, at the
@@ -988,7 +959,7 @@ func report(w *os.File, path string, result validate.Result) {
 // It reaches no host. The workstation talks to the provider's API and to
 // nothing else, so it takes no --site and no --ssh.
 func runDNSInit(args []string) error {
-	cfg, wants, provider, execute, err := dnsSetup("dns init", "actually create the missing records", args)
+	r, cfg, wants, provider, execute, err := dnsSetup("dns init", "actually create the missing records", args)
 	if err != nil {
 		return err
 	}
@@ -999,19 +970,28 @@ func runDNSInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	plan.Write(os.Stdout)
+	// A dry run is the plan. --execute reports progress instead, and shows
+	// the plan first only with --verbose, since its steps say the same.
+	if !execute || r.Verbose() || len(plan.Conflicts()) > 0 {
+		plan.Show(r)
+	}
 
 	if !execute {
-		if len(plan.Creates()) == 0 {
+		if n := len(plan.Conflicts()); n > 0 {
+			r.Result("%s conflict with the provider's. Resolve %s before --execute, which creates nothing while one stands.", plural(n, "record"), map[bool]string{true: "it", false: "them"}[n == 1])
 			return nil
 		}
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to create these.\n")
+		if len(plan.Creates()) == 0 {
+			r.Result("Every record is present. Nothing to create.")
+			return nil
+		}
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	if err := dns.Execute(ctx, provider, plan); err != nil {
+	if err := dns.Execute(ctx, provider, plan, r); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\ncreated %d record(s) at %s, each read back\n", len(plan.Creates()), plan.Provider)
+	r.Result("Created %s at %s.", plural(len(plan.Creates()), "record"), plan.Provider)
 	return nil
 }
 
@@ -1020,7 +1000,7 @@ func runDNSInit(args []string) error {
 // states. A dry run by default, like dns init, and it reaches no host.
 func runDNSPrune(args []string) error {
 	var vouched pathList
-	cfg, wants, provider, execute, err := dnsSetup("dns prune", "actually delete the records listed as remove", args, func(fs *flag.FlagSet) {
+	r, cfg, wants, provider, execute, err := dnsSetup("dns prune", "actually delete the records listed as remove", args, func(fs *flag.FlagSet) {
 		fs.Var(&vouched, "name", "vouch that this exact name, outside community.domain and no longer configured, was this deployment's (repeatable)")
 	})
 	if err != nil {
@@ -1033,19 +1013,22 @@ func runDNSPrune(args []string) error {
 	if err != nil {
 		return err
 	}
-	plan.Write(os.Stdout)
+	if !execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	if !execute {
 		if len(plan.Removes()) == 0 {
+			r.Result("No record to delete.")
 			return nil
 		}
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to delete the records marked remove.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	if err := dns.ExecutePrune(ctx, provider, plan); err != nil {
+	if err := dns.ExecutePrune(ctx, provider, plan, r); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\ndeleted %d record(s) at %s, each confirmed gone\n", len(plan.Removes()), plan.Provider)
+	r.Result("Deleted %s at %s.", plural(len(plan.Removes()), "record"), plan.Provider)
 	return nil
 }
 
@@ -1053,8 +1036,9 @@ func runDNSPrune(args []string) error {
 // validate, derive the wanted records, then open the secrets. The records
 // are worked out before the secrets are opened or the provider is contacted,
 // so a configuration that cannot name its records is refused offline.
-func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagSet)) (*config.Config, []dns.Want, dns.Provider, bool, error) {
+func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagSet)) (ui.Reporter, *config.Config, []dns.Want, dns.Provider, bool, error) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	reporter := commonFlags(fs)
 	for _, add := range extra {
 		add(fs)
 	}
@@ -1062,21 +1046,22 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, executeHelp)
 	if err := fs.Parse(args); err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, nil, false, err
 	}
+	r := reporter()
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, nil, false, err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return nil, nil, nil, false, fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return nil, nil, nil, nil, false, fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
 	wants, err := dns.Desired(cfg)
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, nil, false, err
 	}
 
 	if *secretsPath == "" {
@@ -1084,30 +1069,23 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 	}
 	secrets, err := config.LoadSecrets(*secretsPath)
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, nil, false, err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	provider, err := dns.For(cfg.ACME.Provider, secrets.External["acme_dns_token"])
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, nil, false, err
 	}
-	return cfg, wants, provider, *execute, nil
+	return r, cfg, wants, provider, *execute, nil
 }
 
-// printBootstrap shows the database work where it happens: after the
-// infrastructure stack and before any app stack.
-func printBootstrap(b *apply.Bootstrap) {
-	if len(b.EtcdUnstarted) > 0 {
-		fmt.Fprintf(os.Stdout, "  %-9s after the infrastructure stack: etcd is being founded and %s runs no etcd yet, so no primary can appear. Apply %s, then this site again\n",
-			"stop", strings.Join(b.EtcdUnstarted, ", "), strings.Join(b.EtcdUnstarted, ", then "))
-		return
-	}
-	fmt.Fprintf(os.Stdout, "  %-9s for a Patroni primary at %s, up to 3 minutes; a replica leaves the rest to the leader's site\n", "wait", b.Patroni)
-	for _, db := range b.Databases {
-		fmt.Fprintf(os.Stdout, "  %-9s database %s: role %s with its password, database owned by it, creating only what is missing\n", "bootstrap", db.App, db.Role)
-	}
+// warnUnencrypted is the warning every command that opens the secrets gives
+// for a file that is not under sops. The file is accepted, since fixtures and
+// examples are plain, so it is a warning and not a refusal.
+func warnUnencrypted(r ui.Reporter, path string) {
+	r.Warn(path+" is not encrypted", "That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.")
 }
 
 // pathList collects a repeatable flag. --overwrite takes one path each time it

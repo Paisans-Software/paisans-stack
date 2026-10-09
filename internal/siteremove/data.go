@@ -355,21 +355,21 @@ func (p *Plan) endWantsSync() bool {
 
 // buildData is stage 1: the database and the objects out of the site.
 func (p *Plan) buildData() *Stage {
-	st := &Stage{Number: 1, Name: "data out of the site"}
+	st := &Stage{Number: 1, Name: "data out of the site", Short: "data is off the site"}
 	var gates []string
 	inCluster := contains(p.cfg.Cluster.Sites, p.Site)
 	if inCluster {
 		if p.patroni.leader == p.Site {
-			st.Steps = append(st.Steps, Step{Site: p.patroni.candidate, Verb: "switch", Text: fmt.Sprintf("the Patroni leader from %s to the Sync Standby %s, losing no acknowledged write: %s", p.Site, p.patroni.candidate, failover.SwitchoverCommand(p.dep(), p.Site, p.patroni.candidate))})
+			st.Steps = append(st.Steps, Step{Site: p.patroni.candidate, Verb: "switch", Title: "switch leader to " + p.patroni.candidate, Text: fmt.Sprintf("the Patroni leader from %s to the Sync Standby %s, losing no acknowledged write: %s", p.Site, p.patroni.candidate, failover.SwitchoverCommand(p.dep(), p.Site, p.patroni.candidate))})
 		}
 		if p.patroni.sync && len(p.end.Cluster.Sites) < 2 {
-			st.Steps = append(st.Steps, Step{Site: p.patroni.at, Verb: "set", Text: "synchronous_mode=false in Patroni's dynamic configuration: one data site remains, and a leader that waits for a standby that is leaving stops taking writes"})
+			st.Steps = append(st.Steps, Step{Site: p.patroni.at, Verb: "set", Title: "turn synchronous mode off", Text: "synchronous_mode=false in Patroni's dynamic configuration: one data site remains, and a leader that waits for a standby that is leaving stops taking writes"})
 		}
 		if p.patroni.listed {
 			if !p.HostGone {
-				st.Steps = append(st.Steps, Step{Site: p.Site, Verb: "stop", Text: "Patroni: " + p.stopPatroni()})
+				st.Steps = append(st.Steps, Step{Site: p.Site, Verb: "stop", Title: "stop Patroni on " + p.Site, Text: "Patroni: " + p.stopPatroni()})
 			}
-			st.Steps = append(st.Steps, Step{Site: p.etcd.control, Verb: "delete", Text: fmt.Sprintf("%s's member key, %s, so Patroni stops listing it", p.Site, p.memberKey())})
+			st.Steps = append(st.Steps, Step{Site: p.etcd.control, Verb: "delete", Title: "delete " + p.Site + "'s Patroni member key", Text: fmt.Sprintf("%s's member key, %s, so Patroni stops listing it", p.Site, p.memberKey())})
 		}
 		gate := fmt.Sprintf("`patronictl list` on %s shows another site leading and no %s", p.patroni.at, p.Site)
 		if p.endWantsSync() {
@@ -380,13 +380,14 @@ func (p *Plan) buildData() *Stage {
 	if p.garage.anchor != "" {
 		if p.garage.node != "" {
 			st.Steps = append(st.Steps,
-				Step{Site: p.garage.anchor, Verb: "remove", Text: fmt.Sprintf("%s's node %s from Garage's layout: %s", p.Site, p.garage.node, gcmd(p, "layout remove "+p.garage.node))},
-				Step{Site: p.garage.anchor, Verb: "apply", Text: fmt.Sprintf("the layout: %s; Garage copies the node's partitions to the nodes that stay", gcmd(p, fmt.Sprintf("layout apply --version %d", p.garage.version+1)))},
+				Step{Site: p.garage.anchor, Verb: "remove", Title: "remove " + p.Site + " from the Garage layout", Text: fmt.Sprintf("%s's node %s from Garage's layout: %s", p.Site, p.garage.node, gcmd(p, "layout remove "+p.garage.node))},
+				Step{Site: p.garage.anchor, Verb: "apply", Title: "apply the Garage layout", Text: fmt.Sprintf("the layout: %s; Garage copies the node's partitions to the nodes that stay", gcmd(p, fmt.Sprintf("layout apply --version %d", p.garage.version+1)))},
 			)
 		}
 		gates = append(gates, fmt.Sprintf("no layout row for %s, and on every remaining Garage site one live layout version and an empty resync queue with no errors, %d reads in a row, within %s", p.Site, garageSamples, garageWait))
 	}
 	if len(gates) == 0 {
+		st.Short = "no database or objects here"
 		st.Gate = fmt.Sprintf("none: %s holds no database and no objects", p.Site)
 		return st
 	}
@@ -409,7 +410,7 @@ func (p *Plan) buildData() *Stage {
 func (p *Plan) runData() error {
 	at := p.transports[p.patroni.at]
 	if p.patroni.leader == p.Site {
-		p.say("  %-9s the leader to %s\n", "switch", p.patroni.candidate)
+		p.work("switch leader to " + p.patroni.candidate)
 		t := p.transports[p.patroni.candidate]
 		if out, err := t.Run(failover.SwitchoverCommand(p.dep(), p.Site, p.patroni.candidate)); err != nil {
 			return fmt.Errorf("%s: switchover: %w: %s", p.patroni.candidate, err, lastLines(out, 3))
@@ -434,28 +435,30 @@ func (p *Plan) runData() error {
 		}
 	}
 	if p.patroni.sync && len(p.end.Cluster.Sites) < 2 && contains(p.cfg.Cluster.Sites, p.Site) {
-		p.say("  %-9s synchronous_mode off\n", "set")
+		p.work("turn synchronous mode off")
 		if out, err := at.Run(p.patronictl("edit-config --force -q -s synchronous_mode=false -s synchronous_mode_strict=false")); err != nil {
 			return fmt.Errorf("%s: patronictl edit-config: %w: %s", p.patroni.at, err, lastLines(out, 3))
 		}
 	}
 	if p.patroni.listed {
 		if !p.HostGone {
-			p.say("  %-9s Patroni on %s\n", "stop", p.Site)
+			p.work("stop Patroni on " + p.Site)
 			if out, err := p.transports[p.Site].Run(p.stopPatroni()); err != nil {
 				return fmt.Errorf("%s: stopping Patroni: %w: %s", p.Site, err, lastLines(out, 3))
 			}
 		}
+		p.work("delete " + p.Site + "'s Patroni member key")
 		if out, err := p.transports[p.etcd.control].Run(apply.Etcdctl(p.dep(), "del "+p.memberKey())); err != nil {
 			return fmt.Errorf("%s: deleting %s: %w: %s", p.etcd.control, p.memberKey(), err, lastLines(out, 3))
 		}
 	}
 	if p.garage.node != "" {
 		t := p.transports[p.garage.anchor]
-		p.say("  %-9s %s's Garage node from the layout\n", "remove", p.Site)
+		p.work("remove " + p.Site + " from the Garage layout")
 		if out, err := t.Run(gcmd(p, "layout remove "+p.garage.node)); err != nil {
 			return fmt.Errorf("%s: `garage layout remove`: %w: %s", p.garage.anchor, err, lastLines(out, 3))
 		}
+		p.work("apply the Garage layout")
 		if out, err := t.Run(gcmd(p, fmt.Sprintf("layout apply --version %d", p.garage.version+1))); err != nil {
 			return fmt.Errorf("%s: `garage layout apply`: %w: %s", p.garage.anchor, err, lastLines(out, 3))
 		}

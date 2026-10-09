@@ -22,7 +22,7 @@ package siteremove
 import (
 	"errors"
 	"fmt"
-	"io"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -31,6 +31,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -49,7 +50,21 @@ type Options struct {
 type Step struct {
 	Site string
 	Verb string
+	// Text is the whole step, commands included. A dry run shows it only with
+	// --verbose.
 	Text string
+	// Title is the step as a line of its own. It is empty for a step that
+	// has none worth the name, which then reads as its verb and site. Steps
+	// that follow each other with one title are listed as one item.
+	Title string
+}
+
+// title is the line a dry run lists the step as.
+func (s Step) title() string {
+	if s.Title != "" {
+		return s.Title
+	}
+	return s.Verb + " " + s.Site
 }
 
 // Stage is one stage of the removal: its steps, then its gate.
@@ -59,6 +74,9 @@ type Stage struct {
 	Steps  []Step
 	// Gate says what must hold before the next stage may start.
 	Gate string
+	// Short names the gate in a few words, as the title of its step. The long
+	// text is that step's detail.
+	Short string
 	// Skipped says why the stage does nothing, empty when it runs.
 	Skipped string
 
@@ -76,9 +94,9 @@ type Plan struct {
 	// Kept is what the removal leaves on the host, with why: planned at
 	// Build and added to as the host stage runs.
 	Kept []string
-	// Progress receives each stage as it starts and each gate as it passes.
-	// Nil discards it.
-	Progress io.Writer
+	// Report receives each stage as a section, the work in it as steps and
+	// each gate as a step of its own. Nil discards it.
+	Report ui.Reporter
 
 	cfg *config.Config
 	end *config.Config
@@ -95,11 +113,41 @@ type Plan struct {
 	patroni patroniState
 	garage  garageState
 	host    *hostPlan
+	// open is the step the running stage is in the middle of, ended when the
+	// next one starts or the stage's work does.
+	open ui.Step
 }
 
-func (p *Plan) say(format string, args ...any) {
-	if p.Progress != nil {
-		fmt.Fprintf(p.Progress, format, args...)
+func (p *Plan) reporter() ui.Reporter {
+	if p.Report == nil {
+		return ui.Discard
+	}
+	return p.Report
+}
+
+// work starts the step a stage's run is now doing and ends the one before it,
+// so a stage's work reads as a list of steps and a failure marks the one that
+// failed.
+func (p *Plan) work(title string) ui.Step {
+	p.idle()
+	p.open = p.reporter().Step(title)
+	return p.open
+}
+
+// idle ends the open step as done. A step that calls into apply ends its own
+// first, since the apply reports steps of its own and two cannot be open.
+func (p *Plan) idle() {
+	if p.open != nil {
+		p.open.Done("")
+		p.open = nil
+	}
+}
+
+// stop ends the open step as failed, when there is one.
+func (p *Plan) stop(err error) {
+	if p.open != nil {
+		p.open.Fail(err)
+		p.open = nil
 	}
 }
 
@@ -385,7 +433,7 @@ func (p *Plan) notePocketID(st *Stage) {
 	for _, app := range apply.StandbyApps(p.cfg) {
 		for _, in := range apply.LookAtInstances(p.cfg, app, map[string]apply.Transport{p.Site: p.transports[p.Site]}) {
 			if in.Site == p.Site && in.State == apply.Active {
-				notes = append(notes, Step{Site: p.Site, Verb: "note", Text: fmt.Sprintf("it holds the active instance of Pocket ID %s, so once this stage stops it, sign in is unavailable for a few seconds while a standby on another site takes over, up to about 90 seconds if the instance does not stop cleanly", app)})
+				notes = append(notes, Step{Site: p.Site, Verb: "note", Title: "note Pocket ID failover", Text: fmt.Sprintf("it holds the active instance of Pocket ID %s, so once this stage stops it, sign in is unavailable for a few seconds while a standby on another site takes over, up to about 90 seconds if the instance does not stop cleanly", app)})
 			}
 		}
 	}
@@ -408,13 +456,15 @@ func (p *Plan) buildConfig() *Stage {
 		Number: 4,
 		Name:   "config",
 		Gate:   fmt.Sprintf("%s loads, and declares no site %s", p.ConfigPath, p.Site),
-		Steps:  []Step{{Site: p.Site, Verb: "remove", Text: fmt.Sprintf("sites.%s from %s, and its name from cluster.sites, etcd.members, storage.garage.sites and storage.garage.capacities, keeping every comment", p.Site, p.ConfigPath)}},
+		Short:  "configuration loads without " + p.Site,
+		Steps:  []Step{{Site: p.Site, Verb: "remove", Title: "remove " + p.Site + " from " + path.Base(p.ConfigPath), Text: fmt.Sprintf("sites.%s from %s, and its name from cluster.sites, etcd.members, storage.garage.sites and storage.garage.capacities, keeping every comment", p.Site, p.ConfigPath)}},
 	}
 	if p.witness != "" {
 		st.Gate += fmt.Sprintf(", etcd.members does not list %s, and %s has no witness role", p.witness, p.witness)
-		st.Steps = append(st.Steps, Step{Site: p.witness, Verb: "remove", Text: fmt.Sprintf("%s from etcd.members and witness from sites.%s.roles, in the same write", p.witness, p.witness)})
+		st.Steps = append(st.Steps, Step{Site: p.witness, Verb: "remove", Title: "remove witness " + p.witness, Text: fmt.Sprintf("%s from etcd.members and witness from sites.%s.roles, in the same write", p.witness, p.witness)})
 	}
 	st.run = func() error {
+		p.work("remove " + p.Site + " from " + path.Base(p.ConfigPath))
 		if p.ConfigPath == "" {
 			return fmt.Errorf("no configuration file to edit")
 		}
@@ -443,26 +493,37 @@ func (p *Plan) buildConfig() *Stage {
 // any; its gate always runs, so a resumed removal proves each stage again
 // before moving past it.
 func Execute(p *Plan) error {
+	r := p.reporter()
 	for _, st := range p.Stages {
-		p.say("stage %d, %s\n", st.Number, st.Name)
+		r.Section(stageTitle(st))
 		if st.Skipped != "" {
-			p.say("  %-9s %s\n", "skipped", st.Skipped)
+			s := r.Step("skip " + st.Name)
+			s.Detail("%s", st.Skipped)
+			s.Done("skipped")
 			continue
 		}
 		if st.run != nil && len(st.Steps) > 0 {
-			if err := st.run(); err != nil {
+			err := st.run()
+			if err != nil {
+				p.stop(err)
 				return p.fail(st, err)
 			}
+			p.idle()
 		}
+		g := r.Step("gate: " + st.Short)
+		g.Detail("%s", st.Gate)
 		if st.gate != nil {
 			if err := st.gate(); err != nil {
+				g.Fail(err)
 				return p.fail(st, fmt.Errorf("gate: %w", err))
 			}
 		}
-		p.say("  %-9s %s\n", "passed", st.Gate)
+		g.Done("passed")
 	}
 	return nil
 }
+
+func stageTitle(st *Stage) string { return fmt.Sprintf("stage %d, %s", st.Number, st.Name) }
 
 func (p *Plan) fail(st *Stage, err error) error {
 	if st.Number == monitorStage {
@@ -473,23 +534,31 @@ func (p *Plan) fail(st *Stage, err error) error {
 	return fmt.Errorf("site remove %s stopped at stage %d (%s), and nothing after it ran: %v\nFix the cause and run site remove again: it resumes at the first stage with anything left to do", p.Site, st.Number, st.Name, err)
 }
 
-// Print writes the plan as an operator reads it. What it leaves for later is
-// Remains.
-func (p *Plan) Print(w io.Writer) {
-	fmt.Fprintf(w, "site remove %s\n", p.Site)
+// Show lists the plan as an operator reads it: a section per stage, an item
+// per step and one for the gate, with the whole text of each as its detail.
+// What the removal leaves for later is Remains.
+func (p *Plan) Show(r ui.Reporter) {
 	for _, st := range p.Stages {
-		fmt.Fprintf(w, "\n%d. %s\n", st.Number, st.Name)
+		r.Section(stageTitle(st))
 		if st.Skipped != "" {
-			fmt.Fprintf(w, "  %-9s %s\n", "skip", st.Skipped)
+			r.Item("skip " + st.Name)
+			r.Detail("%s", st.Skipped)
 			continue
 		}
 		if len(st.Steps) == 0 {
-			fmt.Fprintf(w, "  %-9s nothing to do here, and the gate is still checked\n", "nothing")
+			r.Item("nothing to do here")
+			r.Detail("nothing to do here, and the gate is still checked")
 		}
+		last := ""
 		for _, step := range st.Steps {
-			fmt.Fprintf(w, "  %-9s %s: %s\n", step.Verb, step.Site, step.Text)
+			if t := step.title(); t != last {
+				r.Item(t)
+				last = t
+			}
+			r.Detail("%s: %s", step.Site, step.Text)
 		}
-		fmt.Fprintf(w, "  %-9s %s\n", "gate", st.Gate)
+		r.Item("gate: " + st.Short)
+		r.Detail("%s", st.Gate)
 	}
 }
 
@@ -501,14 +570,10 @@ func (p *Plan) Remains() []string {
 	var out []string
 	if p.secrets != nil {
 		if _, ok := p.secrets.Sites[p.Site]; ok {
-			out = append(out, fmt.Sprintf("secrets: sites.%s (its WireGuard key) is still in the secrets file, which this command never edits. Remove it with sops once nothing needs it", p.Site))
+			out = append(out, secretsLeft(p.Site))
 		}
 	}
-	if addr := p.cfg.Sites[p.Site].PublicAddress; addr != "" {
-		out = append(out, fmt.Sprintf("DNS: records dns init made pointing at %s stay until `paisans dns prune --execute` deletes them", addr))
-	} else {
-		out = append(out, "DNS: any record dns init made pointing at this host stays until `paisans dns prune --execute` deletes it")
-	}
+	out = append(out, dnsLeft(p.cfg.Sites[p.Site].PublicAddress))
 	out = append(out, p.Notes...)
 	out = append(out, p.Kept...)
 	return out

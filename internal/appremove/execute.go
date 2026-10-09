@@ -3,7 +3,6 @@ package appremove
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/url"
 	"sort"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // composeProjectLabel is the label Compose puts on every container, network
@@ -73,16 +73,43 @@ type Executor struct {
 	// Clients is Pocket ID's API at the plan's client site, nil when the
 	// plan deletes no client.
 	Clients Clients
-	// Progress receives one line per step done.
-	Progress io.Writer
+	// Report receives a section per place the removal acts and a step per
+	// thing it does there. Nil discards it.
+	Report ui.Reporter
 	// Kept collects what a step found had to stay, for the report.
 	Kept []string
+
+	// open is the step being done, ended when the next starts or the run does.
+	open ui.Step
 }
 
-func (e *Executor) say(format string, args ...any) {
-	if e.Progress != nil {
-		fmt.Fprintf(e.Progress, format+"\n", args...)
+func (e *Executor) reporter() ui.Reporter {
+	if e.Report == nil {
+		return ui.Discard
 	}
+	return e.Report
+}
+
+// work starts the step now being done and ends the one before it, so a
+// failure marks the step that failed.
+func (e *Executor) work(title string) ui.Step {
+	e.idle()
+	e.open = e.reporter().Step(title)
+	return e.open
+}
+
+// idle ends the open step as done.
+func (e *Executor) idle() {
+	if e.open != nil {
+		e.open.Done("")
+		e.open = nil
+	}
+}
+
+// section starts a block of steps, after the step before it has ended.
+func (e *Executor) section(format string, args ...any) {
+	e.idle()
+	e.reporter().Section(fmt.Sprintf(format, args...))
 }
 
 // Execute runs every step in order: on each site its containers and
@@ -94,6 +121,16 @@ func (e *Executor) say(format string, args ...any) {
 // and is a no-op once done, and the first failure stops the run, so running
 // it again resumes.
 func (e *Executor) Execute(p *Plan) error {
+	err := e.execute(p)
+	if err != nil && e.open != nil {
+		e.open.Fail(err)
+		e.open = nil
+	}
+	e.idle()
+	return err
+}
+
+func (e *Executor) execute(p *Plan) error {
 	d := p.Deployment
 	for _, s := range p.Sites {
 		if s.Empty() {
@@ -103,65 +140,74 @@ func (e *Executor) Execute(p *Plan) error {
 		if h == nil {
 			return fmt.Errorf("%s: no way to reach the host", s.Site)
 		}
+		e.section("%s", s.Site)
+		e.work("remove containers and networks").Detail("containers and networks of %s", s.Project)
 		if out, err := h.Run(ContainersCommand(d, s.Project, p.DeleteData)); err != nil {
 			return fmt.Errorf("%s: stopping and removing %s: %w: %s", s.Site, s.Project, err, firstLine(out))
 		}
-		e.say("  %-9s %s: containers and networks of %s", "removed", s.Site, s.Project)
 		if err := e.files(h, d, s); err != nil {
 			return fmt.Errorf("%s: %w", s.Site, err)
 		}
 		dir := d.Dir(p.App)
 		deleteDir := p.DeleteData && !s.edited(dir)
+		if deleteDir {
+			e.work("delete " + dir)
+		} else {
+			e.work("remove empty directories")
+		}
 		if out, err := h.Run(DirCommandFor(dir, deleteDir)); err != nil {
 			return fmt.Errorf("%s: %s: %w: %s", s.Site, dir, err, firstLine(out))
 		}
 		if p.DeleteData && !deleteDir {
-			e.Kept = append(e.Kept, fmt.Sprintf("%s: %s and its data, because a file in it was edited on the host", s.Site, dir))
+			e.Kept = append(e.Kept, dirEdited(s.Site, dir))
 		}
 		if dd, err := probeDir(h, dir); err != nil {
 			return fmt.Errorf("%s: %w", s.Site, err)
 		} else if dd.Exists {
-			e.Kept = append(e.Kept, fmt.Sprintf("%s: %s, %d file(s), %s, not written by apply", s.Site, dir, dd.Files, size(dd.Bytes)))
-		} else {
-			e.say("  %-9s %s: %s", "removed", s.Site, dir)
+			e.Kept = append(e.Kept, dirData(s.Site, dir, dd.Files, size(dd.Bytes)))
 		}
 		if p.DeleteData {
+			e.work("delete volumes").Detail("volumes %s", strings.Join(s.Volumes, ", "))
 			if out, err := h.Run(VolumesCommand(d, s.Project)); err != nil {
 				return fmt.Errorf("%s: removing %s's volumes: %w: %s", s.Site, s.Project, err, firstLine(out))
-			}
-			if len(s.Volumes) > 0 {
-				e.say("  %-9s %s: volumes %s", "removed", s.Site, strings.Join(s.Volumes, ", "))
 			}
 		}
 	}
 	if c := p.Client.Delete; c != nil {
+		e.section("Pocket ID (%s)", p.Client.Provider)
+		e.work("delete client "+c.Name).Detail("client %s (id %s) at %s", c.Name, c.ID, p.Client.Provider)
 		if e.Clients == nil {
 			return fmt.Errorf("no way to reach Pocket ID to delete client %s", c.ID)
 		}
 		if err := e.Clients.DeleteOIDCClient(c.ID); err != nil {
 			return fmt.Errorf("deleting client %s (id %s) at %s: %w", c.Name, c.ID, p.Client.Provider, err)
 		}
-		e.say("  %-9s client %s (id %s) at %s", "deleted", c.Name, c.ID, p.Client.Provider)
 	}
 	if db := p.Database; db != nil && (db.DropDatabase || db.DropRole) {
+		e.section("Postgres (the leader, %s)", db.Leader)
 		if err := e.database(d, db); err != nil {
 			return err
 		}
 	}
 	if st := p.Storage; st != nil && (len(st.Buckets) > 0 || len(st.Keys) > 0) {
+		e.section("Garage (on %s)", st.Anchor)
 		if err := e.storage(d, st); err != nil {
 			return err
 		}
 	}
+	// The monitor's reseed is not a step of the removal above, so the last of
+	// those ends first: a failure here must not mark an unrelated line.
+	e.idle()
 	for _, m := range p.Monitors {
+		if m.Pending() {
+			e.section("%s (the monitor)", m.Site)
+			e.work("apply "+m.App+" on "+m.Site).Detail("%s on %s, on the seed rendered without %s", m.App, m.Site, p.App)
+		}
 		if err := m.Execute(); err != nil {
 			return &MonitorError{Err: err, Monitors: p.Monitors}
 		}
 		if err := m.Gate(); err != nil {
 			return &MonitorError{Err: err, Monitors: p.Monitors}
-		}
-		if m.Pending() {
-			e.say("  %-9s %s on %s, on the seed rendered without %s", "applied", m.App, m.Site, p.App)
 		}
 	}
 	return nil
@@ -189,6 +235,7 @@ func (e *Executor) files(h Host, d deployment.Deployment, s SitePlan) error {
 	if len(s.Files) == 0 {
 		return nil
 	}
+	e.work("remove files")
 	out, err := h.Run(FilesCommand(s.Files))
 	if err != nil {
 		return fmt.Errorf("removing files: %w: %s", err, firstLine(out))
@@ -206,10 +253,10 @@ func (e *Executor) files(h Host, d deployment.Deployment, s SitePlan) error {
 		case "removed", "gone":
 			drop[rel] = true
 			if verb == "removed" {
-				e.say("  %-9s %s: %s", "removed", s.Site, p)
+				e.open.Detail("%s", p)
 			}
 		case "kept":
-			e.Kept = append(e.Kept, fmt.Sprintf("%s: %s, edited on the host since apply wrote it, kept with its manifest entry. Delete it by hand once nothing needs it, and run this again", s.Site, p))
+			e.Kept = append(e.Kept, fileEdited(s.Site, p))
 		}
 	}
 	for _, f := range s.Files {
@@ -269,10 +316,10 @@ func (e *Executor) database(d deployment.Deployment, db *DatabasePlan) error {
 	if h == nil {
 		return fmt.Errorf("%s: no way to reach Patroni's leader", db.Leader)
 	}
+	e.work("drop database "+db.Name).Detail("database and role %s", db.Name)
 	if out, err := h.RunInput(psql(d), DropSQL(db)); err != nil {
 		return fmt.Errorf("%s: dropping %s: %w: %s", db.Leader, db.Name, err, strings.TrimSpace(out))
 	}
-	e.say("  %-9s %s: database and role %s", "dropped", db.Leader, db.Name)
 	return nil
 }
 
@@ -286,6 +333,7 @@ func (e *Executor) storage(d deployment.Deployment, st *StoragePlan) error {
 		return fmt.Errorf("%s: no way to reach Garage", st.Anchor)
 	}
 	for _, b := range st.Buckets {
+		e.work("delete bucket " + b.Name)
 		if err := e.empty(h, st.Address, b); err != nil {
 			return fmt.Errorf("%s: emptying bucket %s: %w", st.Anchor, b.Name, err)
 		}
@@ -298,9 +346,9 @@ func (e *Executor) storage(d deployment.Deployment, st *StoragePlan) error {
 				return fmt.Errorf("%s: %w", st.Anchor, err)
 			}
 		}
-		e.say("  %-9s %s: bucket %s", "deleted", st.Anchor, b.Name)
 	}
 	for _, id := range st.Keys {
+		e.work("delete S3 key " + id)
 		kb, err := garage.ReadKeyBuckets(h, d, id)
 		if err != nil {
 			return err
@@ -310,7 +358,6 @@ func (e *Executor) storage(d deployment.Deployment, st *StoragePlan) error {
 				return fmt.Errorf("%s: %w", st.Anchor, err)
 			}
 		}
-		e.say("  %-9s %s: S3 key %s", "deleted", st.Anchor, id)
 	}
 	return nil
 }

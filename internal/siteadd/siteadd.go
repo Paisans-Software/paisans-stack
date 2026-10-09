@@ -14,7 +14,6 @@ package siteadd
 import (
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -24,13 +23,31 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/preflight"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Step is one thing a stage will do, for the plan an operator reads.
 type Step struct {
 	Site string
 	Verb string
+	// Text is the whole step, commands included. A dry run shows it only with
+	// --verbose.
 	Text string
+	// Level is "warn" or "refuse" for a step that is a finding rather than
+	// work: a dry run reports it as a warning or a refusal so it shows without
+	// --verbose.
+	Level string
+	// Title is the step as a line of its own. It is empty for a step that
+	// has none worth the name, which then reads as its verb and site.
+	Title string
+}
+
+// title is the line a dry run lists the step as.
+func (s Step) title() string {
+	if s.Title != "" {
+		return s.Title
+	}
+	return s.Verb + " " + s.Site
 }
 
 // Stage is one stage of the join: its steps, then its gate.
@@ -40,6 +57,9 @@ type Stage struct {
 	Steps  []Step
 	// Gate says what must hold before the next stage may start.
 	Gate string
+	// Short names the gate in a few words, as the title of its step. The long
+	// text is that step's detail.
+	Short string
 	// OnFailure says what a failed gate undoes, empty when it undoes nothing.
 	OnFailure string
 
@@ -55,9 +75,9 @@ type Plan struct {
 	Preflight preflight.Report
 	// Notes are things the join leaves for later, on purpose.
 	Notes []string
-	// Progress receives each stage as it starts and each gate as it passes.
-	// Nil discards it.
-	Progress io.Writer
+	// Report receives each stage as a section, the work in it as steps and
+	// each gate as a step of its own. Nil discards it.
+	Report ui.Reporter
 	// KeepImages leaves superseded images on the new site, as apply's
 	// --keep-images does. It is set for a host the host check found shared,
 	// where an image the toolkit renders may be what something else runs
@@ -81,11 +101,41 @@ type Plan struct {
 	patroni string
 	// preflightSkipped says why stage 1 is not run, empty when it is.
 	preflightSkipped string
+	// open is the step the running stage is in the middle of, ended when the
+	// next one starts or the stage's work does.
+	open ui.Step
 }
 
-func (p *Plan) say(format string, args ...any) {
-	if p.Progress != nil {
-		fmt.Fprintf(p.Progress, format, args...)
+func (p *Plan) reporter() ui.Reporter {
+	if p.Report == nil {
+		return ui.Discard
+	}
+	return p.Report
+}
+
+// work starts the step a stage's run is now doing and ends the one before it,
+// so a stage's work reads as a list of steps and a failure marks the one that
+// failed.
+func (p *Plan) work(title string) ui.Step {
+	p.idle()
+	p.open = p.reporter().Step(title)
+	return p.open
+}
+
+// idle ends the open step as done. A step that calls into apply ends its own
+// first, since the apply reports steps of its own and two cannot be open.
+func (p *Plan) idle() {
+	if p.open != nil {
+		p.open.Done("")
+		p.open = nil
+	}
+}
+
+// stop ends the open step as failed, when there is one.
+func (p *Plan) stop(err error) {
+	if p.open != nil {
+		p.open.Fail(err)
+		p.open = nil
 	}
 }
 
@@ -315,21 +365,21 @@ func (p *Plan) joinStarted(live []apply.EtcdMember) (bool, string, error) {
 }
 
 func (p *Plan) buildPreflight() *Stage {
-	st := &Stage{Number: 1, Name: "preflight", Gate: "every check passes"}
+	st := &Stage{Number: 1, Name: "preflight", Gate: "every check passes", Short: "preflight checks pass"}
 	if p.preflightSkipped != "" {
 		st.Gate = "passed on the run that started this join"
-		st.Steps = append(st.Steps, Step{Site: p.Site, Verb: "skip", Text: "preflight is not run again: " + p.preflightSkipped + ", and preflight's checks are for a host the join has not touched (its own mesh interface now holds its port)"})
+		st.Steps = append(st.Steps, Step{Site: p.Site, Verb: "skip", Title: "skip preflight", Text: "preflight is not run again: " + p.preflightSkipped + ", and preflight's checks are for a host the join has not touched (its own mesh interface now holds its port)"})
 		return st
 	}
 	for _, c := range p.Preflight.Checks {
-		verb := "pass"
+		verb, level := "pass", ""
 		switch {
 		case c.Refused:
-			verb = "refuse"
+			verb, level = "refuse", "refuse"
 		case c.Warned:
-			verb = "warn"
+			verb, level = "warn", "warn"
 		}
-		st.Steps = append(st.Steps, Step{Site: c.Site, Verb: verb, Text: c.Name + ": " + c.Detail})
+		st.Steps = append(st.Steps, Step{Site: c.Site, Verb: verb, Level: level, Title: c.Name + " on " + c.Site, Text: c.Detail})
 	}
 	st.gate = func() error {
 		if !p.Preflight.Refused() {
@@ -381,9 +431,10 @@ func (p *Plan) noteOwed(rendered *render.Plan, members []patroniMember) error {
 // Patroni recreated and streaming again before the next (see
 // apply.ReplicaEnv).
 func (p *Plan) buildReplicaEnvs(rendered *render.Plan, members []patroniMember) (*Stage, error) {
-	st := &Stage{Number: 7, Name: "replicas' patroni.env"}
+	st := &Stage{Number: 7, Name: "replicas' patroni.env", Short: "replicas stream"}
 	lead := leader(members)
 	if lead == "" {
+		st.Short = "no leader reported"
 		st.Gate = "none: Patroni reported no leader, so no replica is recreated; stage 4 cannot pass without one either"
 		return st, nil
 	}
@@ -400,11 +451,12 @@ func (p *Plan) buildReplicaEnvs(rendered *render.Plan, members []patroniMember) 
 			continue
 		}
 		for _, s := range r.Steps(p.dep()) {
-			st.Steps = append(st.Steps, Step{Site: name, Verb: s.Verb, Text: s.Text})
+			st.Steps = append(st.Steps, Step{Site: name, Verb: s.Verb, Title: "recreate Patroni on " + name, Text: s.Text})
 		}
 		replicas = append(replicas, r)
 	}
 	if len(replicas) == 0 {
+		st.Short = "no replica to update"
 		st.Gate = "none: no existing replica runs with other etcd hosts than its patroni.env names"
 		return st, nil
 	}
@@ -423,12 +475,12 @@ func (p *Plan) buildReplicaEnvs(rendered *render.Plan, members []patroniMember) 
 	}
 	st.run = func() error {
 		for _, r := range replicas {
-			p.say("  %-9s Patroni on %s, with its patroni.env up to date\n", "recreate", r.Site)
+			p.work("recreate Patroni on "+r.Site).Detail("Patroni on %s, with its patroni.env up to date", r.Site)
 			gate := apply.ReplicaEnvGate{At: p.transports[lead], Wait: replicaWait, Poll: replicaPoll, Sleep: sleep, Sync: p.cfg.Cluster.Synchronous}
 			if err := r.Execute(p.dep(), p.transports[r.Site], gate); err != nil {
 				return err
 			}
-			p.say("  %-9s %s streams again\n", "checked", r.Site)
+			p.open.Detail("%s streams again", r.Site)
 		}
 		return nil
 	}
@@ -440,22 +492,31 @@ func (p *Plan) buildReplicaEnvs(rendered *render.Plan, members []patroniMember) 
 // moving past it. A failed gate stops everything, after undoing what that
 // stage undoes.
 func Execute(p *Plan) error {
+	r := p.reporter()
 	for _, st := range p.Stages {
-		p.say("stage %d, %s\n", st.Number, st.Name)
+		r.Section(stageTitle(st))
 		if st.run != nil && len(st.Steps) > 0 {
-			if err := st.run(); err != nil {
+			err := st.run()
+			if err != nil {
+				p.stop(err)
 				return p.fail(st, err)
 			}
+			p.idle()
 		}
+		g := r.Step("gate: " + st.Short)
+		g.Detail("%s", st.Gate)
 		if st.gate != nil {
 			if err := st.gate(); err != nil {
+				g.Fail(err)
 				return p.fail(st, fmt.Errorf("gate: %w", err))
 			}
 		}
-		p.say("  %-9s %s\n", "passed", st.Gate)
+		g.Done("passed")
 	}
 	return nil
 }
+
+func stageTitle(st *Stage) string { return fmt.Sprintf("stage %d, %s", st.Number, st.Name) }
 
 func (p *Plan) fail(st *Stage, err error) error {
 	msg := fmt.Sprintf("site add %s stopped at stage %d (%s), and nothing after it ran: %v", p.Site, st.Number, st.Name, err)
@@ -474,24 +535,37 @@ func (p *Plan) fail(st *Stage, err error) error {
 	return fmt.Errorf("%s\nFix the cause and run site add again: it resumes at the first stage whose gate does not pass", msg)
 }
 
-// Print writes the plan as an operator reads it.
-func (p *Plan) Print(w io.Writer) {
-	fmt.Fprintf(w, "site add %s\n", p.Site)
+// Show lists the plan as an operator reads it: a section per stage, an item
+// per step (steps that follow each other with one title are one item) and one
+// for the gate, with the whole text of each as its detail.
+func (p *Plan) Show(r ui.Reporter) {
 	for _, st := range p.Stages {
-		fmt.Fprintf(w, "\n%d. %s\n", st.Number, st.Name)
+		r.Section(stageTitle(st))
 		if len(st.Steps) == 0 {
-			fmt.Fprintf(w, "  %-9s nothing to do here, and the gate is still checked\n", "nothing")
+			r.Item("nothing to do here")
+			r.Detail("nothing to do here, and the gate is still checked")
 		}
+		last := ""
 		for _, step := range st.Steps {
-			fmt.Fprintf(w, "  %-9s %s: %s\n", step.Verb, step.Site, step.Text)
+			switch step.Level {
+			case "refuse":
+				r.Refuse(step.title()+" refused", step.Text)
+				continue
+			case "warn":
+				r.Warn(step.title(), step.Text)
+				continue
+			}
+			if t := step.title(); t != last {
+				r.Item(t)
+				last = t
+			}
+			r.Detail("%s: %s", step.Site, step.Text)
 		}
-		fmt.Fprintf(w, "  %-9s %s\n", "gate", st.Gate)
+		r.Item("gate: " + st.Short)
+		r.Detail("%s", st.Gate)
 		if st.OnFailure != "" {
-			fmt.Fprintf(w, "  %-9s %s\n", "rollback", st.OnFailure)
+			r.Detail("rollback: %s", st.OnFailure)
 		}
-	}
-	for _, note := range p.Notes {
-		fmt.Fprintf(w, "\nnote: %s\n", note)
 	}
 }
 

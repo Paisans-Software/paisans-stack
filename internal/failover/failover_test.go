@@ -13,6 +13,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // world is the cluster every fake host shares: who leads, what each replica
@@ -156,8 +157,8 @@ func ok(string) int { return http.StatusOK }
 
 func TestDryRunChecksAndChangesNothing(t *testing.T) {
 	cfg, w, o, asked := setup(t, ok)
-	var out strings.Builder
-	o.Out = &out
+	rec := &ui.Recorder{Verbose_: true}
+	o.Report = rec
 	if err := Run(cfg, o); err != nil {
 		t.Fatal(err)
 	}
@@ -169,13 +170,17 @@ func TestDryRunChecksAndChangesNothing(t *testing.T) {
 	if w.leader != "home-a" {
 		t.Fatalf("leader moved to %s", w.leader)
 	}
-	text := out.String()
+	text := rec.Lines()
 	for _, want := range []string{
 		"on home-a: " + SwitchoverCommand(cfg.Deployment(), "home-a", "home-b"),
 		"on home-b: " + SwitchoverCommand(cfg.Deployment(), "home-b", "home-a"),
 		"expected interruption",
-		"Nothing was changed",
-		"auth on home-a healthy",
+		"warn: writes fail twice",
+		"Nothing changed. Re-run with --execute",
+		"done: check auth on home-a healthy",
+		"restart the apps that use the cluster database, on every apps site",
+		"item: restart auth on home-a",
+		"detail: on home-a: docker compose -f /srv/paisans/f2a9/auth/compose.yaml restart",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("dry run does not say %q:\n%s", want, text)
@@ -202,10 +207,10 @@ func TestSwitchoverCommandFlags(t *testing.T) {
 func TestExecuteSwitchesOverAndBack(t *testing.T) {
 	cfg, w, o, _ := setup(t, ok)
 	o.Execute = true
-	var out strings.Builder
-	o.Out = &out
+	rec := &ui.Recorder{Verbose_: true}
+	o.Report = rec
 	if err := Run(cfg, o); err != nil {
-		t.Fatalf("%v\n%s", err, out.String())
+		t.Fatalf("%v\n%s", err, rec.Lines())
 	}
 	var switches []string
 	for _, c := range w.ran {
@@ -221,8 +226,14 @@ func TestExecuteSwitchesOverAndBack(t *testing.T) {
 	if w.leader != "home-a" {
 		t.Fatalf("leader ended on %s", w.leader)
 	}
-	if strings.Count(out.String(), "gate passed") != 2 {
-		t.Errorf("want two gates passed:\n%s", out.String())
+	var gates int
+	for _, e := range rec.Events {
+		if e.Kind == "done" && e.Text == "wait for apps" {
+			gates++
+		}
+	}
+	if gates != 2 || !rec.Has("result", "Failover test passed: home-a is the primary again") {
+		t.Errorf("want two gates passed and the result:\n%s", rec.Lines())
 	}
 }
 
@@ -237,7 +248,7 @@ func TestPreflightRefuses(t *testing.T) {
 		"lag unknown":           {setup: func(w *world) { w.lag["home-b"] = `"unknown"` }, want: "lags by unknown"},
 		"no sync standby":       {setup: func(w *world) { w.noSync = true }, want: "no member is a Sync Standby"},
 		"member missing":        {setup: func(w *world) { w.members = []string{"home-a"} }, want: "home-b is not a cluster member"},
-		"stack unhealthy":       {setup: func(w *world) { w.unhealthy["blog"] = true }, want: "blog on home-a"},
+		"stack unhealthy":       {setup: func(w *world) { w.unhealthy["blog"] = true }, want: "blog is not healthy on home-a"},
 		"app answers 502": {
 			status: func(path string) int {
 				if path == "/.well-known/openid-configuration" {
@@ -259,14 +270,14 @@ func TestPreflightRefuses(t *testing.T) {
 				tc.setup(w)
 			}
 			o.Execute = true
-			var out strings.Builder
-			o.Out = &out
+			rec := &ui.Recorder{Verbose_: true}
+			o.Report = rec
 			err := Run(cfg, o)
 			if err == nil {
-				t.Fatalf("not refused:\n%s", out.String())
+				t.Fatalf("not refused:\n%s", rec.Lines())
 			}
-			if !strings.Contains(out.String(), tc.want) {
-				t.Errorf("output does not say %q:\n%s", tc.want, out.String())
+			if !strings.Contains(rec.Lines(), tc.want) {
+				t.Errorf("output does not say %q:\n%s", tc.want, rec.Lines())
 			}
 			for _, c := range w.ran {
 				if strings.Contains(c, "patronictl") {
@@ -319,19 +330,18 @@ func TestEachSwitchRestartsTheDatabaseAppsOnEveryAppsSite(t *testing.T) {
 	pinned.Placement = config.Placement{Mode: config.PlacementPinned, Site: "home-a"}
 	cfg.Apps["blog"] = pinned
 	o.Execute = true
-	var out strings.Builder
-	o.Out = &out
+	rec := &ui.Recorder{Verbose_: true}
+	o.Report = rec
 	if err := Run(cfg, o); err != nil {
-		t.Fatalf("%v\n%s", err, out.String())
+		t.Fatalf("%v\n%s", err, rec.Lines())
 	}
 	for _, want := range []string{
-		"restart the apps that use the cluster database, on every apps site",
-		"on home-a: docker compose -f /srv/paisans/f2a9/auth/compose.yaml restart",
-		"on home-b: docker compose -f /srv/paisans/f2a9/auth/compose.yaml restart",
-		"restarted auth on home-b",
+		"done: restart auth on home-a",
+		"done: restart auth on home-b",
+		"detail: docker compose -f /srv/paisans/f2a9/auth/compose.yaml restart restart auth on home-b",
 	} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("output does not say %q:\n%s", want, out.String())
+		if !strings.Contains(rec.Lines(), want) {
+			t.Errorf("output does not say %q:\n%s", want, rec.Lines())
 		}
 	}
 
@@ -416,16 +426,16 @@ func twoAppsSites(cfg *config.Config) {
 func TestPreflightChecksOnePocketIDIsActive(t *testing.T) {
 	cfg, _, o, _ := setup(t, ok)
 	twoAppsSites(cfg)
-	var out strings.Builder
-	o.Out = &out
+	rec := &ui.Recorder{Verbose_: true}
+	o.Report = rec
 	if err := Run(cfg, o); err != nil {
-		t.Fatalf("%v\n%s", err, out.String())
+		t.Fatalf("%v\n%s", err, rec.Lines())
 	}
-	if !strings.Contains(out.String(), "ok       standby  pocket-id auth: home-a active, home-b standby") {
-		t.Errorf("preflight does not report the standby:\n%s", out.String())
+	if !strings.Contains(rec.Lines(), "done: check auth standby home-a active, home-b standby") {
+		t.Errorf("preflight does not report the standby:\n%s", rec.Lines())
 	}
-	if !strings.Contains(out.String(), "Each gate\nwaits for exactly one active instance.") {
-		t.Errorf("the plan does not say the gate waits for one active Pocket ID:\n%s", out.String())
+	if !strings.Contains(rec.Lines(), "waits for exactly one active instance.") {
+		t.Errorf("the plan does not say the gate waits for one active Pocket ID:\n%s", rec.Lines())
 	}
 }
 
@@ -434,13 +444,13 @@ func TestPreflightRefusesTwoActivePocketIDs(t *testing.T) {
 	twoAppsSites(cfg)
 	w.instance = map[string]string{"home-a": "active", "home-b": "active"}
 	o.Execute = true
-	var out strings.Builder
-	o.Out = &out
+	rec := &ui.Recorder{Verbose_: true}
+	o.Report = rec
 	if err := Run(cfg, o); err == nil {
-		t.Fatalf("not refused:\n%s", out.String())
+		t.Fatalf("not refused:\n%s", rec.Lines())
 	}
-	if !strings.Contains(out.String(), "REFUSED  standby  pocket-id auth: 2 sites have an active instance") {
-		t.Errorf("output:\n%s", out.String())
+	if !strings.Contains(rec.Lines(), "refuse: auth does not have exactly one active instance pocket-id auth: 2 sites have an active instance") {
+		t.Errorf("output:\n%s", rec.Lines())
 	}
 	for _, c := range w.ran {
 		if strings.Contains(c, "patronictl") {
@@ -462,10 +472,10 @@ func TestTheGateWaitsForAPocketIDHandover(t *testing.T) {
 		waited++
 		w.instance = map[string]string{"home-a": "standby", "home-b": "active"}
 	}
-	var out strings.Builder
-	o.Out = &out
+	rec := &ui.Recorder{Verbose_: true}
+	o.Report = rec
 	if err := Run(cfg, o); err != nil {
-		t.Fatalf("%v\n%s", err, out.String())
+		t.Fatalf("%v\n%s", err, rec.Lines())
 	}
 	if waited == 0 {
 		t.Fatal("the gate never waited, so this proved nothing")
@@ -477,13 +487,13 @@ func TestTheGateStopsWhenNoPocketIDBecomesActive(t *testing.T) {
 	twoAppsSites(cfg)
 	w.afterRestart = map[string]string{"home-a": "standby", "home-b": "down"}
 	o.Execute = true
-	var out strings.Builder
-	o.Out = &out
+	rec := &ui.Recorder{Verbose_: true}
+	o.Report = rec
 	err := Run(cfg, o)
 	if err == nil || !strings.Contains(err.Error(), "pocket-id auth: no site has an active instance") {
-		t.Fatalf("got %v\n%s", err, out.String())
+		t.Fatalf("got %v\n%s", err, rec.Lines())
 	}
-	if strings.Contains(out.String(), "switchover 2:") {
-		t.Errorf("did not stop after the first switch:\n%s", out.String())
+	if strings.Contains(rec.Lines(), "switchover 2:") {
+		t.Errorf("did not stop after the first switch:\n%s", rec.Lines())
 	}
 }

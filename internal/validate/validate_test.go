@@ -1,7 +1,9 @@
 package validate_test
 
 import (
+	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -629,5 +631,30 @@ func TestTheIngressNetworkMustNotOverlapTheMesh(t *testing.T) {
 	}
 	if !refusedFor(validate.Check(cfg), "ingress-network-overlaps-mesh", "sites.watch.ingress") {
 		t.Fatalf("%v", validate.Check(cfg).Findings)
+	}
+}
+
+// A static check: every warn and refuse call passes a hint literal.
+func TestEveryCallPassesAHint(t *testing.T) {
+	files, _ := filepath.Glob("*.go")
+	// rule literal, key expression (which may hold one level of call
+	// parentheses with commas, Eg: fmt.Sprintf("sites.%s", name)), then the
+	// hint literal.
+	re := regexp.MustCompile(`c\.(warn|refuse)\(\s*"[^"]+",\s*(?:[^,()]|\([^()]*\))+,\s*"([^"]*)"`)
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, _ := os.ReadFile(f)
+		calls := regexp.MustCompile(`c\.(warn|refuse)\(`).FindAllIndex(src, -1)
+		hinted := re.FindAllSubmatch(src, -1)
+		if len(calls) != len(hinted) {
+			t.Errorf("%s: %d warn/refuse calls, %d with a hint literal", f, len(calls), len(hinted))
+		}
+		for _, m := range hinted {
+			if h := string(m[2]); h == "" || len(h) > 80 {
+				t.Errorf("%s: bad hint %q", f, h)
+			}
+		}
 	}
 }

@@ -1,13 +1,13 @@
 package dns
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // fixtureID is the fixture deployment's id, and recordComment the comment its
@@ -61,9 +61,9 @@ func TestPruneDryRunRemovesOnlyTheStaleToolkitRecord(t *testing.T) {
 	c := fake.serve(t)
 	p := prunePlan(t, c)
 
-	var out bytes.Buffer
-	p.Write(&out)
-	t.Logf("dry run:\n%s", out.String())
+	out := &ui.Recorder{Verbose_: true}
+	p.Show(out)
+	t.Logf("dry run:\n%s", out.Lines())
 
 	if len(fake.deletes) != 0 {
 		t.Fatalf("a dry run deleted %v", fake.deletes)
@@ -71,8 +71,8 @@ func TestPruneDryRunRemovesOnlyTheStaleToolkitRecord(t *testing.T) {
 	if got := p.Removes(); len(got) != 1 || got[0].ID != "rec-stale" {
 		t.Fatalf("want only rec-stale removed, got %+v", got)
 	}
-	if !strings.Contains(out.String(), "remove A    media.example.org -> 203.0.113.10  (zone example.org, record rec-stale)") {
-		t.Errorf("dry run should name type, name, content, zone and id:\n%s", out.String())
+	if !strings.Contains(out.Lines(), "remove A    media.example.org -> 203.0.113.10  (zone example.org, record rec-stale)") {
+		t.Errorf("dry run should name type, name, content, zone and id:\n%s", out.Lines())
 	}
 	for id, reason := range map[string]string{
 		"rec-wanted":  "still wants a record of type A at this name (apps.talk.hostname)",
@@ -100,7 +100,7 @@ func TestPruneDryRunRemovesOnlyTheStaleToolkitRecord(t *testing.T) {
 func TestPruneExecuteDeletesAndConfirms(t *testing.T) {
 	fake := zoneAfterTheMove()
 	c := fake.serve(t)
-	if err := ExecutePrune(context.Background(), c, prunePlan(t, c)); err != nil {
+	if err := ExecutePrune(context.Background(), c, prunePlan(t, c), ui.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(fake.deletes, ",") != "rec-stale" {
@@ -119,7 +119,7 @@ func TestPruneExecuteCatchesADeleteThatDidNotLand(t *testing.T) {
 	fake := zoneAfterTheMove()
 	fake.dropDeletes = true
 	c := fake.serve(t)
-	err := ExecutePrune(context.Background(), c, prunePlan(t, c))
+	err := ExecutePrune(context.Background(), c, prunePlan(t, c), ui.Discard)
 	if err == nil || !strings.Contains(err.Error(), "still listed: A media.example.org (record rec-stale)") {
 		t.Fatalf("want a confirmation failure, got %v", err)
 	}

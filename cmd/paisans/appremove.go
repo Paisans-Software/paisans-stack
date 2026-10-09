@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -42,6 +42,7 @@ var removeClients = func(cfg *config.Config, site, key string) appremove.Clients
 // again by somebody who did not mean it, and a typed name cannot.
 func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	fs := flag.NewFlagSet("app remove", flag.ContinueOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, "actually stop, remove and delete")
@@ -55,6 +56,7 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	if app == "" && fs.NArg() > 0 {
 		app = fs.Arg(0)
 		if err := fs.Parse(fs.Args()[1:]); err != nil {
@@ -73,7 +75,7 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -142,7 +144,7 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		for _, site := range cfg.MonitorSites() {
 			transports[site] = hosts[site]
 		}
-		if _, err := gateSites(stdout, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
+		if _, err := gateSites(r, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
 			return err
 		}
 		rendered, err := render.Build(cfg, secrets)
@@ -158,11 +160,13 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		if *deleteData {
 			where = "on any site, at Pocket ID, in Postgres or in Garage"
 		}
-		fmt.Fprintf(stdout, "Nothing of %s was found %s. Nothing to do.\n", app, where)
-		printRemains(stdout, appremove.Remains(plan, secrets, nil))
+		reportRemains(r, appremove.Remains(plan, secrets, nil))
+		r.Result("Nothing of %s was found %s. Nothing to do.", app, where)
 		return nil
 	}
-	plan.Print(stdout)
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	touched := map[string]registry.Runner{}
 	for _, s := range plan.Sites {
@@ -184,13 +188,13 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 			touched[m.Site] = registryHost(m.Site, cfg.Sites[m.Site], "", *sudo)
 		}
 	}
-	if err := claimHosts(cfg, *execute, touched); err != nil {
+	if err := claimHosts(r, cfg, *execute, touched); err != nil {
 		return err
 	}
 
 	if !*execute {
-		printRemains(stdout, appremove.Remains(plan, secrets, nil))
-		fmt.Fprintf(stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		reportRemains(r, appremove.Remains(plan, secrets, nil))
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
 	if *deleteData {
@@ -198,8 +202,7 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 	}
-	fmt.Fprintln(stdout)
-	runner := &appremove.Executor{Hosts: hosts, Clients: clients, Progress: stdout}
+	runner := &appremove.Executor{Hosts: hosts, Clients: clients, Report: r}
 	if err := runner.Execute(plan); err != nil {
 		var me *appremove.MonitorError
 		if errors.As(err, &me) {
@@ -207,8 +210,8 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		}
 		return fmt.Errorf("app remove: %w\nEvery step is safe to repeat: run the same command again to resume", err)
 	}
-	fmt.Fprintf(stdout, "\n%s is removed.\n", app)
-	printRemains(stdout, appremove.Remains(plan, secrets, runner.Kept))
+	reportRemains(r, appremove.Remains(plan, secrets, runner.Kept))
+	r.Result("%s is removed.", app)
 	return nil
 }
 
@@ -229,12 +232,16 @@ func confirmName(stdin io.Reader, stdout io.Writer, app string) error {
 	return nil
 }
 
-func printRemains(w io.Writer, lines []string) {
-	if len(lines) == 0 {
-		return
-	}
-	fmt.Fprintf(w, "\nLeft for you:\n")
+// reportRemains tells the operator what a removal leaves for them to see to:
+// a secret still in the secrets file, DNS records, data and whatever was kept
+// on a host. Each shows without --verbose, the line's first sentence as the
+// hint an operator scans for and the rest under it, since the rest names the
+// object (which client, which path) and the hint alone cannot be acted on.
+// After site remove --execute the configuration no longer declares the site,
+// so a second run with --verbose could not show it either.
+func reportRemains(r ui.Reporter, lines []string) {
 	for _, l := range lines {
-		fmt.Fprintf(w, "  %s\n", l)
+		hint, detail, _ := strings.Cut(l, ". ")
+		r.Note(hint, detail)
 	}
 }

@@ -89,22 +89,22 @@ func (p *Plan) changedFiles(site string) (moved []string, owed []string) {
 // remaining site the files that name it, each moved by a scoped apply and
 // the one command it needs.
 func (p *Plan) buildCluster() (*Stage, error) {
-	st := &Stage{Number: 2, Name: "out of the cluster"}
+	st := &Stage{Number: 2, Name: "out of the cluster", Short: "etcd, mesh and HAProxy drop " + p.Site}
 	var gates []string
 	if p.etcd.control != "" {
 		if p.etcd.member != nil {
-			st.Steps = append(st.Steps, Step{Site: p.etcd.control, Verb: "remove", Text: fmt.Sprintf("%s's etcd member %s: %s", p.Site, p.etcd.member.HexID(), apply.Etcdctl(p.dep(), "member remove "+p.etcd.member.HexID()))})
+			st.Steps = append(st.Steps, Step{Site: p.etcd.control, Verb: "remove", Title: "remove " + p.Site + "'s etcd member", Text: fmt.Sprintf("%s's etcd member %s: %s", p.Site, p.etcd.member.HexID(), apply.Etcdctl(p.dep(), "member remove "+p.etcd.member.HexID()))})
 			if !p.HostGone {
-				st.Steps = append(st.Steps, Step{Site: p.Site, Verb: "stop", Text: "its etcd, which a removed member cannot rejoin, so it does not restart in a loop: " + p.stopService("etcd")})
+				st.Steps = append(st.Steps, Step{Site: p.Site, Verb: "stop", Title: "stop etcd on " + p.Site, Text: "its etcd, which a removed member cannot rejoin, so it does not restart in a loop: " + p.stopService("etcd")})
 			}
 		}
 		if p.witness != "" {
 			if p.etcd.witness != nil {
-				st.Steps = append(st.Steps, Step{Site: p.etcd.control, Verb: "check", Text: fmt.Sprintf("etcd's voters are exactly %s, both healthy, before the second removal", strings.Join(sortedCopy(append(append([]string(nil), p.end.Etcd.Members...), p.witness)), " and "))})
-				st.Steps = append(st.Steps, Step{Site: p.etcd.control, Verb: "remove", Text: fmt.Sprintf("the witness %s's etcd member %s, leaving %s the one voter, since two voters are worse than one: %s", p.witness, p.etcd.witness.HexID(), p.end.Etcd.Members[0], apply.Etcdctl(p.dep(), "member remove "+p.etcd.witness.HexID()))})
+				st.Steps = append(st.Steps, Step{Site: p.etcd.control, Verb: "check", Title: "check etcd voters", Text: fmt.Sprintf("etcd's voters are exactly %s, both healthy, before the second removal", strings.Join(sortedCopy(append(append([]string(nil), p.end.Etcd.Members...), p.witness)), " and "))})
+				st.Steps = append(st.Steps, Step{Site: p.etcd.control, Verb: "remove", Title: "remove witness " + p.witness + "'s etcd member", Text: fmt.Sprintf("the witness %s's etcd member %s, leaving %s the one voter, since two voters are worse than one: %s", p.witness, p.etcd.witness.HexID(), p.end.Etcd.Members[0], apply.Etcdctl(p.dep(), "member remove "+p.etcd.witness.HexID()))})
 			}
 			if p.etcd.witnessRunning {
-				st.Steps = append(st.Steps, Step{Site: p.witness, Verb: "stop", Text: "its etcd, which a removed member cannot rejoin, found by this deployment's label and the infrastructure project's etcd service: " + p.stopWitnessEtcd()})
+				st.Steps = append(st.Steps, Step{Site: p.witness, Verb: "stop", Title: "stop etcd on " + p.witness, Text: "its etcd, which a removed member cannot rejoin, found by this deployment's label and the infrastructure project's etcd service: " + p.stopWitnessEtcd()})
 			}
 		}
 		gates = append(gates, fmt.Sprintf("etcd's voters are exactly %s and every member is healthy", strings.Join(sortedCopy(p.end.Etcd.Members), ", ")))
@@ -119,7 +119,7 @@ func (p *Plan) buildCluster() (*Stage, error) {
 	for _, name := range p.end.SiteNames() {
 		moved, owed := p.changedFiles(name)
 		for _, o := range owed {
-			p.Notes = append(p.Notes, fmt.Sprintf("%s: %s. `paisans apply --site %s` brings it up to date when that is acceptable", name, o, name))
+			p.Notes = append(p.Notes, ownedNote(name, o))
 		}
 		t := p.transports[name]
 		c := &siteChange{site: name}
@@ -133,10 +133,10 @@ func (p *Plan) buildCluster() (*Stage, error) {
 			}
 			c.plan, c.paths = sp, moved
 			for _, w := range sp.Writes() {
-				st.Steps = append(st.Steps, Step{Site: name, Verb: w.Kind.String(), Text: w.Path})
+				st.Steps = append(st.Steps, Step{Site: name, Verb: w.Kind.String(), Title: "update files on " + name, Text: w.Path})
 			}
 			if sp.WireGuard != apply.WireGuardNone {
-				st.Steps = append(st.Steps, Step{Site: name, Verb: "mesh", Text: sp.WireGuard.Describe(p.dep())})
+				st.Steps = append(st.Steps, Step{Site: name, Verb: "mesh", Title: "update files on " + name, Text: sp.WireGuard.Describe(p.dep())})
 			}
 		}
 		for _, rel := range moved {
@@ -156,11 +156,11 @@ func (p *Plan) buildCluster() (*Stage, error) {
 			if c.haproxy && (len(c.plan.Writes()) > 0 || lists) {
 				c.dbApps = p.databaseApps(name)
 				if len(c.dbApps) > 0 {
-					st.Steps = append(st.Steps, Step{Site: name, Verb: "stop", Text: strings.Join(c.dbApps, ", ") + ": they reach the database through this HAProxy, and an app's open connections do not survive its restart"})
+					st.Steps = append(st.Steps, Step{Site: name, Verb: "stop", Title: "stop " + strings.Join(c.dbApps, ", ") + " on " + name, Text: strings.Join(c.dbApps, ", ") + ": they reach the database through this HAProxy, and an app's open connections do not survive its restart"})
 				}
-				st.Steps = append(st.Steps, Step{Site: name, Verb: "restart", Text: "HAProxy alone, without " + p.Site + "'s backend: " + p.restartHAProxy()})
+				st.Steps = append(st.Steps, Step{Site: name, Verb: "restart", Title: "restart HAProxy on " + name, Text: "HAProxy alone, without " + p.Site + "'s backend: " + p.restartHAProxy()})
 				if len(c.dbApps) > 0 {
-					st.Steps = append(st.Steps, Step{Site: name, Verb: "start", Text: strings.Join(c.dbApps, ", ") + ", and check each healthy as apply does"})
+					st.Steps = append(st.Steps, Step{Site: name, Verb: "start", Title: "start " + strings.Join(c.dbApps, ", ") + " on " + name, Text: strings.Join(c.dbApps, ", ") + ", and check each healthy as apply does"})
 				}
 			} else {
 				c.haproxy = false
@@ -168,8 +168,8 @@ func (p *Plan) buildCluster() (*Stage, error) {
 		}
 		if c.caddy {
 			st.Steps = append(st.Steps,
-				Step{Site: name, Verb: "validate", Text: "the routes without " + p.Site + ": " + validateCaddy(p.dep())},
-				Step{Site: name, Verb: "reload", Text: "Caddy: " + reloadCaddy(p.dep())})
+				Step{Site: name, Verb: "validate", Title: "validate Caddy routes on " + name, Text: "the routes without " + p.Site + ": " + validateCaddy(p.dep())},
+				Step{Site: name, Verb: "reload", Title: "reload Caddy on " + name, Text: "Caddy: " + reloadCaddy(p.dep())})
 		}
 		if c.plan != nil {
 			changes = append(changes, c)
@@ -190,6 +190,7 @@ func (p *Plan) buildCluster() (*Stage, error) {
 				return err
 			}
 			if !p.HostGone {
+				p.work("stop etcd on " + p.Site)
 				if out, err := p.transports[p.Site].Run(p.stopService("etcd")); err != nil {
 					return fmt.Errorf("%s: stopping etcd: %w: %s", p.Site, err, lastLines(out, 3))
 				}
@@ -201,6 +202,7 @@ func (p *Plan) buildCluster() (*Stage, error) {
 			}
 		}
 		if p.etcd.witness != nil || p.etcd.witnessRunning {
+			p.work("stop etcd on " + p.witness)
 			if out, err := p.transports[p.witness].Run(p.stopWitnessEtcd()); err != nil {
 				return fmt.Errorf("%s: stopping its etcd: %w: %s", p.witness, err, lastLines(out, 3))
 			}
@@ -211,12 +213,12 @@ func (p *Plan) buildCluster() (*Stage, error) {
 			}
 		}
 		for _, r := range replicas {
-			p.say("  %-9s Patroni on %s, with its patroni.env up to date\n", "recreate", r.Site)
+			p.work("recreate Patroni on "+r.Site).Detail("Patroni on %s, with its patroni.env up to date", r.Site)
 			gate := apply.ReplicaEnvGate{At: p.transports[p.endLeader()], Wait: replicaWait, Poll: replicaPoll, Sleep: sleep, Sync: p.endWantsSync()}
 			if err := r.Execute(p.dep(), p.transports[r.Site], gate); err != nil {
 				return err
 			}
-			p.say("  %-9s %s streams again\n", "checked", r.Site)
+			p.open.Detail("%s streams again", r.Site)
 		}
 		return nil
 	}
@@ -255,7 +257,7 @@ func (p *Plan) replicaEnvs(st *Stage) ([]*apply.ReplicaEnv, error) {
 	for _, name := range p.end.Cluster.Sites {
 		if name == p.endLeader() {
 			if renderedContent(p.full, name, rel) != renderedContent(p.rendered, name, rel) {
-				p.Notes = append(p.Notes, name+": "+apply.LeaderPatroniEnvNote(name))
+				p.Notes = append(p.Notes, apply.LeaderPatroniEnvNote(name))
 			}
 			continue
 		}
@@ -267,7 +269,7 @@ func (p *Plan) replicaEnvs(st *Stage) ([]*apply.ReplicaEnv, error) {
 			continue
 		}
 		for _, s := range r.Steps(p.dep()) {
-			st.Steps = append(st.Steps, Step{Site: name, Verb: s.Verb, Text: s.Text})
+			st.Steps = append(st.Steps, Step{Site: name, Verb: s.Verb, Title: "recreate Patroni on " + name, Text: s.Text})
 		}
 		out = append(out, r)
 	}
@@ -304,6 +306,7 @@ func (p *Plan) stopWitnessEtcd() string {
 // one needs both: the removal is a change both must commit.
 func (p *Plan) removeWitness() error {
 	both := append(append([]string(nil), p.end.Etcd.Members...), p.witness)
+	p.work("check etcd voters")
 	if err := p.etcdVoters(both); err != nil {
 		return fmt.Errorf("before taking %s out of etcd: %w", p.witness, err)
 	}
@@ -315,7 +318,7 @@ func (p *Plan) removeWitness() error {
 		if apply.EtcdMemberSite(p.cfg, m) != p.witness {
 			continue
 		}
-		p.say("  %-9s the witness %s's etcd member\n", "remove", p.witness)
+		p.work("remove witness " + p.witness + "'s etcd member")
 		if out, err := p.transports[p.etcd.control].Run(apply.Etcdctl(p.dep(), "member remove "+m.HexID())); err != nil {
 			return fmt.Errorf("%s: etcdctl member remove %s: %w: %s", p.etcd.control, m.HexID(), err, lastLines(out, 3))
 		}
@@ -343,7 +346,7 @@ func (p *Plan) removeEtcdMember() error {
 		if apply.EtcdMemberSite(p.cfg, m) != p.Site {
 			continue
 		}
-		p.say("  %-9s %s's etcd member\n", "remove", p.Site)
+		p.work("remove " + p.Site + "'s etcd member")
 		if out, err := p.transports[p.etcd.control].Run(apply.Etcdctl(p.dep(), "member remove "+m.HexID())); err != nil {
 			return fmt.Errorf("%s: etcdctl member remove %s: %w: %s", p.etcd.control, m.HexID(), err, lastLines(out, 3))
 		}
@@ -408,6 +411,7 @@ func (p *Plan) etcdVoters(sites []string) error {
 func (p *Plan) applyChange(c *siteChange) error {
 	t := p.transports[c.site]
 	if len(c.plan.Writes()) > 0 || c.plan.WireGuard != apply.WireGuardNone {
+		p.work("update files on " + c.site)
 		if err := apply.Execute(c.plan, t); err != nil {
 			return err
 		}
@@ -418,13 +422,13 @@ func (p *Plan) applyChange(c *siteChange) error {
 		}
 	}
 	if c.caddy {
+		p.work("reload Caddy on " + c.site)
 		if out, err := t.Run(validateCaddy(p.dep())); err != nil {
 			return fmt.Errorf("%s: the routes without %s do not validate, so Caddy was not reloaded and still serves the old ones: %w\n%s", c.site, p.Site, err, out)
 		}
 		if out, err := t.Run(reloadCaddy(p.dep())); err != nil {
 			return fmt.Errorf("%s: reloading Caddy: %w: %s", c.site, err, lastLines(out, 5))
 		}
-		p.say("  %-9s Caddy on %s\n", "reloaded", c.site)
 	}
 	return nil
 }
@@ -478,20 +482,37 @@ func (p *Plan) proxyLists(site string) (bool, error) {
 // connections close under them.
 func (p *Plan) restartProxy(site string, apps []string) error {
 	t := p.transports[site]
+	list := strings.Join(apps, ", ")
+	if len(apps) > 0 {
+		p.work("stop " + list + " on " + site)
+	}
 	for _, app := range apps {
 		if out, err := t.Run(p.dep().ComposeCmd(app) + " stop"); err != nil {
 			return fmt.Errorf("%s: stopping %s before HAProxy's restart, so HAProxy was not restarted: %w: %s", site, app, err, lastLines(out, 5))
 		}
 	}
-	p.say("  %-9s HAProxy on %s\n", "restart", site)
+	restart := p.work("restart HAProxy on " + site)
 	out, restartErr := t.Run(p.restartHAProxy())
+	if restartErr != nil {
+		// The apps below are still started, so the line that failed is marked
+		// now rather than by whichever step is open when the error returns.
+		restart.Fail(restartErr)
+		p.open = nil
+	}
+	if len(apps) > 0 {
+		p.work("start " + list + " on " + site)
+	}
 	for _, app := range apps {
 		if out, err := t.Run(p.dep().ComposeCmd(app) + " up -d"); err != nil {
 			return fmt.Errorf("%s: starting %s after HAProxy's restart: %w: %s", site, app, err, lastLines(out, 5))
 		}
 	}
 	if restartErr != nil {
+		p.idle()
 		return fmt.Errorf("%s: restarting HAProxy: %w: %s", site, restartErr, lastLines(out, 5))
+	}
+	if len(apps) > 0 {
+		p.work("check " + list + " on " + site)
 	}
 	for _, app := range apps {
 		if err := apply.WaitHealthy(p.dep(), site, app, t, "Site remove stopped here, before HAProxy's gate. The app was started against the new HAProxy; read its logs, fix it, and run site remove again"); err != nil {

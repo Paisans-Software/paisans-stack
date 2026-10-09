@@ -65,6 +65,10 @@ const danglingProbe = `set -e; vs=$(docker volume ls -qf dangling=true); for v i
 const composeProject = "com.docker.compose.project"
 
 // anonymousName is the name Docker gives an anonymous volume.
+// IsAnonymousVolume reports whether name is one Docker generated, which is
+// unreadable at any length and so is the only kind worth shortening.
+func IsAnonymousVolume(name string) bool { return anonymousName.MatchString(name) }
+
 var anonymousName = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // BuildVolumePrune reads a site's dangling volumes and decides each one for

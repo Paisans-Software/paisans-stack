@@ -449,7 +449,7 @@ func planClient(app string, st ClientState) ClientPlan {
 		return cp
 	}
 	byHand := func(c *pocketid.OIDCClient, why string) string {
-		return fmt.Sprintf("client %s (id %s) at %s: %s. Delete it as a Pocket ID administrator if it served only %s", c.Name, c.ID, st.Provider, why, app)
+		return clientKept(app, c.Name, c.ID, st.Provider, why)
 	}
 	switch {
 	case st.ByID != nil && st.ByID.Name == app:
@@ -479,12 +479,12 @@ func planDatabase(cfg *config.Config, st DatabaseState) *DatabasePlan {
 		return dp
 	}
 	if !identifier.MatchString(st.Name) || len(st.Name) > 63 || reservedRoles[st.Name] || strings.HasPrefix(st.Name, "pg_") {
-		dp.Kept = append(dp.Kept, fmt.Sprintf("database and role %s: not a name apply creates for an app", st.Name))
+		dp.Kept = append(dp.Kept, databaseNotApps(st.Name))
 		return dp
 	}
 	for _, declared := range cfg.AppNames() {
 		if render.DBIdentifier(declared) == st.Name {
-			dp.Kept = append(dp.Kept, fmt.Sprintf("database and role %s: also the name of declared app %s's, which uses them", st.Name, declared))
+			dp.Kept = append(dp.Kept, databaseDeclared(st.Name, declared))
 			return dp
 		}
 	}
@@ -493,9 +493,9 @@ func planDatabase(cfg *config.Config, st DatabaseState) *DatabasePlan {
 		dp.DropDatabase = true
 		dp.DropRole = st.Role
 	case st.Database:
-		dp.Kept = append(dp.Kept, fmt.Sprintf("database %s on %s: owned by %s, not by the role apply creates for it, so not provably this app's", st.Name, st.Leader, st.Owner))
+		dp.Kept = append(dp.Kept, databaseForeign(st.Name, st.Leader, st.Owner))
 		if st.Role {
-			dp.Kept = append(dp.Kept, fmt.Sprintf("role %s on %s: kept with the database above", st.Name, st.Leader))
+			dp.Kept = append(dp.Kept, roleKept(st.Name, st.Leader))
 		}
 	case st.Role:
 		dp.DropRole = true
@@ -508,7 +508,7 @@ func planStorage(st StorageState) *StoragePlan {
 	shared := map[string]bool{}
 	for _, id := range st.Shared {
 		shared[id] = true
-		sp.Kept = append(sp.Kept, fmt.Sprintf("S3 key %s: a declared app records it too", id))
+		sp.Kept = append(sp.Kept, keyDeclared(id))
 	}
 	ours := map[string]KeyState{}
 	for _, k := range st.Keys {
@@ -533,7 +533,7 @@ func planStorage(st StorageState) *StoragePlan {
 			case !ok || b.Absent:
 				continue
 			case !b.Parsed:
-				sp.Kept = append(sp.Kept, fmt.Sprintf("bucket %s: `garage bucket info` did not read as expected, so nothing about it is proven", prefix))
+				sp.Kept = append(sp.Kept, bucketUnread(prefix))
 				continue
 			}
 			name := strings.Join(b.Aliases, ", ")
@@ -548,9 +548,9 @@ func planStorage(st StorageState) *StoragePlan {
 			}
 			switch {
 			case len(foreign) > 0:
-				sp.Kept = append(sp.Kept, fmt.Sprintf("bucket %s: also granted to key(s) %s, which this app does not record", name, strings.Join(foreign, ", ")))
+				sp.Kept = append(sp.Kept, bucketGranted(name, foreign))
 			case len(b.Aliases) != 1 || b.LocalAliases > 0:
-				sp.Kept = append(sp.Kept, fmt.Sprintf("bucket %s: has %d global and %d key specific aliases, where storage init gives it one", name, len(b.Aliases), b.LocalAliases))
+				sp.Kept = append(sp.Kept, bucketAliases(name, len(b.Aliases), b.LocalAliases))
 			default:
 				sp.Buckets = append(sp.Buckets, BucketPlan{Name: b.Aliases[0], Objects: b.Objects, KeyID: id, secret: ours[id].Secret})
 			}

@@ -15,6 +15,7 @@ package storageadd_test
 
 import (
 	"fmt"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -282,14 +283,14 @@ func TestStorageAddResetsAndJoinsRealGarage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var progress strings.Builder
-	p.Print(&progress)
-	p.Progress = &progress
+	rec := &ui.Recorder{Verbose_: true}
+	p.Show(rec)
+	p.Report = rec
 	start := time.Now()
 	if err := storageadd.Execute(p); err != nil {
-		t.Fatalf("storage add: %v\n%s", err, progress.String())
+		t.Fatalf("storage add: %v\n%s", err, rec.Lines())
 	}
-	t.Logf("storage add took %s:\n%s", time.Since(start).Round(time.Second), progress.String())
+	t.Logf("storage add took %s:\n%s", time.Since(start).Round(time.Second), rec.Lines())
 
 	if _, found, _ := hosts["home-a"].ReadFile("/srv/paisans/f2a9/infra/garage/meta/cluster_layout.rf1"); !found {
 		t.Error("home-a's replication 1 layout was not set aside")
@@ -310,9 +311,9 @@ func TestStorageAddResetsAndJoinsRealGarage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.Pending() {
-		var b strings.Builder
-		p.Print(&b)
-		t.Errorf("a joined cluster still plans work:\n%s", b.String())
+		rec := &ui.Recorder{}
+		p.Show(rec)
+		t.Errorf("a joined cluster still plans work:\n%s", rec.Lines())
 	}
 	if err := storageadd.Execute(p); err != nil {
 		t.Fatalf("a second run: %v", err)
@@ -432,13 +433,13 @@ func TestStorageAddGrowsToThreeWithAStorageSite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var progress strings.Builder
-	p.Print(&progress)
-	p.Progress = &progress
+	rec := &ui.Recorder{Verbose_: true}
+	p.Show(rec)
+	p.Report = rec
 	if err := storageadd.Execute(p); err != nil {
-		t.Fatalf("storage add: %v\n%s", err, progress.String())
+		t.Fatalf("storage add: %v\n%s", err, rec.Lines())
 	}
-	t.Logf("storage add:\n%s", progress.String())
+	t.Logf("storage add:\n%s", rec.Lines())
 
 	out, err := hosts["home-a"].Run(garage.Command(storageadd.Fixture) + " layout show")
 	if err != nil {

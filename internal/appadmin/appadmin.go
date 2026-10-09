@@ -184,6 +184,33 @@ func (p *Plan) Lines() []string {
 	return out
 }
 
+// Titles is one short phrase per action, in the order of Lines, for the
+// default output: the operator needs to see what will happen, and the request
+// behind each action is Lines' business, shown only on request. Like Lines it
+// names the user and the groups, never a credential.
+func (p *Plan) Titles() []string {
+	out := make([]string, 0, len(p.Actions))
+	for _, a := range p.Actions {
+		switch a {
+		case ActionCreate:
+			// The user is created as the app's administrator, which is the
+			// point of the command, so the title says so.
+			out = append(out, "create administrator "+p.req.Username)
+		case ActionVerify:
+			out = append(out, "verify "+p.req.Username)
+		case ActionGrantAdmin:
+			out = append(out, "make "+p.req.Username+" an administrator")
+		case ActionJoinGroups:
+			out = append(out, "add "+p.req.Username+" to admin groups "+strings.Join(p.req.AdminGroups, ", "))
+		case ActionLoginLink:
+			out = append(out, "issue login link for "+p.req.Username)
+		default:
+			out = append(out, string(a)+" "+p.req.Username)
+		}
+	}
+	return out
+}
+
 // Execute runs the plan, then probes again and refuses to report success
 // unless the user now exists, is verified and is an admin. A command that
 // exits zero without doing its job is exactly what that second probe exists

@@ -47,7 +47,7 @@ func Clocks(samples []ClockSample) []Finding {
 	var out []Finding
 	for _, c := range samples {
 		if c.Err != "" {
-			out = append(out, Finding{Section: SectionClocks, Level: Warn, Line: fmt.Sprintf("%s: could not read the clock (%s)", c.Site, firstLine(c.Err))})
+			out = append(out, Finding{Section: SectionClocks, Level: Warn, Line: fmt.Sprintf("%s: could not read the clock", c.Site), More: []string{firstLine(c.Err)}})
 			continue
 		}
 		offset, rtt, err := c.Offset()

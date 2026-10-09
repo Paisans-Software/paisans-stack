@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/registry"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // initHost is how `paisans init` reaches a site to read its registry and its
@@ -61,19 +61,35 @@ func checkMeshLive(cfg *config.Config, site string, h mesh.Host) error {
 // it, and otherwise rolls a random /24 that overlaps none, moving each
 // site's address into it with its host number kept. It writes paisans.yaml
 // only when it rolled, and says why. It reports whether it wrote.
-func settleMesh(cfg *config.Config, path string, hosts map[string]registry.Runner, random io.Reader, w io.Writer) (bool, error) {
+//
+// The decision is one step, "settle mesh subnet", whose result is what
+// happened to the subnet; why is its details.
+func settleMesh(r ui.Reporter, cfg *config.Config, path string, hosts map[string]registry.Runner, random io.Reader) (bool, error) {
+	s := r.Step("settle mesh subnet")
+	wrote, result, err := chooseMesh(s, cfg, path, hosts, random)
+	if err != nil {
+		s.Fail(err)
+		return false, err
+	}
+	s.Done(result)
+	return wrote, nil
+}
+
+// chooseMesh is settleMesh's decision, reporting what it finds to s, and
+// returning whether it wrote and the short result for the step.
+func chooseMesh(s ui.Step, cfg *config.Config, path string, hosts map[string]registry.Runner, random io.Reader) (bool, string, error) {
 	sites := cfg.SiteNames()
 	registries := map[string]registry.Registry{}
 	var unreachable []string
 	var claimedOn []string
 	for _, name := range sites {
-		r, err := registry.Read(hosts[name])
+		reg, err := registry.Read(hosts[name])
 		if err != nil {
 			unreachable = append(unreachable, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
-		registries[name] = r
-		if _, ok := r.Deployments[cfg.ID]; ok {
+		registries[name] = reg
+		if _, ok := reg.Deployments[cfg.ID]; ok {
 			claimedOn = append(claimedOn, name)
 		}
 	}
@@ -85,13 +101,13 @@ func settleMesh(cfg *config.Config, path string, hosts map[string]registry.Runne
 			if recorded != "" {
 				hint = fmt.Sprintf(" %s records it as %s.", claimedOn[0], recorded)
 			}
-			return false, fmt.Errorf("%s: mesh.subnet is missing, and this deployment is already on %s, so its subnet is deployed and is not chosen again.%s Restore it in %s", path, strings.Join(claimedOn, ", "), hint, path)
+			return false, "", fmt.Errorf("%s: mesh.subnet is missing, and this deployment is already on %s, so its subnet is deployed and is not chosen again.%s Restore it in %s", path, strings.Join(claimedOn, ", "), hint, path)
 		}
-		fmt.Fprintf(w, "%s: mesh.subnet %s is deployed (this deployment is on %s), so it is kept as it is.\n", path, cfg.Mesh.Subnet, strings.Join(claimedOn, ", "))
-		return false, nil
+		s.Detail("%s: mesh.subnet %s is deployed (this deployment is on %s), so it is kept as it is.", path, cfg.Mesh.Subnet, strings.Join(claimedOn, ", "))
+		return false, "deployed, kept", nil
 	}
 	if len(unreachable) > 0 {
-		return false, fmt.Errorf("init reaches every site before it settles mesh.subnet, and could not read:\n  %s\nNothing was written. Every host has to be checked, since a subnet chosen without one is a subnet that may collide on it", strings.Join(unreachable, "\n  "))
+		return false, "", fmt.Errorf("init reaches every site before it settles mesh.subnet, and could not read:\n  %s\nNothing was written. Every host has to be checked, since a subnet chosen without one is a subnet that may collide on it", strings.Join(unreachable, "\n  "))
 	}
 
 	iface := cfg.Deployment().Interface()
@@ -100,18 +116,18 @@ func settleMesh(cfg *config.Config, path string, hosts map[string]registry.Runne
 		taken = append(taken, registry.Meshes(registries[name], cfg.ID, name)...)
 		probed, err := mesh.Probe(hosts[name])
 		if err != nil {
-			return false, fmt.Errorf("%v. Nothing was written", err)
+			return false, "", fmt.Errorf("%v. Nothing was written", err)
 		}
 		live, err := probed.Taken(iface, name)
 		if err != nil {
-			return false, fmt.Errorf("%s: %v. Nothing was written", name, err)
+			return false, "", fmt.Errorf("%s: %v. Nothing was written", name, err)
 		}
 		taken = append(taken, live...)
 	}
 
 	choice, err := mesh.Choose(cfg.Mesh.Subnet, taken, random)
 	if err != nil {
-		return false, fmt.Errorf("%s: %w. Nothing was written", path, err)
+		return false, "", fmt.Errorf("%s: %w. Nothing was written", path, err)
 	}
 	subnet := choice.Subnet.String()
 	addresses := map[string]string{}
@@ -121,7 +137,7 @@ func settleMesh(cfg *config.Config, path string, hosts map[string]registry.Runne
 			current[name] = cfg.Sites[name].Address
 		}
 		if addresses, err = mesh.Readdress(cfg.Mesh.Subnet, choice.Subnet, current); err != nil {
-			return false, fmt.Errorf("%s: rolled %s, but %v. Nothing was written", path, subnet, err)
+			return false, "", fmt.Errorf("%s: rolled %s, but %v. Nothing was written", path, subnet, err)
 		}
 	}
 
@@ -140,28 +156,28 @@ func settleMesh(cfg *config.Config, path string, hosts map[string]registry.Runne
 	for _, name := range sites {
 		id, e := registry.For(&next, name, time.Time{})
 		if c := registry.Conflicts(registries[name], id, e); len(c) > 0 {
-			return false, fmt.Errorf("%s: %v, and nothing was written. %s", name, c[0], conflictAdvice(c[0]))
+			return false, "", fmt.Errorf("%s: %v, and nothing was written. %s", name, c[0], conflictAdvice(c[0]))
 		}
 	}
 
 	if !choice.Rolled {
-		fmt.Fprintf(w, "%s: mesh.subnet %s overlaps nothing on %s; kept.\n", path, subnet, strings.Join(sites, ", "))
-		return false, nil
+		s.Detail("%s: mesh.subnet %s overlaps nothing on %s; kept.", path, subnet, strings.Join(sites, ", "))
+		return false, "kept", nil
 	}
 	if err := config.SetMesh(path, subnet, addresses); err != nil {
-		return false, err
+		return false, "", err
 	}
-	fmt.Fprintf(w, "%s: rolled mesh.subnet %s (%s).\n", path, subnet, strings.Join(choice.Why, "; "))
+	s.Detail("%s: rolled mesh.subnet %s (%s).", path, subnet, strings.Join(choice.Why, "; "))
 	names := make([]string, 0, len(addresses))
 	for name := range addresses {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		fmt.Fprintf(w, "  sites.%s.address %s -> %s\n", name, cfg.Sites[name].Address, addresses[name])
+		s.Detail("  sites.%s.address %s -> %s", name, cfg.Sites[name].Address, addresses[name])
 	}
-	fmt.Fprintf(w, "It is fixed from the first apply on: every app trusts it for forwarded client addresses and every service binds an address in it.\n")
-	return true, nil
+	s.Detail("It is fixed from the first apply on: every app trusts it for forwarded client addresses and every service binds an address in it.")
+	return true, "rolled to " + subnet, nil
 }
 
 // conflictAdvice is what an operator does about a registry conflict init
@@ -183,6 +199,3 @@ func initHosts(cfg *config.Config, sudo bool) map[string]registry.Runner {
 	}
 	return hosts
 }
-
-// initOut is where init's subnet report goes. A test replaces it.
-var initOut io.Writer = os.Stdout

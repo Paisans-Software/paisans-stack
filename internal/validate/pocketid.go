@@ -34,6 +34,7 @@ func (c *checker) pocketIDSettingInvalid() {
 	for _, name := range c.pocketIDApps() {
 		for _, p := range kinds.PocketIDSettingProblems(c.cfg.Apps[name].Settings) {
 			c.refuse("pocket-id-setting-invalid", fmt.Sprintf("apps.%s.settings.%s", name, p.Key),
+				"pocket id setting has an invalid value",
 				"%s Pocket ID reads its whole configuration from the rendered .env and will not start on a value it refuses.", p.Message)
 		}
 	}
@@ -50,6 +51,7 @@ func (c *checker) pocketIDSettingUnknown() {
 				continue
 			}
 			c.warn("pocket-id-setting-unknown", fmt.Sprintf("apps.%s.settings.%s", name, key),
+				"pocket id setting is not read by the toolkit",
 				"is not a setting the pocket-id kind reads, so it renders nothing. The settings are listed in README.md, \"Pocket ID's configuration is rendered from paisans.yaml\"; an option the toolkit does not model goes under config, by its variable name.")
 		}
 	}
@@ -69,6 +71,7 @@ func (c *checker) pocketIDConfigKeyHasASetting() {
 				continue
 			}
 			c.refuse("pocket-id-config-key-has-a-setting", fmt.Sprintf("apps.%s.config.%s", name, key),
+				"pocket id config key duplicates a setting",
 				"is rendered by %s. Set it there and remove it from config, so the value has one place to be changed.", owner)
 		}
 	}
@@ -96,6 +99,7 @@ func (c *checker) pocketIDEmailWithoutSMTP() {
 			continue
 		}
 		c.refuse("pocket-id-email-without-smtp", fmt.Sprintf("apps.%s.settings.%s", name, on[0]),
+			"pocket id mail is on without an smtp host or sender",
 			"turns on mail from Pocket ID (%s), but its smtp settings resolve no %s. Declare them in the top level smtp block or in apps.%s.smtp, or turn the mail off.",
 			strings.Join(on, ", "), strings.Join(missing, " and no "), name)
 	}
@@ -117,11 +121,13 @@ func (c *checker) pocketIDSMTPSender() {
 		}
 		if smtp.FromAddress == "" {
 			c.warn("pocket-id-smtp-without-sender", key,
+				"pocket id smtp has no sender",
 				"is not set, so %s's mail would be sent with an empty sender. Pocket ID starts, but a mail server is likely to refuse it. Set from_address.", name)
 			continue
 		}
 		if addr, err := mail.ParseAddress(smtp.FromAddress); err != nil || addr.Address != smtp.FromAddress {
 			c.refuse("pocket-id-smtp-from-not-an-email", key,
+				"pocket id sender is not an email address",
 				"is %q, which %s renders as SMTP_FROM, and Pocket ID will not start unless that is an email address alone, Eg: hello@example.org.", smtp.FromAddress, name)
 		}
 	}
@@ -139,6 +145,7 @@ func (c *checker) pocketIDSMTPFromName() {
 			continue
 		}
 		c.warn("pocket-id-smtp-from-name", fmt.Sprintf("apps.%s.smtp.from_name", name),
+			"pocket id ignores a sender name",
 			"is set, and Pocket ID has no sender name setting: its mail is sent under its app name. Set apps.%s.settings.app_name to change it, and remove from_name here.", name)
 	}
 }

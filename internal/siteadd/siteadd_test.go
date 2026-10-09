@@ -1,13 +1,14 @@
 package siteadd_test
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/preflight"
 	"github.com/paisans-software/paisans-stack/internal/siteadd"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 func build(t *testing.T, w *world) *siteadd.Plan {
@@ -82,11 +83,11 @@ func TestTheDryRunPlansEveryStageAndChangesNothing(t *testing.T) {
 			}
 		}
 	}
-	var out bytes.Buffer
-	p.Print(&out)
-	t.Log("\n" + out.String())
-	if !strings.Contains(out.String(), "3. etcd") || !strings.Contains(out.String(), "rollback") {
-		t.Errorf("the printed plan is missing its stages:\n%s", out.String())
+	rec := &ui.Recorder{Verbose_: true}
+	p.Show(rec)
+	t.Log("\n" + rec.Lines())
+	if !rec.Has("section", "stage 3, etcd") || !rec.Has("detail", "rollback: ") || !rec.Has("item", "gate: etcd healthy") {
+		t.Errorf("the printed plan is missing its stages:\n%s", rec.Lines())
 	}
 }
 
@@ -121,9 +122,9 @@ func TestAJoinCompletesAndLeavesNothingToDo(t *testing.T) {
 
 	again := build(t, w)
 	if again.Pending() {
-		var out bytes.Buffer
-		again.Print(&out)
-		t.Errorf("a finished join still plans work:\n%s", out.String())
+		rec := &ui.Recorder{}
+		again.Show(rec)
+		t.Errorf("a finished join still plans work:\n%s", rec.Lines())
 	}
 	if !hasStep(again, 1, "home-b", "skip") {
 		t.Error("a started join runs preflight again, which a site holding 51820/udp would fail")
@@ -309,17 +310,20 @@ func TestHAProxyRestartsWithItsDatabaseAppsStopped(t *testing.T) {
 	defer siteadd.SetFast()()
 	w := newWorld(t)
 	p := build(t, w)
-	var out bytes.Buffer
-	p.Print(&out)
-	plan := out.String()
-	for _, want := range []string{
-		"stop      home-a: auth, docs, talk: they reach the database through this HAProxy",
-		"restart   home-a: HAProxy alone",
-		"start     home-a: auth, docs, talk (docker compose -f /srv/paisans/f2a9/auth/compose.yaml up -d;",
-		"check     home-a: auth, docs, talk: every container running",
+	rec := &ui.Recorder{Verbose_: true}
+	p.Show(rec)
+	for _, want := range []struct{ kind, text string }{
+		{"item", "stop auth, docs, talk on home-a"},
+		{"detail", "home-a: auth, docs, talk: they reach the database through this HAProxy"},
+		{"item", "restart HAProxy on home-a"},
+		{"detail", "home-a: HAProxy alone"},
+		{"item", "start auth, docs, talk on home-a"},
+		{"detail", "home-a: auth, docs, talk (docker compose -f /srv/paisans/f2a9/auth/compose.yaml up -d;"},
+		{"item", "check auth, docs, talk on home-a"},
+		{"detail", "home-a: auth, docs, talk: every container running"},
 	} {
-		if !strings.Contains(plan, want) {
-			t.Errorf("the plan has no %q:\n%s", want, plan)
+		if !rec.Has(want.kind, want.text) {
+			t.Errorf("the plan has no %s %q:\n%s", want.kind, want.text, rec.Lines())
 		}
 	}
 	if err := siteadd.Execute(p); err != nil {
@@ -408,5 +412,59 @@ func TestAnUnreachableHAProxyProbeIsNotARestart(t *testing.T) {
 	_, err := siteadd.Build(w.cfg, w.secrets, "home-b", w.transports())
 	if err == nil || !strings.Contains(err.Error(), "could not read host state") {
 		t.Fatalf("want the transport error, got %v", err)
+	}
+}
+
+// A join reports each stage as a section, its work as steps and its gate as a
+// step of its own, and a failed gate marks that step and still returns the
+// error in full.
+func TestAJoinReportsStagesStepsAndGates(t *testing.T) {
+	defer siteadd.SetFast()()
+	w := newWorld(t)
+	p := build(t, w)
+	rec := &ui.Recorder{}
+	p.Report = rec
+	if err := siteadd.Execute(p); err != nil {
+		t.Fatalf("%v\n%s", err, rec.Lines())
+	}
+	for _, want := range []struct{ kind, text string }{
+		{"section", "stage 1, preflight"},
+		{"section", "stage 3, etcd"},
+		{"done", "update mesh on home-a"},
+		{"done", "promote vm to voter"},
+		{"done", "restart HAProxy on home-a"},
+		{"done", "gate: mesh handshakes and ping"},
+		{"done", "gate: home-b streams"},
+	} {
+		if !rec.Has(want.kind, want.text) {
+			t.Errorf("no %s %q:\n%s", want.kind, want.text, rec.Lines())
+		}
+	}
+	for _, e := range rec.Events {
+		if e.Kind == "fail" || e.Kind == "warn" {
+			t.Errorf("a clean join reported %s %q", e.Kind, e.Text)
+		}
+	}
+}
+
+// A refused or warned preflight check shows in a dry run without --verbose,
+// as the refusal or warning it is.
+func TestADryRunShowsPreflightFindingsByDefault(t *testing.T) {
+	defer siteadd.SetFast()()
+	defer siteadd.SetPreflight(preflight.Report{Checks: []preflight.Check{
+		{Site: "home-b", Name: "ports", Detail: "51820/udp is held by another service", Refused: true},
+		{Site: "home-b", Name: "disk", Detail: "9 GiB free", Warned: true},
+	}})()
+	w := newWorld(t)
+	p := build(t, w)
+	rec := &ui.Recorder{}
+	p.Show(rec)
+	if !rec.Has("refuse", "ports on home-b") || !rec.Has("warn", "disk on home-b") {
+		t.Errorf("preflight findings are not reported:\n%s", rec.Lines())
+	}
+	for _, e := range rec.Events {
+		if e.Kind == "refuse" && !strings.Contains(e.Extra, "51820/udp") {
+			t.Errorf("the refusal lacks its explanation: %+v", e)
+		}
 	}
 }

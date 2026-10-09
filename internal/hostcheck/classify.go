@@ -2,7 +2,6 @@ package hostcheck
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"strings"
 )
@@ -367,7 +366,14 @@ func contains(list []string, s string) bool {
 func (r *Report) Refusal() error {
 	switch r.Class {
 	case Conflicted:
-		return fmt.Errorf("host check: %s holds %d thing(s) %s claims, each listed above as CONFLICT, so nothing was changed. Move what holds each one, or change the paisans.yaml key it names, and run again", r.Host, len(r.Conflicts), r.Site)
+		// The conflicts are listed here rather than with the report's other
+		// lines, which show only with --verbose: a refusal has to say what
+		// to move at any verbosity.
+		lines := make([]string, len(r.Conflicts))
+		for i, c := range r.Conflicts {
+			lines[i] = c.String()
+		}
+		return fmt.Errorf("host check: %s holds %d thing(s) %s claims, so nothing was changed:\n  %s\nMove what holds each one, or change the paisans.yaml key it names, and run again", r.Host, len(r.Conflicts), r.Site, strings.Join(lines, "\n  "))
 	case Shared:
 		if why := firewallGap(r.Inventory.Firewall); why != "" {
 			port := r.SSHPort
@@ -396,11 +402,19 @@ func firewallGap(f Firewall) string {
 	return ""
 }
 
-// Print writes the report: the class, Docker and the firewall as found,
-// then one line per foreign thing and per conflict.
-func (r *Report) Print(w io.Writer) {
-	line := func(label, text string) { fmt.Fprintf(w, "  %-9s %s\n", label, text) }
-	fmt.Fprintf(w, "host check: %s (%s) is %s\n", r.Site, r.Host, r.Class)
+// detailer is what Show attaches the report to: the host check's step, or a
+// reporter.
+type detailer interface {
+	Detail(format string, args ...any)
+}
+
+// Show attaches the report to the host check's step as details: the class,
+// Docker and the firewall as found, then one line per foreign thing and
+// note. They explain the step's result and show with --verbose. Conflicts
+// are not among them: they are in Refusal's error, which prints in full.
+func (r *Report) Show(d detailer) {
+	line := func(label, text string) { d.Detail("%-9s %s", label, text) }
+	d.Detail("%s (%s) is %s", r.Site, r.Host, r.Class)
 	inv := r.Inventory
 	docker := "absent"
 	if inv.Docker.Present {
@@ -416,9 +430,6 @@ func (r *Report) Print(w io.Writer) {
 	}
 	for _, n := range r.Notes {
 		line("note", n)
-	}
-	for _, c := range r.Conflicts {
-		line("CONFLICT", c.String())
 	}
 	if r.Class == Shared {
 		line("shared", "ufw's default policy and enabled state are left alone, superseded images are kept, and prune removes only volumes labelled with this deployment's id, as everywhere")

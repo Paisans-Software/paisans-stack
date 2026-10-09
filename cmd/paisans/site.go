@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -22,6 +21,7 @@ import (
 // its own ssh section.
 func runSiteAdd(args []string) error {
 	fs := flag.NewFlagSet("site add", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, "actually run the stages, stopping at the first gate that fails")
@@ -35,6 +35,7 @@ func runSiteAdd(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	if site == "" && fs.NArg() > 0 {
 		site = fs.Arg(0)
 	} else if fs.NArg() > 0 {
@@ -49,7 +50,7 @@ func runSiteAdd(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -61,7 +62,7 @@ func runSiteAdd(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
@@ -80,19 +81,19 @@ func runSiteAdd(args []string) error {
 	if _, ok := cfg.Sites[site]; !ok {
 		return fmt.Errorf("site add: %s declares no site %q. Declared sites are %s", *configPath, site, strings.Join(cfg.SiteNames(), ", "))
 	}
-	host, err := hostGate(os.Stdout, cfg, site, transports[site])
+	host, err := hostGate(r, cfg, site, transports[site])
 	if err != nil {
 		return err
 	}
 	// The monitor's stack is applied last, with the new site in its seed,
 	// so each monitor site is host checked as apply would check it.
-	shared, err := gateSites(os.Stdout, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] })
+	shared, err := gateSites(r, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] })
 	if err != nil {
 		return err
 	}
 	// Site add writes to every site: the mesh, HAProxy and etcd change on
 	// each, not only on the new one.
-	if err := claimSites(cfg, *execute, *sudo, cfg.SiteNames()...); err != nil {
+	if err := claimSites(r, cfg, *execute, *sudo, cfg.SiteNames()...); err != nil {
 		return err
 	}
 	plan, err := siteadd.Build(cfg, secrets, site, transports)
@@ -101,17 +102,20 @@ func runSiteAdd(args []string) error {
 	}
 	plan.KeepImages = host.Shared()
 	plan.SharedSites = shared
-	plan.Print(os.Stdout)
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	if !*execute {
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to run these stages; each stops at its gate if it does not pass.\n")
+		reportRemains(r, plan.Notes)
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	plan.Progress = os.Stdout
-	fmt.Fprintln(os.Stdout)
+	plan.Report = r
 	if err := siteadd.Execute(plan); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\n%s joined: every gate passed\n", site)
+	reportRemains(r, plan.Notes)
+	r.Result("%s joined: every gate passed.", site)
 	return nil
 }

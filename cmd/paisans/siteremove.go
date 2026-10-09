@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -32,6 +31,7 @@ var removeSiteHost = func(name string, site config.Site, sudo bool) apply.Transp
 // at a terminal, for the reason app remove does.
 func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	fs := flag.NewFlagSet("site remove", flag.ContinueOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, "actually run the stages, stopping at the first gate that fails")
@@ -45,6 +45,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	if site == "" && fs.NArg() > 0 {
 		site = fs.Arg(0)
 		if err := fs.Parse(fs.Args()[1:]); err != nil {
@@ -63,7 +64,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -84,7 +85,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
@@ -104,22 +105,24 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	// The monitor's stack is applied last, with the site out of its seed,
 	// so each monitor site is host checked as apply would check it.
-	if _, err := gateSites(stdout, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
+	if _, err := gateSites(r, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
 		return err
 	}
 	plan, err := siteremove.Build(cfg, secrets, site, transports, opts)
 	if err != nil {
 		return err
 	}
-	plan.Print(stdout)
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 	// Every site it reaches is written to: the cluster and the mesh change
 	// on each remaining one, and the leaving host is cleaned.
-	if err := claimSites(cfg, *execute, *sudo, claim...); err != nil {
+	if err := claimSites(r, cfg, *execute, *sudo, claim...); err != nil {
 		return err
 	}
 	if !*execute {
-		printRemains(stdout, plan.Remains())
-		fmt.Fprintf(stdout, "\nNothing was changed. Re-run with --execute to run these stages; each stops at its gate if it does not pass.\n")
+		reportRemains(r, plan.Remains())
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
 	if *deleteData {
@@ -127,13 +130,12 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 	}
-	plan.Progress = stdout
-	fmt.Fprintln(stdout)
+	plan.Report = r
 	if err := siteremove.Execute(plan); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "\n%s is removed: every gate passed, and %s no longer declares it.\n", site, *configPath)
-	printRemains(stdout, plan.Remains())
+	reportRemains(r, plan.Remains())
+	r.Result("%s is removed: every gate passed, and %s no longer declares it.", site, *configPath)
 	return nil
 }
 

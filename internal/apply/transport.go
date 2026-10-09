@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -241,8 +242,56 @@ var sshRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second}
 // stand in for the ssh binary and choose its output and exit status.
 var runSSH = func(cmd *exec.Cmd) error { return cmd.Run() }
 
-// retryLog receives one line per retry.
-var retryLog io.Writer = os.Stderr
+// retryLog receives one line per retry. Nothing by default: a retry that
+// then succeeds is not news, and one that runs out is reported in full by the
+// error that ends the command, so the lines are only worth showing to
+// someone who asked for detail. SetRetryLog lets a command route them there.
+var retryLog io.Writer = io.Discard
+
+// SetRetryLog sends the notice of each ssh retry to w, or nowhere for nil.
+func SetRetryLog(w io.Writer) {
+	if w == nil {
+		w = io.Discard
+	}
+	retryLog = w
+}
+
+// promptHold pauses the operator's progress display while ssh may be asking
+// on the terminal, and returns what resumes it. Nothing by default, since a
+// run with nothing drawn has nothing to pause. SetPromptHold lets a command
+// connect it to the reporter that draws.
+var promptHold = func() (resume func()) { return func() {} }
+
+// SetPromptHold pauses with hold around an ssh that may ask the operator
+// something, or with nothing for nil.
+func SetPromptHold(hold func() (resume func())) {
+	if hold == nil {
+		hold = func() (resume func()) { return func() {} }
+	}
+	promptHold = hold
+}
+
+// contacted is every destination ssh has reached in this run. ssh asks on
+// the terminal itself, not through the toolkit, when it meets a host key it
+// does not know, and that happens on a first connection. Until a host has
+// answered once, each attempt is made with the display held, so a spinner
+// redrawing its line cannot erase the question; after that the spinner runs.
+var (
+	contactedMu sync.Mutex
+	contacted   = map[string]bool{}
+)
+
+func firstContact(destination string) bool {
+	contactedMu.Lock()
+	defer contactedMu.Unlock()
+	return !contacted[destination]
+}
+
+func markContacted(destination string) {
+	contactedMu.Lock()
+	defer contactedMu.Unlock()
+	contacted[destination] = true
+}
 
 // ErrUnreachable marks a command that never reached the host: ssh could not
 // connect, on every attempt. A caller asking the host a question can tell
@@ -323,12 +372,20 @@ func (t SSHTransport) run(command string, stdin *string) (string, error) {
 		var out bytes.Buffer
 		cmd.Stdout = &out
 		cmd.Stderr = &out
+		resume := func() {}
+		if firstContact(t.Describe()) {
+			resume = promptHold()
+		}
 		err = runSSH(cmd)
+		resume()
 		cleanup()
 		if err == nil {
+			markContacted(t.Describe())
 			return out.String(), nil
 		}
 		if !connectionFailed(err, out.String()) {
+			// The host answered, so any question about its key is settled.
+			markContacted(t.Describe())
 			return out.String(), err
 		}
 		if attempt > len(sshRetryDelays) {

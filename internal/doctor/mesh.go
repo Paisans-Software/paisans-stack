@@ -30,7 +30,7 @@ func Mesh(cfg *config.Config, probes []MeshProbe) []Finding {
 	var out []Finding
 	for _, p := range probes {
 		if p.LinkErr != "" {
-			out = append(out, Finding{Section: SectionMesh, Level: Warn, Line: fmt.Sprintf("%s: could not read %s (%s)", p.Site, iface, firstLine(p.LinkErr))})
+			out = append(out, Finding{Section: SectionMesh, Level: Warn, Line: fmt.Sprintf("%s: could not read %s", p.Site, iface), More: []string{firstLine(p.LinkErr)}})
 		} else {
 			exists, up, err := mesh.LinkUp(p.Link)
 			switch {
@@ -54,7 +54,7 @@ func Mesh(cfg *config.Config, probes []MeshProbe) []Finding {
 		}
 
 		if p.ProbeErr != "" {
-			out = append(out, Finding{Section: SectionMesh, Level: Warn, Line: fmt.Sprintf("%s: could not read the host's networks, so overlaps with the mesh are unknown (%s)", p.Site, firstLine(p.ProbeErr))})
+			out = append(out, Finding{Section: SectionMesh, Level: Warn, Line: fmt.Sprintf("%s: could not read the host's networks, so mesh overlaps are unknown", p.Site), More: []string{firstLine(p.ProbeErr)}})
 			continue
 		}
 		if subnetErr != nil {

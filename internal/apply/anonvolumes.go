@@ -18,7 +18,7 @@ func stackVolumes(d deployment.Deployment, stack string) string {
 func recordAnonymousVolumes(plan *Plan, stack string, t Transport) []string {
 	out, err := t.Run(stackVolumes(plan.Deployment, stack))
 	if err != nil {
-		plan.say("  %-9s %s: the volumes its old containers used were not read, so none will be removed after it: %s\n", "warning", stack, firstLine(strings.TrimSpace(out)))
+		plan.warn(stack+": the volumes its old containers used were not read, so none will be removed after it", firstLine(strings.TrimSpace(out)))
 		return nil
 	}
 	var names []string
@@ -41,7 +41,7 @@ func removeAbandonedVolumes(plan *Plan, stack string, previous []string, t Trans
 	}
 	out, err := t.Run("docker volume ls -qf dangling=true")
 	if err != nil {
-		plan.say("  %-9s %s: its old containers' anonymous volumes were left in place: listing dangling volumes: %s\n", "warning", stack, firstLine(strings.TrimSpace(out)))
+		plan.warn(stack+": its old containers' anonymous volumes were left in place", "listing dangling volumes: "+firstLine(strings.TrimSpace(out)))
 		return
 	}
 	dangling := map[string]bool{}
@@ -53,9 +53,9 @@ func removeAbandonedVolumes(plan *Plan, stack string, previous []string, t Trans
 			continue
 		}
 		if out, err := t.Run("docker volume rm " + shellQuote(name)); err != nil {
-			plan.say("  %-9s %s: could not remove anonymous volume %s: %s\n", "warning", stack, name, firstLine(strings.TrimSpace(out)))
+			plan.warn(stack+": could not remove anonymous volume "+name, firstLine(strings.TrimSpace(out)))
 			continue
 		}
-		plan.say("  %-9s anonymous volume %s, left by %s's previous containers\n", "removed", name, stack)
+		plan.say("removed anonymous volume %s, left by %s's previous containers", name, stack)
 	}
 }

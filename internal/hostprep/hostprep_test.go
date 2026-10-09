@@ -1,7 +1,6 @@
 package hostprep_test
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // fakeHost answers each probe by a substring that only that probe's script
@@ -217,10 +217,11 @@ func describes(plan *hostprep.Plan) string {
 	return strings.Join(out, "\n")
 }
 
+// printed is everything Show reports with --verbose, one event per line.
 func printed(plan *hostprep.Plan) string {
-	var buf bytes.Buffer
-	plan.Print(&buf)
-	return buf.String()
+	rec := &ui.Recorder{Verbose_: true}
+	plan.Show(rec)
+	return rec.Lines()
 }
 
 // The wording is the founder's. It names what the host is, then lists what it
@@ -273,7 +274,7 @@ func TestAFreshDataSitePlansEveryStep(t *testing.T) {
 		"firewall: deny incoming by default",
 		"firewall: allow outgoing by default",
 		"firewall: enable ufw",
-		"WARNING   the watchdog will be softdog",
+		"warn: watchdog: falling back to softdog",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q", want)
@@ -352,7 +353,7 @@ func TestExecuteRunsEveryStepInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	host.ran = nil
-	if err := hostprep.Execute(plan, host); err != nil {
+	if err := hostprep.Execute(plan, host, ui.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if len(host.written) != 3 {
@@ -360,6 +361,56 @@ func TestExecuteRunsEveryStepInOrder(t *testing.T) {
 	}
 	if last := host.ran[len(host.ran)-1]; last != "ufw --force enable" {
 		t.Errorf("enabling the firewall is the last thing run, got %q", last)
+	}
+}
+
+// Each step is reported under its short title, ended as done, with the full
+// sentence as its detail, so a run reads as a list of verbs and a failure
+// leaves the line that failed marked.
+func TestExecuteReportsEachStepByItsTitle(t *testing.T) {
+	host := freshHost()
+	plan, err := hostprep.Build("home-a", fixture(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &ui.Recorder{Verbose_: true}
+	if err := hostprep.Execute(plan, host, rec); err != nil {
+		t.Fatal(err)
+	}
+	for _, title := range []string{"add docker apt key", "install packages", "enable ufw"} {
+		if !rec.Has("done", title) {
+			t.Errorf("no finished step %q:\n%s", title, rec.Lines())
+		}
+	}
+	if !rec.Has("detail", "packages: install ") {
+		t.Errorf("a step's sentence is its detail:\n%s", rec.Lines())
+	}
+}
+
+// A title is a verb and its object, short enough to share a line with a
+// result; the sentence behind it is for --verbose.
+func TestEveryStepHasAShortTitle(t *testing.T) {
+	plan, err := hostprep.Build("home-a", fixture(t), freshHost())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range plan.Steps {
+		if s.Title == "" || len(s.Title) > 40 {
+			t.Errorf("step %q has title %q", s.Describe, s.Title)
+		}
+	}
+}
+
+// A dry run lists the steps as items and keeps what was found for --verbose.
+func TestShowListsStepsAsItemsAndFindingsAsDetails(t *testing.T) {
+	plan, err := hostprep.Build("home-a", fixture(t), freshHost())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &ui.Recorder{}
+	plan.Show(rec)
+	if !rec.Has("item", "install packages") || !rec.Has("warn", "falling back to softdog") {
+		t.Errorf("got:\n%s", rec.Lines())
 	}
 }
 
@@ -372,7 +423,7 @@ func TestExecuteStopsAtTheFirstFailure(t *testing.T) {
 	}
 	host.failures = map[string]error{"modprobe softdog": errors.New("exit status 1")}
 	host.ran = nil
-	err = hostprep.Execute(plan, host)
+	err = hostprep.Execute(plan, host, ui.Discard)
 	if err == nil || !strings.HasPrefix(err.Error(), "watchdog: load softdog now") {
 		t.Fatalf("got %v", err)
 	}
@@ -534,7 +585,7 @@ func TestASoftdogHostReRunsClean(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := hostprep.Execute(plan, host); err != nil {
+	if err := hostprep.Execute(plan, host, ui.Discard); err != nil {
 		t.Fatal(err)
 	}
 	after := preparedHost(false)
@@ -667,7 +718,7 @@ func TestAStaleOwnedRuleIsRemovedLast(t *testing.T) {
 			t.Errorf("a removal is labelled %q: %s", s.Label, s.Describe)
 		}
 	}
-	if !strings.Contains(printed(plan), "  remove    firewall: delete `ufw allow 80/tcp comment 'paisans-f2a9: test'`") {
+	if !strings.Contains(printed(plan), "remove    firewall: delete `ufw allow 80/tcp comment 'paisans-f2a9: test'`") {
 		t.Errorf("the plan does not show the removal as remove:\n%s", printed(plan))
 	}
 }
@@ -795,7 +846,7 @@ func TestALegacyRuleIsAdoptedWithoutAGap(t *testing.T) {
 			t.Errorf("not an adoption: %s %q", s.Label, s.Command)
 		}
 	}
-	if !strings.Contains(out, "  adopt     firewall: mark `ufw allow 22/tcp` as host prepare's") ||
+	if !strings.Contains(out, "adopt     firewall: mark `ufw allow 22/tcp` as host prepare's") ||
 		!strings.Contains(out, "present   firewall: 22/tcp allowed, by a rule without the paisans comment") {
 		t.Errorf("got:\n%s", out)
 	}
@@ -939,8 +990,8 @@ func TestAUserWithoutAuthorizedKeysGetsThem(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"  add       ssh: authorize key " + fingerprint(keyAlice) + " (alice@example.org) for ubuntu",
-		"  add       ssh: authorize key " + fingerprint(keyBob) + " (bob@example.org) for ubuntu",
+		"add       ssh: authorize key " + fingerprint(keyAlice) + " (alice@example.org) for ubuntu",
+		"add       ssh: authorize key " + fingerprint(keyBob) + " (bob@example.org) for ubuntu",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
@@ -977,7 +1028,7 @@ func TestAnExistingListedKeyIsAdoptedAndOthersLeftAlone(t *testing.T) {
 	if len(adopt) != 1 || len(add) != 1 || len(plan.Steps) != 2 {
 		t.Fatalf("want one adopt and one add:\n%s", out)
 	}
-	if !strings.Contains(out, "  adopt     ssh: key "+fingerprint(keyAlice)+" (alice@example.org) is already authorized for ubuntu; record it as host prepare's") {
+	if !strings.Contains(out, "adopt     ssh: key "+fingerprint(keyAlice)+" (alice@example.org) is already authorized for ubuntu; record it as host prepare's") {
 		t.Errorf("the adoption reads:\n%s", out)
 	}
 	if strings.Contains(adopt[0].Command, ">> '/home/ubuntu/.ssh/authorized_keys'") {

@@ -190,7 +190,10 @@ func (p *Plan) probeStaleNetworks(t Transport) error {
 		// the primary, a failover. That is the operator's to schedule, so
 		// the plan says what to do and leaves the stack running.
 		if a.Stack == infraStack {
-			p.Notes = append(p.Notes, fmt.Sprintf("the infrastructure stack's network %s does not match its compose file: %s. It was left as it is, because taking that stack down stops the database and the gateway on this site. At a time this site can be out, run `%s down`, then apply again with `--recreate infra`, which starts it on a network created as declared", name, why, p.Deployment.ComposeCmd(a.Stack)))
+			p.Notes = append(p.Notes, Note{
+				Hint: "infra network differs from its compose file: run infra down, then apply --recreate infra",
+				Text: fmt.Sprintf("the infrastructure stack's network %s does not match its compose file: %s. It was left as it is, because taking that stack down stops the database and the gateway on this site. At a time this site can be out, run `%s down`, then apply again with `--recreate infra`, which starts it on a network created as declared", name, why, p.Deployment.ComposeCmd(a.Stack)),
+			})
 			continue
 		}
 		p.Actions[i].Down = true

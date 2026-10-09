@@ -8,6 +8,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // stateHost answers the instance question with one fixed word and records
@@ -63,7 +64,7 @@ func standbyCfg(t *testing.T) *config.Config {
 func TestApplyChecksOneActivePocketIDAfterActingOnIt(t *testing.T) {
 	var asked []string
 	plan := &apply.Plan{Site: "home-a", Actions: []apply.Action{{Stack: "auth", Recreate: true}}}
-	err := checkStandby(standbyCfg(t), plan, "home-a", stateHost{"active", &asked, "home-a"}, func(name string) apply.Transport {
+	err := checkStandby(ui.Discard, standbyCfg(t), plan, "home-a", stateHost{"active", &asked, "home-a"}, func(name string) apply.Transport {
 		return stateHost{"standby", &asked, name + " by its section"}
 	})
 	if err != nil {
@@ -77,7 +78,7 @@ func TestApplyChecksOneActivePocketIDAfterActingOnIt(t *testing.T) {
 func TestApplyFailsOnTwoActivePocketIDs(t *testing.T) {
 	var asked []string
 	plan := &apply.Plan{Site: "home-a", Actions: []apply.Action{{Stack: "auth"}}}
-	err := checkStandby(standbyCfg(t), plan, "home-a", stateHost{"active", &asked, "home-a"}, func(name string) apply.Transport {
+	err := checkStandby(ui.Discard, standbyCfg(t), plan, "home-a", stateHost{"active", &asked, "home-a"}, func(name string) apply.Transport {
 		return stateHost{"active", &asked, name}
 	})
 	if err == nil || !strings.Contains(err.Error(), "2 sites have an active instance") || !strings.Contains(err.Error(), "The apply itself finished") {
@@ -89,7 +90,7 @@ func TestApplyFailsOnTwoActivePocketIDs(t *testing.T) {
 func TestApplyLeavesPocketIDAloneWhenItDidNotActOnIt(t *testing.T) {
 	var asked []string
 	plan := &apply.Plan{Site: "home-a", Actions: []apply.Action{{Stack: "talk", Recreate: true}}}
-	err := checkStandby(standbyCfg(t), plan, "home-a", stateHost{"down", &asked, "home-a"}, func(name string) apply.Transport {
+	err := checkStandby(ui.Discard, standbyCfg(t), plan, "home-a", stateHost{"down", &asked, "home-a"}, func(name string) apply.Transport {
 		return stateHost{"down", &asked, name}
 	})
 	if err != nil || len(asked) != 0 {

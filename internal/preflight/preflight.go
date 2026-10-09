@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"path"
 	"sort"
@@ -28,6 +27,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/patroni"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Check is one finding. A check that is neither refused nor warned passed.
@@ -53,18 +53,70 @@ func (r Report) Refused() bool {
 	return false
 }
 
-// Print writes the report, one line per check.
-func (r Report) Print(w io.Writer) {
+// Show reports each check as a step titled "check <name> <site>", in the
+// order they were made. A pass ends done with the first sentence of its
+// finding as the result; a warning and a refusal are a single Warn or Refuse
+// naming the check and the same sentence, with no step of their own so they
+// never show two marks, since a refusal must say what to fix without a
+// second run. What the finding says after its first sentence
+// is the reasoning and the advice: a detail of a pass or a warning, and the
+// explanation of a refusal.
+func (r Report) Show(rep ui.Reporter) {
 	for _, c := range r.Checks {
-		label := "ok"
+		title := "check " + c.Name + " " + c.Site
+		hint, rest := firstSentence(c.Detail)
 		switch {
 		case c.Refused:
-			label = "REFUSED"
+			rep.Refuse(title+": "+hint, rest)
 		case c.Warned:
-			label = "WARNING"
+			rep.Warn(title+": "+hint, rest)
+		default:
+			s := rep.Step(title)
+			if rest != "" {
+				s.Detail("%s", rest)
+			}
+			s.Done(hint)
 		}
-		fmt.Fprintf(w, "  %-8s %-8s %-10s %s\n", label, c.Site, c.Name, c.Detail)
 	}
+}
+
+// Summary is the closing line: how many checks passed, warned and refused.
+func (r Report) Summary() string {
+	var passed, warned, refused int
+	for _, c := range r.Checks {
+		switch {
+		case c.Refused:
+			refused++
+		case c.Warned:
+			warned++
+		default:
+			passed++
+		}
+	}
+	parts := []string{fmt.Sprintf("%d %s passed", passed, noun(passed, "check"))}
+	if warned > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", warned, noun(warned, "warning")))
+	}
+	if refused > 0 {
+		parts = append(parts, fmt.Sprintf("%d refused", refused))
+	}
+	return strings.Join(parts, ", ") + "."
+}
+
+func noun(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
+}
+
+// firstSentence splits a finding at its first full stop followed by a space:
+// the sentence an operator reads by default, and the rest.
+func firstSentence(s string) (first, rest string) {
+	if i := strings.Index(s, ". "); i >= 0 {
+		return s[:i], strings.TrimSpace(s[i+2:])
+	}
+	return strings.TrimSuffix(s, "."), ""
 }
 
 // diskHeadroom is what the new site must have free beyond the leader's

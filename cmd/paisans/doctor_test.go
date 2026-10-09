@@ -96,16 +96,9 @@ func withDoctorHosts(t *testing.T, hosts map[string]doctorHost) {
 	t.Cleanup(func() { doctorTransport, doctorNow = saved, savedNow })
 }
 
-// The stuck case, end to end: home-b led and is switched off, home-a is a
-// replica /sync no longer names. doctor says so, puts starting home-b first
-// and the forced failover second, exits non zero, and every command any host
-// received is a read.
-func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
-	cfg, err := config.Load(fixtureConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sent, writes []string
+// stuckHosts are the four sites of the stuck case: home-b led and is down,
+// home-a is a replica /sync no longer names, and vm overlaps the mesh.
+func stuckHosts(cfg *config.Config, sent, writes *[]string) map[string]doctorHost {
 	inspect := "docker inspect "
 	homeA := map[string]string{
 		doctor.ReachCommand:                                        "",
@@ -138,33 +131,47 @@ func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
 		doctor.ClockCommand:                        "1760000000.000000000\n",
 		doctor.ContainersCommand(cfg.Deployment()): `{"Names":"paisans-f2a9-status-app-1","State":"running","Status":"Up 2 days","Labels":"community.paisans.deployment=f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}`,
 	}
-	withDoctorHosts(t, map[string]doctorHost{
-		"home-a.local":      {name: "home-a.local", answers: homeA, sent: &sent, writes: &writes},
-		"home-b.local":      {name: "home-b.local", down: true, sent: &sent, writes: &writes},
-		"vm.example.org":    {name: "vm.example.org", answers: vm, sent: &sent, writes: &writes},
-		"watch.example.org": {name: "watch.example.org", answers: watch, sent: &sent, writes: &writes},
-	})
+	return map[string]doctorHost{
+		"home-a.local":      {name: "home-a.local", answers: homeA, sent: sent, writes: writes},
+		"home-b.local":      {name: "home-b.local", down: true, sent: sent, writes: writes},
+		"vm.example.org":    {name: "vm.example.org", answers: vm, sent: sent, writes: writes},
+		"watch.example.org": {name: "watch.example.org", answers: watch, sent: sent, writes: writes},
+	}
+}
 
-	var runErr error
-	out := captureStdout(t, func() { runErr = runDoctor([]string{"--config", fixtureConfig(), "--sudo=false"}) })
+// The stuck case, end to end: home-b led and is switched off, home-a is a
+// replica /sync no longer names. doctor says so, puts starting home-b first
+// and the forced failover second, exits non zero, and every command any host
+// received is a read.
+func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
+	cfg, err := config.Load(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent, writes []string
+	withDoctorHosts(t, stuckHosts(cfg, &sent, &writes))
+
+	rec := withRecorder(t, true)
+	runErr := runDoctor([]string{"--config", fixtureConfig(), "--sudo=false"})
+	out := rec.Lines()
 	if runErr == nil || !strings.Contains(runErr.Error(), "marked FAIL") {
 		t.Fatalf("doctor should fail on a cluster with no primary, got %v\n%s", runErr, out)
 	}
 
 	for _, want := range []string{
-		"doctor: 4 site(s), 3 reached",
-		"ok    home-a: psns-f2a9 is up",
-		"ok    home-a: nothing on the host overlaps the mesh subnet 10.44.0.0/24",
-		"FAIL  vm: the mesh subnet 10.44.0.0/24 overlaps route 10.44.0.0/16 dev wg9",
-		"FAIL  home-b: ssh to ubuntu@home-b.local did not answer (ssh: connect to host home-b.local port 22: Operation timed out)",
-		"WARN  quorum: 2 of 3 members healthy (needs 2), asked from home-a",
-		"FAIL  no primary: home-a is a replica and will not promote while home-b, which led, is gone",
-		"FAIL  home-a: paisans-f2a9-talk-app-1 restarting (exit 1, restarted 9 time(s))",
+		"detail: 4 site(s), 3 reached",
+		"done: check mesh home-a psns-f2a9 is up",
+		"done: check mesh home-a nothing on the host overlaps the mesh subnet 10.44.0.0/24",
+		"refuse: check mesh vm: the mesh subnet 10.44.0.0/24 overlaps route 10.44.0.0/16 dev wg9",
+		"refuse: check reach home-b: ssh to ubuntu@home-b.local did not answer (ssh: connect to host home-b.local port 22: Operation timed out)",
+		"warn: check etcd quorum: 2 of 3 members healthy (needs 2), asked from home-a",
+		"refuse: check patroni: no primary: home-a is a replica and will not promote while home-b, which led, is gone",
+		"refuse: check containers home-a: paisans-f2a9-talk-app-1 restarting (exit 1, restarted 9 time(s))",
 		"It cannot reach its database",
-		"FAIL  auth: no active instance, so sign in is down",
+		"refuse: check pocket-id auth: no active instance, so sign in is down",
 		"home-b   unreachable did not answer ssh (see reach)",
 		"There is no database primary (see patroni)",
-		"Changes nothing.",
+		"doctor changes nothing",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
@@ -231,14 +238,15 @@ func TestDoctorSiteNarrowsTheHostsReached(t *testing.T) {
 			"docker compose -f /srv/paisans/f2a9/infra/compose.yaml exec -T etcd etcdctl": `[{"endpoint":"http://10.44.0.1:2379","health":true},{"endpoint":"http://10.44.0.2:2379","health":true},{"endpoint":"http://10.44.0.3:2379","health":true}]`,
 		}},
 	})
-	var runErr error
-	out := captureStdout(t, func() { runErr = runDoctor([]string{"--config", fixtureConfig(), "--sudo=false", "--site", "vm"}) })
+	rec := withRecorder(t, true)
+	runErr := runDoctor([]string{"--config", fixtureConfig(), "--sudo=false", "--site", "vm"})
+	out := rec.Lines()
 	for _, s := range sent {
 		if !strings.HasPrefix(s, "vm.example.org: ") {
 			t.Errorf("reached a site outside --site: %s", s)
 		}
 	}
-	if !strings.Contains(out, "doctor: 1 site(s), 1 reached") || !strings.Contains(out, "no database site reached") || !strings.Contains(out, "not asked (outside --site)") {
+	if !strings.Contains(out, "detail: 1 site(s), 1 reached") || !strings.Contains(out, "no database site reached") || !strings.Contains(out, "not asked (outside --site)") {
 		t.Errorf("output:\n%s", out)
 	}
 	if runErr == nil {
@@ -287,14 +295,16 @@ func TestDoctorReportsLeftoversAndForeignCaddyUsers(t *testing.T) {
 	withDoctorHosts(t, map[string]doctorHost{
 		"vm.example.org": {name: "vm.example.org", sent: &sent, writes: &writes, answers: answers},
 	})
-	out := captureStdout(t, func() { _ = runDoctor([]string{"--config", fixtureConfig(), "--site", "vm"}) })
+	rec := withRecorder(t, true)
+	_ = runDoctor([]string{"--config", fixtureConfig(), "--site", "vm"})
+	out := rec.Lines()
 	for _, want := range []string{
 		"leftovers",
-		"WARN  vm: 1 thing(s) of this deployment left over",
+		"warn: check leftovers vm: 1 thing(s) of this deployment left over",
 		"stack old (compose project paisans-f2a9-old, 1 of 1 running): paisans-f2a9-old-app-1",
 		"apply leaves them in place.",
 		"`paisans app remove old` takes old's off every site, once a whole apply has run on each; it keeps its data unless given --delete-data.",
-		"info  vm: 1 foreign thing(s) rely on this deployment's Caddy",
+		"done: check leftovers vm 1 foreign thing(s) rely on this deployment's Caddy",
 		"site block /srv/caddy.d/blog.caddy, served by this deployment's Caddy",
 	} {
 		if !strings.Contains(out, want) {

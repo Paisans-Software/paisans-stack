@@ -19,7 +19,6 @@ package storageadd
 import (
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -29,13 +28,32 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Step is one thing a stage will do, for the plan an operator reads.
 type Step struct {
 	Site string
 	Verb string
+	// Text is the whole step, commands included. A dry run shows it only with
+	// --verbose.
 	Text string
+	// Level is "warn" or "refuse" for a step that is a finding rather than
+	// work: a dry run reports it as a warning or a refusal so it shows without
+	// --verbose.
+	Level string
+	// Title is the step as a line of its own. It is empty for a step that
+	// has none worth the name, which then reads as its verb and site. Steps
+	// that follow each other with one title are listed as one item.
+	Title string
+}
+
+// title is the line a dry run lists the step as.
+func (s Step) title() string {
+	if s.Title != "" {
+		return s.Title
+	}
+	return s.Verb + " " + s.Site
 }
 
 // Stage is one stage of the join: its steps, then its gate.
@@ -45,6 +63,9 @@ type Stage struct {
 	Steps  []Step
 	// Gate says what must hold before the next stage may start.
 	Gate string
+	// Short names the gate in a few words, as the title of its step. The long
+	// text is that step's detail.
+	Short string
 	// Waits marks a gate that waits on Garage rather than on anything the
 	// toolkit does. A run that finds one not yet passing exits with
 	// ErrWaiting, unless it was asked to wait.
@@ -92,9 +113,9 @@ type Plan struct {
 	Stages []*Stage
 	// Notes are things the join leaves for later, on purpose.
 	Notes []string
-	// Progress receives each stage as it starts and each gate as it passes.
-	// Nil discards it.
-	Progress io.Writer
+	// Report receives each stage as a section, the work in it as steps and
+	// each gate as a step of its own. Nil discards it.
+	Report ui.Reporter
 
 	cfg        *config.Config
 	secrets    *config.Secrets
@@ -111,6 +132,9 @@ type Plan struct {
 	// nodes stopped.
 	needsChange bool
 	reset       bool
+	// open is the step the running stage is in the middle of, or the gate
+	// being checked, ended when the next one starts or the stage's work does.
+	open ui.Step
 }
 
 // ErrWaiting is what Execute returns, wrapped, when a gate is waiting on
@@ -166,10 +190,47 @@ func attempts(wait, poll time.Duration) int {
 	return 1
 }
 
-func (p *Plan) say(format string, args ...any) {
-	if p.Progress != nil {
-		fmt.Fprintf(p.Progress, format, args...)
+func (p *Plan) reporter() ui.Reporter {
+	if p.Report == nil {
+		return ui.Discard
 	}
+	return p.Report
+}
+
+// work starts the step a stage's run is now doing and ends the one before it,
+// so a stage's work reads as a list of steps and a failure marks the one that
+// failed.
+func (p *Plan) work(title string) ui.Step {
+	p.idle()
+	p.open = p.reporter().Step(title)
+	return p.open
+}
+
+// idle ends the open step as done. A step that calls into apply ends its own
+// first, since the apply reports steps of its own and two cannot be open.
+func (p *Plan) idle() {
+	if p.open != nil {
+		p.open.Done("")
+		p.open = nil
+	}
+}
+
+// stop ends the open step as failed, when there is one.
+func (p *Plan) stop(err error) {
+	if p.open != nil {
+		p.open.Fail(err)
+		p.open = nil
+	}
+}
+
+// note attaches a line to the step or gate in progress, shown with
+// --verbose.
+func (p *Plan) note(format string, args ...any) {
+	if p.open != nil {
+		p.open.Detail(format, args...)
+		return
+	}
+	p.reporter().Detail(format, args...)
 }
 
 // Build decides the join, reading every Garage site and the gateway and
@@ -334,11 +395,17 @@ func (p *Plan) noteOwed() error {
 			return err
 		}
 		if n := len(sp.Writes()); n > 0 {
-			p.Notes = append(p.Notes, fmt.Sprintf(
-				"%s's app configuration differs from the render in %d file(s), Eg: S3_ENDPOINT after storage.garage.sites was reordered. `paisans apply --site %s` brings it up to date and recreates those apps; run it when that is acceptable", name, n, name))
+			p.Notes = append(p.Notes, appConfigNote(name, n))
 		}
 	}
 	return nil
+}
+
+// appConfigNote is what a join leaves for the operator when an app's .env on
+// site no longer matches the render. Its first sentence is what shows without
+// --verbose, so it carries the command.
+func appConfigNote(site string, files int) string {
+	return fmt.Sprintf("%s: run `paisans apply --site %s` when acceptable. Its apps are out of date in %d file(s); their configuration differs from the render, Eg: S3_ENDPOINT after storage.garage.sites was reordered, and the apply brings it up to date and recreates those apps", site, site, files)
 }
 
 // appEnvFiles is every app .env the render places on site.
@@ -362,26 +429,42 @@ func (p *Plan) appEnvFiles(site string) []string {
 // moving past it. A failed gate stops everything; a waiting one stops it with
 // a *Waiting.
 func Execute(p *Plan) error {
+	r := p.reporter()
 	for _, st := range p.Stages {
-		p.say("stage %d, %s\n", st.Number, st.Name)
+		r.Section(stageTitle(st))
 		if st.run != nil && len(st.Steps) > 0 {
-			if err := st.run(); err != nil {
+			err := st.run()
+			if err != nil {
+				p.stop(err)
 				return p.fail(st, err)
 			}
+			p.idle()
 		}
+		g := r.Step("gate: " + st.Short)
+		g.Detail("%s", st.Gate)
 		if st.gate != nil {
-			if err := p.check(st); err != nil {
+			p.open = g
+			err := p.check(st)
+			p.open = nil
+			if err != nil {
 				var w *Waiting
 				if errors.As(err, &w) {
+					// Waiting is not a failure: the line says where the run
+					// stopped, and the error, printed in full, says why and
+					// how to carry on.
+					g.Done("waiting")
 					return err
 				}
+				g.Fail(err)
 				return p.fail(st, fmt.Errorf("gate: %w", err))
 			}
 		}
-		p.say("  %-9s %s\n", "passed", st.Gate)
+		g.Done("passed")
 	}
 	return nil
 }
+
+func stageTitle(st *Stage) string { return fmt.Sprintf("stage %d, %s", st.Number, st.Name) }
 
 // check runs a stage's gate, polling a waiting gate for as long as the
 // operator asked.
@@ -406,7 +489,7 @@ func (p *Plan) check(st *Stage) error {
 		if !errors.As(last, &w) {
 			return last
 		}
-		p.say("  %-9s %s\n", "waiting", w.Detail)
+		p.note("waiting: %s", w.Detail)
 	}
 	return last
 }
@@ -415,26 +498,35 @@ func (p *Plan) fail(st *Stage, err error) error {
 	return fmt.Errorf("storage add stopped at stage %d (%s), and nothing after it ran: %v\nFix the cause and run storage add again: it resumes at the first stage whose gate does not pass", st.Number, st.Name, err)
 }
 
-// Print writes the plan as an operator reads it.
-func (p *Plan) Print(w io.Writer) {
-	fmt.Fprintf(w, "storage add: %s at replication %d, consistency %s\n",
-		strings.Join(p.cfg.Storage.Garage.Sites, ", "), p.replication(), p.consistency())
+// Show lists the plan as an operator reads it: a section per stage, an item
+// per kind of step and one for the gate, with the whole text of each as its
+// detail.
+func (p *Plan) Show(r ui.Reporter) {
+	r.Detail("storage add: %s at replication %d, consistency %s", strings.Join(p.cfg.Storage.Garage.Sites, ", "), p.replication(), p.consistency())
 	for _, st := range p.Stages {
-		fmt.Fprintf(w, "\n%d. %s\n", st.Number, st.Name)
+		r.Section(stageTitle(st))
 		if len(st.Steps) == 0 {
-			fmt.Fprintf(w, "  %-9s nothing to do here, and the gate is still checked\n", "nothing")
+			r.Item("nothing to do here")
+			r.Detail("nothing to do here, and the gate is still checked")
 		}
+		last := ""
 		for _, step := range st.Steps {
-			fmt.Fprintf(w, "  %-9s %s: %s\n", step.Verb, step.Site, step.Text)
+			switch step.Level {
+			case "refuse":
+				r.Refuse(step.title(), step.Text)
+				continue
+			case "warn":
+				r.Warn(step.title(), step.Text)
+				continue
+			}
+			if t := step.title(); t != last {
+				r.Item(t)
+				last = t
+			}
+			r.Detail("%s: %s", step.Site, step.Text)
 		}
-		gate := "gate"
-		if st.Waits {
-			gate = "waits"
-		}
-		fmt.Fprintf(w, "  %-9s %s\n", gate, st.Gate)
-	}
-	for _, note := range p.Notes {
-		fmt.Fprintf(w, "\nnote: %s\n", note)
+		r.Item("gate: " + st.Short)
+		r.Detail("%s", st.Gate)
 	}
 }
 

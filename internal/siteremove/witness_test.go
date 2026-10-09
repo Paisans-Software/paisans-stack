@@ -1,8 +1,8 @@
 package siteremove_test
 
 import (
-	"bytes"
 	"encoding/json"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"os"
 	"strings"
 	"testing"
@@ -63,10 +63,10 @@ func TestTwoDataSitesAndAWitnessShrinkToOneVoter(t *testing.T) {
 			t.Errorf("stage %d has no %s %s step with %q:\n%s", want.stage, want.verb, want.site, want.text, printed(p))
 		}
 	}
-	var progress bytes.Buffer
-	p.Progress = &progress
+	rec := &ui.Recorder{}
+	p.Report = rec
 	if err := siteremove.Execute(p); err != nil {
-		t.Fatalf("%v\n%s", err, progress.String())
+		t.Fatalf("%v\n%s", err, rec.Lines())
 	}
 
 	if len(w.etcd) != 1 || w.etcd[0].Name != "home-a" {

@@ -1,6 +1,7 @@
 package siteremove
 
 import (
+	"strings"
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
@@ -44,4 +45,21 @@ func SetNow(at time.Time) func() {
 	saved := now
 	now = func() time.Time { return at }
 	return func() { now = saved }
+}
+
+// WorstCaseRemains is every line a removal leaves for the operator, built
+// with the longest inputs a real deployment gives it: 20-character site
+// names, 36-character IDs, 50-character fingerprints and 60-character paths.
+func WorstCaseRemains() []string {
+	site, name, path, rule := strings.Repeat("s", 20), strings.Repeat("n", 60), "/"+strings.Repeat("p", 59), strings.Repeat("r", 60)
+	fp := "SHA256:" + strings.Repeat("f", 43)
+	out := []string{
+		containerKept(site, name), networkKept(site, name), volumeKept(site, name), editedFileKept(site, path),
+		sshAllowKept(site, rule), ufwRuleKept(site, rule), rootEditedKept(site, path), dataLeft(site, path, 99999),
+		keysNoPasswd(site, path, name), keySharedKept(site, fp, path), keyLinesKept(site, path, path, name),
+		secretsLeft(site), dnsLeft(strings.Repeat("a", 60)), dnsLeft(""), ownedNote(site, name),
+		apply.LeaderPatroniEnvNote(site),
+	}
+	out = append(out, handoverKept(site, "/srv/caddy.d", true)...)
+	return out
 }

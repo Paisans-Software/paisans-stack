@@ -301,8 +301,8 @@ func TestAnOwedStackNoLongerRenderedIsDropped(t *testing.T) {
 	if _, ok := actionOn(p, "gone"); ok {
 		t.Error("a stack the site no longer renders is acted on")
 	}
-	if !strings.Contains(strings.Join(p.Notes, "\n"), "gone") {
-		t.Errorf("notes %v do not mention the dropped stack", p.Notes)
+	if len(p.Notes) != 1 || !strings.Contains(p.Notes[0].Text, "gone") || p.Notes[0].Hint != "" {
+		t.Errorf("notes %v do not say, as information, that the dropped stack's record went", p.Notes)
 	}
 }
 

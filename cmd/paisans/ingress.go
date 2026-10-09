@@ -24,10 +24,17 @@ func runIngress(args []string) error {
 	}
 	sub := args[0]
 	fs := flag.NewFlagSet("ingress "+sub, flag.ContinueOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	appName := fs.String("app", "", "the app pinned to a monitor site, by the name it has in the configuration")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
+	}
+	r := reporter()
+	if sub == "show" {
+		// stdout carries the sheet alone, so what validate and the sheet's
+		// own warning have to say goes to stderr.
+		r = errReporter(r)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("ingress %s: unexpected argument(s) %s", sub, strings.Join(fs.Args(), " "))
@@ -35,7 +42,7 @@ func runIngress(args []string) error {
 	if *appName == "" {
 		return fmt.Errorf("ingress %s: --app is required", sub)
 	}
-	cfg, err := loadChecked(*configPath)
+	cfg, err := loadChecked(r, *configPath)
 	if err != nil {
 		return err
 	}
@@ -44,12 +51,20 @@ func runIngress(args []string) error {
 		return err
 	}
 	if sub == "show" {
+		// The sheet is the command's product, to be read and copied into a
+		// web server's configuration, so it goes to stdout whole and not
+		// through the reporter, which hides its details by default.
+		if hint, detail, ok := ingress.ListenWarning(target); ok {
+			r.Warn(hint, detail)
+		}
 		ingress.Show(os.Stdout, target)
 		return nil
 	}
-	fmt.Fprintf(os.Stdout, "ingress check for %s at %s, from this machine\n", target.App, target.Hostname)
-	if ingress.Print(os.Stdout, ingress.Check(context.Background(), target, ingressProbes())) {
+	r.Section(fmt.Sprintf("ingress %s at %s", target.App, target.Hostname))
+	results := ingress.Check(context.Background(), target, ingressProbes())
+	if ingress.Report(r, results) {
 		return fmt.Errorf("ingress check for %s: fix what is marked FAIL and run it again", target.App)
 	}
+	r.Result("%s passed.", plural(len(results), "check"))
 	return nil
 }

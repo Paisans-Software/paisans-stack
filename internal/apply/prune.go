@@ -167,26 +167,26 @@ func superseded(stacks []string, images map[string][]string, ids map[string]stri
 // not service.
 func pruneStack(plan *Plan, stack string, t Transport) {
 	warn := func(format string, args ...any) {
-		plan.say("  %-9s %s: %s\n", "warning", stack, fmt.Sprintf(format, args...))
+		plan.warn(stack+": old images left in place", fmt.Sprintf(format, args...))
 	}
 	ids, err := probeImages(allRefs(plan.images), t)
 	if err != nil {
-		warn("superseded images were left in place: %v", err)
+		warn("%v", err)
 		return
 	}
 	out, err := t.Run(imageList)
 	if err != nil {
-		warn("superseded images were left in place: listing images: %v", err)
+		warn("listing images: %v", err)
 		return
 	}
 	listed, err := parseImages(out)
 	if err != nil {
-		warn("superseded images were left in place: %v", err)
+		warn("%v", err)
 		return
 	}
 	used, err := t.Run(containerImages)
 	if err != nil {
-		warn("superseded images were left in place: listing what containers use: %v", err)
+		warn("listing what containers use: %v", err)
 		return
 	}
 	var inUse []string
@@ -200,6 +200,6 @@ func pruneStack(plan *Plan, stack string, t Transport) {
 			warn("could not remove %s (%s): %s", p.Ref, shortID(p.ID), firstLine(strings.TrimSpace(out)))
 			continue
 		}
-		plan.say("  %-9s %s\n", "pruned", p.Ref)
+		plan.say("pruned %s", p.Ref)
 	}
 }

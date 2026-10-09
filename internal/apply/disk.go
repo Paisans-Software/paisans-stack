@@ -37,7 +37,17 @@ type DiskCheck struct {
 // Short reports whether the host has less free space than this apply needs.
 func (d *DiskCheck) Short() bool { return d != nil && d.Free < d.Need }
 
-// Describe is the plan's line for the check.
+// Summary is the check's result on the step's line (Eg: 13.6 GiB free). It is
+// empty when nothing was checked, because no image needed pulling.
+func (d *DiskCheck) Summary() string {
+	if d == nil {
+		return ""
+	}
+	return FormatSize(d.Free) + " free"
+}
+
+// Describe is the plan's line for the check, shown as the step's detail with
+// --verbose.
 func (d *DiskCheck) Describe() string {
 	verdict := "enough"
 	if d.Short() {

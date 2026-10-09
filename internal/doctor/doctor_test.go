@@ -1,7 +1,6 @@
 package doctor
 
 import (
-	"bytes"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,6 +8,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // The fixtures below are what a live two data site deployment answered, with
@@ -78,9 +78,9 @@ func find(t *testing.T, findings []Finding, section, contains string) Finding {
 }
 
 func dump(findings []Finding) string {
-	var b bytes.Buffer
-	Report{Findings: findings}.Print(&b)
-	return b.String()
+	rec := &ui.Recorder{Verbose_: true}
+	Report{Findings: findings}.Show(rec)
+	return rec.Lines()
 }
 
 func TestHealthyDeploymentHasNothingToSay(t *testing.T) {
@@ -100,15 +100,57 @@ func TestHealthyDeploymentHasNothingToSay(t *testing.T) {
 	}
 }
 
-func TestPrintShape(t *testing.T) {
-	var b bytes.Buffer
+// Each check is a step whose result is the finding. A failure carries its
+// recovery as the explanation of a refusal, shown at every verbosity, since
+// doctor is read in the middle of an outage.
+func TestShowShape(t *testing.T) {
+	rec := &ui.Recorder{}
 	Report{Sites: 3, Reached: 2, Findings: []Finding{
 		{Section: SectionPatroni, Level: Fail, Line: "no primary", More: []string{"recover:"}},
 		{Section: SectionReach, Level: OK, Line: "home-a: answers"},
-	}}.Print(&b)
-	want := "doctor: 3 site(s), 2 reached\nreach\n  ok    home-a: answers\npatroni\n  FAIL  no primary\n        recover:\nChanges nothing.\n"
-	if b.String() != want {
-		t.Fatalf("got\n%s\nwant\n%s", b.String(), want)
+		{Section: SectionClocks, Level: Warn, Line: "home-b: 2 s ahead", More: []string{"check time sync"}},
+	}}.Show(rec)
+	var got []string
+	for _, e := range rec.Events {
+		got = append(got, e.Kind+" "+e.Text+" | "+e.Extra)
+	}
+	// Details show only with --verbose, so a recorder keeps them for the
+	// terminal to drop.
+	want := []string{
+		"detail 3 site(s), 2 reached | ",
+		"section reach | ",
+		"step check reach home-a | ",
+		"done check reach home-a | answers",
+		"section patroni | ",
+		"refuse check patroni: no primary | recover:",
+		"section clocks | ",
+		"warn check clocks home-b: 2 s ahead | check time sync",
+		"detail doctor changes nothing | ",
+		"result 1 check passed, 1 warning, 1 failed. | ",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A check that could not be made found nothing right, so it is not shown or
+// counted as passed: it is a warning naming the check and why it was
+// skipped, and the summary counts it apart.
+func TestSkipIsAWarningNotAPass(t *testing.T) {
+	rec := &ui.Recorder{}
+	Report{Sites: 1, Reached: 1, Findings: []Finding{
+		{Section: SectionReach, Level: OK, Line: "home-a: answers"},
+		{Section: SectionLeftovers, Level: Skip, Line: "home-a: the host's inventory could not be read", More: []string{"sudo: a password is required"}},
+	}}.Show(rec)
+	if rec.Has("done", "check leftovers") {
+		t.Errorf("a skipped check ended as a step that passed:\n%s", rec.Lines())
+	}
+	i := rec.Index("warn", "check leftovers home-a skipped: the host's inventory could not be read")
+	if i < 0 || rec.Events[i].Extra != "sudo: a password is required" {
+		t.Errorf("a skipped check is not a warning with its cause:\n%s", rec.Lines())
+	}
+	if !rec.Has("result", "1 check passed, 1 skipped.") {
+		t.Errorf("summary does not count the skip apart:\n%s", rec.Lines())
 	}
 }
 

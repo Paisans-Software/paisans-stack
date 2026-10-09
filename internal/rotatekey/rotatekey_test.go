@@ -1,9 +1,9 @@
 package rotatekey_test
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -167,7 +167,7 @@ func (sw switcher) Pending(name string, secrets *config.Secrets) ([]string, erro
 	return nil, nil
 }
 
-func (sw switcher) Apply(name string, secrets *config.Secrets) error {
+func (sw switcher) Apply(name string, secrets *config.Secrets, _ ui.Reporter) error {
 	sw.w.log = append(sw.w.log, name+": apply --only talk")
 	if err := sw.w.failing("apply " + name); err != nil {
 		return err
@@ -201,11 +201,12 @@ func (w *world) run(t *testing.T, cfg *config.Config, secrets *config.Secrets, g
 	if err != nil {
 		return "", "", err
 	}
-	var printed, progress bytes.Buffer
-	plan.Print(&printed)
-	plan.Progress = &progress
+	shown := &ui.Recorder{Verbose_: true}
+	plan.Show(shown)
+	progress := &ui.Recorder{Verbose_: true}
+	plan.Report = progress
 	err = rotatekey.Execute(plan)
-	return printed.String(), progress.String(), err
+	return shown.Lines(), progress.Lines(), err
 }
 
 func (w *world) options(cfg *config.Config, secrets *config.Secrets, generated *int) rotatekey.Options {
@@ -321,8 +322,19 @@ func TestAFullRotationRunsInOrder(t *testing.T) {
 	}
 
 	// The plan names the retiring key ID, never a secret.
-	if !strings.Contains(printed, "retiring  "+oldID) {
+	if !strings.Contains(printed, "retiring "+oldID) {
 		t.Errorf("the plan does not show the retiring key:\n%s", printed)
+	}
+	for _, want := range []string{
+		"section: switch talk on home-a",
+		"done: write the new key to the secrets",
+		"done: delete the old key " + oldID + " from Garage",
+		"done: gate: new key writes and reads",
+		"done: gate: old key is gone",
+	} {
+		if !strings.Contains(progress, want) {
+			t.Errorf("the progress lacks %q:\n%s", want, progress)
+		}
 	}
 	for _, secret := range []string{oldSecret, newSecret} {
 		if strings.Contains(printed+progress, secret) {
@@ -359,8 +371,8 @@ func TestADryRunChangesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	plan.Print(&out)
+	out := &ui.Recorder{Verbose_: true}
+	plan.Show(out)
 	if generated != 0 || w.saves != 0 {
 		t.Error("building the plan generated or saved")
 	}
@@ -369,9 +381,9 @@ func TestADryRunChangesNothing(t *testing.T) {
 			t.Errorf("building the plan ran %s", line)
 		}
 	}
-	for _, want := range []string{"retiring  " + oldID, "generated at stage 1", "garage key delete --yes " + oldID, "home-b: as `paisans apply --site home-b --only talk`"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("the plan lacks %q:\n%s", want, out.String())
+	for _, want := range []string{"retiring " + oldID, "generated at stage 1", "garage key delete --yes " + oldID, "home-b: as `paisans apply --site home-b --only talk`"} {
+		if !strings.Contains(out.Lines(), want) {
+			t.Errorf("the plan lacks %q:\n%s", want, out.Lines())
 		}
 	}
 }

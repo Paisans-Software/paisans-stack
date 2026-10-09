@@ -126,7 +126,7 @@ func (u ubuntu) Packages(t Transport, host OSRelease) (Section, error) {
 			if err != nil {
 				return out, err
 			}
-			out.Steps = append(out.Steps, Step{Describe: "docker: add Docker's apt signing key at " + dockerKeyring, Command: script})
+			out.Steps = append(out.Steps, Step{Title: "add docker apt key", Describe: "docker: add Docker's apt signing key at " + dockerKeyring, Command: script})
 		}
 
 		codename := host.Fields["UBUNTU_CODENAME"]
@@ -148,6 +148,7 @@ func (u ubuntu) Packages(t Transport, host OSRelease) (Section, error) {
 			out.Present = append(out.Present, "docker: apt repository at "+dockerSources)
 		} else {
 			out.Steps = append(out.Steps, Step{
+				Title:    "add docker apt repo",
 				Describe: fmt.Sprintf("docker: add Docker's apt repository for %s/%s at %s", codename, facts.arch, dockerSources),
 				File:     &File{Path: dockerSources, Content: sources, Mode: 0o644},
 			})
@@ -171,7 +172,7 @@ func (u ubuntu) Packages(t Transport, host OSRelease) (Section, error) {
 		if err != nil {
 			return out, err
 		}
-		out.Steps = append(out.Steps, Step{Describe: "packages: install " + strings.Join(install, " "), Command: script})
+		out.Steps = append(out.Steps, Step{Title: "install packages", Describe: "packages: install " + strings.Join(install, " "), Command: script})
 	}
 	return out, nil
 }
@@ -231,6 +232,7 @@ func (u ubuntu) Services(t Transport, d deployment.Deployment) (Section, error) 
 		out.Present = append(out.Present, "service: docker starts after "+d.Interface()+" at boot")
 	} else {
 		out.Steps = append(out.Steps, Step{
+			Title:    "start docker after mesh",
 			Describe: "service: start docker after " + d.Interface() + " at boot, so containers can bind the mesh address (" + dropInPath + ")",
 			File:     &File{Path: dropInPath, Content: dropIn, Mode: 0o644},
 			Command:  "systemctl daemon-reload",
@@ -244,7 +246,7 @@ func (u ubuntu) Services(t Transport, d deployment.Deployment) (Section, error) 
 		out.Present = append(out.Present, "service: docker enabled and running")
 		return out, nil
 	}
-	out.Steps = append(out.Steps, Step{Describe: "service: enable and start docker", Command: "systemctl enable --now docker"})
+	out.Steps = append(out.Steps, Step{Title: "start docker", Describe: "service: enable and start docker", Command: "systemctl enable --now docker"})
 	return out, nil
 }
 
@@ -263,7 +265,7 @@ func (u ubuntu) WatchdogModule(t Transport, d deployment.Deployment, module stri
 	var out Section
 	unitName := watchdogUnit(d)
 	if !loaded {
-		out.Steps = append(out.Steps, Step{Describe: "watchdog: load " + module + " now", Command: "modprobe " + module})
+		out.Steps = append(out.Steps, Step{Title: "load " + module, Describe: "watchdog: load " + module + " now", Command: "modprobe " + module})
 	}
 	unit, err := snippet(u.tmpl("watchdog-module.service.tmpl"), map[string]string{"Module": module})
 	if err != nil {
@@ -281,12 +283,14 @@ func (u ubuntu) WatchdogModule(t Transport, d deployment.Deployment, module stri
 	switch {
 	case !found || current != unit:
 		out.Steps = append(out.Steps, Step{
+			Title:    "load " + module + " at boot",
 			Describe: fmt.Sprintf("watchdog: load %s at every boot (%s)", module, unitName),
 			File:     &File{Path: path, Content: unit, Mode: 0o644},
 			Command:  "systemctl daemon-reload && systemctl enable " + unitName,
 		})
 	case !enabled:
 		out.Steps = append(out.Steps, Step{
+			Title:    "enable " + module + " at boot",
 			Describe: fmt.Sprintf("watchdog: enable %s so %s loads at every boot", unitName, module),
 			Command:  "systemctl enable " + unitName,
 		})
@@ -358,17 +362,17 @@ func (u ubuntu) Firewall(t Transport, d deployment.Deployment, rules []Rule, hos
 	if input == "DROP" {
 		out.Present = append(out.Present, "firewall: incoming denied by default")
 	} else {
-		out.Steps = append(out.Steps, Step{Describe: "firewall: deny incoming by default", Command: "ufw default deny incoming"})
+		out.Steps = append(out.Steps, Step{Title: "deny incoming", Describe: "firewall: deny incoming by default", Command: "ufw default deny incoming"})
 	}
 	if output == "ACCEPT" {
 		out.Present = append(out.Present, "firewall: outgoing allowed by default")
 	} else {
-		out.Steps = append(out.Steps, Step{Describe: "firewall: allow outgoing by default", Command: "ufw default allow outgoing"})
+		out.Steps = append(out.Steps, Step{Title: "allow outgoing", Describe: "firewall: allow outgoing by default", Command: "ufw default allow outgoing"})
 	}
 	if active {
 		out.Present = append(out.Present, "firewall: ufw active")
 	} else {
-		out.Steps = append(out.Steps, Step{Describe: "firewall: enable ufw", Command: "ufw --force enable"})
+		out.Steps = append(out.Steps, Step{Title: "enable ufw", Describe: "firewall: enable ufw", Command: "ufw --force enable"})
 	}
 	out.Steps = append(out.Steps, removals...)
 	return out, nil

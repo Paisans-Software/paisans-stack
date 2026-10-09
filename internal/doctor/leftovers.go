@@ -26,7 +26,7 @@ func Leftovers(probes []LeftoverProbe) []Finding {
 	var out []Finding
 	for _, p := range probes {
 		if p.Err != "" {
-			out = append(out, Finding{Section: SectionLeftovers, Level: Skip, Line: fmt.Sprintf("%s: the host's inventory could not be read (%s)", p.Site, p.Err)})
+			out = append(out, Finding{Section: SectionLeftovers, Level: Skip, Line: fmt.Sprintf("%s: the host's inventory could not be read", p.Site), More: []string{p.Err}})
 			continue
 		}
 		if lines := p.Report.LeftoverLines(); len(lines) > 0 {

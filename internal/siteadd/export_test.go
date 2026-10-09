@@ -39,3 +39,13 @@ func PassPreflight() func() {
 	}
 	return func() { runPreflight = saved }
 }
+
+// SetPreflight stands in a report for stage 1 and returns a function that
+// restores it.
+func SetPreflight(report preflight.Report) func() {
+	saved := runPreflight
+	runPreflight = func(*config.Config, string, map[string]apply.Transport) (preflight.Report, error) {
+		return report, nil
+	}
+	return func() { runPreflight = saved }
+}

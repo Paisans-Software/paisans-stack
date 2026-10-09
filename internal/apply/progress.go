@@ -1,83 +1,74 @@
 package apply
 
 import (
-	"fmt"
-	"io"
 	"strings"
-	"time"
+
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
-// step announces one thing an apply is about to do on the host, and returns
-// the function that reports how it ended. A pull, a health wait or a database
-// bootstrap takes minutes on a real site, and an apply that spoke only when
-// it had finished looked hung for all of them.
-//
-// The announcement is written before the command runs, so the line on the
-// operator's terminal names what the host is doing now, and an apply that
-// stops part way shows the step it stopped in. The ending goes on the same
-// line when nothing was said in between, and on a line of its own when a note
-// was (Eg: a pruned image), so neither is lost.
-//
-// A plan without a Progress writer says nothing, as it always has.
-func (p *Plan) step(verb, format string, args ...any) func(error) {
-	if p.Progress == nil {
-		return func(error) {}
+// step starts one thing an apply does on the host. It is reported before the
+// command runs, so a terminal shows what the host is doing now and an apply
+// that stops part way shows the step it stopped in. A pull, a health wait or
+// a database bootstrap takes minutes on a real site, and an apply that spoke
+// only when it had finished looked hung for all of them.
+func (p *Plan) step(title string) ui.Step {
+	return p.reporter().Step(title)
+}
+
+// say is a note about what an apply decided that is not an error (a pruned
+// image, a replica leaving the bootstrap to its leader). It belongs to the
+// open step when there is one, and shows with --verbose.
+func (p *Plan) say(format string, args ...any) {
+	p.reporter().Detail(strings.TrimRight(format, "\n"), args...)
+}
+
+// warn is a note the operator should see at any verbosity: something the
+// apply could not do that costs disk or time, never the apply itself.
+func (p *Plan) warn(hint, detail string) {
+	p.reporter().Warn(hint, detail)
+}
+
+// reporter is the plan's Report, or ui.Discard for a plan built without one,
+// so a plan that was given no reporter says nothing rather than failing.
+func (p *Plan) reporter() ui.Reporter {
+	if p.Report == nil {
+		return ui.Discard
 	}
-	announce(p.Progress, verb, format, args...)
-	p.stepOpen = true
-	started := now()
-	return func(err error) {
-		if !p.stepOpen {
-			fmt.Fprintf(p.Progress, "  %-9s ", "")
-		}
-		ended(p.Progress, err, started)
-		p.stepOpen = false
-	}
+	return p.Report
 }
 
-// Step is step for a command's own work outside a plan, such as the host
-// check before one is built. Nothing may write to w between the call and the
-// ending, since the ending finishes the same line.
-func Step(w io.Writer, verb, format string, args ...any) func(error) {
-	announce(w, verb, format, args...)
-	started := now()
-	return func(err error) { ended(w, err, started) }
-}
-
-func announce(w io.Writer, verb, format string, args ...any) {
-	fmt.Fprintf(w, "  %-9s %s ... ", verb, fmt.Sprintf(format, args...))
-}
-
-func ended(w io.Writer, err error, started time.Time) {
-	outcome := "done"
+// finish ends a step by how its work ended. It only marks the step: the
+// caller still returns the error, so it is printed in full at any verbosity.
+func finish(s ui.Step, err error) {
 	if err != nil {
-		outcome = "failed"
+		s.Fail(err)
+		return
 	}
-	fmt.Fprintf(w, "%s (%.1fs)\n", outcome, now().Sub(started).Seconds())
+	s.Done("")
 }
 
-// stackActionStep describes what runAction is about to do to a stack, in the
-// words of the command it runs.
-func stackActionStep(action Action) (verb, what string) {
+// ActionTitle names what runAction does to a stack, as the title of its step.
+// The compose command and the reason are the step's detail.
+func ActionTitle(a Action) string {
 	switch {
-	case action.Down:
-		return "replacing", action.Stack + " (down, then up -d)"
-	case action.Recreate && action.Force:
-		return "starting", action.Stack + " (up -d --force-recreate)"
-	case action.Recreate:
-		return "starting", action.Stack + " (up -d)"
-	case len(action.Services) > 0:
-		return "restart", action.Stack + " (" + strings.Join(action.Services, ", ") + ")"
+	case a.Down:
+		return "replace " + a.Stack
+	case a.Recreate && a.Force:
+		return "recreate " + a.Stack + " (forced)"
+	case a.Recreate:
+		return "recreate " + a.Stack
+	case len(a.Services) > 0:
+		return "restart " + a.Stack + " (" + strings.Join(a.Services, ", ") + ")"
 	default:
-		return "restart", action.Stack
+		return "restart " + a.Stack
 	}
 }
 
-// waitHealthyStep is waitHealthy announced, since the health gate is the
+// waitHealthyStep is waitHealthy reported, since the health gate is the
 // longest wait in most applies.
 func waitHealthyStep(plan *Plan, stack string, t Transport) error {
-	done := plan.step("waiting", "%s to be healthy", stack)
+	s := plan.step("wait for " + stack)
 	err := waitHealthy(plan, stack, t)
-	done(err)
+	finish(s, err)
 	return err
 }

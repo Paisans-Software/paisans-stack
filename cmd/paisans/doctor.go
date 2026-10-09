@@ -4,7 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -42,6 +41,7 @@ const doctorConnectTimeout = 10
 // override cannot name them all.
 func runDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	var only pathList
 	fs.Var(&only, "site", "look at this site only (repeatable); every check then runs on the named sites alone")
@@ -49,10 +49,11 @@ func runDoctor(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	if fs.NArg() > 0 {
 		return fmt.Errorf("doctor takes flags only. Got extra argument(s): %s", strings.Join(fs.Args(), " "))
 	}
-	cfg, err := loadChecked(*configPath)
+	cfg, err := loadChecked(r, *configPath)
 	if err != nil {
 		return err
 	}
@@ -73,8 +74,7 @@ func runDoctor(args []string) error {
 	}
 
 	report := doctor.Diagnose(cfg, gatherDoctor(cfg, sites, transports))
-	fmt.Fprintln(os.Stdout)
-	report.Print(os.Stdout)
+	report.Show(r)
 	if report.Failed() {
 		return fmt.Errorf("doctor: %d finding(s) marked FAIL", report.Count(doctor.Fail))
 	}

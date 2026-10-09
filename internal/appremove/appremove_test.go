@@ -1,7 +1,7 @@
 package appremove
 
 import (
-	"bytes"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"strings"
 	"testing"
 
@@ -126,17 +126,21 @@ func TestThePlanTakesOnlyWhatIsProvablyTheApps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	p.Print(&out)
-	printed := out.String()
+	rec := &ui.Recorder{Verbose_: true}
+	p.Show(rec)
+	printed := rec.Lines()
 	for _, want := range []string{
-		"stop      paisans-f2a9-docs: 2 container(s), 1 running: paisans-f2a9-docs-app-1, paisans-f2a9-docs-redis-1",
-		"remove    network paisans-f2a9-docs_default",
-		"remove    " + docsEnv,
-		"remove    " + docsRoute,
-		"remove    " + docsMedia,
-		"keep      /srv/paisans/f2a9/docs: data, written by the app",
-		"keep      volume paisans-f2a9-docs_cache. --delete-data deletes it",
+		"item: remove containers and networks",
+		"detail: stop paisans-f2a9-docs: 2 container(s), 1 running: paisans-f2a9-docs-app-1, paisans-f2a9-docs-redis-1",
+		"detail: remove network paisans-f2a9-docs_default",
+		"item: remove files",
+		"detail: " + docsEnv,
+		"detail: " + docsRoute,
+		"detail: " + docsMedia,
+		"item: keep /srv/paisans/f2a9/docs",
+		"detail: /srv/paisans/f2a9/docs: data, written by the app",
+		"item: keep volumes",
+		"detail: volume paisans-f2a9-docs_cache. --delete-data deletes it",
 	} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("plan lacks %q:\n%s", want, printed)
@@ -237,11 +241,11 @@ func TestAFileEditedOnTheHostIsKept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	p.Print(&out)
-	if !strings.Contains(out.String(), "keep      "+docsEnv+" and its manifest entry: edited on the host") ||
-		!strings.Contains(out.String(), "keep      /srv/paisans/f2a9/docs and everything in it, because a file in it was edited") {
-		t.Errorf("plan:\n%s", out.String())
+	rec := &ui.Recorder{Verbose_: true}
+	p.Show(rec)
+	if !rec.Has("detail", docsEnv+" and its manifest entry: edited on the host") ||
+		!rec.Has("detail", "/srv/paisans/f2a9/docs and everything in it, because a file in it was edited") {
+		t.Errorf("plan:\n%s", rec.Lines())
 	}
 	ex := executor(hosts)
 	if err := ex.Execute(p); err != nil {
@@ -307,7 +311,7 @@ func TestTheClientIsDeletedOnlyByItsRecordedID(t *testing.T) {
 			t.Errorf("%s: delete %q kept %v", name, got, cp.Kept)
 		}
 		for _, k := range cp.Kept {
-			if !strings.Contains(k, "Delete it as a Pocket ID administrator") {
+			if !strings.Contains(k, "delete it in Pocket ID if it served only docs") {
 				t.Errorf("%s: kept without saying how to delete it: %s", name, k)
 			}
 		}
@@ -360,7 +364,7 @@ func TestDeleteDataDropsTheDatabaseAndBucket(t *testing.T) {
 	if !p.Database.DropDatabase || !p.Database.DropRole || len(p.Storage.Buckets) != 1 || p.Storage.Buckets[0].Name != "docs-uploads" {
 		t.Fatalf("plan: db %+v storage %+v", p.Database, p.Storage)
 	}
-	if !strings.Contains(strings.Join(p.Storage.Kept, "\n"), "bucket shared: also granted to key(s) GK000000000000000000000002") {
+	if !strings.Contains(strings.Join(p.Storage.Kept, "\n"), "The bucket is shared, and the keys are GK000000000000000000000002") {
 		t.Errorf("kept = %v", p.Storage.Kept)
 	}
 	clients := &fakeClients{}
@@ -444,3 +448,73 @@ var errExit = &exitError{}
 type exitError struct{}
 
 func (*exitError) Error() string { return "exit status 1" }
+
+// A removal reports a section per site and a step per thing it does there,
+// and a failure marks the step that failed.
+func TestTheExecutorReportsEachStep(t *testing.T) {
+	cfg, hosts := world(t)
+	p, err := Build(cfg, "docs", probe(t, cfg, "docs", hosts, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &ui.Recorder{}
+	ex := executor(hosts)
+	ex.Report = rec
+	if err := ex.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct{ kind, text string }{
+		{"section", "home-a"},
+		{"done", "remove containers and networks"},
+		{"done", "remove files"},
+	} {
+		if !rec.Has(want.kind, want.text) {
+			t.Errorf("no %s %q:\n%s", want.kind, want.text, rec.Lines())
+		}
+	}
+	for _, e := range rec.Events {
+		if e.Kind == "fail" {
+			t.Errorf("a clean removal failed %q", e.Text)
+		}
+	}
+}
+
+// What a removal leaves for the operator shows its first sentence without
+// --verbose, so every such sentence stays within 100 characters.
+func TestTheLeftForYouHintsStayShort(t *testing.T) {
+	cfg, hosts := world(t)
+	hosts["home-a"].files[docsEnv] = "SECRET_KEY=edited\n"
+	p, err := Build(cfg, "docs", probe(t, cfg, "docs", hosts, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep, err := Build(cfg, "docs", probe(t, cfg, "docs", hosts, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := &config.Secrets{Apps: map[string]map[string]any{"docs": {
+		"s3_access_key_id": "GKx", "s3_secret_access_key": "y", "previous_s3_access_key_id": "GKz", "previous_s3_secret_access_key": "w", "secret_key": "k",
+	}}}
+	ex := executor(hosts)
+	if err := ex.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+	lines := append(Remains(p, secrets, ex.Kept), Remains(keep, secrets, nil)...)
+	// Every producer, with the longest inputs a real deployment gives it:
+	// 20-character names, 36-character client IDs, 63-character database
+	// names and several foreign key IDs.
+	site, long, uuid, path := strings.Repeat("s", 20), strings.Repeat("n", 63), strings.Repeat("u", 36), "/"+strings.Repeat("p", 59)
+	keys := []string{"GK" + strings.Repeat("a", 24), "GK" + strings.Repeat("b", 24), "GK" + strings.Repeat("c", 24)}
+	lines = append(lines,
+		clientKept(site, long, uuid, "pocket-id on "+site, "its ID is not the one recorded under oidc_clients."+site),
+		databaseNotApps(long), databaseDeclared(long, long), databaseForeign(long, site, long), roleKept(long, site),
+		keyDeclared(uuid), bucketUnread(long), bucketGranted(long, keys), bucketAliases(long, 99, 99),
+		dirEdited(site, path), dirData(site, path, 99999, "999.9 GiB"), fileEdited(site, path),
+		secretsLeft(site, strings.Repeat("apps.x.y, ", 20)), dnsLeft, dataKept(site))
+	for _, line := range lines {
+		hint, _, _ := strings.Cut(line, ". ")
+		if len(hint) > 100 {
+			t.Errorf("%d characters: %s", len(hint), hint)
+		}
+	}
+}

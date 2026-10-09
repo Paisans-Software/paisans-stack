@@ -296,18 +296,54 @@ compared first, so a conflict is found before a single byte is written; an apply
 that wrote files as it discovered them could leave a stack half updated and then
 refuse.
 
-**Every step on the host is announced as it starts.** Reading the rendered
-files, the image and disk probe, each write, the gateway gates, each stack's
-action, its health wait and its prune, and the database bootstrap each print a
-line to `Plan.Progress` before their command runs, finished with `done` or
-`failed` and the time taken. A pull or a health wait takes minutes on a real
-site, and an apply that spoke only once it was finished looked hung for all of
-them; a line written first also names the step an apply stopped in. `Build`
-takes the writer through `apply.Progress`, so planning announces its reads as
-`Execute` announces its changes, and `apply.Step` gives a command's own work
-outside a plan (the mesh and host checks) the same form. A note said while a
-step is open starts its own line, and the step's ending follows on another.
-Raw command output is not streamed: it stays captured, and a failure quotes it.
+**Every command reports through one reporter.** Each command writes through a
+`ui.Reporter` from `internal/ui` and formats nothing itself, so what an
+operator reads can change in one place and no package decides its own voice.
+There are two levels. By default a step is one short line
+(`ok   disk space              13.6 GiB free`) with no rationale, values or
+request bodies, because an operator watching an install needs to know where it is, and a screenful of
+explanation on every step buries the one line that matters. With `-v` or
+`--verbose` the detail behind each step appears under it: reasons,
+configuration values, request bodies, ssh retries, and the raw output of the
+two commands whose output explains a step: what each site's Pocket ID said
+while `apply` waits for one active instance, and the `patronictl switchover`
+of `failover test`. Compose and
+pull output is not streamed at either level; a command that fails carries its
+output in the error, which prints in full.
+
+A step is reported before its command runs. A pull or a health wait takes
+minutes on a real site, and a step reported only once finished looked hung for
+all of them; a step announced first also names where an apply stopped. On a
+terminal the open step shows a spinner with the elapsed time. When output is
+piped, or `NO_COLOR` is set, or `TERM` is `dumb`, there is no colour, no cursor
+movement and no spinner, and the words `ok`, `FAIL` and `WARN` stand in for the
+glyphs, so a log from cron or CI reads cleanly.
+
+Anything that asks on the terminal holds the spinner first (`ui.Hold`), since a
+frame clears the line it draws on and would erase the question. The sudo
+password prompt is read inside a hold, and `apply.SetPromptHold` holds it
+around every ssh attempt to a host until that host has answered once, which is
+where ssh asks to accept an unknown host key. `routeHolds` in `cmd/paisans`
+points both at the reporter that draws, beside `routeRetries`. A key
+passphrase ssh asks for on every connection is not held after the first one;
+the README's sudo section tells the operator to keep keys in an agent.
+
+`apply.Report` hands the reporter to `apply.Build`, which keeps it on the
+plan for `apply.Execute`, so planning and executing speak in one voice.
+
+A note said while a step is open is that step's detail (`Detail`), and raw
+command output is a `Trace`; both show only with `--verbose`. A warning shows
+its one-line hint and a refusal its hint and explanation, because an operator
+must see that there is something to fix. An error is never a detail: it prints
+in full at every verbosity, since having to re-run a failed apply to learn why
+it failed is worse than a long line. A dry run ends with `Nothing changed.
+Re-run with --execute to apply.`, and `--execute` shows progress only.
+
+Tests assert on `ui.Recorder` events, not on rendered text, so a change to the
+wording of a line or to the plain rendering does not break a test about what a
+command did. `cmd/paisans/output_test.go` drives the dry runs and executions
+against their fakes and holds the default output to short lines without
+escapes.
 
 **A file edited on the host is a conflict, and a conflict stops the whole
 apply.** Rendered files are build artifacts and nothing edits them in place, so

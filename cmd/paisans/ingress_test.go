@@ -58,9 +58,10 @@ func TestIngressCheckFailsOnAFailedItem(t *testing.T) {
 			Now:      time.Now,
 		}
 	}
-	var err error
-	out := captureStdout(t, func() { err = runIngress([]string{"check", "--app", "status", "--config", fixtureConfig()}) })
-	if err == nil || !strings.Contains(out, "FAIL  dns") || !strings.Contains(out, "FAIL  certificate") {
+	rec := withRecorder(t, false)
+	err := runIngress([]string{"check", "--app", "status", "--config", fixtureConfig()})
+	out := rec.Lines()
+	if err == nil || !rec.Has("fail", "check dns") || !rec.Has("fail", "check certificate") {
 		t.Fatalf("err = %v\n%s", err, out)
 	}
 }

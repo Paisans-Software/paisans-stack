@@ -3,19 +3,18 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
-	"os"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/registry"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
 // runPrune lists a site's dangling volumes and, with --execute, removes the
 // ones a paisans container left behind. It is modelled on runHostPrepare: one
-// site, a dry run by default, and the plan printed before anything happens.
+// site, a dry run by default, and the plan reported before anything happens.
 //
 // It exists for what accumulated before apply refused undeclared volumes:
 // a real apps site had 18 anonymous volumes under Mbin's /app/var/, about
@@ -25,6 +24,7 @@ import (
 // surprises depending on the engine (Docker Engine 23.0 release notes).
 func runPrune(args []string) error {
 	fs := flag.NewFlagSet("prune", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	site := fs.String("site", "", "the site to prune, by the name it has in the configuration")
 	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
@@ -33,6 +33,7 @@ func runPrune(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	if *site == "" {
 		return fmt.Errorf("prune: --site is required. A site at a time is deliberate, the same reason apply takes one")
 	}
@@ -41,7 +42,7 @@ func runPrune(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -51,36 +52,53 @@ func runPrune(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
-	if _, err := hostGate(os.Stdout, cfg, *site, transport); err != nil {
+	r.Section(fmt.Sprintf("%s (%s)", *site, transport.Describe()))
+	if _, err := hostGate(r, cfg, *site, transport); err != nil {
 		return err
 	}
-	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+	if err := claimHosts(r, cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
 	plan, err := apply.BuildVolumePrune(cfg.Deployment(), *site, transport)
 	if err != nil {
 		return err
 	}
-	printVolumePrune(os.Stdout, plan)
+	// A dry run is the plan. --execute reports the removal alone, and shows
+	// the plan first only with --verbose.
+	if !*execute || r.Verbose() {
+		showVolumePrune(r, plan)
+	}
 	removals := plan.Removals()
 	if !*execute {
-		if len(removals) > 0 {
-			fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to remove %d volume(s).\n", len(removals))
+		if len(removals) == 0 {
+			r.Result("No dangling volume to remove.")
+			return nil
 		}
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
+	if len(removals) == 0 {
+		r.Result("No dangling volume to remove.")
+		return nil
+	}
+	s := r.Step("remove volumes")
+	s.Detail("from %s", plan.Transport)
 	if err := apply.ExecuteVolumePrune(plan, transport); err != nil {
+		s.Fail(err)
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\nremoved %d volume(s) from %s\n", len(removals), plan.Transport)
+	s.Done(plural(len(removals), "volume"))
+	r.Result("Removed %s from %s.", plural(len(removals), "volume"), *site)
 	return nil
 }
 
-func printVolumePrune(w io.Writer, plan *apply.VolumePrune) {
-	fmt.Fprintf(w, "%s (%s)\n", plan.Site, plan.Transport)
-	fmt.Fprintf(w, "  %s\n", apply.PruneHeader)
+// showVolumePrune reports the plan: each volume it would remove as an item,
+// and every verdict, kept or removed, with its size, contents and reason as
+// details, since the reason is what an operator reads before agreeing.
+func showVolumePrune(r ui.Reporter, plan *apply.VolumePrune) {
+	r.Detail("%s", apply.PruneHeader)
 	if len(plan.Volumes) == 0 {
-		fmt.Fprintf(w, "  no dangling volumes\n")
+		r.Detail("no dangling volumes")
 		return
 	}
 	var total int64
@@ -89,12 +107,21 @@ func printVolumePrune(w io.Writer, plan *apply.VolumePrune) {
 		if v.Remove {
 			verb = "remove"
 			total += v.Size
+			// Only an anonymous volume's name is shortened, since it is 64
+			// hex characters whose front tells one from another. A named
+			// volume's name is what an operator recognises, and this list
+			// is the consent to delete its data, so it is shown whole.
+			name := v.Name
+			if apply.IsAnonymousVolume(name) {
+				name = name[:12]
+			}
+			r.Item("remove volume " + name)
 		}
 		entries := "empty"
 		if len(v.Entries) > 0 {
 			entries = strings.Join(v.Entries, " ")
 		}
-		fmt.Fprintf(w, "  %-9s %s  %s  [%s]\n      %s\n", verb, v.Name, apply.FormatSize(v.Size), entries, v.Reason)
+		r.Detail("%-9s %s  %s  [%s]\n    %s", verb, v.Name, apply.FormatSize(v.Size), entries, v.Reason)
 	}
-	fmt.Fprintf(w, "  %-9s %d of %d dangling volume(s), %s\n", "total", len(plan.Removals()), len(plan.Volumes), apply.FormatSize(total))
+	r.Detail("%-9s %d of %d dangling volume(s), %s", "total", len(plan.Removals()), len(plan.Volumes), apply.FormatSize(total))
 }

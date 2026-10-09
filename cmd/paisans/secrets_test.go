@@ -49,8 +49,8 @@ func TestSecretsSetWritesAnOwedKeyAndPrintsOnlyItsName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if printed != "set external.acme_dns_token\n" {
-		t.Errorf("printed %q, want only the key", printed)
+	if !strings.HasPrefix(printed, "Set external.acme_dns_token.\n") || strings.Contains(printed, token) {
+		t.Errorf("printed %q, want the key and never the value", printed)
 	}
 	secrets, err := config.LoadSecrets(secretsPath)
 	if err != nil {

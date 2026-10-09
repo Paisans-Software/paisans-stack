@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/rotatekey"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -22,6 +22,7 @@ import (
 // prints the plan, and changes anything only with --execute.
 func runStorageRotateKey(args []string) error {
 	fs := flag.NewFlagSet("storage rotate-key", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	appName := fs.String("app", "", "the app whose S3 key to replace, by the name it has in the configuration")
@@ -30,6 +31,7 @@ func runStorageRotateKey(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	if fs.NArg() > 0 {
 		return fmt.Errorf("storage rotate-key: name the app with --app. %q is extra", fs.Arg(0))
 	}
@@ -42,7 +44,7 @@ func runStorageRotateKey(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -54,7 +56,7 @@ func runStorageRotateKey(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
@@ -78,14 +80,14 @@ func runStorageRotateKey(args []string) error {
 	// of those is host checked first, as apply checks it.
 	sites := append([]string(nil), render.AppSites(cfg)[*appName]...)
 	sort.Strings(sites)
-	shared, err := gateSites(os.Stdout, cfg, sites, func(site string) hostcheck.Transport { return transports[site] })
+	shared, err := gateSites(r, cfg, sites, func(site string) hostcheck.Transport { return transports[site] })
 	if err != nil {
 		return err
 	}
 	// Garage's first site, where the key is imported and deleted, and every
 	// site the app runs on, where the switch applies it.
 	if len(cfg.Storage.Garage.Sites) > 0 {
-		if err := claimSites(cfg, *execute, *sudo, union(cfg.Storage.Garage.Sites[:1], render.AppSites(cfg)[*appName])...); err != nil {
+		if err := claimSites(r, cfg, *execute, *sudo, union(cfg.Storage.Garage.Sites[:1], render.AppSites(cfg)[*appName])...); err != nil {
 			return err
 		}
 	}
@@ -102,18 +104,19 @@ func runStorageRotateKey(args []string) error {
 	if err != nil {
 		return err
 	}
-	plan.Print(os.Stdout)
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	if !*execute {
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to run these stages; each stops at its gate if it does not pass, and the old key is deleted only after the app is switched and the new key proven.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	plan.Progress = os.Stdout
-	fmt.Fprintln(os.Stdout)
+	plan.Report = r
 	if err := rotatekey.Execute(plan); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\nstorage rotate-key: %s now uses %s, and %s is deleted from Garage\n", *appName, plan.NewKeyID, plan.OldKeyID)
+	r.Result("%s now uses %s, and %s is deleted from Garage.", *appName, plan.NewKeyID, plan.OldKeyID)
 	return nil
 }
 
@@ -163,11 +166,11 @@ func (a applySwitch) Pending(site string, secrets *config.Secrets) ([]string, er
 	return pending, nil
 }
 
-func (a applySwitch) Apply(site string, secrets *config.Secrets) error {
+func (a applySwitch) Apply(site string, secrets *config.Secrets, r ui.Reporter) error {
 	plan, err := a.plan(site, secrets)
 	if err != nil {
 		return err
 	}
-	plan.Progress = os.Stdout
+	plan.Report = r
 	return apply.Execute(plan, a.transports[site])
 }

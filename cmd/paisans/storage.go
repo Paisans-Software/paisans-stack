@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
@@ -24,6 +23,7 @@ import (
 // of work is the cluster. docs/specs/2026-10-07-multisite-garage.md.
 func runStorageAdd(args []string) error {
 	fs := flag.NewFlagSet("storage add", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, "actually run the stages, stopping at the first gate that fails or waits")
@@ -34,6 +34,7 @@ func runStorageAdd(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	if fs.NArg() > 0 {
 		return fmt.Errorf("storage add: takes no site; it joins every site in storage.garage.sites. %q is extra", fs.Arg(0))
 	}
@@ -43,7 +44,7 @@ func runStorageAdd(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -55,7 +56,7 @@ func runStorageAdd(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
@@ -69,13 +70,13 @@ func runStorageAdd(args []string) error {
 	// last, on every monitor site, so each is host checked before any
 	// changes.
 	sites := union(cfg.Storage.Garage.Sites, cfg.GatewaySites(), cfg.MonitorSites())
-	shared, err := gateSites(os.Stdout, cfg, sites, func(site string) hostcheck.Transport { return transports[site] })
+	shared, err := gateSites(r, cfg, sites, func(site string) hostcheck.Transport { return transports[site] })
 	if err != nil {
 		return err
 	}
 	// Every Garage site, the gateway, which takes the media routes, and the
 	// monitor, which is reseeded.
-	if err := claimSites(cfg, *execute, *sudo, sites...); err != nil {
+	if err := claimSites(r, cfg, *execute, *sudo, sites...); err != nil {
 		return err
 	}
 	plan, err := storageadd.Build(cfg, secrets, transports, storageadd.Options{
@@ -87,17 +88,20 @@ func runStorageAdd(args []string) error {
 	if err != nil {
 		return err
 	}
-	plan.Print(os.Stdout)
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	if !*execute {
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to run these stages; each stops at its gate if it does not pass, and a stage waiting on Garage exits for a later run to resume.\n")
+		reportRemains(r, plan.Notes)
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	plan.Progress = os.Stdout
-	fmt.Fprintln(os.Stdout)
+	plan.Report = r
 	if err := storageadd.Execute(plan); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\nstorage add: every gate passed\n")
+	reportRemains(r, plan.Notes)
+	r.Result("storage add: every gate passed.")
 	return nil
 }

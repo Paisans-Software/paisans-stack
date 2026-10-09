@@ -7,8 +7,8 @@
 package storageadd_test
 
 import (
-	"bytes"
 	"errors"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"strings"
 	"testing"
 
@@ -39,9 +39,9 @@ func stageNames(p *storageadd.Plan) []string {
 }
 
 func printed(p *storageadd.Plan) string {
-	var b bytes.Buffer
-	p.Print(&b)
-	return b.String()
+	rec := &ui.Recorder{Verbose_: true}
+	p.Show(rec)
+	return rec.Lines()
 }
 
 // Garage cannot change the factor in place, and the reset it documents is
@@ -90,9 +90,25 @@ func TestAResetJoinWaitsAndResumes(t *testing.T) {
 		t.Fatal("a plan with a reset to run is not pending")
 	}
 
+	rec := &ui.Recorder{}
+	p.Report = rec
 	err := storageadd.Execute(p)
 	if !errors.Is(err, storageadd.ErrWaiting) {
 		t.Fatalf("expected the run to stop waiting on the sync, got %v", err)
+	}
+	// A gate that waits is not a failed one: its line says so and the
+	// returned error carries the reason.
+	waiting := false
+	for _, e := range rec.Events {
+		if e.Kind == "done" && e.Text == "gate: data has synced" && e.Extra == "waiting" {
+			waiting = true
+		}
+		if e.Kind == "fail" {
+			t.Errorf("a waiting run failed %q", e.Text)
+		}
+	}
+	if !waiting {
+		t.Errorf("the sync gate is not reported as waiting:\n%s", rec.Lines())
 	}
 	if !strings.Contains(err.Error(), "stage 6 (sync)") {
 		t.Errorf("the wait does not name the sync stage:\n%v", err)
@@ -228,7 +244,14 @@ func TestASiteWithoutGarageIsSentToApply(t *testing.T) {
 	w.provisioned(2, "home-a")
 	delete(w.hosts["home-b"].files, storageadd.GarageToml)
 
-	err := storageadd.Execute(w.build(storageadd.Options{}))
+	p := w.build(storageadd.Options{})
+	// The dry run says so without --verbose: it is a refusal, not a detail.
+	rec := &ui.Recorder{}
+	p.Show(rec)
+	if !rec.Has("refuse", "home-b has no garage.toml yet") {
+		t.Errorf("the dry run hides the missing garage.toml:\n%s", rec.Lines())
+	}
+	err := storageadd.Execute(p)
 	if err == nil || !strings.Contains(err.Error(), "paisans apply --site home-b") {
 		t.Fatalf("expected to be sent to apply, got %v", err)
 	}
@@ -478,6 +501,19 @@ func TestBuildStopsOnAProbeThatNeverReachedTheHost(t *testing.T) {
 		}
 		if !errors.Is(err, apply.ErrUnreachable) || !strings.Contains(err.Error(), "could not read host state") {
 			t.Errorf("%s: want the transport error, got %v", tc.name, err)
+		}
+	}
+}
+
+// What a join leaves for the operator shows its first sentence without
+// --verbose, so that sentence stays short.
+func TestTheLeftForYouHintsStayShort(t *testing.T) {
+	for _, line := range []string{
+		storageadd.AppConfigNote(strings.Repeat("s", 20), 9999),
+		storageadd.MediaNote,
+	} {
+		if hint, _, _ := strings.Cut(line, ". "); len(hint) > 100 {
+			t.Errorf("%d characters: %s", len(hint), hint)
 		}
 	}
 }

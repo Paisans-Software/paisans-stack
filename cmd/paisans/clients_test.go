@@ -16,6 +16,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // The recorder is the one way a client's credentials reach the secrets file,
@@ -50,6 +51,9 @@ type passLog struct {
 	// heldOverwrites is put on every plan, as Build reports an --overwrite
 	// in a held stack.
 	heldOverwrites []string
+	// notes is put on every plan, as Build finds the same thing on every
+	// pass.
+	notes []apply.Note
 }
 
 func (l *passLog) pass(t *testing.T, c *clientStep, app string) sitePass {
@@ -69,13 +73,18 @@ func (l *passLog) pass(t *testing.T, c *clientStep, app string) sitePass {
 				}
 			}
 			l.events = append(l.events, fmt.Sprintf("plan hold=%s client=%t", strings.Join(hold, ","), has))
-			p := &apply.Plan{Site: c.site, HeldOverwrites: l.heldOverwrites}
+			p := &apply.Plan{Site: c.site, HeldOverwrites: l.heldOverwrites, Notes: l.notes}
 			l.plans = append(l.plans, p)
 			return p, nil
 		},
 		execute: func(*apply.Plan) error {
 			l.events = append(l.events, "execute")
 			return nil
+		},
+		notes: func(p *apply.Plan) {
+			for _, n := range p.Notes {
+				l.events = append(l.events, "note "+n.Hint)
+			}
 		},
 	}
 }
@@ -110,7 +119,7 @@ func stepFor(t *testing.T, site, path string, only ...string) *clientStep {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := newClientStep(cfg, site, "", path, secrets, only)
+	c, err := newClientStep(stdoutReporter(), cfg, site, "", path, secrets, only)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +128,16 @@ func stepFor(t *testing.T, site, path string, only ...string) *clientStep {
 	}
 	return c
 }
+
+// liveStdout writes to whatever os.Stdout is when it is written to, so a
+// reporter made before captureOutput swaps it still lands in the capture.
+type liveStdout struct{}
+
+func (liveStdout) Write(p []byte) (int, error) { return os.Stdout.Write(p) }
+
+// stdoutReporter is a verbose plain reporter on the live stdout, so a test
+// that reads captured output sees every detail as text.
+func stdoutReporter() ui.Reporter { return ui.NewPlain(liveStdout{}, true) }
 
 // captureOutput runs fn and returns what it wrote to stdout and to stderr.
 func captureOutput(t *testing.T, fn func()) (stdout, stderr string) {
@@ -142,6 +161,23 @@ func captureOutput(t *testing.T, fn func()) (stdout, stderr string) {
 		stderr = <-done
 	})
 	return stdout, stderr
+}
+
+// Every pass is a plan of its own, and Build may decide something on it the
+// operator has to act on, so each pass's notes are reported before it runs.
+func TestEveryPassReportsItsNotes(t *testing.T) {
+	withIDPFake(t)
+	c := stepFor(t, "home-a", secretsWithout(t, "talk"))
+	log := passLog{notes: []apply.Note{{Hint: "run infra down", Text: "the network differs"}}}
+	var err error
+	captureOutput(t, func() { _, err = executeWithClients(c, log.pass(t, c, "talk")) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"plan hold=blog,docs,gate,talk client=false", "note run infra down", "execute", "plan hold= client=true", "note run infra down", "execute"}
+	if strings.Join(log.events, "\n") != strings.Join(want, "\n") {
+		t.Errorf("passes:\n%s\nwant:\n%s", strings.Join(log.events, "\n"), strings.Join(want, "\n"))
+	}
 }
 
 // On a site running Pocket ID, the first pass holds back every other app,
@@ -194,9 +230,11 @@ func TestApplyDryRunSendsNoMutation(t *testing.T) {
 	path := secretsWithout(t, "talk")
 	before, _ := os.ReadFile(path)
 	c := stepFor(t, "home-a", path)
-	stdout, _ := captureOutput(t, func() { c.ensure(false, c.pocketIDHere()) })
-	if !strings.Contains(stdout, "create client talk: POST /api/oidc/clients") {
-		t.Errorf("the dry run does not show the client:\n%s", stdout)
+	rec := &ui.Recorder{Verbose_: true}
+	c.report = rec
+	captureOutput(t, func() { c.ensure(false, c.pocketIDHere()) })
+	if !rec.Has("item", "create OIDC client talk") || !rec.Has("detail", "POST /api/oidc/clients") {
+		t.Errorf("the dry run does not show the client:\n%s", rec.Lines())
 	}
 	if fake.mutated {
 		t.Error("a dry run mutated Pocket ID")
@@ -220,8 +258,8 @@ func TestApplyHoldsBackOnlyAppsWithoutAClientWhenPocketIDIsUnreachable(t *testin
 		hold     string
 		says     string
 	}{
-		{"no client", false, "plan hold=status ", "skip      status:"},
-		{"recorded client", true, "plan hold= ", "unchecked status:"},
+		{"no client", false, "plan hold=status ", "status held back: no client yet and Pocket ID not asked"},
+		{"recorded client", true, "plan hold= ", "status: Pocket ID not asked, recorded client used"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := withIDPFake(t)
@@ -257,7 +295,7 @@ func TestApplyHoldsBackOnlyAppsWithoutAClientWhenPocketIDIsUnreachable(t *testin
 			if result != nil {
 				t.Errorf("an unreachable Pocket ID failed the apply: %v", result)
 			}
-			if !tc.recorded && !strings.Contains(after, "held back from this apply:\n  status: ") {
+			if !tc.recorded && !strings.Contains(after, "held back from this apply: status\n") {
 				t.Errorf("the end of the apply does not say what was held back:\n%s", after)
 			}
 		})
@@ -284,7 +322,7 @@ func TestApplyRefusesOnlyTheAppWhoseClientDiffers(t *testing.T) {
 	if fake.mutated {
 		t.Error("a refused client was changed")
 	}
-	if !strings.Contains(stdout, "refuse    talk:") {
+	if !strings.Contains(stdout, "talk refused; the rest of the site is applied") {
 		t.Errorf("output:\n%s", stdout)
 	}
 	if err := c.result(); err == nil || !strings.Contains(err.Error(), "talk") || !strings.Contains(err.Error(), "differs") {
@@ -306,7 +344,7 @@ func TestApplyRefusesAnUnwritableSecretsFileBeforeContactingPocketID(t *testing.
 		t.Fatal(err)
 	}
 	secrets.Encrypted = true
-	_, err = newClientStep(cfg, "home-a", "", path, secrets, nil)
+	_, err = newClientStep(stdoutReporter(), cfg, "home-a", "", path, secrets, nil)
 	if err == nil || !strings.Contains(err.Error(), "names a recipient") {
 		t.Fatalf("got %v", err)
 	}
@@ -325,7 +363,7 @@ func TestApplyHasNoIdentityStepWithoutAnAppThatSignsIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := newClientStep(cfg, "home-a", "", fixtureSecretsPath(), secrets, []string{"gate"})
+	c, err := newClientStep(stdoutReporter(), cfg, "home-a", "", fixtureSecretsPath(), secrets, []string{"gate"})
 	if err != nil || c != nil {
 		t.Errorf("got %+v, %v", c, err)
 	}
@@ -367,7 +405,7 @@ func TestApplyHoldsBackWhenItsOwnPocketIDNeverAnswers(t *testing.T) {
 	if strings.Join(log.events, "\n") != strings.Join(want, "\n") {
 		t.Errorf("passes:\n%s", strings.Join(log.events, "\n"))
 	}
-	if !strings.Contains(stdout, "skip      talk:") || len(fake.commands) != 0 {
+	if !strings.Contains(stdout, "talk held back: no client yet and Pocket ID not asked") || len(fake.commands) != 0 {
 		t.Errorf("Pocket ID was called %d time(s), output:\n%s", len(fake.commands), stdout)
 	}
 	captureOutput(t, func() { err = c.result() })
@@ -518,7 +556,7 @@ func TestApplyHasNoIdentityStepWithoutPocketID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := newClientStep(cfg, "home-a", "", filepath.Join(t.TempDir(), "secrets.yaml"), &config.Secrets{Version: 1}, nil)
+	c, err := newClientStep(stdoutReporter(), cfg, "home-a", "", filepath.Join(t.TempDir(), "secrets.yaml"), &config.Secrets{Version: 1}, nil)
 	if err != nil || c != nil {
 		t.Errorf("got %+v, %v", c, err)
 	}
@@ -548,7 +586,7 @@ func TestApplyNamesAMissingAPIKey(t *testing.T) {
 	if got := strings.Join(c.heldApps(), ","); got != "status" {
 		t.Errorf("held %s", got)
 	}
-	for _, want := range []string{"static_api_key is missing", "paisans init", "held back from this apply:\n  status: "} {
+	for _, want := range []string{"static_api_key is missing", "paisans init", "held back from this apply: status"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("output lacks %q:\n%s", want, stdout)
 		}
@@ -577,7 +615,54 @@ func TestApplyReportsAnOverwriteItHeldBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout, "--overwrite /srv/paisans/f2a9/status/.env was not applied") {
+	if !strings.Contains(stdout, "--overwrite not applied, its stack was held back: /srv/paisans/f2a9/status/.env") {
 		t.Errorf("the held overwrite is not reported:\n%s", stdout)
+	}
+}
+
+// apply --execute does not list the client plan: the read only planning call
+// lists nothing without --verbose, the executing call reports its mutations
+// as steps, and a plan warning shows once although both calls plan.
+func TestApplyExecuteListsNoClientPlanAndWarnsOnce(t *testing.T) {
+	fake := withIDPFake(t)
+	custom := "https://docs.example.org/custom"
+	fake.others["docs"].LaunchURL = &custom
+	c := stepFor(t, "home-a", secretsWithout(t, "talk"))
+	// A chosen launch URL beside a client's own, which the toolkit did not
+	// set, is the warning that both plans carry.
+	docs := c.cfg.Apps["docs"]
+	settings := map[string]any{}
+	for k, v := range docs.Settings {
+		settings[k] = v
+	}
+	settings["sso_dashboard_link"] = "/home"
+	docs.Settings = settings
+	c.cfg.Apps["docs"] = docs
+	rec := &ui.Recorder{}
+	c.report = rec
+	planFor := func([]string) (*apply.Plan, error) { return &apply.Plan{Site: "home-a"}, nil }
+	var err error
+	captureOutput(t, func() {
+		if _, err = planWithClients(c, planFor, true); err == nil {
+			err = c.ensure(true, false)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Has("item", "") {
+		t.Errorf("--execute listed the client plan:\n%s", rec.Lines())
+	}
+	if !rec.Has("done", "create OIDC client talk") {
+		t.Errorf("the client was not created as a step:\n%s", rec.Lines())
+	}
+	warnings := 0
+	for _, e := range rec.Events {
+		if e.Kind == "warn" && strings.Contains(e.Text, "sso_dashboard_link") {
+			warnings++
+		}
+	}
+	if warnings != 1 {
+		t.Errorf("the warning showed %d times:\n%s", warnings, rec.Lines())
 	}
 }

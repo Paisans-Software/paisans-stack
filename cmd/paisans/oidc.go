@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -38,6 +38,7 @@ func runOIDC(args []string) error {
 // app like any other secret.
 func runOIDCClientCreate(args []string) error {
 	fs := flag.NewFlagSet("oidc client create", flag.ContinueOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	appName := fs.String("app", "", "the app the client is for, by the name it has in the configuration")
@@ -48,6 +49,7 @@ func runOIDCClientCreate(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
 	if fs.NArg() > 0 {
 		return fmt.Errorf("oidc client create: unexpected argument(s) %s", strings.Join(fs.Args(), " "))
 	}
@@ -60,7 +62,7 @@ func runOIDCClientCreate(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -84,7 +86,7 @@ func runOIDCClientCreate(args []string) error {
 	// so only a run that will change something claims it, through sudo,
 	// since the registry is root's.
 	if *execute {
-		if err := claimHosts(cfg, true, map[string]registry.Runner{where: registryHost(where, cfg.Sites[where], *destination, true)}); err != nil {
+		if err := claimHosts(r, cfg, true, map[string]registry.Runner{where: registryHost(where, cfg.Sites[where], *destination, true)}); err != nil {
 			return err
 		}
 	}
@@ -115,27 +117,43 @@ func runOIDCClientCreate(args []string) error {
 	if err != nil {
 		return fmt.Errorf("oidc client create: %w", err)
 	}
-	printClientPlan(*appName, idp, where, plan)
+	// A dry run lists the plan; --execute reports each mutation as it is
+	// made, and lists the plan first only with --verbose.
+	if !*execute || r.Verbose() {
+		listClientPlan(r, *appName, idp, where, plan)
+	}
+	for _, w := range plan.Warnings {
+		r.Warn(w, "")
+	}
 	if len(plan.Steps) == 0 {
 		return nil
 	}
 	if !*execute {
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
 
 	rec := &secretsRecorder{app: *appName, path: *secretsPath, secrets: secrets, recipients: recipients}
+	plan.Report = r
 	if err := oidcclient.Execute(plan, api, rec, secretsgen.ClientSecret); err != nil {
 		return fmt.Errorf("oidc client create: %w", err)
 	}
 	if rec.wrote {
-		fmt.Fprintf(os.Stdout, "\nrecorded oidc_clients.%s.client_id and oidc_clients.%s.client_secret\n", *appName, *appName)
+		r.Detail("recorded oidc_clients.%s.client_id and oidc_clients.%s.client_secret", *appName, *appName)
 		if len(recipients) == 0 {
-			fmt.Fprintf(os.Stderr, "paisans: %s is PLAINTEXT, because no %s beside it names an age recipient.\n", *secretsPath, config.SOPSConfigName)
+			warnPlaintext(r, *secretsPath)
 		}
 	}
-	fmt.Fprintf(os.Stdout, "\n%s's client is in place. `paisans apply --site <site> --execute` on each site running %s renders it.\n", *appName, *appName)
+	r.Detail("`paisans apply --site <site> --execute` on each site running %s renders the client", *appName)
+	r.Result("%s's client is in place.", *appName)
 	return nil
+}
+
+// warnPlaintext is the warning for secrets written to a file that no age
+// recipient beside it covers. The file is written regardless, since fixtures
+// are plain, so it is a warning and not a refusal.
+func warnPlaintext(r ui.Reporter, path string) {
+	r.Warn(path+" was written in plaintext", fmt.Sprintf("%s is PLAINTEXT, because no %s beside it names an age recipient. A real deployment encrypts this file. Add one and re-encrypt before committing anything.", path, config.SOPSConfigName))
 }
 
 // secretsRecorder writes a client's credentials into the secrets file,

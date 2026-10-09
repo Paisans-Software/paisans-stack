@@ -85,6 +85,7 @@ func (p *Plan) buildEtcd(live []apply.EtcdMember) *Stage {
 	st := &Stage{
 		Number: 3,
 		Name:   "etcd",
+		Short:  "etcd healthy, voters match",
 		Gate:   fmt.Sprintf("`etcdctl endpoint health --cluster` on %s reports every member healthy, and the voters are exactly %s", p.control, strings.Join(sortedCopy(p.cfg.Etcd.Members), ", ")),
 	}
 	predicted := map[string]string{}
@@ -98,7 +99,7 @@ func (p *Plan) buildEtcd(live []apply.EtcdMember) *Stage {
 	for _, j := range joiners {
 		url := render.EtcdPeerURL(p.cfg.Sites[j].Address)
 		if !present[j] {
-			st.Steps = append(st.Steps, Step{Site: j, Verb: "add", Text: fmt.Sprintf("an etcd learner %s with peer URL %s, through %s", j, url, p.control)})
+			st.Steps = append(st.Steps, Step{Site: j, Verb: "add", Title: "add etcd learner " + j, Text: fmt.Sprintf("an etcd learner %s with peer URL %s, through %s", j, url, p.control)})
 		}
 		predicted[j] = url
 		initial, ok := p.initial[j]
@@ -106,9 +107,9 @@ func (p *Plan) buildEtcd(live []apply.EtcdMember) *Stage {
 			initial = render.EtcdInitial{State: render.EtcdStateExisting, Cluster: clusterString(predicted)}
 		}
 		st.Steps = append(st.Steps,
-			Step{Site: j, Verb: "write", Text: fmt.Sprintf("%s and /%s: --initial-cluster-state=%s --initial-cluster=%s", p.dep().Compose("infra"), render.EtcdInitialPath(p.dep()), initial.State, initial.Cluster)},
-			Step{Site: j, Verb: "start", Text: "etcd alone: " + p.startEtcd()},
-			Step{Site: j, Verb: "promote", Text: fmt.Sprintf("the learner once it has caught up; etcd refuses until then, so it is retried up to %d times", promoteAttempts)},
+			Step{Site: j, Verb: "write", Title: "write etcd files on " + j, Text: fmt.Sprintf("%s and /%s: --initial-cluster-state=%s --initial-cluster=%s", p.dep().Compose("infra"), render.EtcdInitialPath(p.dep()), initial.State, initial.Cluster)},
+			Step{Site: j, Verb: "start", Title: "start etcd on " + j, Text: "etcd alone: " + p.startEtcd()},
+			Step{Site: j, Verb: "promote", Title: "promote " + j + " to voter", Text: fmt.Sprintf("the learner once it has caught up; etcd refuses until then, so it is retried up to %d times", promoteAttempts)},
 		)
 	}
 	st.run = func() error {
@@ -177,7 +178,7 @@ func (p *Plan) joinEtcd(j string) error {
 	}
 	if m == nil {
 		url := render.EtcdPeerURL(p.cfg.Sites[j].Address)
-		p.say("  %-9s %s as an etcd learner\n", "add", j)
+		p.work("add etcd learner "+j).Detail("%s as an etcd learner, through %s", j, p.control)
 		// etcd's strict reconfiguration check refuses a membership change
 		// with "unhealthy cluster" until every voter has been connected for
 		// its health interval, five seconds in v3.5.16
@@ -226,6 +227,7 @@ func (p *Plan) joinEtcd(j string) error {
 	}
 	p.initial[j] = initial
 
+	p.work("write etcd files on " + j)
 	rendered, err := p.render()
 	if err != nil {
 		return err
@@ -246,7 +248,7 @@ func (p *Plan) joinEtcd(j string) error {
 	if err := apply.Execute(sp, t); err != nil {
 		return err
 	}
-	p.say("  %-9s %s's etcd\n", "start", j)
+	p.work("start etcd on " + j)
 	if out, err := t.Run(p.startEtcd()); err != nil {
 		return fmt.Errorf("%s: starting etcd: %s", j, lastLines(out, 5))
 	}
@@ -265,12 +267,12 @@ func (p *Plan) joinEtcd(j string) error {
 		sleep(learnerPoll)
 	}
 
+	p.work("promote " + j + " to voter")
 	delay := promoteFirstDelay
 	var last string
 	for i := 0; i < promoteAttempts; i++ {
 		out, err := control.Run(apply.Etcdctl(p.dep(), "member promote "+m.HexID()))
 		if err == nil {
-			p.say("  %-9s %s to a voter\n", "promoted", j)
 			return nil
 		}
 		last = lastLines(out, 3)
