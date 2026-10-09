@@ -89,8 +89,14 @@ func TestShowHandsOffAnExternalApp(t *testing.T) {
 
 func TestShowWarnsWhenListenIsNotLoopback(t *testing.T) {
 	var buf bytes.Buffer
-	ingress.Show(&buf, external(t, "192.168.1.20:8480"))
-	if !strings.Contains(buf.String(), "ufw") || !strings.Contains(buf.String(), "proxy_pass http://192.168.1.20:8480;") {
+	target := external(t, "192.168.1.20:8480")
+	ingress.Show(&buf, target)
+	hint, detail, ok := ingress.ListenWarning(target)
+	if !ok || !strings.Contains(hint, "ufw") || !strings.Contains(detail, "DOCKER-USER") {
+		t.Fatalf("no warning: %q %q", hint, detail)
+	}
+	// The sheet is copied into a web server, so the warning is not in it.
+	if strings.Contains(buf.String(), "WARNING") || !strings.Contains(buf.String(), "proxy_pass http://192.168.1.20:8480;") {
 		t.Fatal(buf.String())
 	}
 }

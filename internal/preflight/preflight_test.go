@@ -549,12 +549,12 @@ func TestShowReportsEachCheckAsAStep(t *testing.T) {
 		{Site: "home-b", Name: "ports", Detail: "already in use: 80. Find the owner with `sudo ss -ltnup`", Refused: true},
 		{Site: "home-b", Name: "rtt", Detail: "to vm: 40 ms. Consider raising etcd.heartbeat_ms", Warned: true},
 	}}.Show(rec)
-	for _, want := range [][2]string{{"done", "check clock home-b"}, {"fail", "check ports home-b"}, {"refuse", "already in use: 80"}, {"warn", "to vm: 40 ms"}} {
+	for _, want := range [][2]string{{"done", "check clock home-b"}, {"refuse", "check ports home-b: already in use: 80"}, {"warn", "check rtt home-b: to vm: 40 ms"}} {
 		if !rec.Has(want[0], want[1]) {
 			t.Errorf("no %s %q:\n%s", want[0], want[1], rec.Lines())
 		}
 	}
-	if i := rec.Index("refuse", "already in use: 80"); rec.Events[i].Extra != "Find the owner with `sudo ss -ltnup`" {
+	if i := rec.Index("refuse", "check ports home-b: already in use: 80"); rec.Events[i].Extra != "Find the owner with `sudo ss -ltnup`" {
 		t.Errorf("the advice is the refusal's explanation, got %q", rec.Events[i].Extra)
 	}
 }
@@ -563,5 +563,17 @@ func TestSummaryCountsPassesWarningsAndRefusals(t *testing.T) {
 	got := Report{Checks: []Check{{}, {}, {Warned: true}, {Refused: true}}}.Summary()
 	if got != "2 checks passed, 1 warning, 1 refused." {
 		t.Errorf("got %q", got)
+	}
+}
+
+// A warning or a refusal is one line with one mark: it has no step, so it is
+// never a failed step beside a warning.
+func TestAProblemIsOneLineNotAFailedStepAndAWarning(t *testing.T) {
+	rec := &ui.Recorder{}
+	Report{Checks: []Check{{Site: "a", Name: "ports", Detail: "in use", Refused: true}, {Site: "a", Name: "rtt", Detail: "slow", Warned: true}}}.Show(rec)
+	for _, e := range rec.Events {
+		if e.Kind == "step" || e.Kind == "fail" {
+			t.Errorf("a problem opened a step: %+v", e)
+		}
 	}
 }

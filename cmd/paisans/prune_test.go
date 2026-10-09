@@ -46,3 +46,20 @@ func TestPruneDryRunShowsTheAssumptionAndEachVolume(t *testing.T) {
 		}
 	}
 }
+
+// Only an anonymous volume's 64 hex name is shortened. A named volume is
+// shown whole, since this list is the consent to delete its data.
+func TestPruneShortensOnlyAnonymousVolumeNames(t *testing.T) {
+	anon := strings.Repeat("ab", 32)
+	plan := &apply.VolumePrune{Volumes: []apply.DanglingVolume{
+		{Name: anon, Remove: true}, {Name: "paisans-f2a9-old_data", Remove: true}, {Name: "paisans-f2a9-old_logs", Remove: true},
+	}}
+	rec := &ui.Recorder{}
+	showVolumePrune(rec, plan)
+	if !rec.Has("item", "remove volume abababababab") || rec.Has("item", anon) {
+		t.Errorf("anonymous name not shortened:\n%s", rec.Lines())
+	}
+	if !rec.Has("item", "remove volume paisans-f2a9-old_data") || !rec.Has("item", "remove volume paisans-f2a9-old_logs") {
+		t.Errorf("named volumes are not told apart:\n%s", rec.Lines())
+	}
+}

@@ -42,13 +42,6 @@ func Show(w io.Writer, t Target) {
 	fmt.Fprintf(w, "    every monitor, mesh addresses included, and /metrics is public whenever\n")
 	fmt.Fprintf(w, "    no API token exists, which under this toolkit is always\n\n")
 
-	if ip := net.ParseIP(t.ListenHost); ip != nil && !ip.IsLoopback() {
-		fmt.Fprintf(w, "WARNING: listen is %s, not loopback. Docker publishes the port with its own\n", t.Listen)
-		fmt.Fprintf(w, "iptables rules, in front of ufw, so ufw does not protect it: anything that can\n")
-		fmt.Fprintf(w, "reach %s can reach the app around your web server. Restrict it upstream\n", t.ListenHost)
-		fmt.Fprintf(w, "of the host, or in Docker's DOCKER-USER chain.\n\n")
-	}
-
 	fmt.Fprintf(w, "Caddy (it sets X-Forwarded-For and X-Forwarded-Proto and passes Host itself):\n\n")
 	fmt.Fprint(w, indent(caddySnippet(t)))
 	fmt.Fprintf(w, "\nnginx:\n\n")
@@ -56,6 +49,18 @@ func Show(w io.Writer, t Target) {
 	fmt.Fprintf(w, "\nApache (mod_ssl, mod_proxy, mod_proxy_http and mod_headers; mod_proxy sets\nX-Forwarded-For itself):\n\n")
 	fmt.Fprint(w, indent(apacheSnippet(t)))
 	fmt.Fprintf(w, "\nThen run `paisans ingress check --app %s` from this machine.\n", t.App)
+}
+
+// ListenWarning is the warning for a listen address that is not loopback. It
+// is returned rather than written into the sheet, which is the command's
+// stdout and holds only what is copied into a web server.
+func ListenWarning(t Target) (hint, detail string, ok bool) {
+	ip := net.ParseIP(t.ListenHost)
+	if ip == nil || ip.IsLoopback() {
+		return "", "", false
+	}
+	return fmt.Sprintf("listen is %s, not loopback: ufw does not protect it", t.Listen),
+		fmt.Sprintf("Docker publishes the port with its own iptables rules, in front of ufw, so ufw does not protect it: anything that can reach %s can reach the app around your web server. Restrict it upstream of the host, or in Docker's DOCKER-USER chain.", t.ListenHost), true
 }
 
 // The three snippets differ in what they spell out because the servers

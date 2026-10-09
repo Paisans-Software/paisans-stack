@@ -160,7 +160,6 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 		return fmt.Errorf("app admin create: %w", err)
 	}
 	step.Done("")
-	r.Result("%s is an administrator of %s.", *username, *appName)
 	if outcome.LoginLink != "" {
 		// The one place the link is ever written. It is a credential, so it
 		// goes to stdout once, alone, and is kept nowhere: not in the secrets
@@ -168,7 +167,10 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 		r.Warn(fmt.Sprintf("the login link works once, within %s: treat it as a password", outcome.ExpiresIn),
 			fmt.Sprintf("It signs in as %s once: open it yourself and register a passkey. It is printed here and nowhere else. If it expires, re-run with --login-link --execute.", *username))
 		fmt.Fprintln(os.Stdout, outcome.LoginLink)
+		r.Result("%s is an administrator of %s. Open the login link yourself and register a passkey.", *username, *appName)
+		return nil
 	}
+	r.Result("%s is an administrator of %s.", *username, *appName)
 	return nil
 }
 

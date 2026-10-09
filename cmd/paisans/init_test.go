@@ -282,7 +282,7 @@ func TestInitReportsStepsAndWhatIsOwed(t *testing.T) {
 	if !rec.Has("done", "settle mesh subnet") {
 		t.Errorf("no settled subnet step:\n%s", rec.Lines())
 	}
-	if !rec.Has("done", "create ") || !rec.Has("result", "Generated ") {
+	if !rec.Has("done", "write secrets") || !rec.Has("detail", "+ ") || !rec.Has("result", "Generated ") {
 		t.Errorf("no created secrets:\n%s", rec.Lines())
 	}
 	if !rec.Has("warn", "was written in plaintext") {

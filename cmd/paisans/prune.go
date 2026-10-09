@@ -107,10 +107,12 @@ func showVolumePrune(r ui.Reporter, plan *apply.VolumePrune) {
 		if v.Remove {
 			verb = "remove"
 			total += v.Size
-			// A volume name can be 64 characters; the front of it tells one
-			// from another, and the full name is the detail below.
+			// Only an anonymous volume's name is shortened, since it is 64
+			// hex characters whose front tells one from another. A named
+			// volume's name is what an operator recognises, and this list
+			// is the consent to delete its data, so it is shown whole.
 			name := v.Name
-			if len(name) > 12 {
+			if apply.IsAnonymousVolume(name) {
 				name = name[:12]
 			}
 			r.Item("remove volume " + name)

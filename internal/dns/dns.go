@@ -433,7 +433,8 @@ func (p *Plan) Show(r ui.Reporter) {
 			r.Item(fmt.Sprintf("create %s %s", e.Type, e.Name))
 			r.Detail("%s, zone %s", e.Content, e.Zone)
 		case Conflict:
-			r.Refuse(fmt.Sprintf("%s %s conflicts with a record at the provider", e.Type, e.Name), e.Detail)
+			r.Refuse(fmt.Sprintf("%s %s conflicts with a record at the provider", e.Type, e.Name),
+				fmt.Sprintf("%s\nwanted: %s -> %s (zone %s)", e.Detail, e.Name, e.Content, e.Zone))
 		default:
 			r.Detail("%-9s %-4s %s -> %s  (zone %s)", e.Action, e.Type, e.Name, e.Content, e.Zone)
 		}

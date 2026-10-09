@@ -292,6 +292,11 @@ func TestConflictRefusesBeforeAnyWrite(t *testing.T) {
 			if p.Conflicts()[0].Detail == "" {
 				t.Fatal("a conflict must say what is in the way")
 			}
+			shown := &ui.Recorder{}
+			p.Show(shown)
+			if i := shown.Index("refuse", "talk.example.org conflicts"); i < 0 || !strings.Contains(shown.Events[i].Extra, "wanted: talk.example.org -> 203.0.113.10 (zone example.org)") {
+				t.Errorf("the refusal lost what was wanted:\n%s", shown.Lines())
+			}
 			err := Execute(context.Background(), c, p, ui.Discard)
 			if err == nil {
 				t.Fatal("execute should refuse a plan with a conflict")

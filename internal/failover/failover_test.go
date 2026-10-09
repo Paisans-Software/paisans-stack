@@ -175,6 +175,7 @@ func TestDryRunChecksAndChangesNothing(t *testing.T) {
 		"on home-a: " + SwitchoverCommand(cfg.Deployment(), "home-a", "home-b"),
 		"on home-b: " + SwitchoverCommand(cfg.Deployment(), "home-b", "home-a"),
 		"expected interruption",
+		"warn: writes fail twice",
 		"Nothing changed. Re-run with --execute",
 		"done: check auth on home-a healthy",
 		"restart the apps that use the cluster database, on every apps site",

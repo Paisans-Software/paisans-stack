@@ -31,6 +31,11 @@ func runIngress(args []string) error {
 		return err
 	}
 	r := reporter()
+	if sub == "show" {
+		// stdout carries the sheet alone, so what validate and the sheet's
+		// own warning have to say goes to stderr.
+		r = errReporter(r)
+	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("ingress %s: unexpected argument(s) %s", sub, strings.Join(fs.Args(), " "))
 	}
@@ -49,6 +54,9 @@ func runIngress(args []string) error {
 		// The sheet is the command's product, to be read and copied into a
 		// web server's configuration, so it goes to stdout whole and not
 		// through the reporter, which hides its details by default.
+		if hint, detail, ok := ingress.ListenWarning(target); ok {
+			r.Warn(hint, detail)
+		}
 		ingress.Show(os.Stdout, target)
 		return nil
 	}

@@ -15,7 +15,6 @@
 package doctor
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -104,12 +103,13 @@ func (r Report) Count(l Level) int {
 
 // Show reports the findings: each check is a step titled by what it looked
 // at, whose result is the short finding. A check that passed, was skipped or
-// is only worth knowing ends done. A warning ends failed beside a warning
-// carrying the finding; a failure ends failed beside a refusal carrying the
-// finding and its recovery, since the operator is reading this in an outage
-// and must have the advice without asking for it. A finding's further lines
-// are details of a step that passed, the detail of a warning and the
-// explanation of a failure.
+// is only worth knowing ends done. A warning is one warning line and a
+// failure one refusal line, each naming the check and the finding with no
+// step of its own, so a problem never shows two marks. A failure carries its
+// recovery as the refusal's explanation, since the operator is reading this
+// in an outage and must have the advice without asking for it. A finding's
+// further lines are details of a step that passed, the detail of a warning
+// and the explanation of a failure.
 func (r Report) Show(rep ui.Reporter) {
 	rep.Detail("%d site(s), %d reached", r.Sites, r.Reached)
 	for _, section := range sections {
@@ -131,15 +131,13 @@ func (r Report) Show(rep ui.Reporter) {
 
 func (r Report) show(rep ui.Reporter, f Finding) {
 	title, result := f.Title()
-	s := rep.Step(title)
 	switch f.Level {
 	case Warn:
-		s.Fail(errors.New(f.Line))
-		rep.Warn(f.Line, strings.Join(f.More, "\n"))
+		rep.Warn(title+": "+result, strings.Join(f.More, "\n"))
 	case Fail:
-		s.Fail(errors.New(f.Line))
-		rep.Refuse(f.Line, strings.Join(f.More, "\n"))
+		rep.Refuse(title+": "+result, strings.Join(f.More, "\n"))
 	default:
+		s := rep.Step(title)
 		for _, more := range f.More {
 			s.Detail("%s", more)
 		}

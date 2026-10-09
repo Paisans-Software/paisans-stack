@@ -388,6 +388,7 @@ func (r *runner) listPlan(leader, candidate, back, home string) {
 		rep.Item("wait for apps")
 		rep.Detail("gate: every app stack healthy and answering")
 	}
+	rep.Warn("writes fail twice, for several seconds each", "expected interruption, twice: writes fail from the moment the old primary demotes until the new one is promoted")
 	rep.Detail("expected interruption, twice: writes fail from the moment the old primary")
 	rep.Detail("demotes until the new one is promoted and each site's HAProxy marks it up.")
 	rep.Detail("HAProxy asks every member's /primary every 3 s and needs 2 passes (inter 3s,")

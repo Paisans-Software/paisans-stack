@@ -55,23 +55,23 @@ func (r Report) Refused() bool {
 
 // Show reports each check as a step titled "check <name> <site>", in the
 // order they were made. A pass ends done with the first sentence of its
-// finding as the result; a warning and a refusal end failed beside a Warn
-// or a Refuse carrying the same sentence, since a refusal must say what to
-// fix without a second run. What the finding says after its first sentence
+// finding as the result; a warning and a refusal are a single Warn or Refuse
+// naming the check and the same sentence, with no step of their own so they
+// never show two marks, since a refusal must say what to fix without a
+// second run. What the finding says after its first sentence
 // is the reasoning and the advice: a detail of a pass or a warning, and the
 // explanation of a refusal.
 func (r Report) Show(rep ui.Reporter) {
 	for _, c := range r.Checks {
-		s := rep.Step("check " + c.Name + " " + c.Site)
+		title := "check " + c.Name + " " + c.Site
 		hint, rest := firstSentence(c.Detail)
 		switch {
 		case c.Refused:
-			s.Fail(errors.New(c.Detail))
-			rep.Refuse(hint, rest)
+			rep.Refuse(title+": "+hint, rest)
 		case c.Warned:
-			s.Fail(errors.New(c.Detail))
-			rep.Warn(hint, rest)
+			rep.Warn(title+": "+hint, rest)
 		default:
+			s := rep.Step(title)
 			if rest != "" {
 				s.Detail("%s", rest)
 			}

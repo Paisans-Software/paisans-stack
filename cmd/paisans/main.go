@@ -393,15 +393,18 @@ func runInit(args []string) error {
 		return nil
 	}
 
-	if err := config.WriteSecrets(*secretsPath, secrets, recipients); err != nil {
-		return err
-	}
-
 	// Names, never values. A secret printed to a terminal is in a scrollback
 	// buffer, and often in a multiplexer's log as well.
+	write := r.Step("write secrets")
+	write.Detail("%s", *secretsPath)
 	for _, name := range filled.Generated {
-		r.Step("create " + name).Done("")
+		write.Detail("+ %s", name)
 	}
+	if err := config.WriteSecrets(*secretsPath, secrets, recipients); err != nil {
+		write.Fail(err)
+		return err
+	}
+	write.Done(fmt.Sprintf("%d generated, %d kept", len(filled.Generated), len(filled.Kept)))
 	if len(recipients) == 0 {
 		warnPlaintext(r, *secretsPath)
 	} else {
@@ -960,6 +963,10 @@ func runDNSInit(args []string) error {
 	}
 
 	if !execute {
+		if n := len(plan.Conflicts()); n > 0 {
+			r.Result("%s conflict with the provider's. Resolve %s before --execute, which creates nothing while one stands.", plural(n, "record"), map[bool]string{true: "it", false: "them"}[n == 1])
+			return nil
+		}
 		if len(plan.Creates()) == 0 {
 			r.Result("Every record is present. Nothing to create.")
 			return nil
