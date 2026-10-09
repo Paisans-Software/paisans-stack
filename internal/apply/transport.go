@@ -12,6 +12,7 @@ package apply
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -133,7 +134,10 @@ func (t SSHTransport) port() int {
 // BatchMode is not set, as before: a first connection may still ask the
 // operator to accept a host key, and refusing that would push them to
 // disable host key checking instead.
+//
+// The command is sent as RemoteCommand wraps it, on both routes.
 func (t SSHTransport) SSHArgs(keyFiles []string, command string) []string {
+	command = RemoteCommand(command)
 	if t.Destination != "" {
 		return []string{t.Destination, command}
 	}
@@ -145,6 +149,28 @@ func (t SSHTransport) SSHArgs(keyFiles []string, command string) []string {
 		args = append(args, "-i", f)
 	}
 	return append(args, t.User+"@"+t.Host, command)
+}
+
+// RemoteCommand is what ssh sends for command: command run by sh, whatever
+// the login user's shell is.
+//
+// sshd hands the string ssh sends to the login shell (`$SHELL -c`), and the
+// commands built here are sh syntax, quoted for sh. A login shell with other
+// quoting rules misreads them: inside single quotes fish reads `\'` as an
+// escaped quote, so the way shellQuote closes, escapes and reopens a quote
+// leaves fish's quotes unbalanced, and it fails before anything runs. So the
+// command travels as base64, which has no quote, backslash or space, inside a
+// string every common shell parses the same way: `sh -c`, then one single
+// quoted word holding only `eval`, a double quoted `$(...)`, `printf %s`, the
+// base64 and `base64 -d`. sh decodes it and evaluates it as the command
+// itself, so its output and exit status are the command's, and stdin reaches
+// the command untouched, which sudo's password and WriteFile's content need.
+//
+// The string is a third longer than the command, and it is still one
+// argument: Linux allows 128 KiB in one (MAX_ARG_STRLEN), and anything large
+// here (rendered files, SQL) goes on stdin, not in the command.
+func RemoteCommand(command string) string {
+	return `sh -c 'eval "$(printf %s ` + base64.StdEncoding.EncodeToString([]byte(command)) + ` | base64 -d)"'`
 }
 
 // ssh builds the command for one remote command, with the key files it

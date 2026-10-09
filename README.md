@@ -2263,6 +2263,24 @@ the `user@` win over that file's `Port` and `User`, since ssh_config(5) takes
 not set, so a first connection can still ask the operator to accept a host key,
 which keeps host key checking on from the very first connection.
 
+#### Commands run in sh, whatever the login shell is
+
+sshd hands the command ssh sends to the login user's shell, and every command
+the toolkit builds is sh syntax. A login shell with other quoting rules misreads
+it: fish fails on the nested quoting of `sudo sh -c '<command>'` with "quotes
+are not balanced" before anything runs. So each command is sent base64 encoded,
+as
+
+```
+sh -c 'eval "$(printf %s <base64> | base64 -d)"'
+```
+
+which holds no quote, backslash or space inside its single quotes, so sh, bash,
+zsh, fish and csh all read it the same way. sh then decodes the command and
+runs it, so its output, its exit status and its stdin are the command's own.
+`--ssh` is sent the same way. The host needs `sh` and `base64` (GNU coreutils),
+nothing more.
+
 #### A connection that never opened is tried again
 
 A connect timeout on a host that answers seconds later stopped the first real
