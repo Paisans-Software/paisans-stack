@@ -287,11 +287,18 @@ func runBootstrap(plan *Plan, t Transport) error {
 		}
 		return err
 	}
-	names := make([]string, len(plan.Bootstrap.Databases))
-	for i, db := range plan.Bootstrap.Databases {
-		names[i] = db.Name
+	// Nothing to create means no step to report: a title naming no database
+	// would only be noise.
+	if len(plan.Bootstrap.Databases) == 0 {
+		return nil
 	}
-	done = plan.step("bootstrap database " + strings.Join(names, ", "))
+	// The title stays short however many databases there are, since the
+	// result column is fixed; each database is a detail of the step.
+	title := fmt.Sprintf("bootstrap %d databases", len(plan.Bootstrap.Databases))
+	if len(plan.Bootstrap.Databases) == 1 {
+		title = "bootstrap database " + plan.Bootstrap.Databases[0].Name
+	}
+	done = plan.step(title)
 	for _, db := range plan.Bootstrap.Databases {
 		done.Detail("role %s owns database %s, for %s", db.Role, db.Name, db.App)
 	}

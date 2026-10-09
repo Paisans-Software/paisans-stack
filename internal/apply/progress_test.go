@@ -108,3 +108,29 @@ func TestNoReporterIsSilent(t *testing.T) {
 	}
 
 }
+
+// The bootstrap step's title names the database when there is one and counts
+// them otherwise, so it never outgrows the result column.
+func TestBootstrapStepTitleIsShort(t *testing.T) {
+	noWait(t)
+	for _, keep := range []int{1, 2} {
+		host := newHost()
+		p := bootstrapPlan(t, host)
+		if len(p.Bootstrap.Databases) < keep {
+			t.Skipf("fixture has %d databases", len(p.Bootstrap.Databases))
+		}
+		p.Bootstrap.Databases = p.Bootstrap.Databases[:keep]
+		rec := &ui.Recorder{}
+		p.Report = rec
+		if err := apply.Execute(p, host); err != nil {
+			t.Fatal(err)
+		}
+		want := "bootstrap 2 databases"
+		if keep == 1 {
+			want = "bootstrap database " + p.Bootstrap.Databases[0].Name
+		}
+		if !rec.Has("step", want) {
+			t.Errorf("%d database(s): no step %q:\n%s", keep, want, rec.Lines())
+		}
+	}
+}
