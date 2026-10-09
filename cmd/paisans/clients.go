@@ -617,6 +617,18 @@ type sitePass struct {
 	// plan is told every earlier pass of this apply, for apply.After.
 	plan    func(hold []string, done []*apply.Plan) (*apply.Plan, error)
 	execute func(*apply.Plan) error
+	// notes reports a pass's notes before it runs. Each pass is planned
+	// anew and can find something the operator has to act on.
+	notes func(*apply.Plan)
+}
+
+// planned is a pass planned, with its notes reported.
+func (s sitePass) planned(hold []string, done []*apply.Plan) (*apply.Plan, error) {
+	p, err := s.plan(hold, done)
+	if err == nil && s.notes != nil {
+		s.notes(p)
+	}
+	return p, err
 }
 
 // executeWithClients is apply --execute on a site with an identity step.
@@ -630,7 +642,7 @@ type sitePass struct {
 func executeWithClients(c *clientStep, pass sitePass) ([]*apply.Plan, error) {
 	var plans []*apply.Plan
 	if c.pocketIDHere() {
-		first, err := pass.plan(c.holdForPocketID(), nil)
+		first, err := pass.planned(c.holdForPocketID(), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -655,7 +667,7 @@ func executeWithClients(c *clientStep, pass sitePass) ([]*apply.Plan, error) {
 	} else if err := c.ensure(true, false); err != nil {
 		return plans, err
 	}
-	final, err := pass.plan(c.heldApps(), plans)
+	final, err := pass.planned(c.heldApps(), plans)
 	if err != nil {
 		return plans, err
 	}

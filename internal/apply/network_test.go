@@ -177,7 +177,9 @@ func TestTheInfrastructureStackIsNeverTakenDown(t *testing.T) {
 	}
 	var noted bool
 	for _, note := range p.Notes {
-		if strings.Contains(note, "paisans-f2a9-infra_default") && strings.Contains(note, "--recreate infra") {
+		// The operator has to act on it, so it carries a hint, and the hint
+		// alone says what to do.
+		if strings.Contains(note.Text, "paisans-f2a9-infra_default") && strings.Contains(note.Hint, "--recreate infra") {
 			noted = true
 		}
 	}

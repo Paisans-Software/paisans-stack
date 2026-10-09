@@ -647,9 +647,9 @@ func runApply(args []string) error {
 	}
 	// A dry run is the plan. --execute reports progress instead, and shows
 	// the plan first only with --verbose, since its steps say the same.
-	if !*execute || r.Verbose() {
-		listPlan(r, plan)
-	}
+	// Either way the plan's notes show, and a later pass's new ones too.
+	noted := map[string]bool{}
+	presentPlan(r, plan, *execute, noted)
 	if err := printLeftovers(r, cfg, *site, host.Inventory, plan); err != nil {
 		return err
 	}
@@ -686,6 +686,7 @@ func runApply(args []string) error {
 				return p, nil
 			},
 			execute: func(p *apply.Plan) error { return apply.Execute(p, transport) },
+			notes:   func(p *apply.Plan) { reportNotes(r, p, noted) },
 		}
 		if plans, err = executeWithClients(clients, pass); err != nil {
 			return err

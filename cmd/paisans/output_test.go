@@ -185,10 +185,12 @@ func fixtureRuns(t *testing.T) map[string]string {
 		host := runningHost{failingHost{match: "\x00"}}
 		var b strings.Builder
 		r := ui.NewPlain(&b, false)
-		listPlan(r, freshPlan(t, r, host))
+		presentPlan(r, freshPlan(t, r, host), false, map[string]bool{})
 		runs["apply dry run"] = b.String()
 		b.Reset()
-		if err := apply.Execute(freshPlan(t, r, host), host); err != nil {
+		executed := freshPlan(t, r, host)
+		presentPlan(r, executed, true, map[string]bool{})
+		if err := apply.Execute(executed, host); err != nil {
 			t.Fatal(err)
 		}
 		runs["apply execute"] = b.String()

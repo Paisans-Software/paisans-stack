@@ -9,6 +9,35 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
+// presentPlan is what a plan says before anything runs: its notes, then on a
+// dry run (or with --verbose) the plan itself. --execute lists no plan, since
+// its steps say the same, but a note can be something the operator has to do
+// and must show on --execute too.
+func presentPlan(r ui.Reporter, plan *apply.Plan, execute bool, seen map[string]bool) {
+	reportNotes(r, plan, seen)
+	if !execute || r.Verbose() {
+		listPlan(r, plan)
+	}
+}
+
+// reportNotes reports each note Build decided: one the operator has to act on
+// is a warning, whose hint says what to do, and one that is only information
+// is a detail. seen holds the notes already reported, since every pass of an
+// apply plans the site again and finds the same thing again.
+func reportNotes(r ui.Reporter, plan *apply.Plan, seen map[string]bool) {
+	for _, note := range plan.Notes {
+		if seen[note.Text] {
+			continue
+		}
+		seen[note.Text] = true
+		if note.Hint != "" {
+			r.Warn(note.Hint, note.Text)
+			continue
+		}
+		r.Detail("%s", note.Text)
+	}
+}
+
 // listPlan is a dry run's plan: one item per step, in the order Execute
 // takes them, titled as Execute titles its steps, so a dry run reads as the
 // run it previews. Why each step is there, the files it writes and the
@@ -19,9 +48,6 @@ import (
 // The site's section is the caller's: by the time the plan is listed, the
 // checks that built it have already reported under it.
 func listPlan(r ui.Reporter, plan *apply.Plan) {
-	for _, note := range plan.Notes {
-		r.Detail("%s", note)
-	}
 	// The disk and volume checks ran in Build, as the "disk space" step,
 	// which already carries what they found as its details. An image volume
 	// left unmounted is still refused here, since Execute will refuse it.

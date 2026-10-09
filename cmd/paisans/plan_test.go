@@ -50,3 +50,33 @@ func TestListPlanRefusesConflicts(t *testing.T) {
 		t.Errorf("the refusal does not name the file by default:\n%s", rec.Lines())
 	}
 }
+
+// A note the operator has to act on is a warning on a dry run and on
+// --execute alike, by default, where --execute lists no plan; a note that is
+// only information is a detail. The same note found again by a later pass is
+// said once.
+func TestPlanNotesShowByDefaultOnDryRunAndExecute(t *testing.T) {
+	plan := &apply.Plan{Notes: []apply.Note{
+		{Hint: "infra network differs from its compose file: run infra down, then apply --recreate infra", Text: "the infrastructure stack's network paisans-f2a9-infra_default does not match"},
+		{Text: "gone was owed an action by a stopped apply"},
+	}}
+	for _, execute := range []bool{false, true} {
+		var b strings.Builder
+		r := ui.NewPlain(&b, false)
+		seen := map[string]bool{}
+		presentPlan(r, plan, execute, seen)
+		presentPlan(r, plan, execute, seen)
+		out := b.String()
+		if strings.Count(out, "  WARN infra network differs from its compose file: run infra down, then apply --recreate infra\n") != 1 {
+			t.Errorf("execute=%v: the note to act on is not one warning: %q", execute, out)
+		}
+		if strings.Contains(out, "gone was owed") {
+			t.Errorf("execute=%v: an informational note shows by default: %q", execute, out)
+		}
+	}
+	rec := &ui.Recorder{Verbose_: true}
+	presentPlan(rec, plan, true, map[string]bool{})
+	if !rec.Has("detail", "gone was owed") {
+		t.Errorf("the informational note is not a detail:\n%s", rec.Lines())
+	}
+}

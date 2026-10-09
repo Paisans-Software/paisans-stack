@@ -51,6 +51,9 @@ type passLog struct {
 	// heldOverwrites is put on every plan, as Build reports an --overwrite
 	// in a held stack.
 	heldOverwrites []string
+	// notes is put on every plan, as Build finds the same thing on every
+	// pass.
+	notes []apply.Note
 }
 
 func (l *passLog) pass(t *testing.T, c *clientStep, app string) sitePass {
@@ -70,13 +73,18 @@ func (l *passLog) pass(t *testing.T, c *clientStep, app string) sitePass {
 				}
 			}
 			l.events = append(l.events, fmt.Sprintf("plan hold=%s client=%t", strings.Join(hold, ","), has))
-			p := &apply.Plan{Site: c.site, HeldOverwrites: l.heldOverwrites}
+			p := &apply.Plan{Site: c.site, HeldOverwrites: l.heldOverwrites, Notes: l.notes}
 			l.plans = append(l.plans, p)
 			return p, nil
 		},
 		execute: func(*apply.Plan) error {
 			l.events = append(l.events, "execute")
 			return nil
+		},
+		notes: func(p *apply.Plan) {
+			for _, n := range p.Notes {
+				l.events = append(l.events, "note "+n.Hint)
+			}
 		},
 	}
 }
@@ -153,6 +161,23 @@ func captureOutput(t *testing.T, fn func()) (stdout, stderr string) {
 		stderr = <-done
 	})
 	return stdout, stderr
+}
+
+// Every pass is a plan of its own, and Build may decide something on it the
+// operator has to act on, so each pass's notes are reported before it runs.
+func TestEveryPassReportsItsNotes(t *testing.T) {
+	withIDPFake(t)
+	c := stepFor(t, "home-a", secretsWithout(t, "talk"))
+	log := passLog{notes: []apply.Note{{Hint: "run infra down", Text: "the network differs"}}}
+	var err error
+	captureOutput(t, func() { _, err = executeWithClients(c, log.pass(t, c, "talk")) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"plan hold=blog,docs,gate,talk client=false", "note run infra down", "execute", "plan hold= client=true", "note run infra down", "execute"}
+	if strings.Join(log.events, "\n") != strings.Join(want, "\n") {
+		t.Errorf("passes:\n%s\nwant:\n%s", strings.Join(log.events, "\n"), strings.Join(want, "\n"))
+	}
 }
 
 // On a site running Pocket ID, the first pass holds back every other app,

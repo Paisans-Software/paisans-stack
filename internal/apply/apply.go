@@ -124,6 +124,15 @@ func (a Action) Command(d deployment.Deployment) string {
 	}
 }
 
+// Note is one thing Build decided for the operator to read. Hint is set
+// when the operator has something to do: it is the short line that shows at
+// every verbosity, and Text says the rest. A note without one is information,
+// nothing is left undone by not reading it, and Text is shown only as detail.
+type Note struct {
+	Hint string
+	Text string
+}
+
 // Plan is everything one site's apply would do.
 type Plan struct {
 	Site      string
@@ -212,7 +221,7 @@ type Plan struct {
 	HeldOverwrites []string
 	// Notes are things Build decided that the operator should read and
 	// that change nothing they asked for.
-	Notes []string
+	Notes []Note
 	// renderedChanges is every file this site renders, held back or not,
 	// for the prune keep set: an image a held stack renders is still the
 	// site's.
@@ -768,7 +777,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		// An app removed from the configuration renders no stack here, and
 		// acting on it would fail every apply from now on.
 		if !rendered[action.Stack] {
-			out.Notes = append(out.Notes, fmt.Sprintf("%s was owed an action by a stopped apply, and this site no longer renders it, so the record of it is dropped", action.Stack))
+			out.Notes = append(out.Notes, Note{Text: fmt.Sprintf("%s was owed an action by a stopped apply, and this site no longer renders it, so the record of it is dropped", action.Stack)})
 			continue
 		}
 		live = append(live, action)
