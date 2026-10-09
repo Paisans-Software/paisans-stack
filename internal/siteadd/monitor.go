@@ -16,12 +16,13 @@ import (
 // cluster that is wrong, so a failure here stops nothing that already
 // passed and names the apply that finishes it by hand.
 func (p *Plan) buildMonitor(rendered *render.Plan) (*Stage, error) {
-	st := &Stage{Number: 8, Name: "monitor"}
+	st := &Stage{Number: 8, Name: "monitor", Short: "monitor matches the render"}
 	reseeds, err := apply.PlanMonitorReseeds(p.cfg, rendered, p.acmeModule(), p.transports)
 	if err != nil {
 		return nil, fmt.Errorf("site add %s: %w", p.Site, err)
 	}
 	if len(reseeds) == 0 {
+		st.Short = "no monitor to reseed"
 		st.Gate = "none: no site holds the monitor role, so nothing watches this deployment and there is no monitor to reseed"
 		return st, nil
 	}
@@ -39,7 +40,7 @@ func (p *Plan) buildMonitor(rendered *render.Plan) (*Stage, error) {
 	st.run = func() error {
 		for _, m := range reseeds {
 			m.KeepImages = p.SharedSites[m.Site]
-			p.say("  %-9s %s on %s, on the seed rendered with %s\n", "apply", m.App, m.Site, p.Site)
+			p.work("apply "+m.App+" on "+m.Site).Detail("%s on %s, on the seed rendered with %s", m.App, m.Site, p.Site)
 			if err := m.Execute(); err != nil {
 				return byHand(err)
 			}

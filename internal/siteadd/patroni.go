@@ -9,7 +9,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
-	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // patronictl runs inside a site's Patroni container, against the
@@ -114,6 +113,7 @@ func (p *Plan) buildReplica(members []patroniMember) *Stage {
 	st := &Stage{
 		Number: 4,
 		Name:   "replica",
+		Short:  p.Site + " streams",
 		Gate: fmt.Sprintf("`patronictl list` on %s shows %s streaming, with its replay lag falling, or zero, across %d samples %s apart",
 			p.patroni, p.Site, lagSamples, lagInterval),
 	}
@@ -122,8 +122,8 @@ func (p *Plan) buildReplica(members []patroniMember) *Stage {
 		return st
 	}
 	st.Steps = append(st.Steps,
-		Step{Site: p.Site, Verb: "apply", Text: "any file of its own still missing, as `paisans apply --site " + p.Site + "` would"},
-		Step{Site: p.Site, Verb: "start", Text: "Patroni, which clones the leader with pg_basebackup: " + p.startInfra()},
+		Step{Site: p.Site, Verb: "apply", Title: "apply missing files on " + p.Site, Text: "any file of its own still missing, as `paisans apply --site " + p.Site + "` would"},
+		Step{Site: p.Site, Verb: "start", Title: "start Patroni on " + p.Site, Text: "Patroni, which clones the leader with pg_basebackup: " + p.startInfra()},
 	)
 	st.run = func() error {
 		if _, ok := p.initial[p.Site]; !ok {
@@ -142,15 +142,14 @@ func (p *Plan) buildReplica(members []patroniMember) *Stage {
 		if err != nil {
 			return err
 		}
-		// The staged plan still holds a writer; the apply plan reports through
-		// a reporter, so the writer is wrapped for it.
-		if p.Progress != nil {
-			whole.Report = ui.NewPlain(p.Progress, false)
-		}
+		// The whole apply reports its own steps, so no step of this stage is
+		// open while it runs: two cannot be at once.
+		p.idle()
+		whole.Report = p.reporter()
 		if err := apply.Execute(whole, t); err != nil {
 			return err
 		}
-		p.say("  %-9s %s's Patroni\n", "start", p.Site)
+		p.work("start Patroni on "+p.Site).Detail("%s", p.startInfra())
 		if out, err := t.Run(p.startInfra()); err != nil {
 			return fmt.Errorf("%s: starting Patroni: %s", p.Site, lastLines(out, 5))
 		}
@@ -239,8 +238,9 @@ func (p *Plan) editSynchronous(strict bool) string {
 // buildClusterConfig is stage 5: synchronous mode, when the configuration
 // asks for it and the live configuration differs.
 func (p *Plan) buildClusterConfig() (*Stage, error) {
-	st := &Stage{Number: 5, Name: "cluster configuration"}
+	st := &Stage{Number: 5, Name: "cluster configuration", Short: "synchronous standby"}
 	if !p.cfg.Cluster.Synchronous {
+		st.Short = "synchronous mode is off"
 		st.Gate = "none: cluster.synchronous is false, and site add does not turn synchronous mode off"
 		return st, nil
 	}
@@ -255,9 +255,10 @@ func (p *Plan) buildClusterConfig() (*Stage, error) {
 	}
 	wantStrict := strconv.FormatBool(p.cfg.Cluster.SynchronousStrict)
 	if fmt.Sprint(live["synchronous_mode"]) != "true" || boolString(live["synchronous_mode_strict"]) != wantStrict {
-		st.Steps = append(st.Steps, Step{Site: p.patroni, Verb: "set", Text: fmt.Sprintf("synchronous_mode=true and synchronous_mode_strict=%s in Patroni's dynamic configuration (live: %s and %s)", wantStrict, boolString(live["synchronous_mode"]), boolString(live["synchronous_mode_strict"]))})
+		st.Steps = append(st.Steps, Step{Site: p.patroni, Verb: "set", Title: "set synchronous mode", Text: fmt.Sprintf("synchronous_mode=true and synchronous_mode_strict=%s in Patroni's dynamic configuration (live: %s and %s)", wantStrict, boolString(live["synchronous_mode"]), boolString(live["synchronous_mode_strict"]))})
 	}
 	st.run = func() error {
+		p.work("set synchronous mode")
 		if out, err := p.transports[p.patroni].Run(p.editSynchronous(p.cfg.Cluster.SynchronousStrict)); err != nil {
 			return fmt.Errorf("%s: patronictl edit-config: %s", p.patroni, lastLines(out, 3))
 		}

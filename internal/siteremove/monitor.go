@@ -22,7 +22,7 @@ const monitorStage = 5
 // the apply that finishes it, since site remove cannot be run again for a site
 // the configuration no longer declares.
 func (p *Plan) buildMonitor() (*Stage, error) {
-	st := &Stage{Number: monitorStage, Name: "monitor"}
+	st := &Stage{Number: monitorStage, Name: "monitor", Short: "monitor matches the render"}
 	reseeds, err := apply.PlanMonitorReseeds(p.end, p.rendered, acme.Module(p.cfg.ACME.Provider), p.transports)
 	if err != nil {
 		return nil, fmt.Errorf("site remove %s: %w", p.Site, err)
@@ -30,6 +30,7 @@ func (p *Plan) buildMonitor() (*Stage, error) {
 	if len(reseeds) == 0 {
 		// A monitor site itself is never the one removed: its uptime app is
 		// pinned to it, which Refusal stops.
+		st.Short = "no monitor to reseed"
 		st.Skipped = "no site holds the monitor role, so nothing watches this deployment and there is no monitor to reseed"
 		return st, nil
 	}
@@ -46,7 +47,7 @@ func (p *Plan) buildMonitor() (*Stage, error) {
 	}
 	st.run = func() error {
 		for _, m := range reseeds {
-			p.say("  %-9s %s on %s, on the seed rendered without %s\n", "apply", m.App, m.Site, p.Site)
+			p.work("apply "+m.App+" on "+m.Site).Detail("%s on %s, on the seed rendered without %s", m.App, m.Site, p.Site)
 			if err := m.Execute(); err != nil {
 				return byHand(err)
 			}

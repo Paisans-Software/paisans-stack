@@ -242,7 +242,7 @@ func (p *Plan) handOver(t apply.Transport, h *handover) error {
 		}
 		return nil
 	}
-	p.say("  %-9s Caddy to %s\n", "hand over", handoverDir)
+	p.work("hand over Caddy").Detail("Caddy to %s", handoverDir)
 	if err := t.WriteFile(handoverDir+"/compose.yaml", h.compose, 0o644); err != nil {
 		return err
 	}

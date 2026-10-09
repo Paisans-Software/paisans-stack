@@ -156,7 +156,7 @@ func sum(s string) string {
 // buildHost is stage 3. It probes the host and plans every removal, each
 // proven this deployment's, and lists what it keeps.
 func (p *Plan) buildHost() (*Stage, error) {
-	st := &Stage{Number: 3, Name: "clean the host"}
+	st := &Stage{Number: 3, Name: "clean the host", Short: "nothing of this deployment is left"}
 	if p.HostGone {
 		st.Skipped = "--host-gone: " + p.Site + "'s host is not reached"
 		p.Kept = append(p.Kept, p.hostGoneLeft())
@@ -405,58 +405,58 @@ func (p *Plan) probeKeys(t apply.Transport, hp *hostPlan) error {
 func (p *Plan) hostSteps(st *Stage) {
 	hp := p.host
 	d := p.dep()
-	add := func(verb, format string, args ...any) {
-		st.Steps = append(st.Steps, Step{Site: p.Site, Verb: verb, Text: fmt.Sprintf(format, args...)})
+	add := func(verb, title, format string, args ...any) {
+		st.Steps = append(st.Steps, Step{Site: p.Site, Verb: verb, Title: title, Text: fmt.Sprintf(format, args...)})
 	}
 	if h := hp.handover; h != nil && !h.done {
-		add("hand over", "Caddy to the host's owner in %s, for what relies on it (%s): write compose.yaml (project caddy, no deployment label, %s, host networking) and a Caddyfile importing %s, validate it in a one-off container, stop this deployment's Caddy, move its data and config directories there so certificates survive, start it, and record %s", handoverDir, strings.Join(h.users, ", "), h.image, "/etc/caddy.d/*.caddy", markerPath)
+		add("hand over", "hand over Caddy", "Caddy to the host's owner in %s, for what relies on it (%s): write compose.yaml (project caddy, no deployment label, %s, host networking) and a Caddyfile importing %s, validate it in a one-off container, stop this deployment's Caddy, move its data and config directories there so certificates survive, start it, and record %s", handoverDir, strings.Join(h.users, ", "), h.image, "/etc/caddy.d/*.caddy", markerPath)
 		if h.env {
-			add("copy", "the DNS provider token into %s/caddy.env, on the host: the owner's certificates were issued through DNS-01. It is a credential left on the host for the owner", handoverDir)
+			add("copy", "hand over Caddy", "the DNS provider token into %s/caddy.env, on the host: the owner's certificates were issued through DNS-01. It is a credential left on the host for the owner", handoverDir)
 		}
 	}
 	if len(hp.containers) > 0 || len(hp.networks) > 0 {
-		add("remove", "every container and network with this deployment's label: %s", strings.Join(append(append([]string{}, hp.containers...), hp.networks...), ", "))
+		add("remove", "remove containers and networks", "every container and network with this deployment's label: %s", strings.Join(append(append([]string{}, hp.containers...), hp.networks...), ", "))
 	}
 	if p.DeleteData && len(hp.volumes) > 0 {
-		add("delete", "volumes %s", strings.Join(hp.volumes, ", "))
+		add("delete", "delete volumes", "volumes %s", strings.Join(hp.volumes, ", "))
 	}
 	if hp.wireguard {
-		add("stop", "%s, and disable it at boot", d.WireGuardUnit())
+		add("stop", "stop "+d.WireGuardUnit(), "%s, and disable it at boot", d.WireGuardUnit())
 	}
 	for _, f := range hp.files {
 		switch f.State {
 		case appremove.Remove:
-			add("delete", "/%s", f.Entry.Path)
+			add("delete", "delete files", "/%s", f.Entry.Path)
 		case appremove.Edited:
-			add("keep", "/%s: edited on the host since apply wrote it", f.Entry.Path)
+			add("keep", "keep edited files", "/%s: edited on the host since apply wrote it", f.Entry.Path)
 		}
 	}
 	if hp.manifest {
-		add("delete", "%s, the manifest", d.Manifest())
+		add("delete", "delete the manifest", "%s, the manifest", d.Manifest())
 	}
 	for _, u := range hp.units {
-		add("remove", "unit %s, disabled and stopped first", u)
+		add("remove", "remove units", "unit %s, disabled and stopped first", u)
 	}
 	for _, u := range hp.dropins {
-		add("remove", "drop-in %s", u)
+		add("remove", "remove units", "drop-in %s", u)
 	}
 	for _, r := range hp.rules {
-		add("delete", "ufw rule `%s`", r)
+		add("delete", "delete ufw rules", "ufw rule `%s`", r)
 	}
 	switch {
 	case hp.root.exists && hp.deleteRoot:
-		add("delete", "%s and everything in it: %d file(s), %d bytes", d.Root(), hp.root.files, hp.root.bytes)
+		add("delete", "delete "+d.Root(), "%s and everything in it: %d file(s), %d bytes", d.Root(), hp.root.files, hp.root.bytes)
 	case hp.root.exists:
-		add("remove", "the empty directories under %s", d.Root())
+		add("remove", "remove empty directories", "the empty directories under %s", d.Root())
 	}
 	if hp.registry {
-		add("remove", "deployment %s from %s", d.ID, registry.Path)
+		add("remove", "remove registry entry", "deployment %s from %s", d.ID, registry.Path)
 	}
 	if len(hp.keys.lines) > 0 {
-		add("remove", "%d key line(s) from %s that %s lists, last, since they may be what this command reaches the host with", len(hp.keys.lines), hp.keys.file, hp.keys.record)
+		add("remove", "remove SSH keys", "%d key line(s) from %s that %s lists, last, since they may be what this command reaches the host with", len(hp.keys.lines), hp.keys.file, hp.keys.record)
 	}
 	if hp.keys.found {
-		add("delete", "%s", hp.keys.record)
+		add("delete", "remove SSH keys", "%s", hp.keys.record)
 	}
 }
 
@@ -478,21 +478,25 @@ func (p *Plan) runHost() error {
 		}
 	}
 	if hp.dockerPresent {
+		p.work("remove containers and networks")
 		if err := run("removing this deployment's containers and networks", p.containersCommand()); err != nil {
 			return err
 		}
 		if p.DeleteData {
+			p.work("delete volumes")
 			if err := run("removing this deployment's volumes", p.volumesCommand()); err != nil {
 				return err
 			}
 		}
 	}
 	if hp.wireguard {
+		p.work("stop " + d.WireGuardUnit())
 		if err := run("stopping "+d.WireGuardUnit(), p.wireguardCommand()); err != nil {
 			return err
 		}
 	}
 	if len(hp.files) > 0 {
+		p.work("delete files")
 		out, err := t.Run(appremove.FilesCommand(hp.files))
 		if err != nil {
 			return fmt.Errorf("%s: removing files: %w: %s", p.Site, err, lastLines(out, 3))
@@ -510,16 +514,19 @@ func (p *Plan) runHost() error {
 		}
 	}
 	if hp.manifest {
+		p.work("delete the manifest")
 		if err := run("deleting the manifest", "rm -f -- "+quote(d.Manifest())); err != nil {
 			return err
 		}
 	}
 	if len(hp.units) > 0 || len(hp.dropins) > 0 {
+		p.work("remove units")
 		if err := run("removing units", p.removeUnitsCommand()); err != nil {
 			return err
 		}
 	}
 	if len(hp.rules) > 0 {
+		p.work("delete ufw rules")
 		out, err := t.Run(hostprep.AddedRulesProbe)
 		if err != nil {
 			return fmt.Errorf("%s: reading ufw's rules: %w: %s", p.Site, err, lastLines(out, 2))
@@ -534,19 +541,29 @@ func (p *Plan) runHost() error {
 		}
 	}
 	if hp.root.exists {
+		if hp.deleteRoot {
+			p.work("delete " + d.Root())
+		} else {
+			p.work("remove empty directories")
+		}
 		if err := run("removing "+d.Root(), appremove.DirCommandFor(d.Root(), hp.deleteRoot)); err != nil {
 			return err
 		}
 	}
 	if hp.registry {
+		p.work("remove registry entry")
 		if err := registry.Unclaim(t, d.ID); err != nil {
 			return err
 		}
 	}
+	p.work("check the host before the keys go")
 	if err := p.verifyHost(t); err != nil {
 		return fmt.Errorf("%s: before the keys: %w", p.Site, err)
 	}
 	hp.verified = true
+	if len(hp.keys.lines) > 0 || hp.keys.found {
+		p.work("remove SSH keys")
+	}
 	if len(hp.keys.lines) > 0 {
 		if err := run("removing keys from "+hp.keys.file, removeKeyLines(hp.keys.file, hp.keys.lines)); err != nil {
 			return err

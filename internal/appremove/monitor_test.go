@@ -1,8 +1,8 @@
 package appremove
 
 import (
-	"bytes"
 	"errors"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,10 +69,10 @@ func TestTheRemovalReseedsTheMonitorLast(t *testing.T) {
 		t.Fatal(err)
 	}
 	monitors(t, cfg, secrets, hosts, p)
-	var out bytes.Buffer
-	p.Print(&out)
-	if !strings.Contains(out.String(), "watch (the monitor)") || !strings.Contains(out.String(), "update    "+seed) {
-		t.Fatalf("the plan does not show the reseed:\n%s", out.String())
+	rec := &ui.Recorder{Verbose_: true}
+	p.Show(rec)
+	if !rec.Has("section", "watch (the monitor)") || !rec.Has("detail", seed) {
+		t.Fatalf("the plan does not show the reseed:\n%s", rec.Lines())
 	}
 	if err := executor(hosts).Execute(p); err != nil {
 		t.Fatal(err)

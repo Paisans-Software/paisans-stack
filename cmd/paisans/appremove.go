@@ -16,6 +16,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -159,11 +160,13 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		if *deleteData {
 			where = "on any site, at Pocket ID, in Postgres or in Garage"
 		}
-		fmt.Fprintf(stdout, "Nothing of %s was found %s. Nothing to do.\n", app, where)
-		printRemains(stdout, appremove.Remains(plan, secrets, nil))
+		reportRemains(r, appremove.Remains(plan, secrets, nil))
+		r.Result("Nothing of %s was found %s. Nothing to do.", app, where)
 		return nil
 	}
-	plan.Print(stdout)
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	touched := map[string]registry.Runner{}
 	for _, s := range plan.Sites {
@@ -190,8 +193,8 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 
 	if !*execute {
-		printRemains(stdout, appremove.Remains(plan, secrets, nil))
-		fmt.Fprintf(stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		reportRemains(r, appremove.Remains(plan, secrets, nil))
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
 	if *deleteData {
@@ -199,8 +202,7 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 	}
-	fmt.Fprintln(stdout)
-	runner := &appremove.Executor{Hosts: hosts, Clients: clients, Progress: stdout}
+	runner := &appremove.Executor{Hosts: hosts, Clients: clients, Report: r}
 	if err := runner.Execute(plan); err != nil {
 		var me *appremove.MonitorError
 		if errors.As(err, &me) {
@@ -208,8 +210,8 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		}
 		return fmt.Errorf("app remove: %w\nEvery step is safe to repeat: run the same command again to resume", err)
 	}
-	fmt.Fprintf(stdout, "\n%s is removed.\n", app)
-	printRemains(stdout, appremove.Remains(plan, secrets, runner.Kept))
+	reportRemains(r, appremove.Remains(plan, secrets, runner.Kept))
+	r.Result("%s is removed.", app)
 	return nil
 }
 
@@ -230,12 +232,14 @@ func confirmName(stdin io.Reader, stdout io.Writer, app string) error {
 	return nil
 }
 
-func printRemains(w io.Writer, lines []string) {
-	if len(lines) == 0 {
-		return
-	}
-	fmt.Fprintf(w, "\nLeft for you:\n")
+// reportRemains tells the operator what a removal leaves for them to see to:
+// a secret still in the secrets file, DNS records, data and whatever was kept
+// on a host. Each is a warning, so it shows without --verbose, with the line's
+// first sentence as the hint and the rest as its detail, since the hint is
+// what an operator scans for and the rest says why or what to run.
+func reportRemains(r ui.Reporter, lines []string) {
 	for _, l := range lines {
-		fmt.Fprintf(w, "  %s\n", l)
+		hint, detail, _ := strings.Cut(l, ". ")
+		r.Warn(hint, detail)
 	}
 }

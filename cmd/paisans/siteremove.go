@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -86,7 +85,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
@@ -113,15 +112,17 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	plan.Print(stdout)
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 	// Every site it reaches is written to: the cluster and the mesh change
 	// on each remaining one, and the leaving host is cleaned.
 	if err := claimSites(r, cfg, *execute, *sudo, claim...); err != nil {
 		return err
 	}
 	if !*execute {
-		printRemains(stdout, plan.Remains())
-		fmt.Fprintf(stdout, "\nNothing was changed. Re-run with --execute to run these stages; each stops at its gate if it does not pass.\n")
+		reportRemains(r, plan.Remains())
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
 	if *deleteData {
@@ -129,13 +130,12 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 	}
-	plan.Progress = stdout
-	fmt.Fprintln(stdout)
+	plan.Report = r
 	if err := siteremove.Execute(plan); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "\n%s is removed: every gate passed, and %s no longer declares it.\n", site, *configPath)
-	printRemains(stdout, plan.Remains())
+	reportRemains(r, plan.Remains())
+	r.Result("%s is removed: every gate passed, and %s no longer declares it.", site, *configPath)
 	return nil
 }
 

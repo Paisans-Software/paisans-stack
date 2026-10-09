@@ -27,6 +27,7 @@ func (p *Plan) buildMesh(rendered *render.Plan) (*Stage, error) {
 	st := &Stage{
 		Number: 2,
 		Name:   "mesh",
+		Short:  "mesh handshakes and ping",
 		Gate: fmt.Sprintf("a handshake younger than %d seconds between every pair of sites, read from `wg show` on both ends, and %s's mesh address %s answers ping from every site",
 			handshakeMaxAge, p.Site, p.cfg.Sites[p.Site].Address),
 		OnFailure: "restore the previous " + p.cfg.Deployment().Interface() + ".conf on every existing site and sync it, so the running cluster is untouched; the new site's interface is left, since no existing site has it as a peer any more",
@@ -50,10 +51,10 @@ func (p *Plan) buildMesh(rendered *render.Plan) (*Stage, error) {
 		}
 		plans[name] = mp
 		for _, c := range mp.Writes() {
-			st.Steps = append(st.Steps, Step{Site: name, Verb: c.Kind.String(), Text: c.Path})
+			st.Steps = append(st.Steps, Step{Site: name, Verb: c.Kind.String(), Title: "update mesh on " + name, Text: c.Path})
 		}
 		if mp.WireGuard != apply.WireGuardNone {
-			st.Steps = append(st.Steps, Step{Site: name, Verb: "mesh", Text: mp.WireGuard.Describe(p.cfg.Deployment())})
+			st.Steps = append(st.Steps, Step{Site: name, Verb: "mesh", Title: "sync mesh on " + name, Text: mp.WireGuard.Describe(p.cfg.Deployment())})
 		}
 	}
 
@@ -65,6 +66,7 @@ func (p *Plan) buildMesh(rendered *render.Plan) (*Stage, error) {
 				continue
 			}
 			applied = append(applied, name)
+			p.work("update mesh on " + name)
 			if err := apply.Execute(mp, p.transports[name]); err != nil {
 				return err
 			}

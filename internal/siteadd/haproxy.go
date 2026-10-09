@@ -37,6 +37,7 @@ func (p *Plan) buildHAProxy(rendered *render.Plan) (*Stage, error) {
 	st := &Stage{
 		Number: 6,
 		Name:   "haproxy",
+		Short:  "HAProxy routes to the primary",
 		Gate:   "HAProxy's statistics on every site running it list every cluster site, with the leader UP and every replica DOWN by health check, so it routes only to the primary",
 	}
 	plans := map[string]*apply.Plan{}
@@ -59,7 +60,7 @@ func (p *Plan) buildHAProxy(rendered *render.Plan) (*Stage, error) {
 		}
 		plans[name] = sp
 		for _, c := range sp.Writes() {
-			st.Steps = append(st.Steps, Step{Site: name, Verb: c.Kind.String(), Text: c.Path})
+			st.Steps = append(st.Steps, Step{Site: name, Verb: c.Kind.String(), Title: "write HAProxy config on " + name, Text: c.Path})
 		}
 		serves, err := p.servesEverySite(name)
 		if err != nil {
@@ -70,12 +71,12 @@ func (p *Plan) buildHAProxy(rendered *render.Plan) (*Stage, error) {
 			apps[name] = p.databaseApps(rendered, name)
 			list := strings.Join(apps[name], ", ")
 			if list != "" {
-				st.Steps = append(st.Steps, Step{Site: name, Verb: "stop", Text: list + ": they reach the database through this HAProxy, and an app's open connections do not survive its restart (" + p.composeEach(apps[name], "stop") + ")"})
+				st.Steps = append(st.Steps, Step{Site: name, Verb: "stop", Title: "stop " + list + " on " + name, Text: list + ": they reach the database through this HAProxy, and an app's open connections do not survive its restart (" + p.composeEach(apps[name], "stop") + ")"})
 			}
-			st.Steps = append(st.Steps, Step{Site: name, Verb: "restart", Text: "HAProxy alone: " + p.restartHAProxy()})
+			st.Steps = append(st.Steps, Step{Site: name, Verb: "restart", Title: "restart HAProxy on " + name, Text: "HAProxy alone: " + p.restartHAProxy()})
 			if list != "" {
-				st.Steps = append(st.Steps, Step{Site: name, Verb: "start", Text: list + " (" + p.composeEach(apps[name], "up -d") + ")"})
-				st.Steps = append(st.Steps, Step{Site: name, Verb: "check", Text: list + ": every container running, and healthy where it has a healthcheck, as apply's gate"})
+				st.Steps = append(st.Steps, Step{Site: name, Verb: "start", Title: "start " + list + " on " + name, Text: list + " (" + p.composeEach(apps[name], "up -d") + ")"})
+				st.Steps = append(st.Steps, Step{Site: name, Verb: "check", Title: "check " + list + " on " + name, Text: list + ": every container running, and healthy where it has a healthcheck, as apply's gate"})
 			}
 		}
 	}
@@ -83,6 +84,7 @@ func (p *Plan) buildHAProxy(rendered *render.Plan) (*Stage, error) {
 		for _, name := range sites {
 			sp := plans[name]
 			if len(sp.Writes()) > 0 {
+				p.work("write HAProxy config on " + name)
 				if err := apply.Execute(sp, p.transports[name]); err != nil {
 					return err
 				}
@@ -140,15 +142,15 @@ func (p *Plan) appCompose(stack, verb string) string {
 func (p *Plan) restartProxy(site string, apps []string) error {
 	t := p.transports[site]
 	for _, app := range apps {
-		p.say("  %-9s %s on %s\n", "stop", app, site)
+		p.work("stop " + app + " on " + site)
 		if out, err := t.Run(p.appCompose(app, "stop")); err != nil {
 			return fmt.Errorf("%s: stopping %s before HAProxy's restart, so HAProxy was not restarted: %s", site, app, lastLines(out, 5))
 		}
 	}
-	p.say("  %-9s HAProxy on %s\n", "restart", site)
+	p.work("restart HAProxy on " + site)
 	out, restartErr := t.Run(p.restartHAProxy())
 	for _, app := range apps {
-		p.say("  %-9s %s on %s\n", "start", app, site)
+		p.work("start " + app + " on " + site)
 		if out, err := t.Run(p.appCompose(app, "up -d")); err != nil {
 			return fmt.Errorf("%s: starting %s after HAProxy's restart: %s", site, app, lastLines(out, 5))
 		}
@@ -157,10 +159,10 @@ func (p *Plan) restartProxy(site string, apps []string) error {
 		return fmt.Errorf("%s: restarting HAProxy: %s", site, lastLines(out, 5))
 	}
 	for _, app := range apps {
+		p.work("check " + app + " on " + site)
 		if err := apply.WaitHealthy(p.dep(), site, app, t, "Site add stopped here, before HAProxy's gate. The app was started against the new HAProxy; read its logs, fix it, and run site add again"); err != nil {
 			return err
 		}
-		p.say("  %-9s %s on %s healthy\n", "checked", app, site)
 	}
 	return nil
 }

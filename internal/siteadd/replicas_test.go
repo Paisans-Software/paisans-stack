@@ -1,7 +1,6 @@
 package siteadd_test
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +11,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/siteadd"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // withReplica is a join of home-b to a cluster that already has a replica:
@@ -91,10 +91,13 @@ func TestAJoinBringsAReplicasPatroniEnvUpToDate(t *testing.T) {
 	if !strings.Contains(notes, "home-a leads") || !strings.Contains(notes, "next restart") {
 		t.Errorf("the leader's patroni.env is not noted:\n%s", notes)
 	}
-	var progress bytes.Buffer
-	p.Progress = &progress
+	rec := &ui.Recorder{}
+	p.Report = rec
 	if err := siteadd.Execute(p); err != nil {
-		t.Fatalf("%v\n%s", err, progress.String())
+		t.Fatalf("%v\n%s", err, rec.Lines())
+	}
+	if !rec.Has("done", "recreate Patroni on home-c") || !rec.Has("done", "gate: replicas stream") {
+		t.Errorf("stage 7 does not report its work and its gate:\n%s", rec.Lines())
 	}
 	if strings.Join(w.recreated, ",") != "home-c" {
 		t.Errorf("recreated %v", w.recreated)
@@ -127,8 +130,8 @@ func TestAJoinBringsAReplicasPatroniEnvUpToDate(t *testing.T) {
 
 	again := build(t, w)
 	if len(steps(again, 7)) != 0 || again.Pending() {
-		var out bytes.Buffer
-		again.Print(&out)
-		t.Errorf("a finished join plans the replica again:\n%s", out.String())
+		rec := &ui.Recorder{}
+		again.Show(rec)
+		t.Errorf("a finished join plans the replica again:\n%s", rec.Lines())
 	}
 }

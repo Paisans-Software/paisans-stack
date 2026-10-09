@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -63,7 +62,7 @@ func runSiteAdd(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
@@ -103,17 +102,18 @@ func runSiteAdd(args []string) error {
 	}
 	plan.KeepImages = host.Shared()
 	plan.SharedSites = shared
-	plan.Print(os.Stdout)
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	if !*execute {
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to run these stages; each stops at its gate if it does not pass.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	plan.Progress = os.Stdout
-	fmt.Fprintln(os.Stdout)
+	plan.Report = r
 	if err := siteadd.Execute(plan); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\n%s joined: every gate passed\n", site)
+	r.Result("%s joined: every gate passed.", site)
 	return nil
 }

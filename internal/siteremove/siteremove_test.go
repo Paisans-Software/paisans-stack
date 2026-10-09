@@ -1,7 +1,7 @@
 package siteremove_test
 
 import (
-	"bytes"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"os"
 	"strings"
 	"testing"
@@ -31,9 +31,9 @@ func hasStep(p *siteremove.Plan, stage int, site, verb, text string) bool {
 }
 
 func printed(p *siteremove.Plan) string {
-	var out bytes.Buffer
-	p.Print(&out)
-	return out.String()
+	rec := &ui.Recorder{Verbose_: true}
+	p.Show(rec)
+	return rec.Lines()
 }
 
 // The dry run plans every stage from live state and changes nothing.
@@ -109,12 +109,24 @@ func TestARemovalCompletesAndKeepsWhatIsNotOurs(t *testing.T) {
 	}
 	w.hosts["home-b"].files[edited] += "# a hand edit\n"
 	p := w.mustBuild("home-b", siteremove.Options{})
-	var progress bytes.Buffer
-	p.Progress = &progress
+	rec := &ui.Recorder{}
+	p.Report = rec
 	if err := siteremove.Execute(p); err != nil {
-		t.Fatalf("%v\n%s", err, progress.String())
+		t.Fatalf("%v\n%s", err, rec.Lines())
 	}
-	t.Log("\n" + progress.String())
+	t.Log("\n" + rec.Lines())
+	for _, want := range []struct{ kind, text string }{
+		{"section", "stage 1, data out of the site"},
+		{"done", "gate: data is off the site"},
+		{"done", "remove home-b's etcd member"},
+		{"done", "remove containers and networks"},
+		{"done", "gate: nothing of this deployment is left"},
+		{"done", "remove home-b from"},
+	} {
+		if !rec.Has(want.kind, want.text) {
+			t.Errorf("no %s %q:\n%s", want.kind, want.text, rec.Lines())
+		}
+	}
 
 	for _, m := range w.etcd {
 		if m.Name == "home-b" {
