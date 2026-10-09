@@ -356,3 +356,30 @@ func (h *scriptHost) Run(command string) (string, error) {
 	return h.fakeHost.Run(command)
 }
 
+// A plan that leaves the infrastructure stack alone asks etcd nothing, so a
+// witness re-applied while it is the only founding member running, its etcd
+// answering nothing and its own member past founding, is not stopped.
+func TestAPlanLeavingInfraAloneAsksEtcdNothing(t *testing.T) {
+	cfg := fixtureConfig(t)
+	host := leaderlessWitness(render.EtcdInitial{State: "new", Cluster: fixtureFounders})
+	rendered := plan(t)
+	first, err := apply.Build("home-a", rendered, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+	again, err := apply.Build("home-a", rendered, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.commands = nil
+	transports := map[string]apply.Transport{"home-a": host, "vm": leaderlessWitness(render.EtcdInitial{State: "new", Cluster: fixtureFounders})}
+	if err := apply.EtcdGates(cfg, again, transports, false, nil); err != nil {
+		t.Errorf("an apply leaving infra alone was stopped by etcd: %v", err)
+	}
+	if len(host.commands) != 0 {
+		t.Errorf("an apply leaving infra alone asked: %v", host.commands)
+	}
+}

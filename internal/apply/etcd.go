@@ -234,7 +234,15 @@ func EtcdRunning(cfg *config.Config, transports map[string]Transport) (map[strin
 // EtcdGates runs apply's two etcd refusals in order: EtcdRefusal against the
 // live membership, then WitnessFirstRefusal. founding and running are as
 // WitnessFirstRefusal takes them.
+//
+// Both refusals let through a plan that leaves the infrastructure stack
+// alone, so such a plan asks etcd nothing. The witness re-applied while it is
+// the only founding member running is that plan, and its etcd would not
+// answer.
 func EtcdGates(cfg *config.Config, plan *Plan, transports map[string]Transport, founding bool, running map[string]bool) error {
+	if !touchesInfra(plan) {
+		return nil
+	}
 	members, found, err := ProbeEtcdMembers(cfg, plan.Site, transports, founding)
 	if err != nil {
 		return err
