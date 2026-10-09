@@ -919,7 +919,7 @@ func (c *checker) visibilityGateOnUngateableKind() {
 			continue
 		}
 		c.refuse("visibility-gate-on-ungateable-kind", fmt.Sprintf("apps.%s.visibility_gate", name),
-			"is %q on an app of kind %s, which cannot sit behind the gate. The gate redirects a request with no session to a passkey prompt: a Matrix client or a federating server will not follow it, and Pocket ID and the gate are the sign-in flow itself. Set visibility_gate: public.",
+			"is %q on an app of kind %s, which cannot sit behind the gate. The gate redirects a request with no session to a passkey prompt: a Matrix client or a federating server will not follow it, Pocket ID and the gate are the sign-in flow itself, and the monitor must stay readable while the sites the gate signs in through are down. Set visibility_gate: public.",
 			app.VisibilityGate, app.Kind)
 	}
 }

@@ -645,7 +645,9 @@ monitors added by hand.
 **Sign in** is the identity provider, admitting exactly the group named in
 `settings.admin_group`, which is required. Password sign in stays on as the
 break glass: Pocket ID is one of the things being watched, and a monitor you
-cannot open while it is down is no use. `ADMIN_PASS` is generated at `init`.
+cannot open while it is down is no use. `ADMIN_PASS` is generated at `init`. For the same reason the monitor cannot sit behind the visibility gate
+(`visibility-gate-on-ungateable-kind`): the gate signs in through Pocket ID,
+and would put the break glass behind the sign-in it is the fallback for.
 
 **It starts as root and drops.** `apply` writes the seed through `sudo`, so it
 is root's, 0600, because it carries the SMTP password; the data directory is a
@@ -1622,7 +1624,13 @@ Matrix hostname must never be gated: a Matrix client is not a browser and will
 not follow a redirect to a passkey prompt, so gating a homeserver's API or its
 `.well-known` apex breaks federation and every client's login, not just one
 member's. Pocket ID and the gate itself are the sign-in flow, so gating either
-gates the login. Leaving gating to a hand edited include means that failure
+gates the login. The monitor is what an admin opens when the sites it watches
+are down, and the gate signs in at the identity provider on those sites, so a
+gated monitor is unreadable at exactly the moment it exists for, and its break
+glass password sign-in (see *Uptime monitoring*) would sit behind the sign-in
+it is the fallback for; its own OIDC client already admits only
+`settings.admin_group`, so the gate would add no access control, only a
+dependency. Leaving gating to a hand edited include means that failure
 shows up as clients mysteriously unable to log in, with nothing in the
 configuration saying why. A declared `visibility_gate: public` makes the
 absence of a gate a fact about the app that a reviewer can see, rather than an
