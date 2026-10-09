@@ -11,10 +11,10 @@ import (
 
 // commonFlags registers the flags every command takes, and returns the
 // reporter for the command's stdout once the flags are parsed. -v and
-// --verbose show the detail behind each step: reasons, configuration values
-// and raw command output. Without them a command prints one line per step.
+// --verbose show the detail behind each step: reasons, configuration values,
+// requests and retries. Without them a command prints one line per step.
 func commonFlags(fs *flag.FlagSet) func() ui.Reporter {
-	verbose := fs.Bool("verbose", false, "show the detail behind each step: reasons, values and command output")
+	verbose := fs.Bool("verbose", false, "show the detail behind each step: reasons, values, requests and retries")
 	fs.BoolVar(verbose, "v", false, "short for --verbose")
 	return func() ui.Reporter {
 		r := reporterOverride

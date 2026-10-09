@@ -15,7 +15,7 @@ It installs a complete community stack on one machine, then adds sites later as
 a manually invoked, additive step, without touching application configuration.
 Every command that changes a host prints its plan and changes nothing unless
 given `--execute`. Each step is one line; `--verbose` (`-v`) shows the reasons,
-values and command output behind it.
+values and requests behind it.
 
 ```
 paisans init                               # an id, a mesh subnet and the secrets for paisans.yaml
@@ -4025,11 +4025,11 @@ client. `--verbose` puts under each line the request it would send:
 
 ```
   -    create OIDC client talk
-       create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":true,"launchURL":"https://talk.example.org/oauth/oidc/connect"}
+      create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":true,"launchURL":"https://talk.example.org/oauth/oidc/connect"}
   -    allow groups members, admins on talk
-       allow groups members, admins on client talk: PUT /api/oidc/clients/<id>/allowed-user-groups with exactly members, admins
+      allow groups members, admins on client talk: PUT /api/oidc/clients/<id>/allowed-user-groups with exactly members, admins
   -    create client secret for talk
-       create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
+      create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
 ```
 
 **Each line is a Pocket ID mutation.** For an app

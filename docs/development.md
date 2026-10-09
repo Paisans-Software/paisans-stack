@@ -303,9 +303,13 @@ There are two levels. By default a step is one short line
 (`ok   disk space              13.6 GiB free`) with no rationale, values or
 request bodies, because an operator watching an install needs to know where it is, and a screenful of
 explanation on every step buries the one line that matters. With `-v` or
-`--verbose` the detail behind each step appears under it: reasons, values,
-request bodies and the raw output of the commands behind it. Nothing printed
-before this change is lost; it moved behind the flag.
+`--verbose` the detail behind each step appears under it: reasons,
+configuration values, request bodies, ssh retries, and the raw output of the
+two commands whose output explains a step: what each site's Pocket ID said
+while `apply` waits for one active instance, and the `patronictl switchover`
+of `failover test`. Compose and
+pull output is not streamed at either level; a command that fails carries its
+output in the error, which prints in full.
 
 A step is reported before its command runs. A pull or a health wait takes
 minutes on a real site, and a step reported only once finished looked hung for
