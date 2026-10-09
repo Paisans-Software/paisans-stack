@@ -233,8 +233,8 @@ func TestApplyHoldsBackOnlyAppsWithoutAClientWhenPocketIDIsUnreachable(t *testin
 		hold     string
 		says     string
 	}{
-		{"no client", false, "plan hold=status ", "skip      status:"},
-		{"recorded client", true, "plan hold= ", "unchecked status:"},
+		{"no client", false, "plan hold=status ", "status held back: no client yet and Pocket ID not asked"},
+		{"recorded client", true, "plan hold= ", "status: Pocket ID not asked, recorded client used"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := withIDPFake(t)
@@ -270,7 +270,7 @@ func TestApplyHoldsBackOnlyAppsWithoutAClientWhenPocketIDIsUnreachable(t *testin
 			if result != nil {
 				t.Errorf("an unreachable Pocket ID failed the apply: %v", result)
 			}
-			if !tc.recorded && !strings.Contains(after, "held back from this apply:\n  status: ") {
+			if !tc.recorded && !strings.Contains(after, "held back from this apply: status\n") {
 				t.Errorf("the end of the apply does not say what was held back:\n%s", after)
 			}
 		})
@@ -297,7 +297,7 @@ func TestApplyRefusesOnlyTheAppWhoseClientDiffers(t *testing.T) {
 	if fake.mutated {
 		t.Error("a refused client was changed")
 	}
-	if !strings.Contains(stdout, "refuse    talk:") {
+	if !strings.Contains(stdout, "talk refused; the rest of the site is applied") {
 		t.Errorf("output:\n%s", stdout)
 	}
 	if err := c.result(); err == nil || !strings.Contains(err.Error(), "talk") || !strings.Contains(err.Error(), "differs") {
@@ -380,7 +380,7 @@ func TestApplyHoldsBackWhenItsOwnPocketIDNeverAnswers(t *testing.T) {
 	if strings.Join(log.events, "\n") != strings.Join(want, "\n") {
 		t.Errorf("passes:\n%s", strings.Join(log.events, "\n"))
 	}
-	if !strings.Contains(stdout, "skip      talk:") || len(fake.commands) != 0 {
+	if !strings.Contains(stdout, "talk held back: no client yet and Pocket ID not asked") || len(fake.commands) != 0 {
 		t.Errorf("Pocket ID was called %d time(s), output:\n%s", len(fake.commands), stdout)
 	}
 	captureOutput(t, func() { err = c.result() })
@@ -561,7 +561,7 @@ func TestApplyNamesAMissingAPIKey(t *testing.T) {
 	if got := strings.Join(c.heldApps(), ","); got != "status" {
 		t.Errorf("held %s", got)
 	}
-	for _, want := range []string{"static_api_key is missing", "paisans init", "held back from this apply:\n  status: "} {
+	for _, want := range []string{"static_api_key is missing", "paisans init", "held back from this apply: status"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("output lacks %q:\n%s", want, stdout)
 		}
@@ -590,7 +590,7 @@ func TestApplyReportsAnOverwriteItHeldBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout, "--overwrite /srv/paisans/f2a9/status/.env was not applied") {
+	if !strings.Contains(stdout, "--overwrite not applied, its stack was held back: /srv/paisans/f2a9/status/.env") {
 		t.Errorf("the held overwrite is not reported:\n%s", stdout)
 	}
 }

@@ -241,8 +241,19 @@ var sshRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second}
 // stand in for the ssh binary and choose its output and exit status.
 var runSSH = func(cmd *exec.Cmd) error { return cmd.Run() }
 
-// retryLog receives one line per retry.
-var retryLog io.Writer = os.Stderr
+// retryLog receives one line per retry. Nothing by default: a retry that
+// then succeeds is not news, and one that runs out is reported in full by the
+// error that ends the command, so the lines are only worth showing to
+// someone who asked for detail. SetRetryLog lets a command route them there.
+var retryLog io.Writer = io.Discard
+
+// SetRetryLog sends the notice of each ssh retry to w, or nowhere for nil.
+func SetRetryLog(w io.Writer) {
+	if w == nil {
+		w = io.Discard
+	}
+	retryLog = w
+}
 
 // ErrUnreachable marks a command that never reached the host: ssh could not
 // connect, on every attempt. A caller asking the host a question can tell

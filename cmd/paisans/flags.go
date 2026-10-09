@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 	"os"
+	"strings"
 
+	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
@@ -15,11 +17,23 @@ func commonFlags(fs *flag.FlagSet) func() ui.Reporter {
 	verbose := fs.Bool("verbose", false, "show the detail behind each step: reasons, values and command output")
 	fs.BoolVar(verbose, "v", false, "short for --verbose")
 	return func() ui.Reporter {
-		if reporterOverride != nil {
-			return reporterOverride
+		r := reporterOverride
+		if r == nil {
+			r = ui.New(os.Stdout, *verbose)
 		}
-		return ui.New(os.Stdout, *verbose)
+		// An ssh retry is the detail of whatever step is open: the error
+		// that ends the command says in full if the retries ran out.
+		apply.SetRetryLog(detailWriter{r})
+		return r
 	}
+}
+
+// detailWriter turns each line written to it into a detail of the reporter.
+type detailWriter struct{ r ui.Reporter }
+
+func (d detailWriter) Write(p []byte) (int, error) {
+	d.r.Detail("%s", strings.TrimRight(string(p), "\n"))
+	return len(p), nil
 }
 
 // reporterOverride, when set, is the reporter every command uses in place of

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
@@ -52,17 +51,23 @@ func (c *clientStep) ensureGroups(api *pocketid.Client, where string, execute bo
 	if len(c.signupGroups) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stdout, "\nsignup default groups of %s (pocket-id), as IDs for its .env\n", c.idp)
+	r := c.reporter()
 	plans, err := c.planGroups(api, creating)
 	if err != nil {
 		c.groupsCannotAsk(c.signupGroups, unreachable(fmt.Errorf("Pocket ID on %s could not be asked: %w", where, err)), waiting)
 		return
 	}
 	for _, p := range plans {
-		fmt.Fprintf(os.Stdout, "  %s\n", p.line(c.idp))
+		// A dry run lists what would change as an item. The full sentence,
+		// and a group already in place, are details, since the title says
+		// what the step is and the sentence says how.
 		if p.step != groupPresent {
+			if !execute {
+				r.Item(p.title())
+			}
 			c.steps++
 		}
+		r.Detail("%s", p.line(c.idp))
 	}
 	if !execute {
 		return
@@ -73,12 +78,14 @@ func (c *clientStep) ensureGroups(api *pocketid.Client, where string, execute bo
 		case groupPresent:
 			continue
 		case groupCreate:
+			s := r.Step("create signup group " + p.name)
 			g, err := api.CreateGroup(p.name)
 			if err != nil {
 				c.groupsErr = fmt.Errorf("signup group %s could not be created at Pocket ID: %w. Pocket ID runs without it until a re-run creates it", p.name, err)
-				fmt.Fprintf(os.Stdout, "  %-9s %v\n", "refuse", c.groupsErr)
+				s.Fail(c.groupsErr)
 				return
 			}
+			s.Done("")
 			p.id = g.ID
 		}
 		if c.secrets.PocketIDGroups == nil {
@@ -100,7 +107,7 @@ func (c *clientStep) ensureGroups(api *pocketid.Client, where string, execute bo
 	}
 	for _, p := range plans {
 		if p.step != groupPresent {
-			fmt.Fprintf(os.Stdout, "  recorded pocket_id_groups.%s\n", p.name)
+			r.Detail("recorded pocket_id_groups.%s", p.name)
 		}
 	}
 	// As the client step does: a call that answered and did not do its job
@@ -143,7 +150,20 @@ func (c *clientStep) planGroups(api *pocketid.Client, creating map[string]bool) 
 	return out, nil
 }
 
-// line is how a dry run and an apply show one group's step.
+// title is the short name of a group's step, for the list of a dry run.
+func (p groupPlan) title() string {
+	key := "pocket_id_groups." + p.name
+	switch p.step {
+	case groupByClient:
+		return "record " + key + " once its client step creates the group"
+	case groupCreate:
+		return "create signup group " + p.name
+	default:
+		return "record " + key
+	}
+}
+
+// line is the whole sentence for one group's step, shown as its detail.
 func (p groupPlan) line(idp string) string {
 	key := "pocket_id_groups." + p.name
 	switch p.step {
@@ -175,18 +195,19 @@ func (c *clientStep) groupsCannotAsk(groups []string, why string, waiting bool) 
 	if len(groups) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stdout, "\nsignup default groups of %s (pocket-id), as IDs for its .env\n", c.idp)
+	r := c.reporter()
 	if waiting {
-		fmt.Fprintf(os.Stdout, "  %-9s group %s once pocket-id %s on %s has started and answers, then render its .env again with their IDs and recreate it. It does not answer yet: %s\n",
-			"resolve", strings.Join(groups, ", "), c.idp, c.site, why)
+		r.Item("resolve signup groups after " + c.idp + " starts")
+		r.Detail("group %s once pocket-id %s on %s has started and answers, then render its .env again with their IDs and recreate it. It does not answer yet: %s",
+			strings.Join(groups, ", "), c.idp, c.site, why)
 		c.steps++
 		return
 	}
 	for _, g := range groups {
 		if id := c.secrets.PocketIDGroups[g]; id != "" {
-			fmt.Fprintf(os.Stdout, "  %-9s group %s: %s; its recorded ID %s is rendered as it is\n", "unchecked", g, why, id)
+			r.Warn("signup group "+g+": Pocket ID not asked, recorded ID used", why+". Its recorded ID "+id+" is rendered as it is.")
 			continue
 		}
-		fmt.Fprintf(os.Stdout, "  %-9s group %s: %s; Pocket ID's .env leaves it out until a re-run resolves it\n", "skip", g, why)
+		r.Warn("signup group "+g+" left out of the .env: Pocket ID not asked", why+". Pocket ID's .env leaves it out until a re-run resolves it.")
 	}
 }

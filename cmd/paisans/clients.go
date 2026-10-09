@@ -1,8 +1,8 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -408,10 +408,8 @@ func (c *clientStep) ensure(execute, waiting bool) error {
 			c.refuse(p.app, err)
 			continue
 		}
-		if rec.wrote {
-			if len(c.recipients) == 0 {
-				fmt.Fprintf(os.Stderr, "paisans: %s is PLAINTEXT, because no %s beside it names an age recipient.\n", c.secretsPath, config.SOPSConfigName)
-			}
+		if rec.wrote && len(c.recipients) == 0 {
+			warnUnencrypted(r, c.secretsPath)
 		}
 	}
 	// After the clients, so that a group a client step just created is
@@ -491,12 +489,16 @@ func (c *clientStep) cannotAsk(apps []string, why string, waiting bool) {
 		return
 	}
 	for _, app := range apps {
+		// The reason is long and the same for every app held back by one
+		// outage, so the line says what became of the app and the reason
+		// follows under --verbose. The error that ends the run, when there
+		// is one, carries it in full.
 		if c.recorded(app) {
-			fmt.Fprintf(os.Stdout, "  %-9s %s: %s; its recorded client is used as it is\n", "unchecked", app, why)
+			c.reporter().Warn(app+": Pocket ID not asked, recorded client used", why)
 			continue
 		}
 		c.held[app] = why
-		fmt.Fprintf(os.Stdout, "  %-9s %s: %s\n", "skip", app, why)
+		c.reporter().Warn(app+" held back: no client yet and Pocket ID not asked", why)
 	}
 }
 
@@ -505,7 +507,7 @@ func (c *clientStep) cannotAsk(apps []string, why string, waiting bool) {
 func (c *clientStep) refuse(app string, err error) {
 	c.refused[app] = err
 	c.held[app] = err.Error()
-	fmt.Fprintf(os.Stdout, "  %-9s %s: %v. The rest of the site is applied\n", "refuse", app, err)
+	c.reporter().Refuse(app+" refused; the rest of the site is applied", err.Error())
 }
 
 // checkOneActive is how apply waits for Pocket ID. Tests replace it.
@@ -525,7 +527,14 @@ func (c *clientStep) waitForPocketID() error {
 		}
 		transports[name] = standbyLook(siteTransport(name, c.cfg.Sites[name], destination, false))
 	}
-	return checkOneActive(c.cfg, c.idp, transports, os.Stdout)
+	// What the check saw is the detail of waiting for Pocket ID. A failure
+	// goes to the caller as an error, which is shown in full.
+	var seen bytes.Buffer
+	err := checkOneActive(c.cfg, c.idp, transports, &seen)
+	if seen.Len() > 0 {
+		c.reporter().Trace("pocket-id "+c.idp, seen.String())
+	}
+	return err
 }
 
 // result is the step's verdict once the rest of the site is applied. An app
@@ -537,14 +546,19 @@ func (c *clientStep) result() error {
 		return nil
 	}
 	if len(c.held) > len(c.refused) || len(c.heldOverwrites) > 0 {
-		fmt.Fprintf(os.Stdout, "\nheld back from this apply:\n")
+		r := c.reporter()
+		var apps, why []string
 		for _, app := range c.heldApps() {
 			if _, refused := c.refused[app]; !refused {
-				fmt.Fprintf(os.Stdout, "  %s: %s\n", app, c.held[app])
+				apps = append(apps, app)
+				why = append(why, app+": "+c.held[app])
 			}
 		}
+		if len(apps) > 0 {
+			r.Warn("held back from this apply: "+strings.Join(apps, ", "), strings.Join(why, "\n"))
+		}
 		for _, path := range c.heldOverwrites {
-			fmt.Fprintf(os.Stdout, "  --overwrite %s was not applied, because its stack was held back. Name it again on the apply that starts it\n", path)
+			r.Warn("--overwrite not applied, its stack was held back: "+path, "Name it again on the apply that starts it.")
 		}
 	}
 	if len(c.refused) == 0 {

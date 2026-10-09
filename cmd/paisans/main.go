@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -473,7 +474,7 @@ func runRender(args []string) error {
 	if err := render.Write(plan, *out); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "rendered %d files to %s\n", len(plan.Files), *out)
+	r.Result("Rendered %s to %s.", plural(len(plan.Files), "file"), *out)
 	return nil
 }
 
@@ -693,7 +694,7 @@ func runApply(args []string) error {
 		acted.Actions = append(acted.Actions, p.Actions...)
 		written += len(p.Writes())
 	}
-	if err := checkStandby(cfg, acted, *site, transport, func(name string) apply.Transport {
+	if err := checkStandby(r, cfg, acted, *site, transport, func(name string) apply.Transport {
 		return siteTransport(name, cfg.Sites[name], "", *sudo)
 	}); err != nil {
 		return err
@@ -708,7 +709,7 @@ func runApply(args []string) error {
 // gate, active or standing by, and this asks every site that exactly one is
 // active. The applied site is reached as the apply reached it, the others
 // through their ssh sections. See apply.CheckOneActive.
-func checkStandby(cfg *config.Config, plan *apply.Plan, site string, transport apply.Transport, other func(string) apply.Transport) error {
+func checkStandby(r ui.Reporter, cfg *config.Config, plan *apply.Plan, site string, transport apply.Transport, other func(string) apply.Transport) error {
 	acted := map[string]bool{}
 	for _, action := range plan.Actions {
 		acted[action.Stack] = true
@@ -726,10 +727,18 @@ func checkStandby(cfg *config.Config, plan *apply.Plan, site string, transport a
 				transports[name] = other(name)
 			}
 		}
-		fmt.Fprintln(os.Stdout)
-		if err := apply.CheckOneActive(cfg, app, transports, os.Stdout); err != nil {
+		// The sites' states are the check's detail on success. On failure
+		// the table is the evidence the error points at ("each site
+		// above"), so it is shown whatever the verbosity.
+		s := r.Step("check one pocket-id " + app + " is active")
+		var seen bytes.Buffer
+		if err := apply.CheckOneActive(cfg, app, transports, &seen); err != nil {
+			s.Fail(err)
+			r.Refuse("pocket-id "+app+" instances", seen.String())
 			return fmt.Errorf("%w. The apply itself finished; this is the check after it", err)
 		}
+		s.Detail("%s", strings.TrimRight(seen.String(), "\n"))
+		s.Done("")
 	}
 	return nil
 }

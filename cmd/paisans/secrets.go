@@ -53,7 +53,6 @@ func runSecretsSet(args []string, stdin io.Reader) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if fs.NArg() > 0 {
 		return fmt.Errorf("secrets set: the value is read from stdin and never from an argument, which shell history and `ps` would both keep. Got extra argument(s)")
 	}
@@ -118,9 +117,9 @@ func runSecretsSet(args []string, stdin io.Reader) error {
 		return err
 	}
 	// The name, never the value.
-	fmt.Fprintf(os.Stdout, "set %s\n", key)
+	r.Result("Set %s.", key)
 	if len(recipients) == 0 {
-		fmt.Fprintf(os.Stderr, "paisans: %s is PLAINTEXT, because no %s beside it names an age recipient.\n", *secretsPath, config.SOPSConfigName)
+		warnUnencrypted(r, *secretsPath)
 	}
 	return nil
 }
