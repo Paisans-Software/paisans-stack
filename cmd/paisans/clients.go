@@ -114,7 +114,8 @@ func buildClient(d oidcclient.Desired, rec oidcclient.Recorded, state oidcclient
 
 // listClientPlan shows one app's client in a dry run: each mutation as an
 // item, with what it sends as its detail, and what is already present as
-// details, since only what would change is a line by default.
+// details, since only what would change is a line by default. The plan's
+// warnings are the caller's to show, once whether or not it lists the plan.
 func listClientPlan(r ui.Reporter, app, idp, where string, plan *oidcclient.Plan) {
 	r.Detail("%s's client at %s on %s (pocket-id)", app, idp, where)
 	for _, line := range plan.Present {
@@ -123,9 +124,6 @@ func listClientPlan(r ui.Reporter, app, idp, where string, plan *oidcclient.Plan
 	for _, step := range plan.Steps {
 		r.Item(step.Title)
 		r.Detail("%s", step.Detail)
-	}
-	for _, w := range plan.Warnings {
-		r.Warn(w, "")
 	}
 }
 
@@ -138,7 +136,15 @@ func listClientPlan(r ui.Reporter, app, idp, where string, plan *oidcclient.Plan
 // `oidc client create --rotate-secret` does.
 type clientStep struct {
 	// report is where the step's plan and progress go.
-	report      ui.Reporter
+	report ui.Reporter
+	// executing is whether the command runs with --execute. The plan is
+	// listed on a dry run, and on --execute only with --verbose, since the
+	// steps that carry it out say the same.
+	executing bool
+	// warned is every plan warning already shown in this run, so the plan
+	// made before Pocket ID is called and the one carried out do not both
+	// show it. It survives reset, which starts each ensure.
+	warned      map[string]bool
 	cfg         *config.Config
 	site        string
 	destination string
@@ -231,6 +237,18 @@ func (c *clientStep) reporter() ui.Reporter {
 	return c.report
 }
 
+// warn shows a plan warning, once per run.
+func (c *clientStep) warn(w string) {
+	if c.warned == nil {
+		c.warned = map[string]bool{}
+	}
+	if c.warned[w] {
+		return
+	}
+	c.warned[w] = true
+	c.reporter().Warn(w, "")
+}
+
 func (c *clientStep) reset() {
 	c.held, c.refused, c.steps, c.groupsErr = map[string]string{}, map[string]error{}, 0, nil
 }
@@ -273,9 +291,9 @@ func (c *clientStep) heldApps() []string {
 }
 
 // ensure plans every app's client and, with execute, puts it in place and
-// records it, one step per mutation. A dry run lists each plan as `oidc
-// client create` does; with execute it is listed only with --verbose, since
-// the steps that carry it out say the same. Without
+// records it, one step per mutation. The read only call lists each plan as
+// `oidc client create` does, unless the command executes without --verbose;
+// the executing call lists nothing, since its steps say the same. Without
 // execute, Pocket ID is only read. It returns an error only for a refusal of
 // the whole step, made before Pocket ID is sent anything; a refused app is
 // held back and reported by result.
@@ -339,12 +357,11 @@ func (c *clientStep) ensure(execute, waiting bool) error {
 			c.refuse(app, err)
 			continue
 		}
-		if !execute || r.Verbose() {
+		if !execute && (!c.executing || r.Verbose()) {
 			listClientPlan(r, app, c.idp, where, plan)
-		} else {
-			for _, w := range plan.Warnings {
-				r.Warn(w, "")
-			}
+		}
+		for _, w := range plan.Warnings {
+			c.warn(w)
 		}
 		c.steps += len(plan.Steps)
 		for _, step := range plan.Steps {
@@ -460,7 +477,13 @@ func unreachable(err error) string {
 // Pocket ID answers finishes it.
 func (c *clientStep) cannotAsk(apps []string, why string, waiting bool) {
 	if waiting {
+		// A dry run's plan item. --execute starts Pocket ID first and then
+		// reports the clients as steps, so it is not listed there.
 		r := c.reporter()
+		if c.executing {
+			c.steps++
+			return
+		}
 		r.Item("ensure OIDC clients after " + c.idp + " starts")
 		r.Detail("client for %s once pocket-id %s on %s has started and answers, before %s starts. It does not answer yet: %s",
 			strings.Join(apps, ", "), c.idp, c.site, strings.Join(apps, ", "), why)
@@ -563,6 +586,7 @@ func planWithClients(c *clientStep, plan func(hold []string) (*apply.Plan, error
 	if c == nil {
 		return full, nil
 	}
+	c.executing = execute
 	if err := c.ensure(false, c.pocketIDHere()); err != nil {
 		return nil, err
 	}

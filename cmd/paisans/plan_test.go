@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
@@ -41,7 +42,11 @@ func TestListPlanRefusesConflicts(t *testing.T) {
 	}
 	rec := &ui.Recorder{}
 	listPlan(rec, plan)
-	if !rec.Has("refuse", "1 file was edited on the host") {
-		t.Errorf("no refusal for the conflict:\n%s", rec.Lines())
+	i := rec.Index("refuse", "1 file was edited on the host")
+	if i < 0 {
+		t.Fatalf("no refusal for the conflict:\n%s", rec.Lines())
+	}
+	if !strings.Contains(rec.Events[i].Extra, "/srv/paisans/f2a9/talk/.env") {
+		t.Errorf("the refusal does not name the file by default:\n%s", rec.Lines())
 	}
 }

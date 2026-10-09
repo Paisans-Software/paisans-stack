@@ -594,3 +594,50 @@ func TestApplyReportsAnOverwriteItHeldBack(t *testing.T) {
 		t.Errorf("the held overwrite is not reported:\n%s", stdout)
 	}
 }
+
+// apply --execute does not list the client plan: the read only planning call
+// lists nothing without --verbose, the executing call reports its mutations
+// as steps, and a plan warning shows once although both calls plan.
+func TestApplyExecuteListsNoClientPlanAndWarnsOnce(t *testing.T) {
+	fake := withIDPFake(t)
+	custom := "https://docs.example.org/custom"
+	fake.others["docs"].LaunchURL = &custom
+	c := stepFor(t, "home-a", secretsWithout(t, "talk"))
+	// A chosen launch URL beside a client's own, which the toolkit did not
+	// set, is the warning that both plans carry.
+	docs := c.cfg.Apps["docs"]
+	settings := map[string]any{}
+	for k, v := range docs.Settings {
+		settings[k] = v
+	}
+	settings["sso_dashboard_link"] = "/home"
+	docs.Settings = settings
+	c.cfg.Apps["docs"] = docs
+	rec := &ui.Recorder{}
+	c.report = rec
+	planFor := func([]string) (*apply.Plan, error) { return &apply.Plan{Site: "home-a"}, nil }
+	var err error
+	captureOutput(t, func() {
+		if _, err = planWithClients(c, planFor, true); err == nil {
+			err = c.ensure(true, false)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Has("item", "") {
+		t.Errorf("--execute listed the client plan:\n%s", rec.Lines())
+	}
+	if !rec.Has("done", "create OIDC client talk") {
+		t.Errorf("the client was not created as a step:\n%s", rec.Lines())
+	}
+	warnings := 0
+	for _, e := range rec.Events {
+		if e.Kind == "warn" && strings.Contains(e.Text, "sso_dashboard_link") {
+			warnings++
+		}
+	}
+	if warnings != 1 {
+		t.Errorf("the warning showed %d times:\n%s", warnings, rec.Lines())
+	}
+}

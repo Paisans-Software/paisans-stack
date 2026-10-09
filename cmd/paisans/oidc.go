@@ -121,10 +121,9 @@ func runOIDCClientCreate(args []string) error {
 	// made, and lists the plan first only with --verbose.
 	if !*execute || r.Verbose() {
 		listClientPlan(r, *appName, idp, where, plan)
-	} else {
-		for _, w := range plan.Warnings {
-			r.Warn(w, "")
-		}
+	}
+	for _, w := range plan.Warnings {
+		r.Warn(w, "")
 	}
 	if len(plan.Steps) == 0 {
 		return nil

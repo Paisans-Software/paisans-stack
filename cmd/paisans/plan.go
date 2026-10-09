@@ -116,10 +116,14 @@ func listPlan(r ui.Reporter, plan *apply.Plan) {
 		if len(conflicts) == 1 {
 			verb = "was"
 		}
-		r.Refuse(fmt.Sprintf("%s %s edited on the host", plural(len(conflicts), "file"), verb), "Nothing will be applied until that is resolved.")
+		// The paths are the explanation, not details: the operator has to
+		// know which files to look at, at any verbosity.
+		var paths []string
 		for _, c := range conflicts {
-			r.Detail("conflict %s", c.Path)
+			paths = append(paths, c.Path)
 		}
+		r.Refuse(fmt.Sprintf("%s %s edited on the host", plural(len(conflicts), "file"), verb),
+			strings.Join(paths, "\n")+"\nNothing will be applied until that is resolved.")
 	}
 }
 
