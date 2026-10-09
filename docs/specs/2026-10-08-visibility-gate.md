@@ -75,7 +75,9 @@ carries no body from the app.
 
 Each class is its own `handle` with a named matcher, and Caddy keeps those in
 the order they are written. Every handle strips `X-Auth-Request-*` from the
-inbound request first, so nothing upstream of the gate can name a user.
+inbound request first, so nothing upstream of the gate can name a user. An
+ungated host block strips it too, so an app on any hostname sees the header
+only when the gate put it there.
 
 ### ActivityPub reads are filtered
 

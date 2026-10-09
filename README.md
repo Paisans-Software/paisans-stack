@@ -1534,13 +1534,18 @@ gate covers everything, and three classes go to the app without it:
 
 | Class | Matched by | Who authenticates it |
 |---|---|---|
-| ActivityPub | `Accept` or `Content-Type` naming `application/activity+json` or `application/ld+json` | the app, by signed fetch against its allow list |
+| ActivityPub read | a `GET` whose `Accept` names `application/activity+json` or `application/ld+json` | the app, by signed fetch against its allow list; Caddy passes back only an ActivityPub, JSON-LD or JRD answer, and turns any other success into an empty 404 |
+| ActivityPub delivery | a `POST` whose `Content-Type` names either, on the kind's inboxes only | the app, which verifies the delivery's signature |
 | Open paths | the kind's open paths: its OIDC callback, a native app's OAuth chain, federation discovery, the assets those pages load, a dedicated health route | nothing; they hold no private content |
-| Token paths | the kind's token paths **and** an `Authorization` header | the app, which refuses a token it did not issue |
+| Token paths | the kind's token paths **and** `Authorization: Bearer` | the app, which refuses a token it did not issue |
 
 Everything else is redirected to sign in when there is no session, `curl`
 included, and to the gate's `/pending` page when the session belongs to
-someone who is not yet a member. Which paths a kind needs open is knowledge
+someone who is not yet a member. Every hostname, gated or not, strips
+`X-Auth-Request-*` from the inbound request before anything else sees it:
+those headers are only ever the gate's verified answer, and an app that
+trusted one on an ungated hostname would be trusting whoever sent the
+request. Which paths a kind needs open is knowledge
 about that application, so it lives in `internal/kinds` beside the rest, read
 off the pinned tag's source with a citation for each. A token path is recorded
 only once the kind's source shows a token that reads content cannot be had
