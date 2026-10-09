@@ -1,0 +1,265 @@
+package ui
+
+import (
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"time"
+)
+
+// titleWidth is the first column. Steps stream, so the column cannot be
+// sized to the widest title in advance; a fixed width keeps results aligned
+// for every title an installer line should have.
+const titleWidth = 24
+
+var frames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+const (
+	green  = "\x1b[32m"
+	red    = "\x1b[31m"
+	yellow = "\x1b[33m"
+	reset  = "\x1b[0m"
+	clear  = "\r\x1b[K"
+)
+
+type writer struct {
+	mu       sync.Mutex
+	w        io.Writer
+	verbose  bool
+	terminal bool
+	now      func() time.Time
+	tick     time.Duration
+
+	open    *step
+	frame_  int
+	stopped chan struct{}
+}
+
+func newWriter(w io.Writer, verbose, terminal bool) *writer {
+	return &writer{w: w, verbose: verbose, terminal: terminal, now: time.Now, tick: 100 * time.Millisecond}
+}
+
+type step struct {
+	r       *writer
+	title   string
+	started time.Time
+	details []string
+	ended   bool
+}
+
+func (r *writer) Verbose() bool { return r.verbose }
+
+func (r *writer) Section(title string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fmt.Fprintf(r.w, "%s\n", title)
+}
+
+func (r *writer) Step(title string) Step {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := &step{r: r, title: title, started: r.now()}
+	r.open = s
+	if r.terminal {
+		r.frame_ = 0
+		r.drawLocked()
+		if r.tick > 0 {
+			r.stopped = make(chan struct{})
+			go r.spin(r.stopped)
+		}
+	}
+	return s
+}
+
+func (r *writer) spin(stop chan struct{}) {
+	t := time.NewTicker(r.tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			r.frame()
+		}
+	}
+}
+
+// frame draws the next spinner frame for the open step, if there is one.
+func (r *writer) frame() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.open == nil || !r.terminal {
+		return
+	}
+	r.frame_++
+	r.drawLocked()
+}
+
+func (r *writer) drawLocked() {
+	s := r.open
+	elapsed := r.now().Sub(s.started)
+	fmt.Fprintf(r.w, "%s  %s %s", clear, frames[r.frame_%len(frames)], pad(s.title))
+	if elapsed >= time.Second {
+		fmt.Fprintf(r.w, "%ds", int(elapsed.Seconds()))
+	}
+}
+
+func (s *step) Detail(format string, args ...any) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	if s.r.verbose && !s.ended {
+		s.details = append(s.details, fmt.Sprintf(format, args...))
+	}
+}
+
+func (s *step) Done(result string) { s.end(true, result) }
+
+func (s *step) Fail(err error) { s.end(false, "") }
+
+func (s *step) end(ok bool, result string) {
+	r := s.r
+	r.mu.Lock()
+	if s.ended {
+		r.mu.Unlock()
+		return
+	}
+	s.ended = true
+	stop := r.stopped
+	r.stopped = nil
+	if r.open == s {
+		r.open = nil
+	}
+	if result == "" {
+		if d := r.now().Sub(s.started); d >= time.Second {
+			result = fmt.Sprintf("%.1fs", d.Seconds())
+		}
+	}
+	mark := r.mark(ok)
+	line := "  " + mark + " " + strings.TrimRight(pad(s.title)+result, " ")
+	if r.terminal {
+		line = clear + line
+	}
+	fmt.Fprintln(r.w, line)
+	for _, d := range s.details {
+		r.detailLocked(d)
+	}
+	r.mu.Unlock()
+	if stop != nil {
+		close(stop)
+	}
+}
+
+func (r *writer) mark(ok bool) string {
+	switch {
+	case r.terminal && ok:
+		return green + "✓" + reset
+	case r.terminal:
+		return red + "✗" + reset
+	case ok:
+		return "ok  "
+	default:
+		return "FAIL"
+	}
+}
+
+func (r *writer) Item(title string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.terminal {
+		fmt.Fprintf(r.w, "  · %s\n", title)
+		return
+	}
+	fmt.Fprintf(r.w, "  -    %s\n", title)
+}
+
+func (r *writer) Warn(hint, detail string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.interruptLocked()
+	if r.terminal {
+		fmt.Fprintf(r.w, "  %s!%s %s\n", yellow, reset, hint)
+	} else {
+		fmt.Fprintf(r.w, "  WARN %s\n", hint)
+	}
+	if r.verbose && detail != "" {
+		r.detailLocked(detail)
+	}
+}
+
+func (r *writer) Refuse(hint, explanation string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.interruptLocked()
+	if r.terminal {
+		fmt.Fprintf(r.w, "  %s✗%s %s\n", red, reset, hint)
+	} else {
+		fmt.Fprintf(r.w, "  FAIL %s\n", hint)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(explanation), "\n") {
+		if line != "" {
+			fmt.Fprintf(r.w, "       %s\n", line)
+		}
+	}
+}
+
+func (r *writer) Detail(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.verbose {
+		return
+	}
+	text := fmt.Sprintf(format, args...)
+	if r.open != nil {
+		r.open.details = append(r.open.details, text)
+		return
+	}
+	r.detailLocked(text)
+}
+
+func (r *writer) Trace(label, output string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.verbose {
+		return
+	}
+	text := label + ":"
+	for _, line := range strings.Split(strings.TrimRight(output, "\n"), "\n") {
+		text += "\n| " + line
+	}
+	if r.open != nil {
+		r.open.details = append(r.open.details, text)
+		return
+	}
+	r.detailLocked(text)
+}
+
+func (r *writer) Result(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.interruptLocked()
+	fmt.Fprintf(r.w, format+"\n", args...)
+}
+
+// detailLocked prints a verbose line indented under what it belongs to.
+func (r *writer) detailLocked(text string) {
+	for _, line := range strings.Split(text, "\n") {
+		fmt.Fprintf(r.w, "      %s\n", line)
+	}
+}
+
+// interruptLocked ends a drawn spinner line before something else is
+// printed, so a warning said mid-step does not land on the spinner's line.
+// The spinner redraws on its next tick.
+func (r *writer) interruptLocked() {
+	if r.terminal && r.open != nil {
+		fmt.Fprint(r.w, clear)
+	}
+}
+
+func pad(title string) string {
+	if len(title) >= titleWidth {
+		return title + " "
+	}
+	return title + strings.Repeat(" ", titleWidth-len(title))
+}
