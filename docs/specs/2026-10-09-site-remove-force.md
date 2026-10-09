@@ -1,6 +1,6 @@
 # `paisans site remove --force`, and the hosts a deployment has used
 
-Date: 2026-10-09. Status: draft, awaiting the founder's review.
+Date: 2026-10-09. Status: approved by the founder in session.
 
 Two gaps in `site remove` (docs/specs/2026-10-08-site-remove.md), both found
 when the hosts of a deployment were lost and the hosts that survived had to be
