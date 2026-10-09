@@ -84,7 +84,7 @@ func initWorld(t *testing.T, edit func(string) string, sites map[string]*initFak
 		t.Fatal(err)
 	}
 	savedHost, savedRandom, savedOut := initHost, meshRandom, initOut
-	initHost = func(site config.Site, _ bool) registry.Runner {
+	initHost = func(_ string, site config.Site, _ bool) registry.Runner {
 		for _, f := range sites {
 			if f.name == site.SSH.Host {
 				return f

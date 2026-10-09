@@ -43,8 +43,8 @@ func claimHosts(cfg *config.Config, execute bool, transports map[string]registry
 
 // registryHost is how a claim reaches a site's host when the command has no
 // transport of its own to lend it. A test replaces it.
-var registryHost = func(site config.Site, destination string, sudo bool) registry.Runner {
-	return siteTransport(site, destination, sudo)
+var registryHost = func(name string, site config.Site, destination string, sudo bool) registry.Runner {
+	return siteTransport(name, site, destination, sudo)
 }
 
 // claimSites is claimHosts over the named sites, each reached through its
@@ -53,7 +53,7 @@ var registryHost = func(site config.Site, destination string, sudo bool) registr
 func claimSites(cfg *config.Config, execute, sudo bool, sites ...string) error {
 	transports := map[string]registry.Runner{}
 	for _, name := range sites {
-		transports[name] = registryHost(cfg.Sites[name], "", sudo)
+		transports[name] = registryHost(name, cfg.Sites[name], "", sudo)
 	}
 	return claimHosts(cfg, execute, transports)
 }

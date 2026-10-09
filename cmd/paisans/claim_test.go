@@ -35,7 +35,7 @@ func withRegistryFake(t *testing.T) *registryFake {
 	t.Helper()
 	fake := &registryFake{}
 	saved := registryHost
-	registryHost = func(_ config.Site, _ string, sudo bool) registry.Runner {
+	registryHost = func(_ string, _ config.Site, _ string, sudo bool) registry.Runner {
 		fake.sudo = sudo
 		return fake
 	}

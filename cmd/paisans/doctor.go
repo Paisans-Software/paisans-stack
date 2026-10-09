@@ -67,7 +67,7 @@ func runDoctor(args []string) error {
 	}
 	transports := map[string]apply.Transport{}
 	for _, name := range sites {
-		t := siteTransport(cfg.Sites[name], "", *sudo)
+		t := siteTransport(name, cfg.Sites[name], "", *sudo)
 		t.ConnectTimeout = doctorConnectTimeout
 		transports[name] = doctorTransport(t)
 	}

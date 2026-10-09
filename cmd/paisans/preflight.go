@@ -66,7 +66,7 @@ func loadChecked(path string) (*config.Config, error) {
 func allSiteTransports(cfg *config.Config, sudo bool) map[string]apply.Transport {
 	out := map[string]apply.Transport{}
 	for _, name := range cfg.SiteNames() {
-		out[name] = siteTransport(cfg.Sites[name], "", sudo)
+		out[name] = siteTransport(name, cfg.Sites[name], "", sudo)
 	}
 	return out
 }

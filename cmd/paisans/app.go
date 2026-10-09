@@ -112,7 +112,7 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	// so only a run that will change something claims it, through sudo,
 	// since the registry is root's.
 	if *execute {
-		if err := claimHosts(cfg, true, map[string]registry.Runner{where: registryHost(cfg.Sites[where], *destination, true)}); err != nil {
+		if err := claimHosts(cfg, true, map[string]registry.Runner{where: registryHost(where, cfg.Sites[where], *destination, true)}); err != nil {
 			return err
 		}
 	}
@@ -125,7 +125,7 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 		APIKey: key, APIBase: pocketIDBase(cfg, where), PublicURL: "https://" + app.Hostname}
 
 	// No sudo: the calls are curl to Pocket ID's API, which needs no root.
-	transport := adminTransport(siteTransport(cfg.Sites[where], *destination, false))
+	transport := adminTransport(siteTransport(where, cfg.Sites[where], *destination, false))
 	plan, err := appadmin.Build(app.Kind, transport, req)
 	if err != nil {
 		return fmt.Errorf("app admin create: %w", err)
@@ -296,7 +296,7 @@ func activeInstance(cfg *config.Config, appName, site, destination string) (stri
 		if name == site {
 			override = destination
 		}
-		transports[name] = standbyLook(siteTransport(cfg.Sites[name], override, false))
+		transports[name] = standbyLook(siteTransport(name, cfg.Sites[name], override, false))
 	}
 	list := apply.LookAtInstances(cfg, appName, transports)
 	if _, err := apply.OneActive(cfg.Deployment(), appName, list); err != nil {

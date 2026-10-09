@@ -63,7 +63,7 @@ func runStorageAdd(args []string) error {
 
 	transports := map[string]apply.Transport{}
 	for _, name := range cfg.SiteNames() {
-		transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
+		transports[name] = siteTransport(name, cfg.Sites[name], "", *sudo)
 	}
 	// storage add applies files on every Garage site, on the gateway and,
 	// last, on every monitor site, so each is host checked before any

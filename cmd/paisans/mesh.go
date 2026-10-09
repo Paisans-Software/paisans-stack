@@ -16,8 +16,8 @@ import (
 
 // initHost is how `paisans init` reaches a site to read its registry and its
 // networks. A test replaces it.
-var initHost = func(site config.Site, sudo bool) registry.Runner {
-	return siteTransport(site, "", sudo)
+var initHost = func(name string, site config.Site, sudo bool) registry.Runner {
+	return siteTransport(name, site, "", sudo)
 }
 
 // meshRandom is where init's subnet rolls come from. A test replaces it.
@@ -179,7 +179,7 @@ func conflictAdvice(c registry.Conflict) string {
 func initHosts(cfg *config.Config, sudo bool) map[string]registry.Runner {
 	hosts := map[string]registry.Runner{}
 	for _, name := range cfg.SiteNames() {
-		hosts[name] = initHost(cfg.Sites[name], sudo)
+		hosts[name] = initHost(name, cfg.Sites[name], sudo)
 	}
 	return hosts
 }

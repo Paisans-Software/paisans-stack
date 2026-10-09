@@ -15,7 +15,10 @@ import (
 type sudoHost struct {
 	password string
 	// refuse is what `sudo -n true` prints when sudo is not allowed at all.
-	refuse   string
+	refuse string
+	// hostname is what `uname -n` prints. Empty means box-01; "-" means
+	// uname fails.
+	hostname string
 	commands []string
 	stdins   []string
 }
@@ -27,6 +30,14 @@ func (h *sudoHost) install(t *testing.T) {
 		h.commands = append(h.commands, command)
 		h.stdins = append(h.stdins, stdin)
 		switch {
+		case command == "uname -n":
+			switch h.hostname {
+			case "":
+				return "box-01\n", 0
+			case "-":
+				return "uname: not found\n", 127
+			}
+			return h.hostname + "\n", 0
 		case command == "sudo -n true":
 			if h.refuse != "" {
 				return h.refuse, 1
@@ -120,16 +131,16 @@ func TestSudoWithAPasswordPromptsOnceAndSendsItOnStdin(t *testing.T) {
 	if err := tr.WriteFile("/srv/x", "content", 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.asked) != 1 || p.asked[0] != "box" {
-		t.Fatalf("asked %q, want once for box", p.asked)
+	if len(p.asked) != 1 || p.asked[0] != "box, host box-01" {
+		t.Fatalf("asked %q, want once for box, host box-01", p.asked)
 	}
-	if want := []string{"sudo -n true", "sudo -k -S -p '' true", "sudo -k -S -p '' sh -c 'echo one'", "sudo -k -S -p '' sh -c 'cat'"}; !equalPrefix(h.commands, want) {
+	if want := []string{"sudo -n true", "uname -n", "sudo -k -S -p '' true", "sudo -k -S -p '' sh -c 'echo one'", "sudo -k -S -p '' sh -c 'cat'"}; !equalPrefix(h.commands, want) {
 		t.Fatalf("commands %q, want them to begin %q", h.commands, want)
 	}
-	if !strings.HasPrefix(h.commands[4], "sudo -k -S -p '' sh -c ") {
-		t.Errorf("WriteFile ran %q, want it under sudo -k -S", h.commands[4])
+	if !strings.HasPrefix(h.commands[5], "sudo -k -S -p '' sh -c ") {
+		t.Errorf("WriteFile ran %q, want it under sudo -k -S", h.commands[5])
 	}
-	want := []string{"", "hunter2\n", "hunter2\n", "hunter2\ninput", "hunter2\ncontent"}
+	want := []string{"", "", "hunter2\n", "hunter2\n", "hunter2\ninput", "hunter2\ncontent"}
 	for i, s := range want {
 		if h.stdins[i] != s {
 			t.Errorf("call %d (%q) sent stdin %q, want %q", i, h.commands[i], h.stdins[i], s)
@@ -201,8 +212,8 @@ func TestAWrongPasswordIsNeverRetried(t *testing.T) {
 	if len(p.asked) != 1 {
 		t.Errorf("asked %d times, want once", len(p.asked))
 	}
-	if len(h.commands) != 2 {
-		t.Errorf("ran %q, want only the probe and one check", h.commands)
+	if len(h.commands) != 3 {
+		t.Errorf("ran %q, want only the probe, the hostname and one check", h.commands)
 	}
 	if strings.Contains(first.Error(), "wrong") {
 		t.Errorf("the refusal carries the password: %v", first)
@@ -267,4 +278,40 @@ func equalPrefix(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// The prompt names the site from paisans.yaml and the name the host gives
+// itself beside the address, so an operator who does not recognise an
+// address can still tell which site and which machine is asking.
+func TestThePromptNamesTheSiteAndTheHost(t *testing.T) {
+	h := &sudoHost{password: "hunter2", hostname: "home-a-01"}
+	h.install(t)
+	p := &prompter{answer: "hunter2"}
+	tr := apply.SSHTransport{Site: "home-a", Destination: "ubuntu@192.0.2.10", Sudo: true, Auth: apply.NewSudoAuth(p.prompt)}
+
+	if _, err := tr.Run("true"); err != nil {
+		t.Fatal(err)
+	}
+	if want := "site home-a (ubuntu@192.0.2.10, host home-a-01)"; len(p.asked) != 1 || p.asked[0] != want {
+		t.Fatalf("asked %q, want %q", p.asked, want)
+	}
+}
+
+// A hostname the host does not give, or gives with anything a hostname does
+// not contain, is left out of the prompt: the prompt is printed on the
+// operator's terminal, and a host must not write escapes into it.
+func TestThePromptLeavesOutAHostnameItCannotTrust(t *testing.T) {
+	for _, hostname := range []string{"-", "evil\x1b]0;owned\x07", "two words"} {
+		h := &sudoHost{password: "hunter2", hostname: hostname}
+		h.install(t)
+		p := &prompter{answer: "hunter2"}
+		tr := apply.SSHTransport{Site: "home-a", Destination: "box", Sudo: true, Auth: apply.NewSudoAuth(p.prompt)}
+
+		if _, err := tr.Run("true"); err != nil {
+			t.Fatal(err)
+		}
+		if want := "site home-a (box)"; len(p.asked) != 1 || p.asked[0] != want {
+			t.Errorf("hostname %q: asked %q, want %q", hostname, p.asked, want)
+		}
+	}
 }
