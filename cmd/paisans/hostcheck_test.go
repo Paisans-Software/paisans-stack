@@ -92,6 +92,19 @@ func TestTheGateRefusesAConflictHavingOnlyLooked(t *testing.T) {
 	}
 }
 
+// The host check is a dozen probes over ssh before anything else is said,
+// so it is announced as it starts, ahead of the report it prints.
+func TestTheGateAnnouncesTheCheckBeforeItsReport(t *testing.T) {
+	var out bytes.Buffer
+	if _, err := hostGate(&out, hostCheckFixture(t), "home-a", webHost(ufwUp)); err != nil {
+		t.Fatal(err)
+	}
+	first, _, _ := strings.Cut(out.String(), "\n")
+	if !strings.HasPrefix(first, "  checking  home-a's host (ubuntu@host.example.org) ... done (") {
+		t.Errorf("the first line is not the check's announcement:\n%s", out.String())
+	}
+}
+
 // A shared host is let through only with its firewall already up.
 func TestTheGateNeedsASharedHostsFirewall(t *testing.T) {
 	cfg := hostCheckFixture(t)

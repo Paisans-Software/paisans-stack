@@ -272,7 +272,14 @@ func runBootstrap(plan *Plan, t Transport) error {
 			"%s: the infrastructure stack is up, and etcd is waiting on %s: a new etcd cluster settles its version only once every founding member runs, and Patroni takes no leader key before that. No app database was created and no app stack was started. Apply %s, then apply this site again: it resumes here",
 			plan.Site, strings.Join(waiting, ", "), strings.Join(waiting, ", then "))
 	}
-	if err := waitForPrimary(plan, t); err != nil {
+	done := plan.step("waiting", "for a Patroni primary")
+	err := waitForPrimary(plan, t)
+	if _, replica := err.(errReplica); replica {
+		done(nil)
+	} else {
+		done(err)
+	}
+	if err != nil {
 		if replica, ok := err.(errReplica); ok {
 			plan.say("  %-9s skipped: Patroni here is a replica, and %s holds the leader. Apply %s to create app roles and databases\n",
 				"databases", replica.leader, replica.leader)
@@ -280,7 +287,10 @@ func runBootstrap(plan *Plan, t Transport) error {
 		}
 		return err
 	}
-	if out, err := t.RunInput(psql(plan.Deployment), bootstrapSQL(plan.Bootstrap)); err != nil {
+	done = plan.step("creating", "app roles and databases")
+	out, err := t.RunInput(psql(plan.Deployment), bootstrapSQL(plan.Bootstrap))
+	done(err)
+	if err != nil {
 		// psql quotes the failing line back for a syntax error, and that line
 		// can be the one carrying a password.
 		for _, db := range plan.Bootstrap.Databases {

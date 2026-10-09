@@ -217,14 +217,22 @@ type Plan struct {
 	// for the prune keep set: an image a held stack renders is still the
 	// site's.
 	renderedChanges []Change
-	// Progress receives what Execute decided along the way that is not an
-	// error, such as a replica leaving the database work to the leader. Nil
-	// discards it.
+	// Progress receives each step Build and Execute take on the host as it
+	// starts and ends, and what Execute decided along the way that is not
+	// an error, such as a replica leaving the database work to the leader.
+	// Nil discards it. Build sets it from the Progress option.
 	Progress io.Writer
+	// stepOpen is whether the last thing written to Progress was a step
+	// still waiting for its ending. See step.
+	stepOpen bool
 }
 
 func (p *Plan) say(format string, args ...any) {
 	if p.Progress != nil {
+		if p.stepOpen {
+			fmt.Fprintln(p.Progress)
+			p.stepOpen = false
+		}
 		fmt.Fprintf(p.Progress, format, args...)
 	}
 }
@@ -368,6 +376,13 @@ type options struct {
 	// replication_factor replace the deployed one. Only `storage add
 	// --change-replication` sets it; see GarageReplication.
 	replicationChange bool
+	progress          io.Writer
+}
+
+// Progress sets the plan's Progress writer before Build reads the host, so
+// planning announces its steps as Execute does. See Plan.Progress.
+func Progress(w io.Writer) Option {
+	return func(o *options) { o.progress = w }
 }
 
 // ReplicationChange lets this apply replace a deployed garage.toml whose
@@ -477,6 +492,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	for _, opt := range opts {
 		opt(&o)
 	}
+	out.Progress = o.progress
 	// An earlier pass of the same apply already carried out these. See After.
 	doneOverwrite, doneStacks := map[string]bool{}, map[string]bool{}
 	for _, p := range o.after {
@@ -577,6 +593,11 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	// whether its change can be applied in place.
 	var wireguard *Change
 	var wireguardBefore string
+	reading := len(out.rendered)
+	if out.scoped {
+		reading = len(inScope)
+	}
+	done := out.step("reading", "%d rendered file(s) from %s", reading, out.Transport)
 	for _, file := range plan.Files {
 		if !strings.HasPrefix(file.Path, prefix) {
 			continue
@@ -603,11 +624,13 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 
 		current, found, err := t.ReadFile(remote)
 		if err != nil {
+			done(err)
 			return nil, err
 		}
 		change.before = current
 		if rel == GarageConfig(d) && found && !o.replicationChange {
 			if err := garageReplicationGuard(site, current, file.Content); err != nil {
+				done(err)
 				return nil, err
 			}
 		}
@@ -689,6 +712,8 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 			}
 		}
 	}
+
+	done(nil)
 
 	for _, path := range overwrite {
 		if !used[path] {
@@ -840,7 +865,10 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		need = o.minFree
 	}
 	out.KeepImages = o.keepImages
-	if err := out.probeImages(need, t); err != nil {
+	done = out.step("checking", "images and free disk space")
+	err = out.probeImages(need, t)
+	done(err)
+	if err != nil {
 		return nil, fmt.Errorf("%s: %w", site, err)
 	}
 
@@ -982,10 +1010,15 @@ func execute(plan *Plan, t Transport) error {
 	}
 
 	writes := plan.Writes()
-	for _, change := range writes {
-		if err := t.WriteFile(change.Path, change.content, change.Mode); err != nil {
-			return err
+	if len(writes) > 0 {
+		done := plan.step("writing", "%d file(s)", len(writes))
+		for _, change := range writes {
+			if err := t.WriteFile(change.Path, change.content, change.Mode); err != nil {
+				done(err)
+				return err
+			}
 		}
+		done(nil)
 	}
 
 	// Record the files as soon as they are on the host, not only at the end.
@@ -1005,7 +1038,10 @@ func execute(plan *Plan, t Transport) error {
 	// rule is simple: no container is started or checked on a site whose
 	// interface is down.
 	if command := plan.WireGuard.Command(plan.Deployment); command != "" {
-		if out, err := t.Run(command); err != nil {
+		done := plan.step("starting", "the mesh, %s", plan.Deployment.Interface())
+		out, err := t.Run(command)
+		done(err)
+		if err != nil {
 			return fmt.Errorf("%s: bringing up %s, so nothing that binds the mesh address was started:\n%s", plan.Site, plan.Deployment.Interface(), out)
 		}
 	}
@@ -1050,7 +1086,10 @@ func execute(plan *Plan, t Transport) error {
 		// the module: on the first real gateway a private image's
 		// "unauthorized" was reported as a missing DNS provider.
 		infra := plan.Deployment.ComposeCmd(infraStack)
-		if out, err := t.Run(infra + " pull caddy"); err != nil {
+		done := plan.step("pulling", "the gateway's Caddy image")
+		out, err := t.Run(infra + " pull caddy")
+		done(err)
+		if err != nil {
 			return fmt.Errorf(
 				"%s: the gateway's Caddy image could not be pulled, so nothing was changed. If the registry answered unauthorized or denied, the image is private: make it public, or log the host in to that registry:\n%s",
 				plan.Site, out)
@@ -1058,7 +1097,10 @@ func execute(plan *Plan, t Transport) error {
 		command := fmt.Sprintf(
 			"%s run --rm --no-deps --entrypoint caddy caddy list-modules | grep -qxF %s",
 			infra, shellQuote(plan.ACMEModule))
-		if out, err := t.Run(command); err != nil {
+		done = plan.step("checking", "the gateway's Caddy has the %s module", plan.ACMEModule)
+		out, err = t.Run(command)
+		done(err)
+		if err != nil {
 			return fmt.Errorf(
 				"%s: the gateway's Caddy has no %s module, so it cannot serve this configuration and was not reloaded. The image it runs was built without that provider:\n%s",
 				plan.Site, plan.ACMEModule, out)
@@ -1075,7 +1117,10 @@ func execute(plan *Plan, t Transport) error {
 		// since every later apply would refuse at this step. `run` starts a
 		// throwaway container with the service's own image and bind mounts,
 		// which is exactly what validation needs and needs nothing running.
-		if out, err := t.Run(plan.Deployment.ComposeCmd(infraStack) + " run --rm --no-deps --entrypoint caddy caddy validate --config /etc/caddy/Caddyfile"); err != nil {
+		done := plan.step("checking", "the gateway configuration validates")
+		out, err := t.Run(plan.Deployment.ComposeCmd(infraStack) + " run --rm --no-deps --entrypoint caddy caddy validate --config /etc/caddy/Caddyfile")
+		done(err)
+		if err != nil {
 			return fmt.Errorf("%s: the assembled gateway configuration does not validate, so the gateway was not changed:\n%s", plan.Site, out)
 		}
 	}
@@ -1093,17 +1138,23 @@ func execute(plan *Plan, t Transport) error {
 			return fmt.Errorf("%s: asking whether the gateway is running: %w", plan.Site, err)
 		}
 		if strings.TrimSpace(running) != "" {
-			if _, err := t.Run(reloadGateway(plan.Deployment)); err != nil {
+			done := plan.step("reloading", "the gateway")
+			_, err := t.Run(reloadGateway(plan.Deployment))
+			done(err)
+			if err != nil {
 				return fmt.Errorf("%s: reloading the gateway: %w", plan.Site, err)
 			}
 		} else {
 			// A stopped or absent gateway has nothing to reload, and no
 			// stack action will start it, since routing alone is not one.
 			// It starts on the configuration this apply just validated.
-			if _, err := t.Run(plan.Deployment.ComposeCmd(infraStack) + " up -d caddy"); err != nil {
+			done := plan.step("starting", "the gateway (up -d caddy)")
+			_, err := t.Run(plan.Deployment.ComposeCmd(infraStack) + " up -d caddy")
+			done(err)
+			if err != nil {
 				return fmt.Errorf("%s: starting the gateway: %w", plan.Site, err)
 			}
-			if err := waitHealthy(plan, infraStack, t); err != nil {
+			if err := waitHealthyStep(plan, infraStack, t); err != nil {
 				return err
 			}
 		}
@@ -1130,20 +1181,26 @@ func execute(plan *Plan, t Transport) error {
 		if action.Recreate && !action.Down {
 			previous = recordAnonymousVolumes(plan, action.Stack, t)
 		}
-		if err := runAction(plan.Deployment, action, action.Stack == infraStack && plan.GatewayReload, t); err != nil {
+		verb, what := stackActionStep(action)
+		done := plan.step(verb, "%s", what)
+		err := runAction(plan.Deployment, action, action.Stack == infraStack && plan.GatewayReload, t)
+		done(err)
+		if err != nil {
 			return err
 		}
 		// `up -d` and `restart` return once the containers start, which says
 		// nothing about whether they stay up or pass their own checks. The
 		// stack stays in the pending record until this passes, so a failure
 		// here is resumed, and force-recreated, by the next apply.
-		if err := waitHealthy(plan, action.Stack, t); err != nil {
+		if err := waitHealthyStep(plan, action.Stack, t); err != nil {
 			return err
 		}
 		// Only now, with the stack healthy on its new image, is the old one
 		// safe to lose. Before the gate it is the image a rollback would use.
 		if !plan.KeepImages {
+			done := plan.step("pruning", "superseded images of %s", action.Stack)
 			pruneStack(plan, action.Stack, t)
+			done(nil)
 		}
 		// Not tied to --keep-images: a volume the new containers do not
 		// mount is no way back to the old image, which is what that flag
