@@ -242,3 +242,24 @@ func TestTheLeftForYouHintsStayShort(t *testing.T) {
 		}
 	}
 }
+
+func stageNamed(p *siteremove.Plan, name string) *siteremove.Stage {
+	for _, st := range p.Stages {
+		if st.Name == name {
+			return st
+		}
+	}
+	return nil
+}
+
+func hasStepIn(st *siteremove.Stage, site, verb, text string) bool {
+	if st == nil {
+		return false
+	}
+	for _, s := range st.Steps {
+		if s.Site == site && s.Verb == verb && strings.Contains(s.Text, text) {
+			return true
+		}
+	}
+	return false
+}

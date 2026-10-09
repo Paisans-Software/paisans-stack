@@ -326,13 +326,15 @@ func (p *Plan) buildHost() (*Stage, error) {
 		}
 	}
 
-	report, err := ownership.Classify(p.cfg, p.Site, inv, inv.ManifestFiles)
-	if err != nil {
-		return nil, err
-	}
-	if p.cfg.Sites[p.Site].Has(config.RoleGateway) && report.Foreign() {
-		if hp.handover, err = p.probeHandover(t, inv, report); err != nil {
+	if p.cfg.Sites[p.Site].Has(config.RoleGateway) {
+		report, err := ownership.Classify(p.cfg, p.Site, inv, inv.ManifestFiles)
+		if err != nil {
 			return nil, err
+		}
+		if report.Foreign() {
+			if hp.handover, err = p.probeHandover(t, inv, report); err != nil {
+				return nil, err
+			}
 		}
 	}
 

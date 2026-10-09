@@ -94,6 +94,10 @@ type Plan struct {
 	// Kept is what the removal leaves on the host, with why: planned at
 	// Build and added to as the host stage runs.
 	Kept []string
+	// Current is set by BuildForced when the host is the declared site's
+	// own, which its cluster still counts on: the command asks for the
+	// site's name before cleaning it.
+	Current bool
 	// Report receives each stage as a section, the work in it as steps and
 	// each gate as a step of its own. Nil discards it.
 	Report ui.Reporter
