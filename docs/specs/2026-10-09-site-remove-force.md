@@ -52,8 +52,10 @@ Out, each for a stated reason:
   elsewhere that has the cleaned host as a WireGuard peer, an etcd member or a
   Garage node keeps it until that site's next `apply`, or until a full
   `site remove` of the cleaned site.
-* **DNS and Pocket ID.** As for a full removal, reported, not changed:
-  `paisans dns prune` deletes the records. Pruning a sign-in client's secret
+* **DNS and Pocket ID.** Reported, not changed. `paisans dns prune` deletes a
+  record only while its address is still declared, so a record of a site
+  already taken out of `paisans.yaml` is deleted at the provider by hand.
+  Pruning a sign-in client's secret
   does not delete the client at Pocket ID, and the prune says so.
 
 ## `site remove --force`
@@ -189,8 +191,13 @@ survived on hosts that also run other people's services:
    secrets.
 3. The destroyed sites stay declared. Their ssh sections and addresses are
    changed to the new hosts, and `apply` deploys them there.
-4. `paisans dns prune` deletes the records still pointing at addresses nobody
-   uses.
+4. DNS is changed at the provider by hand. `paisans dns` never updates a
+   record, so each name still wanted that points at a lost address (the
+   gateway's) is reported as a conflict; the operator changes it to the new
+   address, and `paisans dns` then finds nothing to do. `paisans dns prune`
+   deletes only a record pointing at an address `paisans.yaml` declares, so
+   the records of the monitors' hostnames, whose addresses are no longer
+   declared once the monitors are taken out, are deleted by hand too.
 
 ## Testing
 
