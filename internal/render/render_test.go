@@ -2665,15 +2665,16 @@ func TestEveryDeclaredImageVolumeIsMounted(t *testing.T) {
 	}
 }
 
-// A site with the storage role runs Garage and nothing else: it is on the
-// mesh, and its infrastructure stack holds Garage alone, because every
-// service in infra-compose.yaml.tmpl is rendered from the site's own flags.
+// A site with the storage role runs Garage and nothing else of the
+// infrastructure: it is on the mesh, and its stack holds Garage and the
+// heartbeat every watched site pushes, because every service in
+// infra-compose.yaml.tmpl is rendered from the site's own flags.
 func TestAStorageSiteRendersGarageAlone(t *testing.T) {
 	cfg := fixture(t)
 	cfg.Sites["store"] = config.Site{Roles: []config.Role{config.RoleStorage}, Address: "10.44.0.4", Endpoint: "203.0.113.40:51820"}
 	cfg.Storage.Garage.Sites = append(cfg.Storage.Garage.Sites, "store")
 	secrets := fixtureSecrets(t)
-	secrets.Sites["store"] = config.SiteSecrets{WireGuardPrivateKey: "Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0M="}
+	secrets.Sites["store"] = config.SiteSecrets{WireGuardPrivateKey: "Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0M=", HeartbeatToken: "5555555555555555555555555555eeee"}
 	plan, err := render.Build(cfg, secrets)
 	if err != nil {
 		t.Fatal(err)
@@ -2686,7 +2687,7 @@ func TestAStorageSiteRendersGarageAlone(t *testing.T) {
 		}
 	}
 	sort.Strings(mine)
-	want := "etc/wireguard/psns-f2a9.conf,srv/paisans/f2a9/infra/compose.yaml,srv/paisans/f2a9/infra/garage/garage.toml"
+	want := "etc/wireguard/psns-f2a9.conf,srv/paisans/f2a9/infra/compose.yaml,srv/paisans/f2a9/infra/garage/garage.toml,srv/paisans/f2a9/infra/heartbeat/heartbeat.env,srv/paisans/f2a9/infra/heartbeat/push.sh"
 	if got := strings.Join(mine, ","); got != want {
 		t.Fatalf("a storage site renders %s, want %s", got, want)
 	}

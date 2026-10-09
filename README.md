@@ -598,7 +598,22 @@ from this configuration and the fork reconciles it at every start:
   unsigned ActivityPub request for a path the app refuses whatever content
   exists, expecting the refusal, because an admin can turn signed fetch off
   inside the app with nothing in this configuration to say so.
-* every site but the monitor's own gets a **ping** over the mesh.
+* every site but the monitor's own gets a **ping** over the mesh, and a
+  **heartbeat** the other way: the site's host pushes to the monitor's public
+  hostname once a minute, over the internet and never the mesh, from a
+  `heartbeat` service in its infrastructure stack (below). The two paths fail
+  separately, which is what tells the failures apart:
+
+  | Ping over the mesh | Heartbeat over the internet | What it is |
+  |---|---|---|
+  | down | fresh | the mesh: the tunnel between the two is torn, the site is up |
+  | up | stale | the site's own way out: its WAN is down, the mesh still carries it |
+  | every site down | every site fresh | the monitor's own tunnel, not the sites |
+  | down | stale | the host, or the site's power and line together |
+
+  A ping alone reports every one of those the same way. Founder decision;
+  the design is the amendment of 2026-10-09 in
+  `docs/specs/2026-10-07-uptime-monitoring.md`.
 * every site Pocket ID runs on gets a check on its **admin reconciler**, which
   fails while the `admins` group has fewer than two members (see *The admin
   reconciler keeps `admins` equal to Pocket ID's administrators*).
@@ -619,6 +634,40 @@ Every other app's public check now runs from a machine that is not the
 gateway, so a dead gateway shows as every public check failing while the
 direct checks stay green.
 
+**The heartbeat is a service, not a cron job.** Each watched site's
+infrastructure stack runs `heartbeat`: curl's own image, pinned by tag like
+every other image the stack runs, around a rendered `heartbeat/push.sh` that
+once a minute requests `https://<monitor hostname>/ping/<token>` for every
+monitor off the site and sleeps beside the requests, so a monitor that is slow
+or gone stretches nothing. It is rendered, applied, reconciled and removed with
+the stack, and a site that is removed takes its pusher with it; nothing is
+installed on the host outside Docker. The token is generated at `init` as
+`sites.<site>.heartbeat_token`, 32 lowercase hex characters, the one shape
+the fork's seed accepts, and `render` refuses a site whose token is missing
+or any other shape rather than let the fork invent a token the host does not
+have. One token per site serves every monitor, because the fork keeps tokens
+unique within one instance only. The URLs carry it, so they live in a 0600
+`heartbeat/heartbeat.env` the service reads through `env_file`, and the 0644
+compose file names neither. The push is a plain outbound HTTPS request, which
+the host firewall allows by default and every app's federation already
+relies on; nothing is opened for it.
+
+The monitor's seed expects each heartbeat at interval 60 with a grace of 120,
+which the fork adds to the interval before a site is stale: 180 s, one push
+missed and the next one late, since a push that fails outright takes about
+33 s (10 s timeout, two retries). The threshold is the same two as every
+other check; the fork evaluates heartbeats every 15 s, so it costs one such
+tick. The monitor's own site pushes to no one with one monitor, and so gets
+no heartbeat, and a role-less monitor site therefore still runs no
+infrastructure stack. With two monitors on two sites every site pushes to
+both, each monitor site pushes to the other, and each seed expects the
+other's site, which is what notices a monitor's host dying. Declaring a
+monitor changes `heartbeat.env` on every site, so a new one reaches a host at
+that host's next `apply`; `apply` recreates the `heartbeat` service alone for
+it, as `up -d` replaces only the service whose configuration changed, and on
+the gateway no gate is engaged for it. A deployment with no monitor renders
+no pusher.
+
 **Topology commands reseed the monitor.** The seed is correct whenever the
 monitor site is applied, and nothing else applies it: `apply` is one site at
 a time, and `site add`, `site remove`, `storage add` and `app remove` move
@@ -629,7 +678,9 @@ those commands ends with one more stage, the monitor: every monitor site's
 `uptime` stack applied on its own (`apply --only <app>`), which writes the
 seed rendered from the configuration as it now stands and restarts the
 monitor on it, and the fork then adds the checks that are new and deletes
-the ones whose site or app is gone. The stage's gate reads the seed back and
+the ones whose site or app is gone; a joining site's heartbeat rides the same
+reseed, and its pusher comes with its own infrastructure stack, which the
+join applies. The stage's gate reads the seed back and
 holds the stack to `apply`'s health gate. It is the last stage on purpose:
 the change itself is done without it, and an out of date monitor is a
 nuisance, not a wrong cluster, so a failure there stops nothing that already
@@ -661,8 +712,9 @@ ignores case and a trailing slash, so every refusal does too: `/metrics/` and
 UI's own session authenticated JSON under `/api/sites` passes, because the
 dashboard's live refresh and the response time chart fetch it. The status page would
 list every monitor, mesh addresses included, and `/metrics` is public whenever
-no API token exists, which here is always. `/ping/*` stays open for heartbeat
-monitors added by hand.
+no API token exists, which here is always. `/ping/*` stays open: it is where
+every site's heartbeat arrives, and where a heartbeat monitor added by hand
+is pinged.
 
 **Sign in** is the identity provider, admitting exactly the group named in
 `settings.admin_group`, which is required. Password sign in stays on as the
@@ -1267,7 +1319,7 @@ Most of `secrets.enc.yaml` is machine-authored. Nobody invents forty passwords.
 
 | Kind | Examples | Origin |
 |------|----------|--------|
-| **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys, Mercure JWT, RabbitMQ and Valkey passwords, Mbin's OAuth2 server keypair | created at `init`, never typed or seen |
+| **Generated** | Postgres superuser/admin/replication passwords, Garage keys, WireGuard private keys and heartbeat tokens, Mercure JWT, RabbitMQ and Valkey passwords, Mbin's OAuth2 server keypair | created at `init`, never typed or seen |
 | **Pasted** | Cloudflare API token, SMTP password (`external.smtp_password`, or per app) | issued elsewhere, supplied by a human |
 | **Captured** | OIDC client secrets | belong to a running service; recorded here, by `apply` or `oidc client create` for Pocket ID |
 

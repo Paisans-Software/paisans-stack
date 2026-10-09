@@ -33,12 +33,12 @@
     },
     {
       "path": "srv/paisans/f2a9/status/compose.yaml",
-      "sha256": "2f08a007fdabb92031328dd2eb2fc724e4d413fa3876f77ab6984eb9ca8f1033",
+      "sha256": "92def62a97431dcccbf02c87349402c63d7527f1752317e05d83b9091fc25737",
       "mode": "0644"
     },
     {
       "path": "srv/paisans/f2a9/status/monitors.json",
-      "sha256": "9e259177e918c9490f6f17818101719919c1fcde9fdd2ef3bc47bf17406d2f2a",
+      "sha256": "481b095633dcb149c5c9a4c0c354f304b812f95fd843cebfede60eac851b54e4",
       "mode": "0600"
     }
   ]

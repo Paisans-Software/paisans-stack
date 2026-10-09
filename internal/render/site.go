@@ -264,6 +264,7 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 		"EtcdPeerPort":            etcdPeerPort,
 		"EtcdCompactionRetention": etcdCompactionRetention,
 		"EtcdQuotaBackendBytes":   etcdQuotaBackendBytes,
+		"HeartbeatImage":          HeartbeatImage,
 	})
 	if err != nil {
 		return nil, err
@@ -273,6 +274,28 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 	// empty services map is nothing apply could start or recreate.
 	if site.runsInfra() {
 		files = append(files, File{Path: base + p.dep().RelPath("infra", "compose.yaml"), Content: infra, Mode: 0o644})
+	}
+
+	if len(site.Heartbeats) > 0 {
+		// The URLs carry the site's token, so they go in a 0600 env file the
+		// service reads through env_file, and the script that pushes them is
+		// a separate 0644 file with no secret in it; the compose file names
+		// neither value. A changed env file recreates the service, which is
+		// how a new monitor's URL reaches a host (apply, isEnvironment).
+		urls, err := p.heartbeatURLs(site.Name, site.Heartbeats)
+		if err != nil {
+			return nil, err
+		}
+		env, err := p.renderTemplate("heartbeat.env.tmpl", map[string]any{"Site": site, "URLs": urls})
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "heartbeat", "heartbeat.env"), Content: env, Mode: 0o600})
+		push, err := p.renderTemplate("heartbeat-push.sh.tmpl", map[string]any{"Site": site})
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, File{Path: base + p.dep().RelPath("infra", "heartbeat", "push.sh"), Content: push, Mode: 0o644})
 	}
 	if site.IsEtcd {
 		files = append(files, File{Path: base + EtcdInitialPath(p.dep()), Content: FormatEtcdInitial(initial), Mode: 0o644})
@@ -402,9 +425,10 @@ func (p *planner) renderSite(site *siteView) ([]File, error) {
 }
 
 // runsInfra reports whether the site runs any infrastructure service, and so
-// gets an infra stack.
+// gets an infra stack. The heartbeat counts: a site watched by a monitor
+// elsewhere pushes to it from here, whatever its roles.
 func (site *siteView) runsInfra() bool {
-	return site.IsEtcd || site.IsData || site.NeedsProxy || site.IsGarage || site.RunsCaddy
+	return site.IsEtcd || site.IsData || site.NeedsProxy || site.IsGarage || site.RunsCaddy || len(site.Heartbeats) > 0
 }
 
 // hostSitesMount is where the Caddyfile imports the host's own site blocks

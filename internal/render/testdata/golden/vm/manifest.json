@@ -103,12 +103,22 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/compose.yaml",
-      "sha256": "c772e69d0e87ed350aefbb2c1501b8e30144ee44eba631616c9c90556c9be908",
+      "sha256": "1e55a0f839c93aac5c9aec49ca0f8e0cc4d9f13b6992d9a62e28530baad80485",
       "mode": "0644"
     },
     {
       "path": "srv/paisans/f2a9/infra/etcd-initial",
       "sha256": "ba76b866cca9d84f06ab7bf484b87c06e2ccc96cbbbe83e063dd4ce73971b009",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/paisans/f2a9/infra/heartbeat/heartbeat.env",
+      "sha256": "0e7db4441acbc8a1868bd368b7b6e8c3f8a59c2cfdb18285740ebd258fab1b9d",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/paisans/f2a9/infra/heartbeat/push.sh",
+      "sha256": "1e38ef1f8455e7f04a1a785c2f01b3b6d6ed11e1f61e928534c9b2ee48af1374",
       "mode": "0644"
     }
   ]

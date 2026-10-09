@@ -706,8 +706,12 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 			}
 			// The compose file moves the image; an environment file under
 			// infra moves what the replaced container starts with. Both
-			// replace the gateway, so both need the gates.
-			if rel == d.RelPath(gatewayCompose) || (change.Stack == infraStack && isEnvironment(rel)) {
+			// replace the gateway, so both need the gates. The heartbeat's
+			// own environment file is the exception: the heartbeat service
+			// alone reads it, and `up -d` replaces only the service whose
+			// configuration changed, so a new monitor's URL reaching the
+			// gateway site never touches Caddy.
+			if rel == d.RelPath(gatewayCompose) || (change.Stack == infraStack && isEnvironment(rel) && infraService(rel) != heartbeatService) {
 				gatewayComposeChanged = true
 			}
 		}
@@ -1443,6 +1447,10 @@ func isStackCompose(c Change) bool {
 	_, stack, rest, ok := deployment.SplitRel(strings.TrimPrefix(c.Path, remoteRoot))
 	return ok && c.Stack != "" && stack == c.Stack && rest == "compose.yaml"
 }
+
+// heartbeatService is the infrastructure stack's heartbeat pusher, whose
+// files sit under heartbeat/ (internal/render/heartbeat.go).
+const heartbeatService = "heartbeat"
 
 // infraService returns the compose service a file of the infrastructure stack
 // is mounted into, empty when it is not one service's. The templates put each

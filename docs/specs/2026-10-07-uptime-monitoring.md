@@ -159,7 +159,10 @@ own compose file already sets.
 **Not seeded:**
 
 * **Heartbeats.** The toolkit runs no scheduled jobs to ping one. Admins add
-  their own (a backup job, a cron) by hand; see ownership below.
+  their own (a backup job, a cron) by hand; see ownership below. *Superseded
+  by the amendment of 2026-10-09 below: every watched site pushes a heartbeat
+  from a service in its infrastructure stack, and the seed expects it. A
+  heartbeat an admin adds by hand is still theirs.*
 * **Domain expiry.** A WHOIS dependency, and DNS is already exercised by every
   public check.
 
@@ -571,3 +574,124 @@ session, changes five things here:
   network's gateway for a loopback `listen`, or the network a LAN or mesh
   `listen` lies in.
 
+
+## Amendment, 2026-10-09: every watched site pushes a heartbeat
+
+Founder decision, approved in session. The toolkit now runs one scheduled job
+per site, and *What gets checked* no longer holds that it runs none.
+
+### Why
+
+The ping over the mesh is one path, and every failure on it reads the same:
+a torn WireGuard tunnel, a site whose line is down, the monitor's own tunnel
+broken, and a dead host all show as a ping failing. A second path that fails
+independently tells them apart, and the reverse direction over the public
+internet is that path: the site's host pushes to the monitor's public
+hostname, through DNS and whatever serves it, and never over the mesh.
+
+| Ping over the mesh | Heartbeat over the internet | What it is |
+|---|---|---|
+| down | fresh | the mesh: the tunnel between the two is torn, the site is up |
+| up | stale | the site's own way out: its WAN is down, the mesh still carries it |
+| every site down | every site fresh | the monitor's own tunnel, not the sites |
+| down | stale | the host, or the site's power and line together |
+
+### Monitor side
+
+For every site other than the monitor's own the seed carries, beside the
+ping, `<site> — heartbeat`: `monitor_type: heartbeat`,
+`heartbeat_schedule_kind: interval`, `interval_seconds: 60`,
+`heartbeat_grace_seconds: 120`, `failure_threshold: 2`, and
+`heartbeat_token`, the site's own from the secrets. The fork at
+`1.1.0-oidc.4` sets the monitor's token to a seeded `heartbeat_token` of 32
+lowercase hex characters, so the monitor and the host agree on the URL
+without the fork inventing one; a token of any other shape it replaces
+silently, which is why `render` refuses one by name.
+
+**Grace 120.** The fork evaluates a heartbeat as stale when its age exceeds
+`interval_seconds + heartbeat_grace_seconds` (`src/lib/checker.js`
+`evaluateHeartbeat`), so the site is stale at 180 s: one push missed and the
+next one late. A push that fails outright takes about 33 s (10 s timeout,
+two retries with curl's 1 s and 2 s delays), and the cycle is one minute
+from its start whatever the pushes took, so a healthy site is never more than
+about 93 s between arrivals at a monitor even when another monitor is gone.
+A grace of 60 would be stale at 120, which one missed push plus that delay
+reaches.
+
+**Threshold 2**, the same as every other check: the fork's watchdog
+(`src/monitor.js` `watchdogTick`, every 15 s) feeds a stale heartbeat
+through the same failure count, so the second failure is one tick later.
+
+**Two monitors.** Each monitor seeds the heartbeat of every site but its
+own, including the other monitor's site, which is what notices that
+monitor's host dying. One token per site serves both monitors, because the
+fork keeps tokens unique within one instance only (`src/lib/sitePayload.js`
+`insertSite` checks the instance's own table and nothing else).
+
+### Host side
+
+Each watched site's infrastructure stack gains a `heartbeat` service:
+`docker.io/curlimages/curl:8.11.1`, pinned by tag like every other
+infrastructure image, with `/bin/sh` running a rendered
+`infra/heartbeat/push.sh` that loops: start a 60 s sleep in the background,
+`curl -fsS -o /dev/null -m 10 --retry 2` each URL in `HEARTBEAT_URLS` in the
+background, wait for all. The sleep beside the pushes keeps the cadence at
+one minute whatever the pushes take. A failed push logs the time and never
+the URL, so the token stays out of the container's log.
+
+`HEARTBEAT_URLS` is in `infra/heartbeat/heartbeat.env`, rendered 0600 and
+read through `env_file`, one `https://<monitor hostname>/ping/<token>` per
+monitor off the site in app order; the 0644 compose file names neither the
+token nor the hostnames. A change to the env file recreates the `heartbeat`
+service alone, since `up -d` replaces only the service whose configuration
+changed, and on the gateway it engages no gate.
+
+The service runs on the stack's default bridge, dialling out and listening
+for nothing. The host firewall allows outgoing traffic by default
+(`hostprep`, "allow outgoing by default"), and every app's federation already
+leaves the same way, so nothing is opened. The monitor's Caddy snippet, and
+the snippets `ingress show` prints for an operator's own web server, let
+`/ping/*` through already.
+
+The monitor's own site pushes to every monitor off it, and so to nothing
+with one monitor: a push from the host the monitor runs on can only ever
+arrive. A role-less monitor site in ingress mode external therefore still
+renders no infrastructure stack; with a second monitor elsewhere it gains one
+holding the heartbeat alone. A deployment with no monitor renders no pusher
+anywhere.
+
+### Secrets
+
+`sites.<site>.heartbeat_token`, generated at `init` beside the site's
+WireGuard key: 16 random bytes, hex. Kept once set, like every generated
+secret. A deployment whose secrets predate it renders nothing until `init`
+is re-run, which fills exactly the missing tokens and reports them.
+
+### Topology commands
+
+The reseed stage every topology command ends with already re-applies each
+monitor's `uptime` stack from the configuration as it stands, so a joining
+site's heartbeat is seeded by it and a removed site's deleted. The joining
+site's pusher comes with its own infrastructure stack, which the join
+applies. Declaring a new monitor changes `heartbeat.env` on every site, which
+each site's next `apply` delivers.
+
+### Tests
+
+Seed: a heartbeat per watched site with the site's token, kind, interval,
+grace and threshold, none for the monitor's own site; two monitors expect
+each other's site. Render: every watched site's `heartbeat.env` (0600) and
+`push.sh`, a `heartbeat` service in its stack, the token in no compose file;
+the monitor's own site renders none with one monitor and the other monitor's
+URL with two; no monitor, no pusher; a missing or malformed token refused by
+name. `secretsgen`: a token per site in shape, kept on a second pass, filled
+for a site added later. `apply`: a `heartbeat.env` change is `up -d` with no
+gateway gate. Golden tree regenerated.
+
+### Image
+
+The kind's default moves to `ghcr.io/paisans-software/uptime:1.1.0-oidc.4`,
+the first release to honour a seeded `heartbeat_token`. On an older image
+the fork invents its own token and every heartbeat stays "waiting for first
+heartbeat": inconclusive, never down, so a deployment that applies this
+render before the image is published loses nothing and gains nothing.

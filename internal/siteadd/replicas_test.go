@@ -27,7 +27,7 @@ func withReplica(t *testing.T) *world {
 	withHomeC(cfg)
 	cfg.Cluster.Sites = []string{"home-a", "home-b", "home-c"}
 	cfg.Etcd.Members = []string{"home-a", "home-b", "home-c", "vm"}
-	secrets.Sites["home-c"] = config.SiteSecrets{WireGuardPrivateKey: "REREREREREREREREREREREREREREREREREREREREREQ="}
+	secrets.Sites["home-c"] = config.SiteSecrets{WireGuardPrivateKey: "REREREREREREREREREREREREREREREREREREREREREQ=", HeartbeatToken: "6666666666666666666666666666ffff"}
 
 	w := &world{t: t, cfg: cfg, secrets: secrets, hosts: map[string]*host{}, nextID: 3,
 		running: map[string]bool{"home-a": true, "home-c": true, "vm": true},

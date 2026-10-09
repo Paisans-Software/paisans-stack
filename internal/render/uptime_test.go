@@ -324,7 +324,7 @@ func TestEachMonitorChecksTheOthersPublicURL(t *testing.T) {
 	cfg.Apps["status-b"] = config.App{Kind: config.KindUptime, Hostname: "status-b.example.org",
 		Placement: config.Placement{Mode: config.PlacementPinned, Site: "watch-b"},
 		Settings:  map[string]any{"admin_group": "admins"}}
-	secrets.Sites["watch-b"] = config.SiteSecrets{WireGuardPrivateKey: "REREREREREREREREREREREREREREREREREREREREREQ="}
+	secrets.Sites["watch-b"] = config.SiteSecrets{WireGuardPrivateKey: "REREREREREREREREREREREREREREREREREREREREREQ=", HeartbeatToken: "4444444444444444444444444444dddd"}
 	secrets.Apps["status-b"] = map[string]any{"admin_password": "fixture-admin-b", "session_secret": "fixture-session-b"}
 	if refusals := validate.Check(cfg).Refusals(); len(refusals) > 0 {
 		t.Fatalf("two monitors is a configuration the toolkit refuses: %v", refusals)
@@ -414,4 +414,193 @@ func TestTheEdgeRefusesMetricsWithATrailingSlash(t *testing.T) {
 		}
 	}
 	t.Fatal("no snippet")
+}
+
+// The reverse of the ping: every other site pushes a heartbeat to the
+// monitor, and the seed expects one. The token is the site's own, from the
+// secrets, so the monitor and the host that pushes agree on the URL without
+// the fork inventing one. Interval 60 with grace 120, which the fork adds
+// (src/lib/checker.js evaluateHeartbeat: tolerated = interval + grace), so a
+// site is stale after 180 s: one missed push, and the next one late. The
+// monitor's own site pushes to no one here, and so gets no heartbeat.
+func TestTheSeedExpectsAHeartbeatFromEveryOtherSite(t *testing.T) {
+	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+	monitors := byName(renderSeed(t, cfg, secrets))
+	for _, site := range []string{"home-a", "home-b", "vm"} {
+		m := monitors[site+" — heartbeat"]
+		if m == nil {
+			t.Fatalf("no heartbeat for %s", site)
+		}
+		token := secrets.Sites[site].HeartbeatToken
+		if token == "" {
+			t.Fatalf("the fixture secrets carry no heartbeat token for %s", site)
+		}
+		if m["monitor_type"] != "heartbeat" || m["heartbeat_token"] != token {
+			t.Errorf("%s heartbeat: %v", site, m)
+		}
+		if m["heartbeat_schedule_kind"] != "interval" || m["interval_seconds"] != float64(60) || m["heartbeat_grace_seconds"] != float64(120) {
+			t.Errorf("%s heartbeat schedule: %v", site, m)
+		}
+		if m["failure_threshold"] != float64(2) {
+			t.Errorf("%s heartbeat threshold: %v", site, m["failure_threshold"])
+		}
+		if _, ok := m["url"]; ok {
+			t.Errorf("%s heartbeat carries a url: %v", site, m)
+		}
+	}
+	if monitors["watch — heartbeat"] != nil {
+		t.Error("the monitor expects a heartbeat from its own site, which nothing pushes")
+	}
+}
+
+// Every site but the monitor's own pushes: its infrastructure stack gains a
+// heartbeat service whose URLs, token included, are in a 0600 env file and
+// nowhere in the 0644 compose file. The monitor's own site pushes nothing with
+// one monitor, and a role-less monitor site therefore still renders no infra
+// stack.
+func TestEveryWatchedSitePushesAHeartbeatToTheMonitor(t *testing.T) {
+	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+	for _, site := range []string{"home-a", "home-b", "vm"} {
+		token := secrets.Sites[site].HeartbeatToken
+		var env *render.File
+		for i, f := range plan.Files {
+			if f.Path == site+"/srv/paisans/f2a9/infra/heartbeat/heartbeat.env" {
+				env = &plan.Files[i]
+			}
+		}
+		if env == nil {
+			t.Fatalf("%s renders no heartbeat.env", site)
+		}
+		if env.Mode != 0o600 {
+			t.Errorf("%s: heartbeat.env carries the token and is rendered %o", site, env.Mode)
+		}
+		if want := "HEARTBEAT_URLS=https://status.example.org/ping/" + token + "\n"; !strings.Contains(env.Content, want) {
+			t.Errorf("%s: heartbeat.env lacks %q:\n%s", site, want, env.Content)
+		}
+		compose := files[site+"/srv/paisans/f2a9/infra/compose.yaml"]
+		if !strings.Contains(compose, "\n  heartbeat:\n") {
+			t.Errorf("%s: the infrastructure stack has no heartbeat service:\n%s", site, compose)
+		}
+		if strings.Contains(compose, token) {
+			t.Errorf("%s: the token is in the 0644 compose file", site)
+		}
+		if _, ok := files[site+"/srv/paisans/f2a9/infra/heartbeat/push.sh"]; !ok {
+			t.Errorf("%s renders no push.sh", site)
+		}
+	}
+	if _, ok := files["watch/srv/paisans/f2a9/infra/heartbeat/heartbeat.env"]; ok {
+		t.Error("the monitor's own site pushes a heartbeat, to itself")
+	}
+	if strings.Contains(files["watch/srv/paisans/f2a9/infra/compose.yaml"], "\n  heartbeat:\n") {
+		t.Error("the monitor's own site runs a heartbeat service")
+	}
+}
+
+// withTwoMonitors is withMonitor plus a second monitor site and app.
+func withTwoMonitors(t *testing.T) (*config.Config, *config.Secrets) {
+	t.Helper()
+	cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+	watchB := cfg.Sites["watch"]
+	watchB.Address = "10.44.0.5"
+	watchB.Endpoint = "watch-b.example.org:51820"
+	watchB.PublicAddress = "203.0.113.21"
+	watchB.SSH.Host = "watch-b.example.org"
+	cfg.Sites["watch-b"] = watchB
+	cfg.Apps["status-b"] = config.App{Kind: config.KindUptime, Hostname: "status-b.example.org",
+		Placement: config.Placement{Mode: config.PlacementPinned, Site: "watch-b"},
+		Settings:  map[string]any{"admin_group": "admins"}}
+	secrets.Sites["watch-b"] = config.SiteSecrets{WireGuardPrivateKey: "REREREREREREREREREREREREREREREREREREREREREQ=", HeartbeatToken: "4444444444444444444444444444dddd"}
+	secrets.Apps["status-b"] = map[string]any{"admin_password": "fixture-admin-b", "session_secret": "fixture-session-b"}
+	if refusals := validate.Check(cfg).Refusals(); len(refusals) > 0 {
+		t.Fatalf("two monitors is a configuration the toolkit refuses: %v", refusals)
+	}
+	return cfg, secrets
+}
+
+// With two monitors each expects the other's site to push, and every site
+// pushes to every monitor off its own site: a host's env lists both URLs with
+// the one token, in app order, and each monitor site lists the other's alone.
+// One token per site serves both because the fork keeps tokens unique within
+// one instance only (src/lib/sitePayload.js insertSite).
+func TestTwoMonitorsCrossCoverHeartbeats(t *testing.T) {
+	cfg, secrets := withTwoMonitors(t)
+	for self, other := range map[string]string{"status": "status-b", "status-b": "status"} {
+		site := cfg.Apps[self].Placement.Site
+		otherSite := cfg.Apps[other].Placement.Site
+		monitors := byName(renderSeedAt(t, cfg, secrets, site+"/srv/paisans/f2a9/"+self+"/monitors.json"))
+		m := monitors[otherSite+" — heartbeat"]
+		if m == nil || m["heartbeat_token"] != secrets.Sites[otherSite].HeartbeatToken {
+			t.Errorf("%s does not expect %s's heartbeat: %v", self, otherSite, m)
+		}
+		if monitors[site+" — heartbeat"] != nil {
+			t.Errorf("%s expects a heartbeat from its own site", self)
+		}
+	}
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := planFiles(plan)
+	token := secrets.Sites["home-a"].HeartbeatToken
+	if want := "HEARTBEAT_URLS=https://status.example.org/ping/" + token + " https://status-b.example.org/ping/" + token + "\n"; !strings.Contains(files["home-a/srv/paisans/f2a9/infra/heartbeat/heartbeat.env"], want) {
+		t.Errorf("home-a pushes to %q, want %q", files["home-a/srv/paisans/f2a9/infra/heartbeat/heartbeat.env"], want)
+	}
+	if want := "HEARTBEAT_URLS=https://status-b.example.org/ping/" + secrets.Sites["watch"].HeartbeatToken + "\n"; !strings.Contains(files["watch/srv/paisans/f2a9/infra/heartbeat/heartbeat.env"], want) {
+		t.Errorf("watch pushes to %q, want %q", files["watch/srv/paisans/f2a9/infra/heartbeat/heartbeat.env"], want)
+	}
+	if want := "HEARTBEAT_URLS=https://status.example.org/ping/" + secrets.Sites["watch-b"].HeartbeatToken + "\n"; !strings.Contains(files["watch-b/srv/paisans/f2a9/infra/heartbeat/heartbeat.env"], want) {
+		t.Errorf("watch-b pushes to %q, want %q", files["watch-b/srv/paisans/f2a9/infra/heartbeat/heartbeat.env"], want)
+	}
+	if !strings.Contains(files["watch-b/srv/paisans/f2a9/infra/compose.yaml"], "\n  heartbeat:\n") {
+		t.Errorf("watch-b, a monitor site in mode paisans, runs no heartbeat service:\n%s", files["watch-b/srv/paisans/f2a9/infra/compose.yaml"])
+	}
+}
+
+// A deployment with no monitor has nothing to push to, so no site runs a
+// heartbeat service.
+func TestNoMonitorMeansNoHeartbeatPusher(t *testing.T) {
+	cfg := fixture(t)
+	delete(cfg.Apps, "status")
+	delete(cfg.Sites, "watch")
+	secrets := fixtureSecrets(t)
+	if refusals := validate.Check(cfg).Refusals(); len(refusals) > 0 {
+		t.Fatalf("a deployment without a monitor is refused: %v", refusals)
+	}
+	plan, err := render.Build(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range planFiles(plan) {
+		if strings.Contains(path, "/heartbeat/") {
+			t.Errorf("%s is rendered with no monitor to push to", path)
+		}
+		if strings.HasSuffix(path, "/infra/compose.yaml") && strings.Contains(content, "\n  heartbeat:\n") {
+			t.Errorf("%s runs a heartbeat service with no monitor to push to", path)
+		}
+	}
+}
+
+// A site without a token, or with one the fork would silently replace, is
+// refused at render by name: the seed and the host would otherwise disagree
+// on the URL, which the monitor reports as the site being down.
+func TestAMissingOrMalformedHeartbeatTokenIsRefused(t *testing.T) {
+	for _, tc := range []struct{ token, want string }{
+		{"", "paisans init"},
+		{"not-hex", "32 lowercase hex"},
+		{"0123456789ABCDEF0123456789ABCDEF", "32 lowercase hex"},
+	} {
+		cfg, secrets := withMonitor(t, config.SMTP{}, nil)
+		site := secrets.Sites["home-a"]
+		site.HeartbeatToken = tc.token
+		secrets.Sites["home-a"] = site
+		_, err := render.Build(cfg, secrets)
+		if err == nil || !strings.Contains(err.Error(), "sites.home-a.heartbeat_token") || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("token %q: got %v, want an error naming sites.home-a.heartbeat_token and %q", tc.token, err, tc.want)
+		}
+	}
 }

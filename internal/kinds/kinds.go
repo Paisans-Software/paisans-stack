@@ -173,16 +173,21 @@ var catalogue = map[config.Kind][]Service{
 		// (SEED_FILE), TRUST_PROXY and an entrypoint that drops from root
 		// from 1.1.0-oidc.2; bulk channel actions and the SMTP lock when the
 		// seed supplies SMTP from 1.1.0-oidc.3, the first release published
-		// from the organisation. Its database is SQLite under /data, which
-		// is why the kind is pinned only: it has no Postgres service, so
-		// cluster-placement-without-a-cluster refuses it.
+		// from the organisation; a seed entry's heartbeat_token taken as the
+		// monitor's token from 1.1.0-oidc.4, which the per site heartbeat
+		// in internal/render/heartbeat.go depends on. Its database is SQLite
+		// under /data, which is why the kind is pinned only: it has no
+		// Postgres service, so cluster-placement-without-a-cluster refuses
+		// it.
 		//
-		// NOTE THE MISSING `v`: the git tag is v1.1.0-oidc.3 and
-		// docker/metadata-action's semver pattern strips it. Checked against
-		// ghcr.io on 2026-10-07 by requesting the manifest for this exact tag
-		// anonymously: 200. Ran it as root with a seed carrying SMTP: healthy,
-		// seed applied.
-		{Name: "app", Image: "ghcr.io/paisans-software/uptime:1.1.0-oidc.3", Purpose: "the monitor"},
+		// NOTE THE MISSING `v`: the git tag is v1.1.0-oidc.4 and
+		// docker/metadata-action's semver pattern strips it. 1.1.0-oidc.3
+		// was checked against ghcr.io on 2026-10-07 by requesting the
+		// manifest for that exact tag anonymously (200) and run as root with
+		// a seed carrying SMTP (healthy, seed applied); 1.1.0-oidc.4 is the
+		// release carrying the heartbeat token, pinned ahead of its
+		// publication, and is to be checked the same way once published.
+		{Name: "app", Image: "ghcr.io/paisans-software/uptime:1.1.0-oidc.4", Purpose: "the monitor"},
 	},
 }
 

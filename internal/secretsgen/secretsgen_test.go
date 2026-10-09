@@ -122,8 +122,11 @@ func TestFillCoversWhatWasAddedLater(t *testing.T) {
 	if secrets.Sites["home-c"].WireGuardPrivateKey == "" {
 		t.Fatal("a site added later got no key")
 	}
-	if len(filled.Generated) != 1 || filled.Generated[0] != "sites.home-c.wireguard_private_key" {
-		t.Fatalf("expected exactly the new site's key, got %v", filled.Generated)
+	if secrets.Sites["home-c"].HeartbeatToken == "" {
+		t.Fatal("a site added later got no heartbeat token")
+	}
+	if want := []string{"sites.home-c.heartbeat_token", "sites.home-c.wireguard_private_key"}; strings.Join(filled.Generated, ",") != strings.Join(want, ",") {
+		t.Fatalf("expected exactly the new site's secrets %v, got %v", want, filled.Generated)
 	}
 }
 
@@ -621,6 +624,40 @@ func TestOutlineAndWriteFreelyOwedClientsNameTheirCallbackAndRestriction(t *test
 		}
 		if strings.Contains(why, "/oauth/callback\"") || strings.Contains(why, "/oauth/callback ") {
 			t.Errorf("%s offers the callback no kind uses:\n%s", name, why)
+		}
+	}
+}
+
+// Every site gets a heartbeat token, the one its host pushes to each monitor
+// with: 32 lowercase hex characters, which is the shape the uptime fork's
+// seed accepts (src/lib/sitePayload.js insertSite). Like every generated
+// secret it is kept once set: a replaced token is a host pushing at a URL the
+// monitor no longer knows, which reads as the site being down.
+func TestFillGeneratesAHeartbeatTokenPerSite(t *testing.T) {
+	cfg := load(t)
+	secrets := &config.Secrets{}
+	if _, err := secretsgen.Fill(cfg, secrets); err != nil {
+		t.Fatal(err)
+	}
+	shape := regexp.MustCompile(`^[0-9a-f]{32}$`)
+	before := map[string]string{}
+	for _, site := range cfg.SiteNames() {
+		token := secrets.Sites[site].HeartbeatToken
+		if !shape.MatchString(token) {
+			t.Errorf("sites.%s.heartbeat_token is %q, not 32 lowercase hex characters", site, token)
+		}
+		before[site] = token
+	}
+	filled, err := secretsgen.Fill(cfg, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filled.Changed() {
+		t.Fatalf("a second pass generated %v", filled.Generated)
+	}
+	for _, site := range cfg.SiteNames() {
+		if secrets.Sites[site].HeartbeatToken != before[site] {
+			t.Errorf("sites.%s.heartbeat_token was replaced", site)
 		}
 	}
 }

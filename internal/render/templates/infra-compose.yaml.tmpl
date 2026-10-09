@@ -116,6 +116,24 @@ services:
       - {{ .Dir }}/caddy/data:/data
       - {{ .Dir }}/caddy/config:/config
 {{- end }}
+{{- if .Site.Heartbeats }}
+  # This site's heartbeat: a push a minute to every monitor off this site, at
+  # its public hostname over the internet rather than the mesh, so that the
+  # ping over the mesh and this push fail separately and the monitor can tell
+  # a torn tunnel from a dead site. The URLs carry the site's token and stay
+  # in heartbeat.env, which is 0600; this file is 0644. On the default bridge,
+  # not the host's network: it dials out and listens for nothing.
+  heartbeat:
+    labels:
+      {{ .DeploymentLabel }}: "{{ .DeploymentID }}"
+    image: {{ .HeartbeatImage }}
+    restart: unless-stopped
+    env_file:
+      - heartbeat/heartbeat.env
+    entrypoint: ["/bin/sh", "/push.sh"]
+    volumes:
+      - {{ .Dir }}/heartbeat/push.sh:/push.sh:ro
+{{- end }}
 
 # Every network carries the deployment label too, so that what owns it is
 # read from the label rather than guessed from its name.

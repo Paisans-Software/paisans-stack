@@ -118,3 +118,23 @@ func TestARoutingChangeBesideARecreateIsOneAction(t *testing.T) {
 		}
 	}
 }
+
+// The heartbeat's own environment file is read by the heartbeat service
+// alone, and `up -d` replaces only the service whose configuration changed,
+// so a new monitor's URL reaching the gateway site recreates the heartbeat
+// and never touches Caddy: no gateway gate is engaged for it.
+func TestAHeartbeatEnvChangeDoesNotEngageTheGatewayGates(t *testing.T) {
+	host := applied(t, "vm")
+	host.running = true
+	p, err := apply.Build("vm", planChangingOn(t, "vm", "srv/paisans/f2a9/infra/heartbeat/heartbeat.env"), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.GatewayChanging {
+		t.Error("a heartbeat.env change is treated as the gateway changing")
+	}
+	a := infraAction(t, p)
+	if !a.Recreate || a.Force {
+		t.Errorf("the infrastructure action is %q, want `up -d`", a.Command(p.Deployment))
+	}
+}
