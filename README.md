@@ -1374,6 +1374,32 @@ creates those with the shapes their consumers require, and it refuses an unknown
 top level section, because a value written where nothing reads it looks
 delivered and is not.
 
+**Secrets nothing declares are pruned.** A site or an app taken out of
+`paisans.yaml` leaves its secrets behind. A secret is orphaned when it names
+something the configuration does not declare:
+
+| Secret | Orphaned when |
+|---|---|
+| `sites.<name>` | no site `<name>` is declared |
+| `apps.<name>` | no app `<name>` is declared |
+| `oidc_clients.<name>` | no app `<name>` is declared |
+| `pocket_id_groups.<name>` | no Pocket ID app's `signup_default_groups` names `<name>` |
+
+`init` and `apply` warn once per orphan, by key and never by value, and never
+refuse: nothing reads it. `paisans secrets prune` lists them and changes
+nothing; with `--execute` it removes them and writes the file, encrypted to the
+same recipients, and refuses an encrypted file with no `.sops.yaml` beside it
+rather than writing it in plaintext. Pruning an `oidc_clients` entry does not
+delete the client at Pocket ID, which it says: delete it there by hand if that
+Pocket ID still runs. A removed site's WireGuard key is safe to prune once no
+site's mesh lists it, which is true after a full `site remove`, or after every
+remaining site's next `apply`.
+
+```sh
+paisans secrets prune             # lists them
+paisans secrets prune --execute   # removes them
+```
+
 **A gateway without its DNS token is refused at `render` and `apply`.** `init`
 lists `external.acme_dns_token` as owed rather than refusing, because an
 install is assembled in steps. Rendering without it is different: the gateway's
@@ -4527,6 +4553,7 @@ place, and everything else found is listed as kept:
 |---|---|---|
 | containers and networks | the deployment label carrying this id, by Docker's own filter | stopped and removed; with `--delete-data` their anonymous volumes too |
 | named volumes | the same label | only with `--delete-data` |
+| images | run only by the containers above, and by no other container on the host | removed by ID, without `-f`, after the containers; one Docker refuses, because something started from it meanwhile, is kept and named with Docker's reason |
 | rendered files | an entry in this deployment's manifest whose hash the file still has | deleted, then the manifest; a file edited on the host is kept and named |
 | the mesh interface | `wg-quick@psns-<token>`, named for the token, and its file hashing to its manifest entry | the unit disabled and stopped; the file deleted with the rendered files |
 | units and drop-ins | named `paisans-<token>-*` under `/etc/systemd/system` and its drop-in directories | disabled, stopped, deleted; systemd reloaded |
@@ -4578,9 +4605,73 @@ reach the cluster again, since no remaining site has it as a WireGuard peer
 and its etcd member is gone.
 
 **It leaves three things and says so,** as `app remove` does: the site's
-WireGuard key in the secrets file, which it never edits; the DNS records `dns
-init` made for the host's public address, until `paisans dns prune
---execute` deletes them; and everything kept above, with why.
+WireGuard key and heartbeat token in the secrets file, which it never edits,
+for `paisans secrets prune` (see *Pasted and captured secrets go in through a
+pipe*); the DNS records `dns init` made for the host's public address, which
+are deleted at the DNS provider by hand, since `paisans dns prune` deletes only
+a record pointing at an address `paisans.yaml` still declares; and everything
+kept above, with why.
+
+#### `--force` cleans one host and nothing else
+
+A full removal checks the cluster first, and when the other hosts are gone
+every one of its refusals holds, so nothing cleans the host that is left.
+`--force` runs stage 3 alone against one host: stages 1, 2, 4 and 5 do not
+run, none of their refusals are checked, no other site is reached, and neither
+`paisans.yaml` nor the secrets file is edited.
+`docs/specs/2026-10-09-site-remove-force.md` is the approved specification.
+
+```sh
+paisans site remove monitor-a --force --ssh admin@203.0.113.9                          # dry run
+paisans site remove monitor-a --force --ssh admin@203.0.113.9 --execute --delete-data  # asks for the name
+paisans site remove home-b --force --execute                                           # its declared host, asks for the name
+paisans site remove home-b --force --ssh admin@198.51.100.4 --execute                  # a host it ran on before
+```
+
+**Which host.** `--ssh user@host[:port]` when given, and it may be any host.
+Otherwise the declared site's own `ssh` section. A site no longer declared
+needs `--ssh`. Any host is safe to name, because nothing on it is touched
+unless it carries this deployment's id or the token taken from it: the same
+proofs as the table above, images included. A host this deployment never used
+plans nothing.
+
+The site's roles, which decide whether a gateway's Caddy is handed over, come
+from this deployment's entry in the host's registry, so they are right for an
+undeclared site and for a host the site has left. With no entry, the declared
+roles are used.
+
+**The site's own host asks first.** When the host is the declared site's own,
+its cluster still counts on it: its etcd member, its Patroni replica, its
+Garage node and its place in every other site's mesh stay until a full `site
+remove`, and its next `apply` deploys it again. The plan says so, and
+`--execute` asks for the site's name at a terminal, as `--delete-data` does.
+No flag answers either question. Any other host is not asked about.
+
+| Refused | Because |
+|---|---|
+| an undeclared site without `--ssh` | there is no way to reach its host |
+| `--ssh` not of the form `user@host[:port]` | the user is whose authorized keys are cleaned; Eg: `admin@203.0.113.9` |
+| `--ssh` without `--force` | a full removal reaches the site through its `ssh` section |
+| `--force` with `--host-gone` | `--force` cleans one host, and `--host-gone` reaches none |
+| a host that does not answer over ssh | what is on it cannot be read |
+| the site's own host, or `--delete-data`, with `--execute` and no terminal | it takes a running site from under its cluster, or deletes member data |
+
+**A lost deployment.** When the data and gateway hosts are destroyed and the
+monitors survive on hosts that also run other people's services:
+
+1. Take the monitor sites and their `uptime` apps out of `paisans.yaml`, then
+   run `paisans site remove <monitor> --force --ssh <its host> --execute
+   --delete-data` once per monitor, from a terminal. Only what is this
+   deployment's goes; the owner's containers, images, Caddy and ufw rules stay.
+2. `paisans secrets prune --execute` removes the monitors' and their apps'
+   secrets.
+3. The destroyed sites stay declared, keeping their identity in the secrets
+   file. Change their `ssh` sections and addresses to the new hosts, Eg:
+   `203.0.113.20`, and `apply` deploys them there.
+4. Change DNS at the provider by hand. `paisans dns` never updates a record,
+   so each name still wanted that points at a lost address is reported as a
+   conflict until it is changed; the monitors' records, whose addresses are no
+   longer declared, are deleted by hand too.
 
 ### Preflight
 
