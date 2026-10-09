@@ -2826,18 +2826,20 @@ afterwards must never hold up a data site's apply: riding out that outage is
 what the witness is for. The gate reads the record on the site being applied
 rather than the live cluster, so it costs an ordinary apply no extra host.
 
-**A founding member alone has no leader, and the gates do not ask it for one.**
-The witness, applied first, runs etcd by itself until the first data site's
-member joins, and until then `etcdctl member list` times out: it is
-linearizable in etcd v3.5.16 and waits for a leader. So whether a member runs
-is asked of Docker (`compose ps --status running etcd`), not of etcd. The check
-against the live membership asks `member list` as always; when that fails on a
-member while this site is being founded, `apply` asks the same member
-`etcdctl endpoint status`, which answers without a leader, and passes over it
-only if that reports no leader. A founding cluster's membership is
-`--initial-cluster` from the configuration, so there is nothing to compare yet.
-A member that answers neither is an error, and so is a leaderless member when
-this site is past founding: that is a cluster in trouble, not one being born.
+**A founding member alone answers nothing, so the gates read its record
+instead.** The witness, applied first, runs etcd by itself until the first data
+site's member joins, and until then it serves no client request at all: in etcd
+v3.5.16 a member waits to publish itself to the cluster before it serves, and
+publishing needs a quorum, so `member list`, `endpoint status` and `/health` all
+hang. So whether a member runs is asked of Docker (`compose ps --status running
+etcd`), not of etcd. The check against the live membership asks `member list` as
+always; when that fails on a member while this site is being founded, `apply`
+reads that member's own `etcd-initial`. If it records
+`initial-cluster-state=new`, the member belongs to exactly the cluster its
+`initial-cluster` names, so that list is compared with `etcd.members` as a live
+membership would be. A member with no such record is an error, and so is one
+that answers nothing when this site is past founding: that is a cluster in
+trouble, not one being born.
 
 ### `apply` creates each clustered app's role and database
 

@@ -191,13 +191,11 @@ func TestProbeEtcdMembers(t *testing.T) {
 }
 
 // etcdHost is a host whose etcd container is running or not, and whose etcd
-// either has a leader or is a founding member alone, the way etcd v3.5.16
-// answers each: `member list` times out without a leader, and `endpoint
-// status` answers with leader 0. statusFails makes `endpoint status` fail
-// too, as a member that answers nothing does.
+// either has a leader or is a founding member alone. A founding member alone
+// answers no client request in etcd v3.5.16, so `member list` times out.
 type etcdHost struct {
 	*fakeHost
-	up, leaderless, statusFails bool
+	up, leaderless bool
 }
 
 const deadline = `{"level":"warn","msg":"retrying of unary invoker failed","error":"rpc error: code = DeadlineExceeded desc = context deadline exceeded"}
@@ -214,16 +212,6 @@ func (h *etcdHost) Run(command string) (string, error) {
 			return deadline, fmt.Errorf("exit status 1")
 		}
 		return memberListOne, nil
-	case strings.Contains(command, "endpoint status -w json"):
-		if !h.up || h.statusFails {
-			return deadline, fmt.Errorf("exit status 1")
-		}
-		leader := `,"leader":12345678901234567890`
-		if h.leaderless {
-			leader = ""
-		}
-		return `{"level":"warn","msg":"a line etcdctl logs first"}
-[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":1,"member_id":2},"version":"3.5.16"` + leader + `,"raftTerm":2}}]`, nil
 	case strings.Contains(command, "ps --status running --quiet etcd"):
 		if h.up {
 			return "running\n", nil
@@ -233,18 +221,31 @@ func (h *etcdHost) Run(command string) (string, error) {
 	return h.fakeHost.Run(command)
 }
 
+// fixtureFounders is --initial-cluster as a founder of the fixture's
+// etcd.members renders it.
+const fixtureFounders = "home-a=http://10.44.0.1:2380,home-b=http://10.44.0.2:2380,vm=http://10.44.0.3:2380"
+
+// leaderlessWitness is the witness as a new deployment leaves it: its etcd
+// runs alone and answers nothing, and its record says what it was founded
+// with.
+func leaderlessWitness(in render.EtcdInitial) *etcdHost {
+	h := &etcdHost{fakeHost: newHost(), up: true, leaderless: true}
+	h.files["/"+"srv/paisans/f2a9/infra/etcd-initial"] = render.FormatEtcdInitial(in)
+	return h
+}
+
 // The first data site of a new deployment is applied after the witness,
-// whose etcd runs alone with no leader. It is not refused: the witness counts
-// as running without asking etcd, the membership probe passes over a
-// leaderless founding member, and the plan carries the founding stop naming
-// the data site still to apply.
+// whose etcd runs alone and answers nothing. It is not refused: the witness
+// counts as running without asking etcd, its membership is read from its
+// record, which names exactly etcd.members, and the plan carries the
+// founding stop naming the data site still to apply.
 func TestAFoundingDataSiteGetsPastALeaderlessWitness(t *testing.T) {
 	cfg := fixtureConfig(t)
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), newHost())
 	if err != nil {
 		t.Fatal(err)
 	}
-	witness := &etcdHost{fakeHost: newHost(), up: true, leaderless: true}
+	witness := leaderlessWitness(render.EtcdInitial{State: "new", Cluster: fixtureFounders})
 	transports := map[string]apply.Transport{
 		"home-a": &etcdHost{fakeHost: newHost()},
 		"home-b": &etcdHost{fakeHost: newHost()},
@@ -265,49 +266,80 @@ func TestAFoundingDataSiteGetsPastALeaderlessWitness(t *testing.T) {
 	if got := apply.FoundingUnstarted(cfg, "home-a", running); len(got) != 1 || got[0] != "home-b" {
 		t.Errorf("the founding stop names %v, want [home-b]", got)
 	}
+	members, found, err := apply.ProbeEtcdMembers(cfg, "home-a", transports, true)
+	if err != nil || !found || len(members) != 3 {
+		t.Fatalf("membership from the witness's record: %v %v %v", members, found, err)
+	}
+	for i, want := range []string{"home-a", "home-b", "vm"} {
+		if got := apply.EtcdMemberSite(cfg, members[i]); got != want {
+			t.Errorf("member %d is %s, want %s", i, got, want)
+		}
+	}
 	if err := apply.EtcdGates(cfg, p, transports, true, running); err != nil {
 		t.Errorf("a founding data site was refused behind a leaderless witness: %v", err)
 	}
 }
 
-// Outside founding, a member with no leader is a cluster in trouble, not one
-// being born, and apply stops on it as it always has.
-func TestALeaderlessEtcdStopsAnApplyPastFounding(t *testing.T) {
+// A witness founded with a different set than etcd.members says is the half
+// grown cluster EtcdRefusal exists for, whether its membership came from etcd
+// or from its record.
+func TestAFoundingWitnessWithAnotherSetIsRefused(t *testing.T) {
 	cfg := fixtureConfig(t)
 	p, err := apply.Build("home-a", plan(t), acmeModule(t), newHost())
 	if err != nil {
 		t.Fatal(err)
 	}
 	transports := map[string]apply.Transport{
-		"home-a": &etcdHost{fakeHost: newHost(), up: true, leaderless: true},
-		"home-b": &etcdHost{fakeHost: newHost(), up: true, leaderless: true},
-		"vm":     &etcdHost{fakeHost: newHost(), up: true, leaderless: true},
+		"home-a": &etcdHost{fakeHost: newHost()},
+		"home-b": &etcdHost{fakeHost: newHost()},
+		"vm":     leaderlessWitness(render.EtcdInitial{State: "new", Cluster: "home-a=http://10.44.0.1:2380,vm=http://10.44.0.3:2380"}),
+	}
+	running := map[string]bool{"vm": true}
+	err = apply.EtcdGates(cfg, p, transports, true, running)
+	if err == nil || !strings.Contains(err.Error(), "the running etcd cluster's members are home-a, vm") {
+		t.Errorf("a witness founded with another set was let through: %v", err)
+	}
+}
+
+// Only a record of a member founded `new` stands in for `member list`. A
+// witness with no record, an unreadable one, or one that joined an existing
+// cluster is an error, as the failed `member list` alone always was.
+func TestAnUnansweredEtcdWithoutAFoundingRecordIsAnError(t *testing.T) {
+	cfg := fixtureConfig(t)
+	cases := map[string]*etcdHost{
+		"no record":  {fakeHost: newHost(), up: true, leaderless: true},
+		"unreadable": leaderlessWitness(render.EtcdInitial{State: "new", Cluster: "home-a"}),
+		"existing":   leaderlessWitness(render.EtcdInitial{State: "existing", Cluster: fixtureFounders}),
+	}
+	cases["garbage"] = &etcdHost{fakeHost: newHost(), up: true, leaderless: true}
+	cases["garbage"].files["/"+"srv/paisans/f2a9/infra/etcd-initial"] = "garbage\n"
+	for name, witness := range cases {
+		transports := map[string]apply.Transport{"home-a": &etcdHost{fakeHost: newHost()}, "vm": witness}
+		_, _, err := apply.ProbeEtcdMembers(cfg, "home-a", transports, true)
+		if err == nil || !strings.HasPrefix(err.Error(), "vm: asking etcd for its members") {
+			t.Errorf("%s: an etcd answering nothing was passed over: %v", name, err)
+		}
+	}
+}
+
+// Outside founding, a member that answers nothing is a cluster in trouble,
+// not one being born, and apply stops on it as it always has, whatever its
+// record says.
+func TestALeaderlessEtcdStopsAnApplyPastFounding(t *testing.T) {
+	cfg := fixtureConfig(t)
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), newHost())
+	if err != nil {
+		t.Fatal(err)
+	}
+	founders := render.EtcdInitial{State: "new", Cluster: fixtureFounders}
+	transports := map[string]apply.Transport{
+		"home-a": leaderlessWitness(founders),
+		"home-b": leaderlessWitness(founders),
+		"vm":     leaderlessWitness(founders),
 	}
 	err = apply.EtcdGates(cfg, p, transports, false, nil)
 	if err == nil || !strings.Contains(err.Error(), "asking etcd for its members") {
 		t.Errorf("a leaderless etcd past founding was let through: %v", err)
-	}
-}
-
-// A member whose `member list` failed is passed over only when `endpoint
-// status` confirms it has no leader. One that answers neither is an error,
-// founding or not: a failed probe says nothing about the host.
-func TestAnUnansweredEtcdIsNeverReadAsLeaderless(t *testing.T) {
-	cfg := fixtureConfig(t)
-	transports := map[string]apply.Transport{
-		"home-a": &etcdHost{fakeHost: newHost()},
-		"vm":     &etcdHost{fakeHost: newHost(), up: true, leaderless: true, statusFails: true},
-	}
-	_, _, err := apply.ProbeEtcdMembers(cfg, "home-a", transports, true)
-	if err == nil || !strings.HasPrefix(err.Error(), "vm: ") {
-		t.Errorf("an etcd answering nothing was passed over: %v", err)
-	}
-	if _, err := apply.EtcdLeaderless(transports["vm"], apply.Fixture); err == nil {
-		t.Error("a failed endpoint status reported a leader state")
-	}
-	led := &etcdHost{fakeHost: newHost(), up: true}
-	if leaderless, err := apply.EtcdLeaderless(led, apply.Fixture); err != nil || leaderless {
-		t.Errorf("a member with a leader: leaderless %v, %v", leaderless, err)
 	}
 }
 
@@ -322,4 +354,32 @@ func (h *scriptHost) Run(command string) (string, error) {
 		return h.answer, nil
 	}
 	return h.fakeHost.Run(command)
+}
+
+// A plan that leaves the infrastructure stack alone asks etcd nothing, so a
+// witness re-applied while it is the only founding member running, its etcd
+// answering nothing and its own member past founding, is not stopped.
+func TestAPlanLeavingInfraAloneAsksEtcdNothing(t *testing.T) {
+	cfg := fixtureConfig(t)
+	host := leaderlessWitness(render.EtcdInitial{State: "new", Cluster: fixtureFounders})
+	rendered := plan(t)
+	first, err := apply.Build("home-a", rendered, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply.Execute(first, host); err != nil {
+		t.Fatal(err)
+	}
+	again, err := apply.Build("home-a", rendered, acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.commands = nil
+	transports := map[string]apply.Transport{"home-a": host, "vm": leaderlessWitness(render.EtcdInitial{State: "new", Cluster: fixtureFounders})}
+	if err := apply.EtcdGates(cfg, again, transports, false, nil); err != nil {
+		t.Errorf("an apply leaving infra alone was stopped by etcd: %v", err)
+	}
+	if len(host.commands) != 0 {
+		t.Errorf("an apply leaving infra alone asked: %v", host.commands)
+	}
 }
