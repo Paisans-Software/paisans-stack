@@ -144,8 +144,11 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 		return nil
 	}
 	if !*execute {
-		for _, line := range plan.Lines() {
-			r.Item(line)
+		// Each action is a short title; the request behind it is its detail.
+		lines := plan.Lines()
+		for i, title := range plan.Titles() {
+			r.Item(title)
+			r.Detail("%s", lines[i])
 		}
 		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil

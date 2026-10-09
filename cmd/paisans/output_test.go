@@ -219,6 +219,13 @@ func fixtureRuns(t *testing.T) map[string]string {
 	}
 
 	{
+		withPIDFake(t)
+		runs["app admin create dry run"] = runDefault(t, "app admin create", func() error {
+			return runAppAdminCreate([]string{"--config", cfg, "--secrets", secrets, "--app", "auth", "--username", "founder", "--email", "founder@example.org", "--first-name", "Fern"}, strings.NewReader(""))
+		})
+	}
+
+	{
 		var sent, writes []string
 		withDoctorHosts(t, stuckHosts(mustLoad(t, cfg), &sent, &writes))
 		runs["doctor"] = runDefault(t, "doctor", func() error { return runDoctor([]string{"--config", cfg, "--sudo=false"}) })

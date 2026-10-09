@@ -299,9 +299,9 @@ refuse.
 **Every command reports through one reporter.** Each command writes through a
 `ui.Reporter` from `internal/ui` and formats nothing itself, so what an
 operator reads can change in one place and no package decides its own voice.
-There are two levels. By default a step is one short line (`ok   disk space
-13.6 GiB free`) with no rationale, values or request bodies, because an
-operator watching an install needs to know where it is, and a screenful of
+There are two levels. By default a step is one short line
+(`ok   disk space              13.6 GiB free`) with no rationale, values or
+request bodies, because an operator watching an install needs to know where it is, and a screenful of
 explanation on every step buries the one line that matters. With `-v` or
 `--verbose` the detail behind each step appears under it: reasons, values,
 request bodies and the raw output of the commands behind it. Nothing printed

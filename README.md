@@ -3696,16 +3696,19 @@ paisans app admin create --app auth --username founder \
     --email founder@example.org --first-name Fern --execute
 ```
 
-The dry run prints the exact body a create would send, the group step and the
-link step, here for a deployment whose Mbin app reads the admin group `admins`:
+The dry run names each step, here for a deployment whose Mbin app reads the
+admin group `admins`:
 
 ```
 auth on home-a (pocket-id)
-  -    create user founder as an administrator: POST /api/users {"username":"founder","email":"founder@example.org","emailVerified":true,"firstName":"Fern","lastName":"","displayName":"Fern","isAdmin":true}
-  -    add founder to admin groups admins: POST /api/user-groups for any that does not exist yet, then PUT /api/users/<id>/user-groups with the groups founder is in now, plus these
-  -    issue one-time login link for founder: valid 20m0s and for one sign in, printed once and only with --execute
+  -    create user founder
+  -    add founder to admin groups admins
+  -    issue login link for founder
 Nothing changed. Re-run with --execute to apply.
 ```
+
+`--verbose` puts the request behind each step under it, including the exact
+body a create would send. The link is printed once, and only with `--execute`.
 
 The link is Pocket ID's own mechanism: an admin issues a one-time access token
 for a user (`POST /api/users/:id/one-time-access-token`,
