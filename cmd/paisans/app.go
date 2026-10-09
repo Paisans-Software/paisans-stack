@@ -74,7 +74,9 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	r := reporter()
+	// stdout carries the one-time login link and nothing else, so that a
+	// script can read it; the report goes to stderr.
+	r := errReporter(reporter())
 	if fs.NArg() > 0 {
 		return fmt.Errorf("app admin create takes flags only. Got extra argument(s): %s", strings.Join(fs.Args(), " "))
 	}
@@ -132,29 +134,40 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("app admin create: %w", err)
 	}
-	fmt.Fprintf(os.Stdout, "%s on %s (%s)\n", *appName, where, app.Kind)
-	for _, line := range plan.Lines() {
-		fmt.Fprintf(os.Stdout, "  %s\n", line)
-	}
-
+	r.Section(fmt.Sprintf("%s on %s (%s)", *appName, where, app.Kind))
 	if len(plan.Actions) == 0 {
+		// Nothing to do: the lines say the user is present.
+		for _, line := range plan.Lines() {
+			r.Detail("%s", line)
+		}
+		r.Result("%s is already an administrator of %s.", *username, *appName)
 		return nil
 	}
 	if !*execute {
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		for _, line := range plan.Lines() {
+			r.Item(line)
+		}
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
+	}
+	step := r.Step("make " + *username + " an administrator")
+	for _, line := range plan.Lines() {
+		step.Detail("%s", line)
 	}
 	outcome, err := appadmin.Execute(plan, transport)
 	if err != nil {
+		step.Fail(err)
 		return fmt.Errorf("app admin create: %w", err)
 	}
-	fmt.Fprintf(os.Stdout, "\n%s is an administrator of %s\n", *username, *appName)
+	step.Done("")
+	r.Result("%s is an administrator of %s.", *username, *appName)
 	if outcome.LoginLink != "" {
 		// The one place the link is ever written. It is a credential, so it
-		// goes to this terminal once and is kept nowhere: not in the secrets
+		// goes to stdout once, alone, and is kept nowhere: not in the secrets
 		// file, not in a log, not in an error.
-		fmt.Fprintf(os.Stdout, "\nOne-time login link for %s. It signs in as %s once, within %s, so treat it as a password: open it yourself and register a passkey. It is printed here and nowhere else. If it expires, re-run with --login-link --execute.\n\n  %s\n",
-			*username, *username, outcome.ExpiresIn, outcome.LoginLink)
+		r.Warn(fmt.Sprintf("the login link works once, within %s: treat it as a password", outcome.ExpiresIn),
+			fmt.Sprintf("It signs in as %s once: open it yourself and register a passkey. It is printed here and nowhere else. If it expires, re-run with --login-link --execute.", *username))
+		fmt.Fprintln(os.Stdout, outcome.LoginLink)
 	}
 	return nil
 }

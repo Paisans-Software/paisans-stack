@@ -127,14 +127,19 @@ func fixtureAPIKey(t *testing.T) string {
 func TestPocketIDAdminDryRunPlansWithoutSudoAndChangesNothing(t *testing.T) {
 	fake := withPIDFake(t)
 	key := fixtureAPIKey(t)
+	rec := withRecorder(t, true)
 	var err error
-	printed := captureStdout(t, func() {
+	stdout := captureStdout(t, func() {
 		err = runAppAdminCreate(pidArgs(), strings.NewReader(""))
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"auth on home-a (pocket-id)", "create user founder as an administrator", "issue one-time login link for founder", "Nothing was changed"} {
+	printed := rec.Lines() + stdout
+	if stdout != "" {
+		t.Errorf("a dry run wrote to stdout, which carries only the login link:\n%s", stdout)
+	}
+	for _, want := range []string{"section: auth on home-a (pocket-id)", "item: create user founder as an administrator", "item: issue one-time login link for founder", "result: Nothing changed"} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("output lacks %q:\n%s", want, printed)
 		}
@@ -163,19 +168,28 @@ func TestPocketIDAdminDryRunPlansWithoutSudoAndChangesNothing(t *testing.T) {
 
 func TestPocketIDAdminExecutePrintsTheLinkOnce(t *testing.T) {
 	fake := withPIDFake(t)
+	rec := withRecorder(t, true)
 	var err error
-	printed := captureStdout(t, func() {
+	stdout := captureStdout(t, func() {
 		err = runAppAdminCreate(pidArgs("--execute"), strings.NewReader(""))
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	link := "https://id.example.org/lc/tok-not-real-0009"
-	if n := strings.Count(printed, link); n != 1 {
-		t.Errorf("the link was printed %d times:\n%s", n, printed)
+	// The link is the only thing on stdout, so a script can read it, and it
+	// is nowhere in the report.
+	if strings.TrimSpace(stdout) != link {
+		t.Errorf("stdout is not the link alone:\n%s", stdout)
 	}
-	if !strings.Contains(printed, "20m0s") {
-		t.Errorf("the expiry is not stated:\n%s", printed)
+	if strings.Contains(rec.Lines(), link) {
+		t.Errorf("the link reached the report:\n%s", rec.Lines())
+	}
+	if !rec.Has("warn", "20m0s") {
+		t.Errorf("the expiry is not stated:\n%s", rec.Lines())
+	}
+	if !rec.Has("result", "founder is an administrator of auth") {
+		t.Errorf("no result:\n%s", rec.Lines())
 	}
 	if fake.registry.claims != 1 || !fake.registry.sudo {
 		t.Errorf("--execute claimed the host %d time(s), sudo %v; want once, through sudo", fake.registry.claims, fake.registry.sudo)

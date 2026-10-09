@@ -29,4 +29,9 @@ var reporterOverride ui.Reporter
 
 // errReporter is r's verbosity on stderr, for a command whose stdout carries
 // data that a script reads.
-func errReporter(r ui.Reporter) ui.Reporter { return ui.New(os.Stderr, r.Verbose()) }
+func errReporter(r ui.Reporter) ui.Reporter {
+	if reporterOverride != nil {
+		return reporterOverride
+	}
+	return ui.New(os.Stderr, r.Verbose())
+}

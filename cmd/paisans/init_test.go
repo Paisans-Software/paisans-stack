@@ -11,6 +11,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/registry"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // initFake is one site as init sees it: its registry, its networks, or no
@@ -69,7 +70,7 @@ func registryHolding(t *testing.T, id, token, subnet string) string {
 
 // initWorld copies the example declaration into a directory of its own and
 // points init at fakes for its sites and at random.
-func initWorld(t *testing.T, edit func(string) string, sites map[string]*initFake, random []byte) (string, *bytes.Buffer) {
+func initWorld(t *testing.T, edit func(string) string, sites map[string]*initFake, random []byte) (string, *ui.Recorder) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "examples", "paisans.example.yaml"))
 	if err != nil {
@@ -83,7 +84,7 @@ func initWorld(t *testing.T, edit func(string) string, sites map[string]*initFak
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	savedHost, savedRandom, savedOut := initHost, meshRandom, initOut
+	savedHost, savedRandom := initHost, meshRandom
 	initHost = func(_ string, site config.Site, _ bool) registry.Runner {
 		for _, f := range sites {
 			if f.name == site.SSH.Host {
@@ -94,10 +95,8 @@ func initWorld(t *testing.T, edit func(string) string, sites map[string]*initFak
 		return nil
 	}
 	meshRandom = bytes.NewReader(random)
-	var out bytes.Buffer
-	initOut = &out
-	t.Cleanup(func() { initHost, meshRandom, initOut = savedHost, savedRandom, savedOut })
-	return path, &out
+	t.Cleanup(func() { initHost, meshRandom = savedHost, savedRandom })
+	return path, withRecorder(t, true)
 }
 
 func fakeSites() map[string]*initFake {
@@ -145,8 +144,8 @@ func TestInitRollsASubnetClearOfEveryHost(t *testing.T) {
 		"rolled mesh.subnet 10.212.37.0/24 (10.44.0.0/24 overlapped deployment " + otherID + " (example.net)'s mesh 10.44.0.0/24 on home-a; 10.1.2.0/24 overlapped route 10.1.0.0/16 dev tun0 on vm)",
 		"sites.home-a.address 10.44.0.1 -> 10.212.37.1",
 	} {
-		if !strings.Contains(out.String(), line) {
-			t.Errorf("init did not say %q:\n%s", line, out)
+		if !strings.Contains(out.Lines(), line) {
+			t.Errorf("init did not say %q:\n%s", line, out.Lines())
 		}
 	}
 	cfg, err := config.Load(path)
@@ -175,8 +174,8 @@ func TestInitAddsAMissingSubnet(t *testing.T) {
 	if cfg.Mesh.Subnet != "10.212.37.0/24" || cfg.Sites["vm"].Address != "10.212.37.3" {
 		t.Errorf("subnet %s, vm %s", cfg.Mesh.Subnet, cfg.Sites["vm"].Address)
 	}
-	if !strings.Contains(out.String(), "(no mesh.subnet was declared)") {
-		t.Errorf("init did not say why it rolled:\n%s", out)
+	if !strings.Contains(out.Lines(), "(no mesh.subnet was declared)") {
+		t.Errorf("init did not say why it rolled:\n%s", out.Lines())
 	}
 }
 
@@ -189,8 +188,8 @@ func TestInitKeepsAClearSubnet(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, _ := os.ReadFile(path)
-	if !bytes.Equal(before, after) || !strings.Contains(out.String(), "overlaps nothing on home-a, home-b, vm, watch; kept") {
-		t.Errorf("a clear subnet was not kept as it was:\n%s", out)
+	if !bytes.Equal(before, after) || !strings.Contains(out.Lines(), "overlaps nothing on home-a, home-b, vm, watch; kept") {
+		t.Errorf("a clear subnet was not kept as it was:\n%s", out.Lines())
 	}
 }
 
@@ -231,8 +230,8 @@ func TestInitLeavesADeployedSubnetAlone(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Errorf("init changed a deployed subnet:\n%s", after)
 	}
-	if !strings.Contains(out.String(), "is deployed (this deployment is on vm)") {
-		t.Errorf("init did not say the subnet is deployed:\n%s", out)
+	if !strings.Contains(out.Lines(), "is deployed (this deployment is on vm)") {
+		t.Errorf("init did not say the subnet is deployed:\n%s", out.Lines())
 	}
 }
 
@@ -269,5 +268,31 @@ func TestCheckMeshLive(t *testing.T) {
 	err = checkMeshLive(cfg, "home-a", clash)
 	if err == nil || !strings.Contains(err.Error(), "route 10.44.0.0/23 dev psns-0c1d on home-a") || !strings.Contains(err.Error(), "nothing was changed") {
 		t.Errorf("checkMeshLive = %v, want a refusal naming the other route", err)
+	}
+}
+
+// init reports the subnet decision as one step with its result, each secret
+// it generates as a step named for it and never its value, and a file written
+// without a recipient as a warning.
+func TestInitReportsStepsAndWhatIsOwed(t *testing.T) {
+	path, rec := initWorld(t, nil, fakeSites(), nil)
+	if err := runInitQuietly(t, path); err != nil {
+		t.Fatal(err)
+	}
+	if !rec.Has("done", "settle mesh subnet") {
+		t.Errorf("no settled subnet step:\n%s", rec.Lines())
+	}
+	if !rec.Has("done", "create ") || !rec.Has("result", "Generated ") {
+		t.Errorf("no created secrets:\n%s", rec.Lines())
+	}
+	if !rec.Has("warn", "was written in plaintext") {
+		t.Errorf("no plaintext warning, although no recipient is configured:\n%s", rec.Lines())
+	}
+	again := withRecorder(t, true)
+	if err := runInitQuietly(t, path); err != nil {
+		t.Fatal(err)
+	}
+	if !again.Has("result", "already present") {
+		t.Errorf("a second run does not say nothing was written:\n%s", again.Lines())
 	}
 }

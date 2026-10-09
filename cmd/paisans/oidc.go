@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -139,13 +139,21 @@ func runOIDCClientCreate(args []string) error {
 		return fmt.Errorf("oidc client create: %w", err)
 	}
 	if rec.wrote {
-		fmt.Fprintf(os.Stdout, "\nrecorded oidc_clients.%s.client_id and oidc_clients.%s.client_secret\n", *appName, *appName)
+		r.Detail("recorded oidc_clients.%s.client_id and oidc_clients.%s.client_secret", *appName, *appName)
 		if len(recipients) == 0 {
-			fmt.Fprintf(os.Stderr, "paisans: %s is PLAINTEXT, because no %s beside it names an age recipient.\n", *secretsPath, config.SOPSConfigName)
+			warnPlaintext(r, *secretsPath)
 		}
 	}
-	fmt.Fprintf(os.Stdout, "\n%s's client is in place. `paisans apply --site <site> --execute` on each site running %s renders it.\n", *appName, *appName)
+	r.Detail("`paisans apply --site <site> --execute` on each site running %s renders the client", *appName)
+	r.Result("%s's client is in place.", *appName)
 	return nil
+}
+
+// warnPlaintext is the warning for secrets written to a file that no age
+// recipient beside it covers. The file is written regardless, since fixtures
+// are plain, so it is a warning and not a refusal.
+func warnPlaintext(r ui.Reporter, path string) {
+	r.Warn(path+" was written in plaintext", fmt.Sprintf("%s is PLAINTEXT, because no %s beside it names an age recipient. A real deployment encrypts this file. Add one and re-encrypt before committing anything.", path, config.SOPSConfigName))
 }
 
 // secretsRecorder writes a client's credentials into the secrets file,

@@ -219,13 +219,12 @@ func TestOIDCClientCreateDryRunWritesNothing(t *testing.T) {
 func TestOIDCClientCreateExecuteRecordsTheSecretWithoutPrintingIt(t *testing.T) {
 	fake := withIDPFake(t)
 	path := tempSecrets(t)
-	var err error
-	printed := captureStdout(t, func() {
-		err = runOIDCClientCreate([]string{"--config", fixtureConfig(), "--secrets", path, "--app", "talk", "--execute"})
-	})
+	rec := withRecorder(t, true)
+	err := runOIDCClientCreate([]string{"--config", fixtureConfig(), "--secrets", path, "--app", "talk", "--execute"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	printed := rec.Lines()
 	secrets, err := config.LoadSecrets(path)
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +244,7 @@ func TestOIDCClientCreateExecuteRecordsTheSecretWithoutPrintingIt(t *testing.T) 
 			t.Errorf("ran %q", c)
 		}
 	}
-	if !strings.Contains(printed, "recorded oidc_clients.talk.client_id") {
+	if !rec.Has("detail", "recorded oidc_clients.talk.client_id") || !rec.Has("result", "talk's client is in place") {
 		t.Errorf("output:\n%s", printed)
 	}
 }

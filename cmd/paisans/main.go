@@ -339,7 +339,9 @@ func runInit(args []string) error {
 		return err
 	}
 	if added {
-		fmt.Fprintf(os.Stdout, "%s: wrote deployment id %s. It never changes; every name and path this deployment holds on a host is derived from it.\n", *configPath, id)
+		s := r.Step("write deployment id")
+		s.Detail("%s: wrote deployment id %s. It never changes; every name and path this deployment holds on a host is derived from it.", *configPath, id)
+		s.Done("")
 	}
 	cfg, err := config.LoadForInit(*configPath)
 	if err != nil {
@@ -353,7 +355,7 @@ func runInit(args []string) error {
 	// The mesh subnet next, while nothing is deployed: it is the one value
 	// that has to be checked against every host before the first apply,
 	// and cannot change after it.
-	wrote, err := settleMesh(cfg, *configPath, initHosts(cfg, *sudo), meshRandom, initOut)
+	wrote, err := settleMesh(r, cfg, *configPath, initHosts(cfg, *sudo), meshRandom)
 	if err != nil {
 		return err
 	}
@@ -385,9 +387,9 @@ func runInit(args []string) error {
 	}
 
 	if !filled.Changed() {
-		fmt.Fprintf(os.Stdout, "%s already has every generated secret (%d). Nothing written.\n",
-			*secretsPath, len(filled.Kept))
-		reportOwed(filled)
+		r.Detail("%s already has every generated secret (%d)", *secretsPath, len(filled.Kept))
+		reportOwed(r, filled)
+		r.Result("Every generated secret is already present. Nothing written.")
 		return nil
 	}
 
@@ -397,30 +399,25 @@ func runInit(args []string) error {
 
 	// Names, never values. A secret printed to a terminal is in a scrollback
 	// buffer, and often in a multiplexer's log as well.
-	fmt.Fprintf(os.Stdout, "%s: generated %d secret(s), kept %d.\n", *secretsPath, len(filled.Generated), len(filled.Kept))
 	for _, name := range filled.Generated {
-		fmt.Fprintf(os.Stdout, "  + %s\n", name)
+		r.Step("create " + name).Done("")
 	}
 	if len(recipients) == 0 {
-		fmt.Fprintf(os.Stderr, "\npaisans: %s was written in PLAINTEXT, because no %s beside it names an age recipient.\nA real deployment encrypts this file. Add one and re-encrypt before committing anything.\n",
-			*secretsPath, config.SOPSConfigName)
+		warnPlaintext(r, *secretsPath)
 	} else {
-		fmt.Fprintf(os.Stdout, "\nEncrypted to %d age recipient(s) from %s.\n", len(recipients), config.SOPSConfigName)
+		r.Detail("Encrypted to %d age recipient(s) from %s.", len(recipients), config.SOPSConfigName)
 	}
-	reportOwed(filled)
+	reportOwed(r, filled)
+	r.Result("Generated %s, kept %d.", plural(len(filled.Generated), "secret"), len(filled.Kept))
 	return nil
 }
 
-// reportOwed prints what the toolkit will not invent. Leaving these silent
+// reportOwed warns of what the toolkit will not invent. Leaving these silent
 // would let an operator believe an install is finished when sign in and
 // certificates are both still missing.
-func reportOwed(filled secretsgen.Result) {
-	if len(filled.Owed) == 0 {
-		return
-	}
-	fmt.Fprintf(os.Stdout, "\nStill owed, and not generated here:\n")
+func reportOwed(r ui.Reporter, filled secretsgen.Result) {
 	for _, owed := range filled.Owed {
-		fmt.Fprintf(os.Stdout, "  ? %s\n      %s\n", owed.Name, owed.Why)
+		r.Warn(owed.Name+" needs a decision", owed.Why)
 	}
 }
 
