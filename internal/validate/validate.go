@@ -160,6 +160,8 @@ func Check(cfg *config.Config) Result {
 	c.portCollision()
 
 	c.evenVoters()
+	c.oneVoterNoFailover()
+	c.asyncAutomaticFailover()
 	c.meshIsNotPrivate()
 	c.pinnedOntoWitness()
 	c.gatewayOnDataSite()
@@ -297,6 +299,47 @@ func (c *checker) dataSiteNotInCluster() {
 		c.refuse("data-site-not-in-cluster", fmt.Sprintf("sites.%s.roles", name),
 			"includes data, but cluster.sites does not list %s. The data role runs Patroni on the site, and cluster.sites is what HAProxy's backends, apply's leader wait and doctor are built from, so this would be a replica nothing routes to or watches. List %s in cluster.sites, at the end if the cluster is already running, or drop the role.", name, name)
 	}
+}
+
+// oneVoterNoFailover warns that a replicated cluster with one etcd member
+// cannot fail over.
+//
+// One member elects nobody: when the voter's site is down, Patroni on every
+// other site loses the DCS and stops serving writes, so the replica is a
+// manual promote rather than a failover. That is the mode the design offers
+// for a declined witness, so it is legitimate and a warning. It is only
+// worth saying when a replica exists; one site with one voter is the plain
+// case.
+func (c *checker) oneVoterNoFailover() {
+	if len(c.cfg.Etcd.Members) != 1 || len(c.cfg.Cluster.Sites) < 2 {
+		return
+	}
+	voter := c.cfg.Etcd.Members[0]
+	c.warn("one-voter-no-failover", "etcd.members",
+		"declares one voter, %s, while %d sites share the cluster. One member elects nobody: while %s is down every other site's Patroni loses etcd and stops taking writes, so the database stops rather than failing over, and promoting the replica is a manual step. A witness in a third failure domain makes three voters and restores automatic failover; without one, this is the manual promote mode and the runbook should say so.",
+		voter, len(c.cfg.Cluster.Sites), voter)
+}
+
+// asyncAutomaticFailover warns that automatic failover under asynchronous
+// replication can lose acknowledged commits.
+//
+// With three voters Patroni promotes a replica on its own, and under
+// asynchronous replication that replica may be behind: every commit the old
+// leader acknowledged after the replica's last received WAL is gone with it,
+// and Patroni promotes anyway as long as the lag is within
+// maximum_lag_on_failover ("the maximum bytes a follower may lag to be able
+// to participate in leader election"; "When using asynchronous replication a
+// failover can cause lost transactions", Patroni's dynamic configuration
+// reference). With one voter nothing promotes anyone, so there is nothing
+// to warn about. It is a choice an operator may make for write latency over
+// a slow link, which is why it warns rather than refuses.
+func (c *checker) asyncAutomaticFailover() {
+	if c.cfg.Cluster.Synchronous || len(c.cfg.Cluster.Sites) < 2 || len(c.cfg.Etcd.Members) < 3 {
+		return
+	}
+	c.warn("async-automatic-failover", "cluster.synchronous",
+		"is false while %d sites share the cluster and %d voters can elect a new leader. Patroni then promotes a replica on its own, and under asynchronous replication that replica may be behind: every commit the old leader acknowledged after the replica's last received WAL is lost, up to maximum_lag_on_failover, the lag Patroni still promotes through. Set synchronous: true so a commit is acknowledged only once a standby holds it (synchronous_strict: false keeps a lone leader writing), or accept that a failover can lose acknowledged writes.",
+		len(c.cfg.Cluster.Sites), len(c.cfg.Etcd.Members))
 }
 
 // clusterSiteWithoutData refuses a cluster member that does not hold the data

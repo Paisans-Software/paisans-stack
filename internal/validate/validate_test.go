@@ -94,6 +94,8 @@ func TestRulesFire(t *testing.T) {
 		{"ingress-external-serves-one-app", "ingress-external-serves-one-app", validate.Refuse},
 		{"voters-share-a-relay", "voters-share-a-relay", validate.Refuse},
 		{"data-site-not-in-cluster", "data-site-not-in-cluster", validate.Refuse},
+		{"async-automatic-failover", "async-automatic-failover", validate.Warn},
+		{"one-voter-no-failover", "one-voter-no-failover", validate.Warn},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
@@ -372,6 +374,33 @@ func TestVotersShareARelay(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A witness-less pair with one voter warns, and the warning says what the
+// voter's loss does; a single site with one voter is the plain case and must
+// not.
+func TestOneVoterWarnsOnlyWithReplicas(t *testing.T) {
+	cfg := load(t, "one-voter-no-failover")
+	cfg.Cluster.Sites = []string{"home-a"}
+	b := cfg.Sites["home-b"]
+	b.Roles = []config.Role{config.RoleApps}
+	cfg.Sites["home-b"] = b
+	if result := validate.Check(cfg); result.Has("one-voter-no-failover") {
+		t.Fatalf("one data site with one voter warned: %v", result.Findings)
+	}
+}
+
+// Asynchronous replication is only a failover risk where a failover can
+// happen on its own: with one voter nothing promotes anyone.
+func TestAsyncWarnsOnlyWithAutomaticFailover(t *testing.T) {
+	cfg := load(t, "async-automatic-failover")
+	cfg.Etcd.Members = []string{"home-a"}
+	vm := cfg.Sites["vm"]
+	vm.Roles = []config.Role{config.RoleGateway}
+	cfg.Sites["vm"] = vm
+	if result := validate.Check(cfg); result.Has("async-automatic-failover") {
+		t.Fatalf("one voter warned about automatic failover: %v", result.Findings)
 	}
 }
 

@@ -737,6 +737,26 @@ the role (`cluster-site-without-data-role`), and it refuses the inverse too
 (`data-site-not-in-cluster`), a data site the list leaves out, which would run
 a Patroni that nothing routes to or watches.
 
+### Asynchronous replication and automatic failover
+
+`cluster.synchronous: true` makes every commit wait for a standby, which is
+what lets a failover keep every write the leader acknowledged (Patroni:
+"Synchronous mode makes sure that successfully committed transactions will
+not be lost at failover"). Turning it off buys write latency over a slow
+link, and the price is paid at the worst moment: with three voters Patroni
+promotes a replica on its own, and under asynchronous replication that
+replica may be behind. Every commit the old leader acknowledged after the
+replica's last received WAL is gone, and Patroni promotes anyway as long as
+the gap is within `maximum_lag_on_failover`, "the maximum bytes a follower
+may lag to be able to participate in leader election" (Patroni's dynamic
+configuration reference, which says plainly that "when using asynchronous
+replication a failover can cause lost transactions").
+
+That is a trade an operator may choose, so `validate` warns rather than
+refuses (`async-automatic-failover`), and only where it applies: a cluster of
+two or more sites with three or more voters. With one voter nothing promotes
+anyone, so there is nothing to lose that way.
+
 ### Nothing here is permanent
 
 A witness holds no data, so relocating one is cheap and scriptable — remove the
@@ -758,7 +778,13 @@ Declining a witness entirely is supported and means **giving up automatic
 failover**: two sites with two voters cannot safely promote anyone, so `site add`
 configures plain streaming replication with a documented manual promote instead.
 That is a legitimate choice. It is a different mode, not a slightly degraded
-version of the same one, and the toolkit should say so plainly.
+version of the same one, and the toolkit should say so plainly. `validate`
+does (`one-voter-no-failover`): a cluster of two or more sites with one etcd
+member gets a warning saying that one member elects nobody, that while the
+voter's site is down every other site's Patroni loses etcd and stops taking
+writes, and that promoting the replica is a manual step. A warning and not a
+refusal, because the mode works as described; what it must not do is pass as
+the automatic one.
 
 ## Configuration
 
