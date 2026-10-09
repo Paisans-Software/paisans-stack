@@ -54,7 +54,7 @@ func (p *Plan) buildMesh(rendered *render.Plan) (*Stage, error) {
 			st.Steps = append(st.Steps, Step{Site: name, Verb: c.Kind.String(), Title: "update mesh on " + name, Text: c.Path})
 		}
 		if mp.WireGuard != apply.WireGuardNone {
-			st.Steps = append(st.Steps, Step{Site: name, Verb: "mesh", Title: "sync mesh on " + name, Text: mp.WireGuard.Describe(p.cfg.Deployment())})
+			st.Steps = append(st.Steps, Step{Site: name, Verb: "mesh", Title: "update mesh on " + name, Text: mp.WireGuard.Describe(p.cfg.Deployment())})
 		}
 	}
 

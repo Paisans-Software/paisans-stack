@@ -57,7 +57,7 @@ func (p *Plan) Show(r ui.Reporter) {
 		case len(s.DataEntries) > 0:
 			line("keep "+dir.Path, "%s: %s, written by the app rather than by apply (%d file(s) and %s in the directory). --delete-data deletes it", dir.Path, strings.Join(s.DataEntries, ", "), dir.Files, size(dir.Bytes))
 		default:
-			line("remove "+dir.Path, "%s once it is empty", dir.Path)
+			line("remove empty directories", "%s once it is empty", dir.Path)
 		}
 		for _, v := range s.Volumes {
 			if p.DeleteData {
@@ -108,7 +108,7 @@ func (p *Plan) Show(r ui.Reporter) {
 		}
 		section("%s (the monitor)", m.Site)
 		for _, s := range m.Steps() {
-			line(s.Verb+" monitor on "+m.Site, "%s", s.Text)
+			line("apply "+m.App+" on "+m.Site, "%s", s.Text)
 		}
 	}
 }

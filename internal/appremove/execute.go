@@ -149,8 +149,12 @@ func (e *Executor) execute(p *Plan) error {
 			return fmt.Errorf("%s: %w", s.Site, err)
 		}
 		dir := d.Dir(p.App)
-		e.work("remove " + dir)
 		deleteDir := p.DeleteData && !s.edited(dir)
+		if deleteDir {
+			e.work("delete " + dir)
+		} else {
+			e.work("remove empty directories")
+		}
 		if out, err := h.Run(DirCommandFor(dir, deleteDir)); err != nil {
 			return fmt.Errorf("%s: %s: %w: %s", s.Site, dir, err, firstLine(out))
 		}

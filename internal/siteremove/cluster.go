@@ -136,7 +136,7 @@ func (p *Plan) buildCluster() (*Stage, error) {
 				st.Steps = append(st.Steps, Step{Site: name, Verb: w.Kind.String(), Title: "update files on " + name, Text: w.Path})
 			}
 			if sp.WireGuard != apply.WireGuardNone {
-				st.Steps = append(st.Steps, Step{Site: name, Verb: "mesh", Title: "sync mesh on " + name, Text: sp.WireGuard.Describe(p.dep())})
+				st.Steps = append(st.Steps, Step{Site: name, Verb: "mesh", Title: "update files on " + name, Text: sp.WireGuard.Describe(p.dep())})
 			}
 		}
 		for _, rel := range moved {
@@ -269,7 +269,7 @@ func (p *Plan) replicaEnvs(st *Stage) ([]*apply.ReplicaEnv, error) {
 			continue
 		}
 		for _, s := range r.Steps(p.dep()) {
-			st.Steps = append(st.Steps, Step{Site: name, Verb: s.Verb, Text: s.Text})
+			st.Steps = append(st.Steps, Step{Site: name, Verb: s.Verb, Title: "recreate Patroni on " + name, Text: s.Text})
 		}
 		out = append(out, r)
 	}
@@ -491,8 +491,14 @@ func (p *Plan) restartProxy(site string, apps []string) error {
 			return fmt.Errorf("%s: stopping %s before HAProxy's restart, so HAProxy was not restarted: %w: %s", site, app, err, lastLines(out, 5))
 		}
 	}
-	p.work("restart HAProxy on " + site)
+	restart := p.work("restart HAProxy on " + site)
 	out, restartErr := t.Run(p.restartHAProxy())
+	if restartErr != nil {
+		// The apps below are still started, so the line that failed is marked
+		// now rather than by whichever step is open when the error returns.
+		restart.Fail(restartErr)
+		p.open = nil
+	}
 	if len(apps) > 0 {
 		p.work("start " + list + " on " + site)
 	}
@@ -502,10 +508,13 @@ func (p *Plan) restartProxy(site string, apps []string) error {
 		}
 	}
 	if restartErr != nil {
+		p.idle()
 		return fmt.Errorf("%s: restarting HAProxy: %w: %s", site, restartErr, lastLines(out, 5))
 	}
+	if len(apps) > 0 {
+		p.work("check " + list + " on " + site)
+	}
 	for _, app := range apps {
-		p.work("check " + app + " on " + site)
 		if err := apply.WaitHealthy(p.dep(), site, app, t, "Site remove stopped here, before HAProxy's gate. The app was started against the new HAProxy; read its logs, fix it, and run site remove again"); err != nil {
 			return err
 		}

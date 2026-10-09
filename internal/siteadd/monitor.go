@@ -30,7 +30,7 @@ func (p *Plan) buildMonitor(rendered *render.Plan) (*Stage, error) {
 	for _, m := range reseeds {
 		sites = append(sites, m.Site)
 		for _, s := range m.Steps() {
-			st.Steps = append(st.Steps, Step{Site: m.Site, Verb: s.Verb, Text: s.Text})
+			st.Steps = append(st.Steps, Step{Site: m.Site, Verb: s.Verb, Title: "apply " + m.App + " on " + m.Site, Text: s.Text})
 		}
 	}
 	st.Gate = fmt.Sprintf("the monitor on %s runs on a monitors.json that matches the render, so %s's ping and direct checks exist", strings.Join(sites, ", "), p.Site)

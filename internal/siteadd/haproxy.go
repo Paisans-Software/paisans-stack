@@ -141,25 +141,39 @@ func (p *Plan) appCompose(stack, verb string) string {
 // error is the only thing the operator has to fix.
 func (p *Plan) restartProxy(site string, apps []string) error {
 	t := p.transports[site]
+	list := strings.Join(apps, ", ")
+	if len(apps) > 0 {
+		p.work("stop " + list + " on " + site)
+	}
 	for _, app := range apps {
-		p.work("stop " + app + " on " + site)
 		if out, err := t.Run(p.appCompose(app, "stop")); err != nil {
 			return fmt.Errorf("%s: stopping %s before HAProxy's restart, so HAProxy was not restarted: %s", site, app, lastLines(out, 5))
 		}
 	}
-	p.work("restart HAProxy on " + site)
+	restart := p.work("restart HAProxy on " + site)
 	out, restartErr := t.Run(p.restartHAProxy())
+	if restartErr != nil {
+		// The apps below are still started, so the line that failed is marked
+		// now rather than by whichever step is open when the error returns.
+		restart.Fail(restartErr)
+		p.open = nil
+	}
+	if len(apps) > 0 {
+		p.work("start " + list + " on " + site)
+	}
 	for _, app := range apps {
-		p.work("start " + app + " on " + site)
 		if out, err := t.Run(p.appCompose(app, "up -d")); err != nil {
 			return fmt.Errorf("%s: starting %s after HAProxy's restart: %s", site, app, lastLines(out, 5))
 		}
 	}
 	if restartErr != nil {
+		p.idle()
 		return fmt.Errorf("%s: restarting HAProxy: %s", site, lastLines(out, 5))
 	}
+	if len(apps) > 0 {
+		p.work("check " + list + " on " + site)
+	}
 	for _, app := range apps {
-		p.work("check " + app + " on " + site)
 		if err := apply.WaitHealthy(p.dep(), site, app, t, "Site add stopped here, before HAProxy's gate. The app was started against the new HAProxy; read its logs, fix it, and run site add again"); err != nil {
 			return err
 		}

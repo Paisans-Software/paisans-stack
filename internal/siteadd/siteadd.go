@@ -447,7 +447,7 @@ func (p *Plan) buildReplicaEnvs(rendered *render.Plan, members []patroniMember) 
 			continue
 		}
 		for _, s := range r.Steps(p.dep()) {
-			st.Steps = append(st.Steps, Step{Site: name, Verb: s.Verb, Text: s.Text})
+			st.Steps = append(st.Steps, Step{Site: name, Verb: s.Verb, Title: "recreate Patroni on " + name, Text: s.Text})
 		}
 		replicas = append(replicas, r)
 	}
@@ -532,7 +532,8 @@ func (p *Plan) fail(st *Stage, err error) error {
 }
 
 // Show lists the plan as an operator reads it: a section per stage, an item
-// per step and one for the gate, with the whole text of each as its detail.
+// per step (steps that follow each other with one title are one item) and one
+// for the gate, with the whole text of each as its detail.
 func (p *Plan) Show(r ui.Reporter) {
 	for _, st := range p.Stages {
 		r.Section(stageTitle(st))
@@ -540,8 +541,12 @@ func (p *Plan) Show(r ui.Reporter) {
 			r.Item("nothing to do here")
 			r.Detail("nothing to do here, and the gate is still checked")
 		}
+		last := ""
 		for _, step := range st.Steps {
-			r.Item(step.title())
+			if t := step.title(); t != last {
+				r.Item(t)
+				last = t
+			}
 			r.Detail("%s: %s", step.Site, step.Text)
 		}
 		r.Item("gate: " + st.Short)

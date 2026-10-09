@@ -22,6 +22,7 @@ package siteremove
 import (
 	"errors"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -456,14 +457,14 @@ func (p *Plan) buildConfig() *Stage {
 		Name:   "config",
 		Gate:   fmt.Sprintf("%s loads, and declares no site %s", p.ConfigPath, p.Site),
 		Short:  "configuration loads without " + p.Site,
-		Steps:  []Step{{Site: p.Site, Verb: "remove", Title: "remove " + p.Site + " from " + p.ConfigPath, Text: fmt.Sprintf("sites.%s from %s, and its name from cluster.sites, etcd.members, storage.garage.sites and storage.garage.capacities, keeping every comment", p.Site, p.ConfigPath)}},
+		Steps:  []Step{{Site: p.Site, Verb: "remove", Title: "remove " + p.Site + " from " + path.Base(p.ConfigPath), Text: fmt.Sprintf("sites.%s from %s, and its name from cluster.sites, etcd.members, storage.garage.sites and storage.garage.capacities, keeping every comment", p.Site, p.ConfigPath)}},
 	}
 	if p.witness != "" {
 		st.Gate += fmt.Sprintf(", etcd.members does not list %s, and %s has no witness role", p.witness, p.witness)
 		st.Steps = append(st.Steps, Step{Site: p.witness, Verb: "remove", Title: "remove witness " + p.witness, Text: fmt.Sprintf("%s from etcd.members and witness from sites.%s.roles, in the same write", p.witness, p.witness)})
 	}
 	st.run = func() error {
-		p.work("remove " + p.Site + " from " + p.ConfigPath)
+		p.work("remove " + p.Site + " from " + path.Base(p.ConfigPath))
 		if p.ConfigPath == "" {
 			return fmt.Errorf("no configuration file to edit")
 		}
