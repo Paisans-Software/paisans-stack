@@ -108,6 +108,8 @@ type host struct {
 	volumes    []hostcheck.Volume
 	rules      []string
 	handedUp   bool
+	// images are the image IDs present on the host.
+	images map[string]bool
 }
 
 func (h *host) Describe() string { return h.name }
@@ -499,6 +501,24 @@ func (h *host) Run(command string) (string, error) {
 		}
 		h.volumes = kept
 		return "", nil
+	case strings.HasPrefix(command, "for i in ") && strings.Contains(command, "docker image rm"):
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for i in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			id := strings.Trim(q, "'")
+			used := false
+			for _, c := range h.containers {
+				used = used || c.Image == id
+			}
+			switch {
+			case used:
+				fmt.Fprintf(&b, "kept %s Error response from daemon: conflict: unable to delete (image is being used by running container)\n", id)
+			default:
+				delete(h.images, id)
+				fmt.Fprintf(&b, "removed %s\n", id)
+			}
+		}
+		return b.String(), nil
 	case strings.HasPrefix(command, "systemctl disable --now wg-quick@psns-f2a9"):
 		h.wgUp = false
 		return "", nil
@@ -883,7 +903,7 @@ func newWorld(t *testing.T, edits ...func(string) string) *world {
 		t.Fatal(err)
 	}
 	for _, name := range cfg.SiteNames() {
-		h := &host{w: w, name: name, files: map[string]string{}, wgUp: true}
+		h := &host{w: w, name: name, files: map[string]string{}, wgUp: true, images: map[string]bool{"sha256:etcd": true}}
 		w.hosts[name] = h
 		var entries []render.ManifestFile
 		for _, f := range rendered.Files {
@@ -914,7 +934,7 @@ func newWorld(t *testing.T, edits ...func(string) string) *world {
 		id, e := registry.For(cfg, name, mustTime())
 		reg.Deployments[id] = e
 		h.files[registry.Path] = encode(t, reg)
-		h.containers = append(h.containers, hostcheck.Container{Name: "paisans-f2a9-infra-etcd-1", Project: "paisans-f2a9-infra", Deployment: ourID, PID: 10})
+		h.containers = append(h.containers, hostcheck.Container{Name: "paisans-f2a9-infra-etcd-1", Project: "paisans-f2a9-infra", Deployment: ourID, Image: "sha256:etcd", PID: 10})
 		h.networks = append(h.networks, hostcheck.Network{Name: "bridge"})
 	}
 	for i, name := range cfg.Cluster.Sites {
@@ -937,14 +957,15 @@ func newWorld(t *testing.T, edits ...func(string) string) *world {
 		return w
 	}
 	b.containers = append(b.containers,
-		hostcheck.Container{Name: "paisans-f2a9-talk-app-1", Project: "paisans-f2a9-talk", Deployment: ourID, PID: 11},
-		hostcheck.Container{Name: "someone-elses-db", Project: "theirs"},
+		hostcheck.Container{Name: "paisans-f2a9-talk-app-1", Project: "paisans-f2a9-talk", Deployment: ourID, Image: "sha256:talk", PID: 11},
+		hostcheck.Container{Name: "someone-elses-db", Project: "theirs", Image: "sha256:theirs"},
 		hostcheck.Container{Name: "paisans-0c1d-infra-etcd-1", Project: "paisans-0c1d-infra", Deployment: otherID},
 	)
 	b.networks = append(b.networks,
 		hostcheck.Network{Name: "paisans-f2a9-talk_default", Project: "paisans-f2a9-talk", Deployment: ourID},
 		hostcheck.Network{Name: "theirs_default", Project: "theirs"},
 	)
+	b.images["sha256:talk"], b.images["sha256:theirs"] = true, true
 	b.volumes = append(b.volumes, hostcheck.Volume{Name: "paisans-f2a9-talk_media", Project: "paisans-f2a9-talk", Deployment: ourID})
 	b.files[root+"/infra/postgres/PG_VERSION"] = "18\n"
 	b.files["/etc/systemd/system/paisans-f2a9-watchdog.service"] = "[Unit]\n"

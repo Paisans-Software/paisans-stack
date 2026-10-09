@@ -31,15 +31,18 @@ type hostPlan struct {
 	containers    []string
 	networks      []string
 	volumes       []string
-	files         []appremove.File
-	manifest      bool
-	wireguard     bool
-	units         []string
-	dropins       []string
-	rules         []string
-	keys          keyPlan
-	registry      bool
-	root          dirState
+	// images are the IDs of the images only this deployment's containers
+	// run, sorted.
+	images    []string
+	files     []appremove.File
+	manifest  bool
+	wireguard bool
+	units     []string
+	dropins   []string
+	rules     []string
+	keys      keyPlan
+	registry  bool
+	root      dirState
 	// deleteRoot is --delete-data with no edited file under the root.
 	deleteRoot bool
 	handover   *handover
@@ -102,6 +105,17 @@ func (p *Plan) containersCommand() string {
 		rm += " -v"
 	}
 	return fmt.Sprintf(`set -e; ids=$(docker ps -aq --no-trunc %[1]s); if [ -n "$ids" ]; then docker stop $ids >/dev/null; %[2]s $ids >/dev/null; fi; nets=$(docker network ls -q --no-trunc %[1]s); if [ -n "$nets" ]; then docker network rm $nets >/dev/null; fi`, filter, rm)
+}
+
+// imagesCommand removes each image by ID, without -f, and answers per image,
+// so an image Docker refuses (one a container still runs from) is reported
+// rather than failing the stage.
+func imagesCommand(ids []string) string {
+	var q []string
+	for _, id := range ids {
+		q = append(q, quote(id))
+	}
+	return fmt.Sprintf(`for i in %s; do if out=$(docker image rm "$i" 2>&1); then echo "removed $i"; else echo "kept $i $(printf %%s "$out" | tr '\n' ' ')"; fi; done`, strings.Join(q, " "))
 }
 
 func (p *Plan) volumesCommand() string {
@@ -183,6 +197,25 @@ func (p *Plan) buildHost() (*Stage, error) {
 			p.Kept = append(p.Kept, containerKept(p.Site, c.Name))
 		}
 	}
+	ours, theirs := map[string]bool{}, map[string]bool{}
+	for _, c := range inv.Containers {
+		if c.Image == "" {
+			continue
+		}
+		if c.Deployment == d.ID {
+			ours[c.Image] = true
+		} else {
+			theirs[c.Image] = true
+		}
+	}
+	for id := range ours {
+		if theirs[id] {
+			p.Kept = append(p.Kept, imageKept(p.Site, id, "a container this deployment does not own runs from it"))
+			continue
+		}
+		hp.images = append(hp.images, id)
+	}
+	sort.Strings(hp.images)
 	for _, n := range inv.Networks {
 		switch {
 		case n.Deployment == d.ID:
@@ -420,6 +453,9 @@ func (p *Plan) hostSteps(st *Stage) {
 	if p.DeleteData && len(hp.volumes) > 0 {
 		add("delete", "delete volumes", "volumes %s", strings.Join(hp.volumes, ", "))
 	}
+	if len(hp.images) > 0 {
+		add("remove", "remove images", "images %s, which only this deployment's containers ran, by ID and without -f, so Docker refuses one in use", strings.Join(hp.images, ", "))
+	}
 	if hp.wireguard {
 		add("stop", "stop "+d.WireGuardUnit(), "%s, and disable it at boot", d.WireGuardUnit())
 	}
@@ -486,6 +522,19 @@ func (p *Plan) runHost() error {
 			p.work("delete volumes")
 			if err := run("removing this deployment's volumes", p.volumesCommand()); err != nil {
 				return err
+			}
+		}
+		if len(hp.images) > 0 {
+			p.work("remove images")
+			out, err := t.Run(imagesCommand(hp.images))
+			if err != nil {
+				return fmt.Errorf("%s: removing images: %w: %s", p.Site, err, lastLines(out, 3))
+			}
+			for _, line := range strings.Split(out, "\n") {
+				if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "kept "); ok {
+					id, why, _ := strings.Cut(rest, " ")
+					p.Kept = append(p.Kept, imageKept(p.Site, id, "Docker refused: "+why))
+				}
 			}
 		}
 	}

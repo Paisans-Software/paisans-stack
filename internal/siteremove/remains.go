@@ -24,6 +24,10 @@ func volumeKept(site, name string) string {
 	return fmt.Sprintf("%s: volume kept; --delete-data deletes it. It is %s, this deployment's data", site, name)
 }
 
+func imageKept(site, id, why string) string {
+	return fmt.Sprintf("%s: image kept; remove it yourself once nothing runs from it. It is %s: %s", site, id, why)
+}
+
 func editedFileKept(site, path string) string {
 	return fmt.Sprintf("%s: an edited file kept; delete it by hand once nothing needs it. It is /%s, edited on the host since apply wrote it", site, path)
 }

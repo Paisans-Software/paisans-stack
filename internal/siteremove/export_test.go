@@ -59,6 +59,7 @@ func WorstCaseRemains() []string {
 		keysNoPasswd(site, path, name), keySharedKept(site, fp, path), keyLinesKept(site, path, path, name),
 		secretsLeft(site), dnsLeft(strings.Repeat("a", 60)), dnsLeft(""), ownedNote(site, name),
 		apply.LeaderPatroniEnvNote(site),
+		imageKept(site, "sha256:"+strings.Repeat("f", 64), strings.Repeat("w", 80)),
 	}
 	out = append(out, handoverKept(site, "/srv/caddy.d", true)...)
 	return out
