@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
@@ -57,7 +56,7 @@ func runStorageAdd(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
@@ -89,17 +88,18 @@ func runStorageAdd(args []string) error {
 	if err != nil {
 		return err
 	}
-	plan.Print(os.Stdout)
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	if !*execute {
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to run these stages; each stops at its gate if it does not pass, and a stage waiting on Garage exits for a later run to resume.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	plan.Progress = os.Stdout
-	fmt.Fprintln(os.Stdout)
+	plan.Report = r
 	if err := storageadd.Execute(plan); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\nstorage add: every gate passed\n")
+	r.Result("storage add: every gate passed.")
 	return nil
 }

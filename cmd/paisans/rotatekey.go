@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 
@@ -57,7 +56,7 @@ func runStorageRotateKey(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	if err := secretsgen.CheckGarageKeys(cfg, secrets); err != nil {
 		return err
@@ -105,18 +104,19 @@ func runStorageRotateKey(args []string) error {
 	if err != nil {
 		return err
 	}
-	plan.Print(os.Stdout)
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	if !*execute {
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to run these stages; each stops at its gate if it does not pass, and the old key is deleted only after the app is switched and the new key proven.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	plan.Progress = os.Stdout
-	fmt.Fprintln(os.Stdout)
+	plan.Report = r
 	if err := rotatekey.Execute(plan); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\nstorage rotate-key: %s now uses %s, and %s is deleted from Garage\n", *appName, plan.NewKeyID, plan.OldKeyID)
+	r.Result("%s now uses %s, and %s is deleted from Garage.", *appName, plan.NewKeyID, plan.OldKeyID)
 	return nil
 }
 
@@ -166,11 +166,11 @@ func (a applySwitch) Pending(site string, secrets *config.Secrets) ([]string, er
 	return pending, nil
 }
 
-func (a applySwitch) Apply(site string, secrets *config.Secrets) error {
+func (a applySwitch) Apply(site string, secrets *config.Secrets, r ui.Reporter) error {
 	plan, err := a.plan(site, secrets)
 	if err != nil {
 		return err
 	}
-	plan.Report = ui.NewPlain(os.Stdout, false)
+	plan.Report = r
 	return apply.Execute(plan, a.transports[site])
 }

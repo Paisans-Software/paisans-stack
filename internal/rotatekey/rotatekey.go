@@ -20,7 +20,6 @@ package rotatekey
 import (
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
@@ -28,6 +27,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 const (
@@ -51,8 +51,8 @@ type Switch interface {
 	// Pending lists what that apply would still change on site with these
 	// secrets. Empty means the site already runs the app as rendered.
 	Pending(site string, secrets *config.Secrets) ([]string, error)
-	// Apply runs it, through apply's health gate.
-	Apply(site string, secrets *config.Secrets) error
+	// Apply runs it, through apply's health gate, reporting its steps to r.
+	Apply(site string, secrets *config.Secrets, r ui.Reporter) error
 }
 
 // Options are everything a rotation reads and the ways it writes.
@@ -71,12 +71,22 @@ type Options struct {
 	Probe string
 }
 
+// Step is one thing a stage will do, for the plan an operator reads. Steps
+// that follow each other with one title are listed as one item.
+type Step struct {
+	Title string
+	Text  string
+}
+
 // Stage is one stage of the rotation: what it will do, then its gate.
 type Stage struct {
 	Number int
 	Name   string
-	Steps  []string
+	Steps  []Step
 	Gate   string
+	// Short names the gate in a few words, as the title of its step. The long
+	// text is that step's detail.
+	Short string
 	// Verifies marks a stage that only proves the result, run on every
 	// execute whether or not it has steps.
 	Verifies bool
@@ -100,8 +110,9 @@ type Plan struct {
 	// InProgress says the secrets already hold a previous pair.
 	InProgress bool
 	Stages     []*Stage
-	// Progress receives each stage as it starts and each gate as it passes.
-	Progress io.Writer
+	// Report receives each stage as a section, the work in it as steps and
+	// each gate as a step of its own. Nil discards it.
+	Report ui.Reporter
 
 	opts      Options
 	oldSecret string
@@ -109,6 +120,41 @@ type Plan struct {
 	region    string
 	endpoint  string
 	garage    apply.Transport
+	// open is the step the running stage is in the middle of, ended when the
+	// next one starts or the stage's work does.
+	open ui.Step
+}
+
+func (p *Plan) reporter() ui.Reporter {
+	if p.Report == nil {
+		return ui.Discard
+	}
+	return p.Report
+}
+
+// work starts the step a stage's run is now doing and ends the one before it,
+// so a failure marks the step that failed.
+func (p *Plan) work(title string) ui.Step {
+	p.idle()
+	p.open = p.reporter().Step(title)
+	return p.open
+}
+
+// idle ends the open step as done. A step that calls into apply ends its own
+// first, since the apply reports steps of its own and two cannot be open.
+func (p *Plan) idle() {
+	if p.open != nil {
+		p.open.Done("")
+		p.open = nil
+	}
+}
+
+// stop ends the open step as failed, when there is one.
+func (p *Plan) stop(err error) {
+	if p.open != nil {
+		p.open.Fail(err)
+		p.open = nil
+	}
 }
 
 // Build decides the rotation, reading Garage and changing nothing.
@@ -224,17 +270,20 @@ func (p *Plan) newName() string {
 // buildSecrets is stage 1: the new pair, with the old one kept beside it.
 func (p *Plan) buildSecrets() *Stage {
 	st := &Stage{
-		Name: "new key in the secrets",
-		Gate: fmt.Sprintf("the secrets hold the new pair as apps.%s.%s and %s, and the retiring %s as %s and %s", p.App, currentID, currentSecret, p.OldKeyID, previousID, previousKey),
+		Name:  "new key in the secrets",
+		Short: "secrets hold the new pair",
+		Gate:  fmt.Sprintf("the secrets hold the new pair as apps.%s.%s and %s, and the retiring %s as %s and %s", p.App, currentID, currentSecret, p.OldKeyID, previousID, previousKey),
 	}
 	if !p.InProgress {
-		st.Steps = []string{
-			fmt.Sprintf("generate a new key ID and secret for %s, the way `paisans init` does", p.App),
-			fmt.Sprintf("keep %s as apps.%s.%s and %s", p.OldKeyID, p.App, previousID, previousKey),
-			"write the secrets file, encrypted to its recipients",
+		const title = "write the new key to the secrets"
+		st.Steps = []Step{
+			{title, fmt.Sprintf("generate a new key ID and secret for %s, the way `paisans init` does", p.App)},
+			{title, fmt.Sprintf("keep %s as apps.%s.%s and %s", p.OldKeyID, p.App, previousID, previousKey)},
+			{title, "write the secrets file, encrypted to its recipients"},
 		}
 	}
 	st.run = func() error {
+		p.work("write the new key to the secrets")
 		id, secret, err := p.opts.Generate()
 		if err != nil {
 			return err
@@ -279,19 +328,21 @@ func (p *Plan) buildSecrets() *Stage {
 // key, so it is left exactly as it is.
 func (p *Plan) buildImport(newPresent bool, bucket garage.Bucket) *Stage {
 	st := &Stage{
-		Name: "new key in Garage",
-		Gate: fmt.Sprintf("%s's Garage holds %s, granted read/write/owner on %s", p.Anchor, p.newName(), p.Bucket),
+		Name:  "new key in Garage",
+		Short: "Garage holds the new key",
+		Gate:  fmt.Sprintf("%s's Garage holds %s, granted read/write/owner on %s", p.Anchor, p.newName(), p.Bucket),
 	}
 	if !newPresent {
-		st.Steps = append(st.Steps, fmt.Sprintf("import %s on %s under the name %s", p.newName(), p.Anchor, p.App))
+		st.Steps = append(st.Steps, Step{"add the new key to Garage", fmt.Sprintf("import %s on %s under the name %s", p.newName(), p.Anchor, p.App)})
 	}
 	if !p.InProgress || !bucket.Grants(p.NewKeyID) {
-		st.Steps = append(st.Steps, fmt.Sprintf("grant %s read/write/owner on %s; website access is the bucket's and is left as it is", p.newName(), p.Bucket))
+		st.Steps = append(st.Steps, Step{"add the new key to Garage", fmt.Sprintf("grant %s read/write/owner on %s; website access is the bucket's and is left as it is", p.newName(), p.Bucket)})
 	}
 	// The steps are decided again from Garage when they run: the key ID is
 	// not known at Build on a fresh rotation, and a resumed run may find
 	// either step already done.
 	st.run = func() error {
+		p.work("add the new key to Garage")
 		var steps []garage.Step
 		present, err := garage.KeyPresent(p.garage, p.opts.Config.Deployment(), p.NewKeyID)
 		if err != nil {
@@ -332,15 +383,16 @@ func (p *Plan) buildImport(newPresent bool, bucket garage.Bucket) *Stage {
 // buildSwitch is stage 3: every site running the app applies it alone.
 func (p *Plan) buildSwitch() (*Stage, error) {
 	st := &Stage{
-		Name: fmt.Sprintf("switch %s to the new key", p.App),
-		Gate: fmt.Sprintf("`apply --only %s` has nothing left to do on %s: the app runs with the rendered .env and passed apply's health gate", p.App, strings.Join(p.Sites, ", ")),
+		Name:  fmt.Sprintf("switch %s to the new key", p.App),
+		Short: fmt.Sprintf("%s runs on the new key", p.App),
+		Gate:  fmt.Sprintf("`apply --only %s` has nothing left to do on %s: the app runs with the rendered .env and passed apply's health gate", p.App, strings.Join(p.Sites, ", ")),
 	}
 	var todo []string
 	for _, site := range p.Sites {
 		if !p.InProgress {
 			// The .env changes once stage 1 has run; with the secrets as
 			// they are, apply would find nothing to do.
-			st.Steps = append(st.Steps, fmt.Sprintf("%s: as `paisans apply --site %s --only %s`: write its .env with %s, recreate it, health gate", site, site, p.App, p.newName()))
+			st.Steps = append(st.Steps, Step{"switch " + p.App + " on " + site, fmt.Sprintf("%s: as `paisans apply --site %s --only %s`: write its .env with %s, recreate it, health gate", site, site, p.App, p.newName())})
 			todo = append(todo, site)
 			continue
 		}
@@ -349,13 +401,17 @@ func (p *Plan) buildSwitch() (*Stage, error) {
 			return nil, err
 		}
 		if len(pending) > 0 {
-			st.Steps = append(st.Steps, fmt.Sprintf("%s: as `paisans apply --site %s --only %s`: %s", site, site, p.App, strings.Join(pending, "; ")))
+			st.Steps = append(st.Steps, Step{"switch " + p.App + " on " + site, fmt.Sprintf("%s: as `paisans apply --site %s --only %s`: %s", site, site, p.App, strings.Join(pending, "; "))})
 			todo = append(todo, site)
 		}
 	}
 	st.run = func() error {
 		for _, site := range todo {
-			if err := p.opts.Switch.Apply(site, p.opts.Secrets); err != nil {
+			// The apply reports steps of its own, under a section naming the
+			// site, since its steps do not.
+			p.idle()
+			p.reporter().Section(fmt.Sprintf("switch %s on %s", p.App, site))
+			if err := p.opts.Switch.Apply(site, p.opts.Secrets, p.reporter()); err != nil {
 				return fmt.Errorf("%s: %w", site, err)
 			}
 		}
@@ -383,10 +439,11 @@ func (p *Plan) buildProve() *Stage {
 	st := &Stage{
 		Name:     "prove the new key",
 		Verifies: true,
+		Short:    "new key writes and reads",
 		Gate:     fmt.Sprintf("from every site running %s, %s writes %s/%s through %s's S3 API, reads it back byte for byte, and deletes it", p.App, p.newName(), p.Bucket, probeObject, p.Anchor),
 	}
 	for _, site := range p.Sites {
-		st.Steps = append(st.Steps, fmt.Sprintf("%s: write, read back and delete %s/%s with %s through %s's S3 API (3900), the address the app is rendered with", site, p.Bucket, probeObject, p.newName(), p.Anchor))
+		st.Steps = append(st.Steps, Step{"prove the new key from " + site, fmt.Sprintf("%s: write, read back and delete %s/%s with %s through %s's S3 API (3900), the address the app is rendered with", site, p.Bucket, probeObject, p.newName(), p.Anchor)})
 	}
 	st.gate = func() error {
 		obj := garage.S3Object{Address: p.endpoint, Bucket: p.Bucket, Key: probeObject, KeyID: p.NewKeyID, Secret: p.newSecret, Region: p.region}
@@ -415,13 +472,14 @@ func (p *Plan) buildProve() *Stage {
 // It runs only after every earlier gate passed in the same run.
 func (p *Plan) buildRetire(oldPresent bool) *Stage {
 	st := &Stage{
-		Name: "retire the old key",
-		Gate: fmt.Sprintf("Garage no longer holds %s, and the secrets no longer hold a previous pair for %s", p.OldKeyID, p.App),
+		Name:  "retire the old key",
+		Short: "old key is gone",
+		Gate:  fmt.Sprintf("Garage no longer holds %s, and the secrets no longer hold a previous pair for %s", p.OldKeyID, p.App),
 	}
 	if oldPresent {
-		st.Steps = append(st.Steps, fmt.Sprintf("delete %s from Garage on %s: garage key delete --yes %s", p.OldKeyID, p.Anchor, p.OldKeyID))
+		st.Steps = append(st.Steps, Step{"delete the old key from Garage", fmt.Sprintf("delete %s from Garage on %s: garage key delete --yes %s", p.OldKeyID, p.Anchor, p.OldKeyID)})
 	}
-	st.Steps = append(st.Steps, fmt.Sprintf("remove apps.%s.%s and %s from the secrets, and write the file", p.App, previousID, previousKey))
+	st.Steps = append(st.Steps, Step{"remove the previous pair from the secrets", fmt.Sprintf("remove apps.%s.%s and %s from the secrets, and write the file", p.App, previousID, previousKey)})
 	st.run = func() error {
 		// The last word before an irreversible step: the ID being deleted
 		// is the retiring one, never the one the app now runs with.
@@ -433,10 +491,12 @@ func (p *Plan) buildRetire(oldPresent bool) *Stage {
 			return err
 		}
 		if present {
+			p.work("delete the old key from Garage")
 			if err := garage.Execute(&garage.Plan{Site: p.Anchor, Steps: []garage.Step{garage.DeleteKeyStep(p.opts.Config.Deployment(), p.OldKeyID)}}, p.garage); err != nil {
 				return err
 			}
 		}
+		p.work("remove the previous pair from the secrets")
 		next := cloneSecrets(p.opts.Secrets)
 		delete(next.Apps[p.App], previousID)
 		delete(next.Apps[p.App], previousKey)
@@ -467,17 +527,24 @@ func (p *Plan) buildRetire(oldPresent bool) *Stage {
 // before moving past it, and the old key is deleted only in a run that has
 // just seen the app switched and the new key proven.
 func Execute(p *Plan) error {
+	r := p.reporter()
 	for _, st := range p.Stages {
-		p.say("stage %d, %s\n", st.Number, st.Name)
+		r.Section(fmt.Sprintf("stage %d, %s", st.Number, st.Name))
 		if st.run != nil && len(st.Steps) > 0 && !st.Verifies {
-			if err := st.run(); err != nil {
+			err := st.run()
+			if err != nil {
+				p.stop(err)
 				return p.fail(st, err)
 			}
+			p.idle()
 		}
+		g := r.Step("gate: " + st.Short)
+		g.Detail("%s", st.Gate)
 		if err := st.gate(); err != nil {
+			g.Fail(err)
 			return p.fail(st, fmt.Errorf("gate: %w", err))
 		}
-		p.say("  %-9s %s\n", "passed", st.Gate)
+		g.Done("passed")
 	}
 	return nil
 }
@@ -490,31 +557,33 @@ func (p *Plan) fail(st *Stage, err error) error {
 	return fmt.Errorf("storage rotate-key stopped at stage %d (%s), and nothing after it ran: %v.%s\nFix the cause and run storage rotate-key again: it resumes from the secrets file", st.Number, st.Name, err, kept)
 }
 
-func (p *Plan) say(format string, args ...any) {
-	if p.Progress != nil {
-		fmt.Fprintf(p.Progress, format, args...)
-	}
-}
-
-// Print writes the plan as an operator reads it. It names key IDs, which are
-// not secret, and never a secret key.
-func (p *Plan) Print(w io.Writer) {
-	fmt.Fprintf(w, "storage rotate-key: %s, bucket %s, through %s's Garage\n", p.App, p.Bucket, p.Anchor)
-	fmt.Fprintf(w, "  %-9s %s\n", "retiring", p.OldKeyID)
+// Show lists the plan as an operator reads it: a section per stage, an item
+// per kind of step and one for the gate, with the whole text of each as its
+// detail. It names key IDs, which are not secret, and never a secret key.
+func (p *Plan) Show(r ui.Reporter) {
+	r.Detail("storage rotate-key: %s, bucket %s, through %s's Garage", p.App, p.Bucket, p.Anchor)
+	r.Detail("retiring %s", p.OldKeyID)
 	if p.NewKeyID == "" {
-		fmt.Fprintf(w, "  %-9s %s\n", "new", "generated at stage 1 when run with --execute")
+		r.Detail("new key generated at stage 1 when run with --execute")
 	} else {
-		fmt.Fprintf(w, "  %-9s %s (a rotation is in progress, resumed from the secrets file)\n", "new", p.NewKeyID)
+		r.Detail("new key %s (a rotation is in progress, resumed from the secrets file)", p.NewKeyID)
 	}
 	for _, st := range p.Stages {
-		fmt.Fprintf(w, "\n%d. %s\n", st.Number, st.Name)
+		r.Section(fmt.Sprintf("stage %d, %s", st.Number, st.Name))
 		if len(st.Steps) == 0 {
-			fmt.Fprintf(w, "  %-9s nothing to do here, and the gate is still checked\n", "nothing")
+			r.Item("nothing to do here")
+			r.Detail("nothing to do here, and the gate is still checked")
 		}
+		last := ""
 		for _, step := range st.Steps {
-			fmt.Fprintf(w, "  %-9s %s\n", "step", step)
+			if step.Title != last {
+				r.Item(step.Title)
+				last = step.Title
+			}
+			r.Detail("%s", step.Text)
 		}
-		fmt.Fprintf(w, "  %-9s %s\n", "gate", st.Gate)
+		r.Item("gate: " + st.Short)
+		r.Detail("%s", st.Gate)
 	}
 }
 

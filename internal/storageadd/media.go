@@ -59,8 +59,9 @@ func (p *Plan) buildMedia() (*Stage, error) {
 	}
 	sort.Strings(paths)
 	st := &Stage{
-		Name: "media routes",
-		Gate: "the gateway's media routes match the render, the Garage nodes in storage.garage.sites order",
+		Name:  "media routes",
+		Short: "media routes match the render",
+		Gate:  "the gateway's media routes match the render, the Garage nodes in storage.garage.sites order",
 	}
 	t := p.transports[p.gateway]
 	sp, err := apply.Build(p.gateway, p.rendered, acme.Module(p.cfg.ACME.Provider), t, p.applyOptions(p.gateway, apply.Scope(paths...))...)
@@ -71,20 +72,23 @@ func (p *Plan) buildMedia() (*Stage, error) {
 		return nil, fmt.Errorf("storage add: %s's %s differs from what the last apply recorded, so somebody edited it on the host. Nothing was changed. Restore it, or copy what is wanted into the configuration, and run storage add again", p.gateway, c[0].Path)
 	}
 	for _, c := range sp.Writes() {
-		st.Steps = append(st.Steps, Step{Site: p.gateway, Verb: c.Kind.String(), Text: c.Path})
+		st.Steps = append(st.Steps, Step{Site: p.gateway, Verb: c.Kind.String(), Title: "write media routes", Text: c.Path})
 	}
 	if len(sp.Writes()) > 0 {
 		st.Steps = append(st.Steps,
-			Step{Site: p.gateway, Verb: "validate", Text: "the gateway's configuration: " + validateCaddy(p.dep())},
-			Step{Site: p.gateway, Verb: "reload", Text: "Caddy: " + reloadCaddy(p.dep())})
+			Step{Site: p.gateway, Verb: "validate", Title: "validate the gateway configuration", Text: "the gateway's configuration: " + validateCaddy(p.dep())},
+			Step{Site: p.gateway, Verb: "reload", Title: "reload Caddy on " + p.gateway, Text: "Caddy: " + reloadCaddy(p.dep())})
 	}
 	st.run = func() error {
+		p.work("write media routes")
 		if err := apply.Execute(sp, t); err != nil {
 			return err
 		}
+		p.work("validate the gateway configuration")
 		if out, err := t.Run(validateCaddy(p.dep())); err != nil {
 			return fmt.Errorf("%s: the gateway's configuration does not validate with the new media routes, so Caddy was not reloaded and still serves the old ones:\n%s", p.gateway, out)
 		}
+		p.work("reload Caddy on " + p.gateway)
 		if out, err := t.Run(reloadCaddy(p.dep())); err != nil {
 			return fmt.Errorf("%s: reloading Caddy: %s", p.gateway, lastLines(out, 5))
 		}
@@ -172,31 +176,33 @@ func (p *Plan) buildSmoke() *Stage {
 	first := p.nodes[0]
 	st := &Stage{
 		Name:     "smoke",
+		Short:    "probe reads back",
 		Verifies: true,
 		Gate:     "the probe reads back, byte for byte, through every node's S3 API and web endpoint and through the app's media hostname, and is deleted",
 	}
-	st.Steps = append(st.Steps, Step{Site: first.site, Verb: "write", Text: fmt.Sprintf("%s/%s through %s's S3 API, with %s's key", pr.bucket, pr.key, first.site, pr.app)})
+	st.Steps = append(st.Steps, Step{Site: first.site, Verb: "write", Title: "write the probe", Text: fmt.Sprintf("%s/%s through %s's S3 API, with %s's key", pr.bucket, pr.key, first.site, pr.app)})
 	for _, n := range p.nodes {
-		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "read", Text: "the probe through its S3 API (3900) and its web endpoint (3902)"})
+		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "read", Title: "read the probe", Text: "the probe through its S3 API (3900) and its web endpoint (3902)"})
 	}
 	if p.gateway != "" && pr.media != "" {
-		st.Steps = append(st.Steps, Step{Site: p.gateway, Verb: "read", Text: fmt.Sprintf("https://%s/%s, %s's media hostname, through the gateway's own Caddy", pr.media, pr.key, pr.app)})
+		st.Steps = append(st.Steps, Step{Site: p.gateway, Verb: "read", Title: "read the probe", Text: fmt.Sprintf("https://%s/%s, %s's media hostname, through the gateway's own Caddy", pr.media, pr.key, pr.app)})
 	}
 	if p.opts.StopTest {
 		victim := p.nodes[len(p.nodes)-1]
 		st.Steps = append(st.Steps,
-			Step{Site: victim.site, Verb: "stop", Text: "Garage, the last listed site, to prove the rest serve without it: " + stopGarage(p.dep())},
-			Step{Site: first.site, Verb: "read", Text: "the probe through every other node and the media hostname, with " + victim.site + " stopped"},
-			Step{Site: first.site, Verb: "write", Text: "a second probe through " + first.site + ", and read it back, with " + victim.site + " stopped: uploads must survive"},
-			Step{Site: victim.site, Verb: "start", Text: "Garage again, whatever the reads said: " + startGarage(p.dep())},
+			Step{Site: victim.site, Verb: "stop", Title: "stop Garage on " + victim.site, Text: "Garage, the last listed site, to prove the rest serve without it: " + stopGarage(p.dep())},
+			Step{Site: first.site, Verb: "read", Title: "read the probe without " + victim.site, Text: "the probe through every other node and the media hostname, with " + victim.site + " stopped"},
+			Step{Site: first.site, Verb: "write", Title: "write a second probe", Text: "a second probe through " + first.site + ", and read it back, with " + victim.site + " stopped: uploads must survive"},
+			Step{Site: victim.site, Verb: "start", Title: "start Garage on " + victim.site, Text: "Garage again, whatever the reads said: " + startGarage(p.dep())},
 		)
 	}
-	st.Steps = append(st.Steps, Step{Site: first.site, Verb: "delete", Text: "the probe"})
+	st.Steps = append(st.Steps, Step{Site: first.site, Verb: "delete", Title: "delete the probe", Text: "the probe"})
 
 	// Every S3 and web request runs on the first listed node's host, which
 	// reaches every node over the mesh.
 	t := p.transports[first.site]
 	st.run = func() error {
+		p.work("write the probe")
 		out, err := t.RunInput(curlStdin, pr.s3Config("PUT", first.address))
 		if err != nil {
 			return fmt.Errorf("%s: writing the probe: %s", first.site, pr.redact(lastLines(out, 3)))
@@ -288,12 +294,12 @@ func (p *Plan) stopTestAllowed() error {
 func (p *Plan) stopTest(pr *probe) (err error) {
 	first, victim := p.nodes[0], p.nodes[len(p.nodes)-1]
 	vt := p.transports[victim.site]
-	p.say("  %-9s Garage on %s\n", "stop", victim.site)
+	p.note("stop Garage on %s", victim.site)
 	if out, err := vt.Run(stopGarage(p.dep())); err != nil {
 		return fmt.Errorf("%s: stopping Garage for the stop test: %s", victim.site, lastLines(out, 5))
 	}
 	defer func() {
-		p.say("  %-9s Garage on %s\n", "start", victim.site)
+		p.note("start Garage on %s", victim.site)
 		if out, startErr := vt.Run(startGarage(p.dep())); startErr != nil {
 			err = fmt.Errorf("%v\n%s: starting Garage again after the stop test failed too: %s", err, victim.site, lastLines(out, 5))
 			return

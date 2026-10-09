@@ -15,12 +15,13 @@ import (
 // because the join is done without it, so a failure here stops nothing that
 // already passed and names the apply that finishes it by hand.
 func (p *Plan) buildMonitor() (*Stage, error) {
-	st := &Stage{Name: "monitor"}
+	st := &Stage{Name: "monitor", Short: "monitor matches the render"}
 	reseeds, err := apply.PlanMonitorReseeds(p.cfg, p.rendered, acme.Module(p.cfg.ACME.Provider), p.transports)
 	if err != nil {
 		return nil, fmt.Errorf("storage add: %w", err)
 	}
 	if len(reseeds) == 0 {
+		st.Short = "no monitor to reseed"
 		st.Gate = "none: no site holds the monitor role, so nothing watches this deployment and there is no monitor to reseed"
 		return st, nil
 	}
@@ -29,7 +30,7 @@ func (p *Plan) buildMonitor() (*Stage, error) {
 		m.KeepImages = p.keepImages(m.Site)
 		sites = append(sites, m.Site)
 		for _, s := range m.Steps() {
-			st.Steps = append(st.Steps, Step{Site: m.Site, Verb: s.Verb, Text: s.Text})
+			st.Steps = append(st.Steps, Step{Site: m.Site, Verb: s.Verb, Title: "apply " + m.App + " on " + m.Site, Text: s.Text})
 		}
 	}
 	st.Gate = fmt.Sprintf("the monitor on %s runs on a monitors.json that matches the render, so every site has its ping and every app its checks", strings.Join(sites, ", "))
@@ -38,7 +39,7 @@ func (p *Plan) buildMonitor() (*Stage, error) {
 	}
 	st.run = func() error {
 		for _, m := range reseeds {
-			p.say("  %-9s %s on %s, on the seed rendered now\n", "apply", m.App, m.Site)
+			p.work("apply "+m.App+" on "+m.Site).Detail("%s on %s, on the seed rendered now", m.App, m.Site)
 			if err := m.Execute(); err != nil {
 				return byHand(err)
 			}

@@ -31,8 +31,9 @@ func asideName(d deployment.Deployment, factor int) string {
 // ahead on it.
 func (p *Plan) buildNodes() *Stage {
 	st := &Stage{
-		Name: "nodes",
-		Gate: "every Garage site has a garage.toml and its node answers, every deployed replication factor matches the configuration or --change-replication was given, and no site without a role is listed ahead of one with a role",
+		Name:  "nodes",
+		Short: "nodes answer and agree",
+		Gate:  "every Garage site has a garage.toml and its node answers, every deployed replication factor matches the configuration or --change-replication was given, and no site without a role is listed ahead of one with a role",
 	}
 	for _, n := range p.nodes {
 		var text string
@@ -48,7 +49,7 @@ func (p *Plan) buildNodes() *Stage {
 			}
 			text = fmt.Sprintf("node %s, garage.toml at replication %d, layout version %d, %s", n.short(), n.factor, n.version, role)
 		}
-		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "read", Text: text})
+		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "read", Title: "read Garage on " + n.site, Text: text})
 	}
 	st.gate = func() error {
 		var problems []string
@@ -153,6 +154,7 @@ func (p *Plan) syncState(st *Stage, sites []string) error {
 func (p *Plan) buildSettle() *Stage {
 	st := &Stage{
 		Name:  "settle",
+		Short: "layout has settled",
 		Gate:  "on every node with a role, `garage layout history` reports a single live layout version and `garage stats` an empty resync queue with no errors, three reads in a row",
 		Waits: true,
 	}
@@ -178,8 +180,9 @@ func (p *Plan) buildSettle() *Stage {
 // higher factor exits (src/rpc/system.rs:583-587).
 func (p *Plan) buildReset() (*Stage, error) {
 	st := &Stage{
-		Name: "reset",
-		Gate: "every Garage node answers again, at the configured replication factor",
+		Name:  "reset",
+		Short: "nodes answer at the new factor",
+		Gate:  "every Garage node answers again, at the configured replication factor",
 	}
 	// An unread counts file is not an absent one. Read as absent, a resumed
 	// reset would count again after the first run's stop, and the provision
@@ -189,7 +192,7 @@ func (p *Plan) buildReset() (*Stage, error) {
 		return nil, fmt.Errorf("%s: could not read host state, so whether the object counts were recorded is unknown: %w", p.anchor, err)
 	}
 	if !countsRecorded {
-		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "count", Text: "record every bucket's object count in " + countsFile(p.dep()) + ", for the provision gate to compare"})
+		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "count", Title: "record object counts", Text: "record every bucket's object count in " + countsFile(p.dep()) + ", for the provision gate to compare"})
 	}
 	var changing []*node
 	for _, n := range p.nodes {
@@ -198,33 +201,37 @@ func (p *Plan) buildReset() (*Stage, error) {
 		}
 	}
 	for _, n := range changing {
-		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "stop", Text: "Garage: " + stopGarage(p.dep())})
+		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "stop", Title: "stop Garage on " + n.site, Text: "Garage: " + stopGarage(p.dep())})
 	}
 	for _, n := range changing {
 		if n.hasLayout {
-			st.Steps = append(st.Steps, Step{Site: n.site, Verb: "set aside", Text: fmt.Sprintf("the stored layout, built at replication %d: mv -n %s %s", n.factor, layoutFile(p.dep()), asideName(p.dep(), n.factor))})
+			st.Steps = append(st.Steps, Step{Site: n.site, Verb: "set aside", Title: "set aside layout on " + n.site, Text: fmt.Sprintf("the stored layout, built at replication %d: mv -n %s %s", n.factor, layoutFile(p.dep()), asideName(p.dep(), n.factor))})
 		}
 	}
 	for _, n := range changing {
-		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "write", Text: fmt.Sprintf("%s at replication %d (was %d)", garageToml(p.dep()), p.replication(), n.factor)})
+		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "write", Title: "write garage.toml on " + n.site, Text: fmt.Sprintf("%s at replication %d (was %d)", garageToml(p.dep()), p.replication(), n.factor)})
 	}
 	for _, n := range p.nodes {
-		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "start", Text: "Garage: " + startGarage(p.dep())})
+		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "start", Title: "start Garage on " + n.site, Text: "Garage: " + startGarage(p.dep())})
 	}
 	st.run = func() error {
 		if !countsRecorded {
+			p.work("record object counts")
 			if err := p.recordCounts(); err != nil {
 				return err
 			}
 		}
 		for _, n := range changing {
-			p.say("  %-9s Garage on %s\n", "stop", n.site)
+			p.work("stop Garage on " + n.site)
 			if out, err := p.transports[n.site].Run(stopGarage(p.dep())); err != nil {
 				return fmt.Errorf("%s: stopping Garage: %s", n.site, lastLines(out, 5))
 			}
 		}
 		for _, n := range changing {
 			t := p.transports[n.site]
+			if n.hasLayout {
+				p.work("set aside layout on " + n.site)
+			}
 			out, err := t.Run(setAsideCommand(p.dep(), n.factor))
 			if err == nil {
 				continue
@@ -242,6 +249,7 @@ func (p *Plan) buildReset() (*Stage, error) {
 		}
 		for _, n := range changing {
 			t := p.transports[n.site]
+			p.work("write garage.toml on " + n.site)
 			sp, err := apply.Build(n.site, p.rendered, acme.Module(p.cfg.ACME.Provider), t, p.applyOptions(n.site, apply.Scope(apply.GarageConfig(p.dep())), apply.ReplicationChange())...)
 			if err != nil {
 				return err
@@ -254,7 +262,7 @@ func (p *Plan) buildReset() (*Stage, error) {
 			}
 		}
 		for _, n := range p.nodes {
-			p.say("  %-9s Garage on %s\n", "start", n.site)
+			p.work("start Garage on " + n.site)
 			if out, err := p.transports[n.site].Run(startGarage(p.dep())); err != nil {
 				return fmt.Errorf("%s: starting Garage: %s", n.site, lastLines(out, 5))
 			}
@@ -356,8 +364,9 @@ func parseCounts(content string) map[string]int {
 // once per node, and nothing renders bootstrap_peers.
 func (p *Plan) buildConnect() *Stage {
 	st := &Stage{
-		Name: "connect",
-		Gate: "`garage status` on every node lists every configured node as healthy",
+		Name:  "connect",
+		Short: "every node is healthy",
+		Gate:  "`garage status` on every node lists every configured node as healthy",
 	}
 	seen := map[string]bool{}
 	if a := p.node(p.anchor); a.answers() && !p.reset {
@@ -369,7 +378,7 @@ func (p *Plan) buildConnect() *Stage {
 		if n.site == p.anchor || (n.answers() && seen[n.short()]) {
 			continue
 		}
-		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "connect", Text: fmt.Sprintf("%s: garage node connect <its node ID>@%s:3901", n.site, n.address)})
+		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "connect", Title: "connect " + n.site, Text: fmt.Sprintf("%s: garage node connect <its node ID>@%s:3901", n.site, n.address)})
 	}
 	st.run = func() error {
 		anchor := p.transports[p.anchor]
@@ -388,7 +397,7 @@ func (p *Plan) buildConnect() *Stage {
 			if seen[n.short()] {
 				continue
 			}
-			p.say("  %-9s %s to %s\n", "connect", n.site, p.anchor)
+			p.work("connect "+n.site).Detail("%s to %s", n.site, p.anchor)
 			target := fmt.Sprintf("%s@%s:3901", n.id, n.address)
 			if out, err := anchor.Run(gcmd(p.dep(), "node connect "+target)); err != nil {
 				return fmt.Errorf("%s: connecting %s: %s", p.anchor, n.site, lastLines(out, 3))
@@ -433,8 +442,9 @@ func (p *Plan) everyNodeHealthy() error {
 // (version.rs:157-172, :314-319).
 func (p *Plan) buildLayout() *Stage {
 	st := &Stage{
-		Name: "layout",
-		Gate: "`garage layout show` on every node reports the same version, with a role for every Garage site in the zone named after it, at its configured capacity",
+		Name:  "layout",
+		Short: "layout agrees on every node",
+		Gate:  "`garage layout show` on every node reports the same version, with a role for every Garage site in the zone named after it, at its configured capacity",
 	}
 	garageCfg := p.cfg.Storage.Garage
 	version := 0
@@ -450,15 +460,15 @@ func (p *Plan) buildLayout() *Stage {
 		want := garageCfg.CapacityFor(n.site)
 		switch {
 		case p.reset || !n.hasRole:
-			st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "assign", Text: fmt.Sprintf("%s: garage layout assign -z %s -c %s <its node ID>", n.site, n.site, want)})
+			st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "assign", Title: "assign " + n.site + " a role", Text: fmt.Sprintf("%s: garage layout assign -z %s -c %s <its node ID>", n.site, n.site, want)})
 			changes++
 		case !p.capacityMatches(shown, n):
-			st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "resize", Text: fmt.Sprintf("%s: garage layout assign -c %s <its node ID>, from %s; Garage rebalances to match", n.site, want, humanBytes(shown.capacity[n.short()]))})
+			st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "resize", Title: "resize " + n.site, Text: fmt.Sprintf("%s: garage layout assign -c %s <its node ID>, from %s; Garage rebalances to match", n.site, want, humanBytes(shown.capacity[n.short()]))})
 			changes++
 		}
 	}
 	if changes > 0 {
-		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "apply", Text: fmt.Sprintf("garage layout apply --version %d", version+1)})
+		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "apply", Title: "apply the layout", Text: fmt.Sprintf("garage layout apply --version %d", version+1)})
 	}
 	st.run = func() error {
 		anchor := p.transports[p.anchor]
@@ -479,7 +489,7 @@ func (p *Plan) buildLayout() *Stage {
 				continue
 			}
 			capacity := garageCfg.CapacityFor(n.site)
-			p.say("  %-9s %s a role in zone %s at %s\n", "assign", n.site, n.site, capacity)
+			p.work("assign "+n.site+" a role").Detail("%s a role in zone %s at %s", n.site, n.site, capacity)
 			cmd := fmt.Sprintf("layout assign -z %s -c %s %s", n.site, capacity, n.id)
 			if out, err := anchor.Run(gcmd(p.dep(), cmd)); err != nil {
 				return fmt.Errorf("%s: assigning %s: %s", p.anchor, n.site, lastLines(out, 3))
@@ -490,7 +500,7 @@ func (p *Plan) buildLayout() *Stage {
 			return nil
 		}
 		next := current.version + 1
-		p.say("  %-9s the layout at version %d\n", "apply", next)
+		p.work("apply the layout").Detail("the layout at version %d", next)
 		if out, err := anchor.Run(gcmd(p.dep(), fmt.Sprintf("layout apply --version %d", next))); err != nil {
 			return fmt.Errorf("%s: applying the layout at version %d: %s", p.anchor, next, lastLines(out, 5))
 		}
@@ -536,6 +546,7 @@ func (p *Plan) buildLayout() *Stage {
 func (p *Plan) buildSync() *Stage {
 	st := &Stage{
 		Name:  "sync",
+		Short: "data has synced",
 		Gate:  "on every node, `garage layout history` reports a single live layout version and `garage stats` an empty resync queue with no errors, three reads in a row",
 		Waits: true,
 	}
@@ -554,8 +565,9 @@ func (p *Plan) buildSync() *Stage {
 // present.
 func (p *Plan) buildProvision() (*Stage, error) {
 	st := &Stage{
-		Name: "provision",
-		Gate: "storage init's plan against the anchor has nothing left, and after a reset no bucket has fewer objects than it had before",
+		Name:  "provision",
+		Short: "keys and buckets exist",
+		Gate:  "storage init's plan against the anchor has nothing left, and after a reset no bucket has fewer objects than it had before",
 	}
 	t := p.transports[p.anchor]
 	ready := !p.reset
@@ -570,12 +582,13 @@ func (p *Plan) buildProvision() (*Stage, error) {
 			return nil, err
 		}
 		for _, step := range plan.Steps {
-			st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "create", Text: step.Describe})
+			st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "create", Title: "create keys and buckets", Text: step.Describe})
 		}
 	} else {
-		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "plan", Text: "keys, buckets, grants and website access, once every node has a role: storage init's planner, run against this site"})
+		st.Steps = append(st.Steps, Step{Site: p.anchor, Verb: "plan", Title: "create keys and buckets", Text: "keys, buckets, grants and website access, once every node has a role: storage init's planner, run against this site"})
 	}
 	st.run = func() error {
+		p.work("create keys and buckets")
 		plan, err := garage.Build(p.anchor, p.cfg, p.secrets, t)
 		if err != nil {
 			return err

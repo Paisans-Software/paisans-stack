@@ -29,7 +29,7 @@ func TestTheJoinReseedsTheMonitorLast(t *testing.T) {
 
 	p := w.build(storageadd.Options{})
 	last := p.Stages[len(p.Stages)-1]
-	if last.Name != "monitor" || !strings.Contains(printed(p), "update    watch: "+seed) || !strings.Contains(printed(p), "restart   watch: status") {
+	if last.Name != "monitor" || !strings.Contains(printed(p), "detail: watch: "+seed) || !strings.Contains(printed(p), "detail: watch: status") {
 		t.Fatalf("the last stage is not the monitor's reseed:\n%s", printed(p))
 	}
 	if !p.Pending() {
