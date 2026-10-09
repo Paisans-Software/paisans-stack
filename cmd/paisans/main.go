@@ -197,6 +197,10 @@ prune reach no host, only the DNS provider's API, and change it only with
 --execute. ingress check reaches no host over ssh and changes nothing: it
 looks at a monitor's public hostname as any visitor could.
 Everything else writes files locally and stops.
+
+Every command takes -v or --verbose. By default each step is one line; with it,
+the reasons, values, request bodies and command output behind each step show
+too. A failure always prints in full, with or without it.
 `
 
 func main() {

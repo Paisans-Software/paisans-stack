@@ -14,7 +14,8 @@ runtime. [docs/decisions.md](docs/decisions.md) records why.
 It installs a complete community stack on one machine, then adds sites later as
 a manually invoked, additive step, without touching application configuration.
 Every command that changes a host prints its plan and changes nothing unless
-given `--execute`.
+given `--execute`. Each step is one line; `--verbose` (`-v`) shows the reasons,
+values and command output behind it.
 
 ```
 paisans init                               # an id, a mesh subnet and the secrets for paisans.yaml
@@ -2358,7 +2359,8 @@ nothing more.
 A connect timeout on a host that answers seconds later stopped the first real
 `storage add` twice, half way through. So a command whose connection never
 opened is tried again: three attempts in all, two and then four seconds apart,
-with one line on stderr per retry naming the destination. After the third, the
+with one line on stderr per retry naming the destination, shown only with
+`--verbose`: a retry that succeeds is not news. After the third, the
 error says the host could not be reached, and a caller never reads that as an
 answer about the host (see *Never infer host state from a failed probe*).
 
@@ -2496,7 +2498,17 @@ removed the images it superseded, and prune removed every anonymous volume
 nothing mounted. Each is right on a dedicated host and wrong on one where
 somebody else runs a web server or a database. So before any of them changes
 anything, in a dry run as well as with `--execute`, it runs the **host
-check** on the site it is about to change and prints what it found. So do
+check** on the site it is about to change and reports its class as one step:
+
+```
+home-a (ubuntu@home-a.local)
+  ok   host check              clean
+```
+
+`shared` stands where `clean` does for a host that runs other services, and a
+conflict ends the step as `FAIL` with each conflict in the error. `--verbose`
+adds under the step what the check found: the Docker version, the firewall
+state, each foreign resource that makes the host shared and each note. So do
 `storage rotate-key` and `storage add`, which apply files on the sites they
 change: rotate-key checks every site the app runs on, storage add every
 Garage site and the gateway, all before the first change.
@@ -3604,7 +3616,8 @@ Three things keep it from happening again:
   unmounted path refuses the apply before anything is written or started, and
   names the stack, service, image, path and the fix. An image the host does not
   have yet is pulled first, after the free space check, which is the pull `up
-  -d` would make anyway. The dry run prints it as `check volumes:`.
+  -d` would make anyway. The dry run reports it with the disk space check, and `--verbose` shows its
+  detail (`volumes: 3 image(s) inspected: every declared path is mounted`).
 * **A cleanup after each recreate.** Before a recreate, `apply` records the
   anonymous volumes the stack's containers mount; once the stack passes its
   health gate, it removes those nothing mounts now. A failure is a warning, as
@@ -3688,9 +3701,10 @@ link step, here for a deployment whose Mbin app reads the admin group `admins`:
 
 ```
 auth on home-a (pocket-id)
-  create user founder as an administrator: POST /api/users {"username":"founder","email":"founder@example.org","emailVerified":true,"firstName":"Fern","lastName":"","displayName":"Fern","isAdmin":true}
-  add founder to admin groups admins: POST /api/user-groups for any that does not exist yet, then PUT /api/users/<id>/user-groups with the groups founder is in now, plus these
-  issue one-time login link for founder: valid 20m0s and for one sign in, printed once and only with --execute
+  -    create user founder as an administrator: POST /api/users {"username":"founder","email":"founder@example.org","emailVerified":true,"firstName":"Fern","lastName":"","displayName":"Fern","isAdmin":true}
+  -    add founder to admin groups admins: POST /api/user-groups for any that does not exist yet, then PUT /api/users/<id>/user-groups with the groups founder is in now, plus these
+  -    issue one-time login link for founder: valid 20m0s and for one sign in, printed once and only with --execute
+Nothing changed. Re-run with --execute to apply.
 ```
 
 The link is Pocket ID's own mechanism: an admin issues a one-time access token
@@ -3983,24 +3997,33 @@ paisans oidc client create --app talk --rotate-secret --execute
 ```
 
 For an Mbin app that declares no groups, so that its member group is
-`members` and its admin group `admins`, the dry run against an empty Pocket
-ID prints:
+`members` and its admin group `admins`, and a Pocket ID that already has both
+groups, the dry run prints one line per mutation it would make:
 
 ```
-talk's client at auth on home-a (pocket-id)
-  create group members: POST /api/user-groups {"friendlyName":"members","name":"members"}
-  create group admins: POST /api/user-groups {"friendlyName":"admins","name":"admins"}
-  create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":true,"launchURL":"https://talk.example.org/oauth/oidc/connect"}
-  allow groups members, admins on client talk: PUT /api/oidc/clients/<id>/allowed-user-groups with exactly members, admins
-  create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
-
-Nothing was changed. Re-run with --execute to apply this.
+  -    create OIDC client talk
+  -    allow groups members, admins on talk
+  -    create client secret for talk
+Nothing changed. Re-run with --execute to apply.
 ```
 
-**Each line is a Pocket ID mutation, and every one is printed.** For an app
-declared in `paisans.yaml` the declaration approves its client; the printed
-plan is what lets an operator see exactly what that approval sends, in a dry
-run of either `apply` or the command, before `--execute`. The same probe runs
+A group that does not exist yet adds a `create group <name>` line before the
+client. `--verbose` puts under each line the request it would send:
+
+```
+  -    create OIDC client talk
+       create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":true,"launchURL":"https://talk.example.org/oauth/oidc/connect"}
+  -    allow groups members, admins on talk
+       allow groups members, admins on client talk: PUT /api/oidc/clients/<id>/allowed-user-groups with exactly members, admins
+  -    create client secret for talk
+       create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
+```
+
+**Each line is a Pocket ID mutation.** For an app
+declared in `paisans.yaml` the declaration approves its client; the plan is
+what lets an operator see what that approval does, in a dry run of either
+`apply` or the command, before `--execute`, and `--verbose` shows exactly what
+each request sends. The same probe runs
 again on `--execute`, so what executes is what a fresh probe plans.
 
 The client is the app kind's, not a choice made at the command line, and
