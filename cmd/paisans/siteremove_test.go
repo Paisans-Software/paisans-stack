@@ -72,3 +72,44 @@ func TestConfirmSiteWantsTheSitesName(t *testing.T) {
 		}
 	}
 }
+
+func TestChooseHost(t *testing.T) {
+	cfg, err := config.Load(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := cfg.Sites["home-b"].Destination().String()
+	for _, tc := range []struct{ site, ssh, want, err string }{
+		{site: "home-b", want: declared},
+		{site: "home-b", ssh: "admin@198.51.100.4", want: "admin@198.51.100.4:22"},
+		{site: "never", ssh: "admin@192.0.2.1:2222", want: "admin@192.0.2.1:2222"},
+		{site: "never", err: "name its host with --ssh"},
+		{site: "home-b", ssh: "myalias", err: "not user@host"},
+	} {
+		got, err := chooseHost(cfg, tc.site, tc.ssh)
+		switch {
+		case tc.err != "" && (err == nil || !strings.Contains(err.Error(), tc.err)):
+			t.Errorf("%s %s: err = %v, want %q", tc.site, tc.ssh, err, tc.err)
+		case tc.err == "" && (err != nil || got.String() != tc.want):
+			t.Errorf("%s %s: got %v, %v; want %s", tc.site, tc.ssh, got, err, tc.want)
+		}
+	}
+}
+
+// Refusals that need no host reach none.
+func TestSiteRemoveForceRefusesBeforeReachingAHost(t *testing.T) {
+	noSiteHosts(t)
+	for args, want := range map[string]string{
+		"home-b --ssh admin@192.0.2.1":                                "only --force takes",
+		"home-b --force --host-gone":                                  "Drop one of them",
+		"never --force":                                               "name its host with --ssh",
+		"home-b --force --ssh myalias":                                "not user@host",
+		"home-b --force --execute":                                    "terminal",
+		"never --force --ssh admin@192.0.2.1 --execute --delete-data": "terminal",
+	} {
+		err := runSiteRemove(append(strings.Fields(args), "--config", fixtureConfig()), strings.NewReader("home-b\n"), &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want %q", args, err, want)
+		}
+	}
+}
