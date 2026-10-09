@@ -161,6 +161,12 @@ func envAssigned(rendered string) map[string]bool {
 	return names
 }
 
+// EnvValue is envValue for a value a template renders rather than a
+// passthrough key: the same quoting, so a value the toolkit writes into a .env
+// reaches the application byte for byte by the same observed rules. key names
+// the value in an error.
+func EnvValue(key, v string) (string, error) { return envValue(key, v) }
+
 // envValue writes a value so that docker compose, reading the file as an
 // env_file, delivers it byte for byte. Both behaviours were observed by
 // running `docker compose config`, not reasoned from documentation: Docker

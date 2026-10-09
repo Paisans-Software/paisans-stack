@@ -99,6 +99,13 @@ apps:
     placement: cluster
     settings:
       file_backend: database
+      # Pocket ID's application configuration, rendered into its .env. The
+      # two groups' IDs are recorded under pocket_id_groups in the secrets.
+      app_name: Example ID
+      session_duration: 10080
+      allow_user_signups: withToken
+      signup_default_groups: [members, newcomers]
+      emails_verified: true
   chat:
     kind: synapse
     hostname: chat.example.org

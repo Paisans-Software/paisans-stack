@@ -236,6 +236,18 @@ apps:
       # ride streaming replication with no sync job, and the service that gates
       # every other one gains no dependency on object storage being up.
       file_backend: database
+      # Pocket ID's application configuration. Its admin page for these is
+      # read only: they are rendered into its .env, and changing one is an
+      # edit here and an apply, which restarts it. Anything left out takes
+      # Pocket ID's default. The full list is in README.md, "Pocket ID's
+      # configuration is rendered from paisans.yaml".
+      app_name: Example ID       # also the sender name on its mail
+      session_duration: 10080    # minutes
+      allow_user_signups: withToken
+      # By name. apply finds or creates each group at the running Pocket ID
+      # and records its ID under pocket_id_groups in the secrets.
+      signup_default_groups: [provisional]
+      email_one_time_access_as_unauthenticated: true
 
   gate:
     kind: oauth2-proxy
@@ -329,7 +341,9 @@ apps:
     # smtp:
     #   from_name: Example Status
 
-# How apps that send mail send it. Today that is the uptime monitor's alerts.
+# How apps that send mail send it: the uptime monitor's alerts, and Pocket
+# ID's login codes and notices, which go out under its app_name rather than
+# from_name.
 # Each app may override any field in its own smtp block. The password is a
 # secret: apps.<app>.smtp_password if set, else external.smtp_password.
 smtp:

@@ -188,10 +188,11 @@ var catalogue = map[config.Kind][]Service{
 
 // SendsMail reports whether a kind reads the deployment's smtp settings. An
 // app level smtp block on any other kind is refused, because an override
-// nothing reads is ignored without a word. Pocket ID keeps its SMTP settings
-// in its own database today; rendering them from the same block would add it
-// here.
-func SendsMail(kind config.Kind) bool { return kind == config.KindUptime }
+// nothing reads is ignored without a word. Pocket ID reads them because its
+// whole application configuration is rendered (see PocketIDSettings).
+func SendsMail(kind config.Kind) bool {
+	return kind == config.KindUptime || kind == config.KindPocketID
+}
 
 // Services returns a kind's services in compose order, which is the order they
 // are declared above rather than alphabetical: `app` first is what an operator

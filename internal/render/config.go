@@ -64,6 +64,19 @@ var settingOwners = []settingOwner{
 	{config.KindWriteFreely, "uploads.max_size_mb", "config.ini", "uploads_max_size_mb"},
 }
 
+// Every Pocket ID setting in kinds.PocketIDSettings owns its variable. They
+// are taken from that table rather than listed again here, so a setting added
+// there is an owner without a second edit. signup_default_groups is not among
+// them: its variable carries recorded IDs, which the setting chooses only by
+// way of apply. validate refuses a passthrough key for it, and for every other
+// variable a setting renders, whether or not the setting is declared
+// (pocket-id-config-key-has-a-setting).
+func init() {
+	for _, s := range kinds.PocketIDSettings {
+		settingOwners = append(settingOwners, settingOwner{config.KindPocketID, s.Env, ".env", s.Key})
+	}
+}
+
 // owningSetting is the setting that owns a kind's rendered key, if any.
 func owningSetting(kind config.Kind, key string) (string, bool) {
 	for _, o := range settingOwners {

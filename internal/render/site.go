@@ -58,6 +58,9 @@ var templateFuncs = template.FuncMap{
 		// marker would end the page and be read as configuration.
 		return strings.NewReplacer("{", "&#123;", "}", "&#125;", "\r", " ", "\n", " ").Replace(template.HTMLEscapeString(v))
 	},
+	// envquote quotes a value for a .env exactly as a passthrough key is
+	// quoted, for a value an operator supplied rather than one generated.
+	"envquote": envquote,
 	"yesno": func(b bool) string {
 		if b {
 			return "true"

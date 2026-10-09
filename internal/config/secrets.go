@@ -26,6 +26,14 @@ type Secrets struct {
 	Apps        map[string]map[string]any `yaml:"apps"`
 	External    map[string]string         `yaml:"external"`
 	OIDCClients map[string]OIDCClient     `yaml:"oidc_clients"`
+	// PocketIDGroups is the ID each group named in the Pocket ID app's
+	// signup_default_groups has at the deployment's Pocket ID, keyed by
+	// group name. apply resolves and records them, as it records a client's
+	// ID under oidc_clients, so that render is a pure function of the files
+	// and every Pocket ID instance renders the same IDs. Not a secret, but
+	// it is state the toolkit wrote about a live instance, which is what
+	// this file holds beside the credentials.
+	PocketIDGroups map[string]string `yaml:"pocket_id_groups,omitempty"`
 
 	// Path is where these were read from, for error messages.
 	Path string `yaml:"-"`
