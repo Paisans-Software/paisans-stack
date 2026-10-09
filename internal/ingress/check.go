@@ -5,7 +5,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // The checks, by name, in the order they run.
@@ -81,20 +82,21 @@ func Check(ctx context.Context, t Target, p Probes) []Result {
 	return results
 }
 
-// Print writes each result as PASS or FAIL, with the fix under a failure, and
-// reports whether any failed.
-func Print(w io.Writer, results []Result) bool {
+// Report shows each result as a step titled by its check, with what was
+// seen as the result. A failure ends the step failed beside a refusal
+// carrying what was seen and the fix, since the operator must act on both.
+// It reports whether any failed.
+func Report(r ui.Reporter, results []Result) bool {
 	failed := false
-	for _, r := range results {
-		if r.OK {
-			fmt.Fprintf(w, "PASS  %-11s %s\n", r.Name, r.Detail)
+	for _, res := range results {
+		s := r.Step("check " + res.Name)
+		if res.OK {
+			s.Done(res.Detail)
 			continue
 		}
 		failed = true
-		fmt.Fprintf(w, "FAIL  %-11s %s\n", r.Name, r.Detail)
-		for _, line := range strings.Split(r.Fix, "\n") {
-			fmt.Fprintf(w, "      fix: %s\n", line)
-		}
+		s.Fail(errors.New(res.Detail))
+		r.Refuse(res.Detail, res.Fix)
 	}
 	return failed
 }

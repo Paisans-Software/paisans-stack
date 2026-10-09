@@ -3,12 +3,12 @@ package dns
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"sort"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Prune removes address records the toolkit created and the configuration no
@@ -206,16 +206,27 @@ func BuildPrune(ctx context.Context, provider Provider, cfg *config.Config, want
 // It stops at the first failed delete. Records already deleted stay deleted,
 // and a re-run plans from a fresh listing, so a run that failed partway
 // resumes rather than starting over.
-func ExecutePrune(ctx context.Context, provider Provider, plan *PrunePlan) error {
+func ExecutePrune(ctx context.Context, provider Provider, plan *PrunePlan, r ui.Reporter) error {
 	removes := plan.Removes()
 	for _, e := range removes {
+		step := r.Step(fmt.Sprintf("delete %s %s", e.Type, e.Name))
+		step.Detail("%s, zone %s, record %s", e.Content, e.Zone, e.ID)
 		if e.ID == "" {
-			return fmt.Errorf("dns: %s %s has no record id to delete by. Nothing further was deleted", e.Type, e.Name)
+			err := fmt.Errorf("dns: %s %s has no record id to delete by. Nothing further was deleted", e.Type, e.Name)
+			step.Fail(err)
+			return err
 		}
 		if err := provider.Delete(ctx, e.zoneID, e.ID); err != nil {
-			return fmt.Errorf("dns: deleting %s %s (record %s): %w", e.Type, e.Name, e.ID, err)
+			err = fmt.Errorf("dns: deleting %s %s (record %s): %w", e.Type, e.Name, e.ID, err)
+			step.Fail(err)
+			return err
 		}
+		step.Done("")
 	}
+	if len(removes) == 0 {
+		return nil
+	}
+	confirm := r.Step("confirm deletes")
 	remaining := map[string]map[string]bool{} // zone id -> record ids
 	for _, e := range removes {
 		if _, listed := remaining[e.zoneID]; listed {
@@ -223,11 +234,13 @@ func ExecutePrune(ctx context.Context, provider Provider, plan *PrunePlan) error
 		}
 		records, err := provider.AllRecords(ctx, e.zoneID)
 		if err != nil {
-			return fmt.Errorf("dns: listing zone %s to confirm the deletes: %w", e.Zone, err)
+			err = fmt.Errorf("dns: listing zone %s to confirm the deletes: %w", e.Zone, err)
+			confirm.Fail(err)
+			return err
 		}
 		ids := map[string]bool{}
-		for _, r := range records {
-			ids[r.ID] = true
+		for _, rec := range records {
+			ids[rec.ID] = true
 		}
 		remaining[e.zoneID] = ids
 	}
@@ -238,22 +251,31 @@ func ExecutePrune(ctx context.Context, provider Provider, plan *PrunePlan) error
 		}
 	}
 	if len(still) > 0 {
-		return fmt.Errorf("dns: deleted, but still listed: %s. Check them in the provider's console before re-running", strings.Join(still, ", "))
+		err := fmt.Errorf("dns: deleted, but still listed: %s. Check them in the provider's console before re-running", strings.Join(still, ", "))
+		confirm.Fail(err)
+		return err
 	}
+	confirm.Done("")
 	return nil
 }
 
-// Write prints a prune plan in the shape dns init's plan uses.
-func (p *PrunePlan) Write(w io.Writer) {
-	fmt.Fprintf(w, "dns prune (%s)\n", p.Provider)
+// Show reports a prune plan in the shape dns init's plan uses: each record
+// to delete as an item, and each one kept as a detail with the reasons it is
+// kept, since they are what an operator reads to decide whether to vouch for
+// a name.
+func (p *PrunePlan) Show(r ui.Reporter) {
+	r.Section("dns prune " + p.Provider)
 	if len(p.Entries) == 0 {
-		fmt.Fprintf(w, "  no record in these zones carries the comment %q\n", p.comment)
+		r.Detail("no record in these zones carries the comment %q", p.comment)
 		return
 	}
 	for _, e := range p.Entries {
-		fmt.Fprintf(w, "  %-6s %-4s %s -> %s  (zone %s, record %s)\n", e.Action, e.Type, e.Name, e.Content, e.Zone, e.ID)
+		if e.Action == Remove {
+			r.Item(fmt.Sprintf("delete %s %s", e.Type, e.Name))
+		}
+		r.Detail("%-6s %-4s %s -> %s  (zone %s, record %s)", e.Action, e.Type, e.Name, e.Content, e.Zone, e.ID)
 		for _, reason := range e.Reasons {
-			fmt.Fprintf(w, "      %s\n", reason)
+			r.Detail("    %s", reason)
 		}
 	}
 }

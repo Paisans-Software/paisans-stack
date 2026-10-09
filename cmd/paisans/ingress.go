@@ -46,12 +46,17 @@ func runIngress(args []string) error {
 		return err
 	}
 	if sub == "show" {
+		// The sheet is the command's product, to be read and copied into a
+		// web server's configuration, so it goes to stdout whole and not
+		// through the reporter, which hides its details by default.
 		ingress.Show(os.Stdout, target)
 		return nil
 	}
-	fmt.Fprintf(os.Stdout, "ingress check for %s at %s, from this machine\n", target.App, target.Hostname)
-	if ingress.Print(os.Stdout, ingress.Check(context.Background(), target, ingressProbes())) {
+	r.Section(fmt.Sprintf("ingress %s at %s", target.App, target.Hostname))
+	results := ingress.Check(context.Background(), target, ingressProbes())
+	if ingress.Report(r, results) {
 		return fmt.Errorf("ingress check for %s: fix what is marked FAIL and run it again", target.App)
 	}
+	r.Result("%s passed.", plural(len(results), "check"))
 	return nil
 }

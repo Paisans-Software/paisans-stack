@@ -1,7 +1,6 @@
 package ingress_test
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/ingress"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // now is the clock every check runs at, so days to expiry are exact.
@@ -179,9 +179,9 @@ func TestCheckPassesAWellConfiguredProxy(t *testing.T) {
 	if d := result(t, results, ingress.CheckCertificate).Detail; !strings.Contains(d, "60 more days") {
 		t.Errorf("days to expiry not printed: %s", d)
 	}
-	var buf bytes.Buffer
-	if ingress.Print(&buf, results) {
-		t.Errorf("Print reported a failure:\n%s", buf.String())
+	rec := &ui.Recorder{}
+	if ingress.Report(rec, results) || !rec.Has("done", "check dns") {
+		t.Errorf("Report reported a failure:\n%s", rec.Lines())
 	}
 }
 
@@ -205,9 +205,13 @@ func TestCheckFailsACertificateForAnotherName(t *testing.T) {
 	if len(results) != 4 {
 		t.Fatalf("one failing item stopped the run: %+v", results)
 	}
-	var buf bytes.Buffer
-	if !ingress.Print(&buf, results) || !strings.Contains(buf.String(), "FAIL") {
-		t.Errorf("Print:\n%s", buf.String())
+	rec := &ui.Recorder{}
+	if !ingress.Report(rec, results) || !rec.Has("fail", "check certificate") || !rec.Has("refuse", "not valid for status.example.org") {
+		t.Errorf("Report:\n%s", rec.Lines())
+	}
+	// The fix is the refusal's explanation, so it shows without --verbose.
+	if i := rec.Index("refuse", "not valid for status.example.org"); !strings.Contains(rec.Events[i].Extra, "YOUR CERTIFICATE") {
+		t.Errorf("the refusal does not carry the fix:\n%s", rec.Lines())
 	}
 }
 

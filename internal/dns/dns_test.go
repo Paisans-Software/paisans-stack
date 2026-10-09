@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // testToken is a placeholder, not a credential. It is distinctive so that the
@@ -216,9 +216,9 @@ func TestFreshZonePlansCreatesAndExecuteReadsBack(t *testing.T) {
 	c := fake.serve(t)
 	p := plan(t, c, declared())
 
-	var out bytes.Buffer
-	p.Write(&out)
-	t.Logf("dry run:\n%s", out.String())
+	out := &ui.Recorder{Verbose_: true}
+	p.Show(out)
+	t.Logf("dry run:\n%s", out.Lines())
 
 	if len(p.Entries) != 5 || len(p.Creates()) != 5 {
 		t.Fatalf("want 5 creates, got %+v", p.Entries)
@@ -226,8 +226,14 @@ func TestFreshZonePlansCreatesAndExecuteReadsBack(t *testing.T) {
 	if len(fake.posts) != 0 {
 		t.Fatalf("planning wrote %d record(s)", len(fake.posts))
 	}
-	if err := Execute(context.Background(), c, p); err != nil {
+	run := &ui.Recorder{}
+	if err := Execute(context.Background(), c, p, run); err != nil {
 		t.Fatal(err)
+	}
+	// Each record is one step, titled by what it creates, and ended only
+	// after it read back.
+	if !run.Has("done", "create A talk.example.org") {
+		t.Errorf("steps:\n%s", run.Lines())
 	}
 	if len(fake.posts) != 5 {
 		t.Fatalf("want 5 POSTs, got %d", len(fake.posts))
@@ -286,7 +292,7 @@ func TestConflictRefusesBeforeAnyWrite(t *testing.T) {
 			if p.Conflicts()[0].Detail == "" {
 				t.Fatal("a conflict must say what is in the way")
 			}
-			err := Execute(context.Background(), c, p)
+			err := Execute(context.Background(), c, p, ui.Discard)
 			if err == nil {
 				t.Fatal("execute should refuse a plan with a conflict")
 			}
@@ -341,7 +347,7 @@ func TestReadBackCatchesARecordThatDidNotLand(t *testing.T) {
 	fake.zones["example.org"] = "zone-1"
 	fake.dropWrites = true
 	c := fake.serve(t)
-	err := Execute(context.Background(), c, plan(t, c, declared()))
+	err := Execute(context.Background(), c, plan(t, c, declared()), ui.Discard)
 	if err == nil || !strings.Contains(err.Error(), "does not read back") {
 		t.Fatalf("want a read-back failure, got %v", err)
 	}

@@ -455,7 +455,7 @@ func runRender(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	// render does not call secretsgen.Fill, so a key hand edited into the file
 	// after the last `init` is never looked at unless this is checked here too.
@@ -539,7 +539,7 @@ func runApply(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	// apply does not call secretsgen.Fill either, and this is the path that
 	// actually reaches a host: a malformed key has to stop here, not just
@@ -816,7 +816,7 @@ func runStorageInit(args []string) error {
 		return err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	// A malformed key has to stop here, before it reaches `garage key import`
 	// partway through provisioning: earlier keys in the same run would
@@ -949,7 +949,7 @@ func printGaragePlan(plan *garage.Plan) {
 // It reaches no host. The workstation talks to the provider's API and to
 // nothing else, so it takes no --site and no --ssh.
 func runDNSInit(args []string) error {
-	cfg, wants, provider, execute, err := dnsSetup("dns init", "actually create the missing records", args)
+	r, cfg, wants, provider, execute, err := dnsSetup("dns init", "actually create the missing records", args)
 	if err != nil {
 		return err
 	}
@@ -960,19 +960,24 @@ func runDNSInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	plan.Write(os.Stdout)
+	// A dry run is the plan. --execute reports progress instead, and shows
+	// the plan first only with --verbose, since its steps say the same.
+	if !execute || r.Verbose() || len(plan.Conflicts()) > 0 {
+		plan.Show(r)
+	}
 
 	if !execute {
 		if len(plan.Creates()) == 0 {
+			r.Result("Every record is present. Nothing to create.")
 			return nil
 		}
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to create these.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	if err := dns.Execute(ctx, provider, plan); err != nil {
+	if err := dns.Execute(ctx, provider, plan, r); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\ncreated %d record(s) at %s, each read back\n", len(plan.Creates()), plan.Provider)
+	r.Result("Created %s at %s.", plural(len(plan.Creates()), "record"), plan.Provider)
 	return nil
 }
 
@@ -981,7 +986,7 @@ func runDNSInit(args []string) error {
 // states. A dry run by default, like dns init, and it reaches no host.
 func runDNSPrune(args []string) error {
 	var vouched pathList
-	cfg, wants, provider, execute, err := dnsSetup("dns prune", "actually delete the records listed as remove", args, func(fs *flag.FlagSet) {
+	r, cfg, wants, provider, execute, err := dnsSetup("dns prune", "actually delete the records listed as remove", args, func(fs *flag.FlagSet) {
 		fs.Var(&vouched, "name", "vouch that this exact name, outside community.domain and no longer configured, was this deployment's (repeatable)")
 	})
 	if err != nil {
@@ -994,19 +999,22 @@ func runDNSPrune(args []string) error {
 	if err != nil {
 		return err
 	}
-	plan.Write(os.Stdout)
+	if !execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	if !execute {
 		if len(plan.Removes()) == 0 {
+			r.Result("No record to delete.")
 			return nil
 		}
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to delete the records marked remove.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	if err := dns.ExecutePrune(ctx, provider, plan); err != nil {
+	if err := dns.ExecutePrune(ctx, provider, plan, r); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\ndeleted %d record(s) at %s, each confirmed gone\n", len(plan.Removes()), plan.Provider)
+	r.Result("Deleted %s at %s.", plural(len(plan.Removes()), "record"), plan.Provider)
 	return nil
 }
 
@@ -1014,7 +1022,7 @@ func runDNSPrune(args []string) error {
 // validate, derive the wanted records, then open the secrets. The records
 // are worked out before the secrets are opened or the provider is contacted,
 // so a configuration that cannot name its records is refused offline.
-func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagSet)) (*config.Config, []dns.Want, dns.Provider, bool, error) {
+func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagSet)) (ui.Reporter, *config.Config, []dns.Want, dns.Provider, bool, error) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	reporter := commonFlags(fs)
 	for _, add := range extra {
@@ -1024,22 +1032,22 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, executeHelp)
 	if err := fs.Parse(args); err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, nil, false, err
 	}
 	r := reporter()
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, nil, false, err
 	}
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return nil, nil, nil, false, fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return nil, nil, nil, nil, false, fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
 	wants, err := dns.Desired(cfg)
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, nil, false, err
 	}
 
 	if *secretsPath == "" {
@@ -1047,16 +1055,23 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 	}
 	secrets, err := config.LoadSecrets(*secretsPath)
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, nil, false, err
 	}
 	if !secrets.Encrypted {
-		fmt.Fprintf(os.Stderr, "paisans: %s is not encrypted. That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.\n", *secretsPath)
+		warnUnencrypted(r, *secretsPath)
 	}
 	provider, err := dns.For(cfg.ACME.Provider, secrets.External["acme_dns_token"])
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, nil, nil, false, err
 	}
-	return cfg, wants, provider, *execute, nil
+	return r, cfg, wants, provider, *execute, nil
+}
+
+// warnUnencrypted is the warning every command that opens the secrets gives
+// for a file that is not under sops. The file is accepted, since fixtures and
+// examples are plain, so it is a warning and not a refusal.
+func warnUnencrypted(r ui.Reporter, path string) {
+	r.Warn(path+" is not encrypted", "That is accepted for fixtures and examples; a real deployment keeps its secrets under sops.")
 }
 
 // pathList collects a repeatable flag. --overwrite takes one path each time it
