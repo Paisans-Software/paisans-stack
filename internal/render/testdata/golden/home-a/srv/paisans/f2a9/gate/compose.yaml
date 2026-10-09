@@ -68,9 +68,7 @@ services:
       OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4181"
       # The enforcement itself: who this instance answers 202 for. The name is
       # the community's access policy, so it is a setting rather than a fixed
-      # value; the live deployment this generalises uses "members". Nothing
-      # creates this group at the identity provider: it has to exist there
-      # under exactly this name, or every member meets the pending page.
+      # value; the live deployment this generalises uses "members".
       OAUTH2_PROXY_ALLOWED_GROUPS: "members"
       OAUTH2_PROXY_UPSTREAMS: "static://202"
     healthcheck:

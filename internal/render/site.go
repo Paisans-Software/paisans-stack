@@ -49,12 +49,6 @@ var templateFuncs = template.FuncMap{
 	// gateMarker is the body of the gate's own redirects, so the monitor can
 	// tell the gate's 302 from an app's.
 	"gateMarker": func() string { return GateMarker },
-	// gateMembersGroupSetting and gateMembersGroupDefault are the setting the
-	// members gate reads its group from and the group it admits when the
-	// setting is absent, so the compose template and validate's group
-	// mismatch check cannot disagree.
-	"gateMembersGroupSetting": func() string { return GateMembersGroupSetting },
-	"gateMembersGroupDefault": func() string { return GateMembersGroupDefault },
 	// caddyhtml escapes a value for an HTML page Caddy serves with respond:
 	// HTML escaping, and braces as entities too, because Caddy expands a
 	// {placeholder} in a response body, and one in a community's name would
@@ -204,23 +198,6 @@ const GateSessionCookie = "_oauth2_proxy"
 // WriteFreely, to its sign-in page), so the monitor's gate check asserts this
 // body rather than the status alone, and fails when the gate is gone.
 const GateMarker = "Sign in required by the visibility gate."
-
-// GateMembersGroupSetting is the oauth2-proxy app setting naming the group
-// its members instance admits, and GateMembersGroupDefault the group it
-// admits when the setting is absent. The compose template reads both through
-// the template funcs of the same names.
-const (
-	GateMembersGroupSetting = "members_group"
-	GateMembersGroupDefault = "members"
-)
-
-// GateMembersGroup is the group a gate app's members instance admits.
-func GateMembersGroup(app config.App) string {
-	if g, ok := app.Settings[GateMembersGroupSetting].(string); ok && strings.TrimSpace(g) != "" {
-		return g
-	}
-	return GateMembersGroupDefault
-}
 
 func bypassFor(name string, app config.App) gateBypass {
 	spec := kinds.GateFor(app.Kind)

@@ -72,7 +72,6 @@ func TestRulesFire(t *testing.T) {
 		{"visibility-gate-on-the-gate", "visibility-gate-on-ungateable-kind", validate.Refuse},
 		{"visibility-gate-on-pocket-id", "visibility-gate-on-ungateable-kind", validate.Refuse},
 		{"visibility-gate-on-the-monitor", "visibility-gate-on-ungateable-kind", validate.Refuse},
-		{"visibility-gate-group-mismatch", "visibility-gate-group-mismatch", validate.Warn},
 		{"homeserver-must-be-pinned", "homeserver-must-be-pinned", validate.Refuse},
 		{"media-hostname-is-not-a-hostname", "media-hostname-is-not-a-hostname", validate.Refuse},
 		{"media-hostname-outside-the-domain", "media-hostname-outside-the-domain", validate.Refuse},
