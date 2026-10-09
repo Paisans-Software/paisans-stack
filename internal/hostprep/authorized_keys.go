@@ -154,6 +154,7 @@ func planAuthorizedKeys(t Transport, d deployment.Deployment, s config.SSH) (out
 
 	if !found {
 		out.Steps = append(out.Steps, Step{
+			Title:    "create authorized_keys",
 			Describe: fmt.Sprintf("ssh: create %s (0600) in %s (0700), owned by %s", file, dir, user),
 			Command: fmt.Sprintf("set -e; [ -d %[1]s ] || install -d -m 700 -o %[3]s -g %[4]s %[1]s; [ -f %[2]s ] || install -m 600 -o %[3]s -g %[4]s /dev/null %[2]s",
 				shellQuote(dir), shellQuote(file), uid, gid),
@@ -178,6 +179,7 @@ func planAuthorizedKeys(t Transport, d deployment.Deployment, s config.SSH) (out
 			setOwned(k.Fingerprint, k.Comment)
 			out.Steps = append(out.Steps, Step{
 				Label:    "adopt",
+				Title:    "adopt ssh key",
 				Describe: fmt.Sprintf("ssh: key %s is already authorized for %s; record it as host prepare's", label, user),
 				Command:  writeOwned(d, user, owned),
 			})
@@ -191,6 +193,7 @@ func planAuthorizedKeys(t Transport, d deployment.Deployment, s config.SSH) (out
 			setOwned(k.Fingerprint, k.Comment)
 			out.Steps = append(out.Steps, Step{
 				Label:    "add",
+				Title:    "authorize ssh key",
 				Describe: fmt.Sprintf("ssh: authorize key %s for %s", label, user),
 				Command:  appendKey(file, k.Line) + "; " + writeOwned(d, user, owned),
 			})
@@ -214,7 +217,7 @@ func planAuthorizedKeys(t Transport, d deployment.Deployment, s config.SSH) (out
 			if len(restricted) > 0 {
 				describe = fmt.Sprintf("ssh: forget key %s, which is now authorized with options by `%s` and so is no longer host prepare's", label, restricted[0].raw)
 			}
-			out.Steps = append(out.Steps, Step{Describe: describe, Command: writeOwned(d, user, owned)})
+			out.Steps = append(out.Steps, Step{Title: "forget ssh key", Describe: describe, Command: writeOwned(d, user, owned)})
 			continue
 		}
 		dropOwned(o.fingerprint)
@@ -224,6 +227,7 @@ func planAuthorizedKeys(t Transport, d deployment.Deployment, s config.SSH) (out
 		}
 		removals = append(removals, Step{
 			Label:    "remove",
+			Title:    "remove ssh key",
 			Describe: fmt.Sprintf("ssh: remove key %s from %s, which host prepare added and ssh.public_key no longer lists", label, file),
 			Command:  removeLines(file, raws) + "; " + writeOwned(d, user, owned),
 		})

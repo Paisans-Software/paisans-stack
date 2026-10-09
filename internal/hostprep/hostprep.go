@@ -19,13 +19,13 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 	"text/template"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 //go:embed profiles snippets
@@ -55,7 +55,11 @@ type File struct {
 
 // Step is one change this plan still needs to make, in order.
 type Step struct {
-	// Describe is one line, shown to the operator before the step runs.
+	// Title is the step's short name, an imperative verb and its object, as
+	// the operator sees it by default. Describe is its full sentence, shown
+	// with --verbose.
+	Title string
+	// Describe is one line saying what the step does and why.
 	Describe string
 	// File, when set, is written first. It goes over stdin, so a unit file or
 	// an apt source never sits in the process table.
@@ -76,9 +80,17 @@ type Section struct {
 	// Foreign is what was found that this package did not create and will not
 	// touch, listed only where it bears on something this package manages.
 	Foreign []string
-	// Warnings are printed whether or not anything is planned, because a
+	// Warnings are reported whether or not anything is planned, because a
 	// prepared host that runs on softdog is still running on softdog.
-	Warnings []string
+	Warnings []Warning
+}
+
+// Warning is a problem that leaves the host working but not as declared.
+// Hint is the line an operator sees by default; Detail says why and what to
+// do, under --verbose.
+type Warning struct {
+	Hint   string
+	Detail string
 }
 
 func (s *Section) add(other Section) {
@@ -277,47 +289,64 @@ func Build(site string, cfg *config.Config, t Transport, opts ...Option) (*Plan,
 	return plan, nil
 }
 
-// Print writes the plan the way every host reaching command here does: the
-// steps still to run, then what was already there, then any warning. A plan
-// with no steps still lists what it found, so an operator can see what was
-// checked rather than a blank that might mean nothing was.
-func (p *Plan) Print(w io.Writer) {
-	fmt.Fprintf(w, "%s (%s)\n", p.Site, p.Profile)
+// Show reports the plan under the section the caller has opened for the
+// site, the way every host reaching command here does: the
+// steps still to run as items, then what was already there as details, then
+// any warning. A plan with no steps still reports what it found under
+// --verbose, so an operator can see what was checked rather than a blank
+// that might mean nothing was.
+func (p *Plan) Show(r ui.Reporter) {
+	r.Detail("host profile %s", p.Profile)
 	for _, step := range p.Steps {
-		label := step.Label
-		if label == "" {
-			label = "change"
-		}
-		fmt.Fprintf(w, "  %-9s %s\n", label, step.Describe)
+		r.Item(step.Title)
+		r.Detail("%-9s %s", step.label(), step.Describe)
 	}
 	for _, present := range p.Present {
-		fmt.Fprintf(w, "  %-9s %s\n", "present", present)
+		r.Detail("%-9s %s", "present", present)
 	}
 	for _, foreign := range p.Foreign {
-		fmt.Fprintf(w, "  %-9s %s\n", "present (not paisans)", foreign)
+		r.Detail("%-9s %s", "present (not paisans)", foreign)
 	}
-	for _, warning := range p.Warnings {
-		fmt.Fprintf(w, "  %-9s %s\n", "WARNING", warning)
+	p.Warn(r)
+}
+
+// Warn reports the plan's warnings alone. They are reported whether or not
+// anything is planned, and on --execute where the plan itself is not shown,
+// because a prepared host that runs on softdog is still running on softdog.
+func (p *Plan) Warn(r ui.Reporter) {
+	for _, w := range p.Warnings {
+		r.Warn(w.Hint, w.Detail)
 	}
+}
+
+func (s Step) label() string {
+	if s.Label == "" {
+		return "change"
+	}
+	return s.Label
 }
 
 // Execute runs each step in order and stops at the first failure, naming the
 // step, so an operator knows where a half finished run left the host. Every
 // step is planned from a probe, so re-running Build after fixing the cause
 // plans only what is still missing.
-func Execute(plan *Plan, t Transport) error {
+func Execute(plan *Plan, t Transport, r ui.Reporter) error {
 	for _, step := range plan.Steps {
+		s := r.Step(step.Title)
+		s.Detail("%s", step.Describe)
 		if step.File != nil {
 			if err := t.WriteFile(step.File.Path, step.File.Content, step.File.Mode); err != nil {
+				s.Fail(err)
 				return fmt.Errorf("%s: %w", step.Describe, err)
 			}
 		}
-		if step.Command == "" {
-			continue
+		if step.Command != "" {
+			if out, err := t.Run(step.Command); err != nil {
+				s.Fail(err)
+				return fmt.Errorf("%s: %w: %s", step.Describe, err, strings.TrimSpace(out))
+			}
 		}
-		if out, err := t.Run(step.Command); err != nil {
-			return fmt.Errorf("%s: %w: %s", step.Describe, err, strings.TrimSpace(out))
-		}
+		s.Done("")
 	}
 	return nil
 }

@@ -173,12 +173,12 @@ func planRules(tag string, rules []Rule, added []addedRule) (out Section, remova
 		a, found := byKey[key]
 		switch {
 		case !found:
-			out.Steps = append(out.Steps, Step{Describe: fmt.Sprintf("firewall: allow %s (%s)", r, r.Why), Command: "ufw " + ufwArgs(tag, r)})
+			out.Steps = append(out.Steps, Step{Title: "allow " + r.String(), Describe: fmt.Sprintf("firewall: allow %s (%s)", r, r.Why), Command: "ufw " + ufwArgs(tag, r)})
 		case a.owned(tag) && a.action == action:
 			out.Present = append(out.Present, fmt.Sprintf("firewall: %s allowed", r))
 		case a.owned(tag):
 			// Ours, changed by hand since. Adding it again replaces it.
-			out.Steps = append(out.Steps, Step{Describe: fmt.Sprintf("firewall: allow %s (%s), replacing `ufw %s`", r, r.Why, a.line), Command: "ufw " + ufwArgs(tag, r)})
+			out.Steps = append(out.Steps, Step{Title: "allow " + r.String(), Describe: fmt.Sprintf("firewall: allow %s (%s), replacing `ufw %s`", r, r.Why, a.line), Command: "ufw " + ufwArgs(tag, r)})
 		case a.comment == "" && a.action == action:
 			// What an earlier version of host prepare added, before rules
 			// carried a comment. ufw replaces it in place when the commented
@@ -188,6 +188,7 @@ func planRules(tag string, rules []Rule, added []addedRule) (out Section, remova
 			out.Present = append(out.Present, fmt.Sprintf("firewall: %s allowed, by a rule without the paisans comment", r))
 			out.Steps = append(out.Steps, Step{
 				Label:    "adopt",
+				Title:    "adopt rule " + r.String(),
 				Describe: fmt.Sprintf("firewall: mark `ufw %s` as host prepare's (%s); ufw rewrites it in place", a.line, r.Why),
 				Command:  "ufw " + ufwArgs(tag, r),
 			})
@@ -204,9 +205,10 @@ func planRules(tag string, rules []Rule, added []addedRule) (out Section, remova
 			// Adding ours would replace theirs, since ufw keeps one rule per
 			// match. A rule host prepare did not create is not its to rewrite.
 			out.Foreign = append(out.Foreign, fmt.Sprintf("firewall: `ufw %s`", a.line))
-			out.Warnings = append(out.Warnings, fmt.Sprintf(
-				"firewall: %s is governed by `ufw %s`, which host prepare did not add, so it is not allowed as derived (%s). Adding the allow would replace that rule, so it is left alone; change or delete it yourself if the allow is wanted",
-				r, a.line, r.Why))
+			out.Warnings = append(out.Warnings, Warning{
+				Hint: "firewall: " + r.String() + " is governed by another ufw rule",
+				Detail: fmt.Sprintf("firewall: %s is governed by `ufw %s`, which host prepare did not add, so it is not allowed as derived (%s). Adding the allow would replace that rule, so it is left alone; change or delete it yourself if the allow is wanted",
+					r, a.line, r.Why)})
 		}
 	}
 
@@ -247,6 +249,7 @@ func planRules(tag string, rules []Rule, added []addedRule) (out Section, remova
 		}
 		removals = append(removals, Step{
 			Label:    "remove",
+			Title:    "remove ufw rule " + a.key,
 			Describe: fmt.Sprintf("firewall: delete `ufw %s`, which host prepare added and this site's roles and configuration no longer give", a.line),
 			Command:  "ufw delete " + a.line,
 		})

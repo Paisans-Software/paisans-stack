@@ -883,17 +883,16 @@ func runHostPrepare(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
+	r.Section(fmt.Sprintf("%s (%s)", *site, transport.Describe()))
 	done := r.Step("check mesh subnet")
-	done.Detail("nothing on %s overlaps the mesh subnet", *site)
 	err = checkMeshLive(cfg, *site, transport)
 	if err != nil {
 		done.Fail(err)
-	} else {
-		done.Done("")
-	}
-	if err != nil {
 		return err
 	}
+	// Only once it is true: a check that could not run found nothing.
+	done.Detail("nothing on %s overlaps the mesh subnet", *site)
+	done.Done("")
 	host, err := hostGate(r, cfg, *site, transport)
 	if err != nil {
 		return err
@@ -909,19 +908,26 @@ func runHostPrepare(args []string) error {
 	if err != nil {
 		return err
 	}
-	plan.Print(os.Stdout)
+	// A dry run is the plan. --execute reports progress instead, and shows
+	// the plan first only with --verbose, since its steps say the same.
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	} else {
+		plan.Warn(r)
+	}
 
 	if !*execute {
 		if len(plan.Steps) == 0 {
+			r.Result("%s is prepared. Nothing to do.", *site)
 			return nil
 		}
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	if err := hostprep.Execute(plan, transport); err != nil {
+	if err := hostprep.Execute(plan, transport, r); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\nprepared %s: %d step(s) on %s\n", *site, len(plan.Steps), transport.Describe())
+	r.Result("Prepared %s.", *site)
 	return nil
 }
 

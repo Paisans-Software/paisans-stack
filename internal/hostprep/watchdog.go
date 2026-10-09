@@ -149,7 +149,9 @@ func planWatchdog(t Transport, d deployment.Deployment, profile Profile, site co
 
 	case config.WatchdogSoftdog:
 		if len(hardware) > 0 {
-			out.Warnings = append(out.Warnings, fmt.Sprintf("watchdog: softdog was declared, but %s already provides /dev/watchdog and Patroni will open that one, not softdog. Declare auto to say so.", hardware[0].Identity))
+			out.Warnings = append(out.Warnings, Warning{
+				Hint:   "watchdog: softdog declared, but a hardware watchdog exists",
+				Detail: fmt.Sprintf("watchdog: softdog was declared, but %s already provides /dev/watchdog and Patroni will open that one, not softdog. Declare auto to say so.", hardware[0].Identity)})
 		}
 		module, err := profile.WatchdogModule(t, d, "softdog", facts.softdogLoaded())
 		if err != nil {
@@ -172,6 +174,6 @@ func planWatchdog(t Transport, d deployment.Deployment, profile Profile, site co
 		return out, err
 	}
 	out.add(module)
-	out.Warnings = append(out.Warnings, softdogWarning)
+	out.Warnings = append(out.Warnings, Warning{Hint: "watchdog: falling back to softdog", Detail: softdogWarning})
 	return out, nil
 }
