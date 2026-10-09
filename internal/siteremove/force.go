@@ -80,6 +80,9 @@ func BuildForced(cfg *config.Config, secrets *config.Secrets, site string, dest 
 	if err != nil {
 		return nil, err
 	}
+	if len(host.Steps) > 0 {
+		p.notePocketID(host)
+	}
 	if p.Current && len(host.Steps) > 0 {
 		host.Steps = append([]Step{{Site: site, Verb: "note", Title: "note the cluster", Text: fmt.Sprintf("%s is still declared and this is its host: its etcd member, Patroni replica and Garage node, and its place in every other site's mesh, stay in the cluster until a full `paisans site remove %s`, and its next `paisans apply --site %s` deploys it again", site, site, site)}}, host.Steps...)
 	}

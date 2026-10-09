@@ -194,3 +194,29 @@ func TestKeysOfAnotherUserAreReported(t *testing.T) {
 		t.Errorf("the ubuntu user's keys are not reported:\n%s", strings.Join(p.Remains(), "\n"))
 	}
 }
+
+// A forced run on a still declared site leaves its secrets in use, so the
+// report does not point at secrets prune; an undeclared site's are orphans.
+func TestForcedPointsAtSecretsPruneOnlyForAnUndeclaredSite(t *testing.T) {
+	w := setup(t)
+	says := func(p *siteremove.Plan) bool {
+		return strings.Contains(strings.Join(p.Remains(), "\n"), "secrets prune")
+	}
+	if says(forced(t, w, w.cfg, "home-b", w.cfg.Sites["home-b"].Destination(), siteremove.Options{})) {
+		t.Error("a still declared site is pointed at secrets prune")
+	}
+	dest, _ := config.ParseDestination("ubuntu@192.0.2.12")
+	if !says(forced(t, w, w.cfg.WithoutSite("home-b"), "home-b", dest, siteremove.Options{})) {
+		t.Error("an undeclared site is not pointed at secrets prune")
+	}
+}
+
+// Cleaning the host with the active Pocket ID says sign in drops.
+func TestForcedSaysSignInDropsOnTheActivePocketID(t *testing.T) {
+	w := setup(t)
+	w.activePocket = "home-b"
+	p := forced(t, w, w.cfg, "home-b", w.cfg.Sites["home-b"].Destination(), siteremove.Options{})
+	if !hasStepIn(stageNamed(p, "clean the host"), "home-b", "note", "sign in is unavailable") {
+		t.Errorf("no Pocket ID note:\n%s", printed(p))
+	}
+}

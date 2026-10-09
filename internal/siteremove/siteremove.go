@@ -575,7 +575,8 @@ func (p *Plan) Show(r ui.Reporter) {
 // command.
 func (p *Plan) Remains() []string {
 	var out []string
-	if p.secrets != nil {
+	// A forced run on a still declared site leaves its secrets in use.
+	if p.secrets != nil && (!p.forced || !p.declared) {
 		if _, ok := p.secrets.Sites[p.Site]; ok {
 			out = append(out, secretsLeft(p.Site))
 		}
