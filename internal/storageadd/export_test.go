@@ -40,3 +40,7 @@ var (
 func KeepsImagesOn(opts Options, site string) bool {
 	return (&Plan{opts: opts}).keepImages(site)
 }
+
+// AppConfigNote is the note a join leaves for an app configuration that is
+// out of date.
+func AppConfigNote(site string, files int) string { return appConfigNote(site, files) }

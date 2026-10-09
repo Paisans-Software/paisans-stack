@@ -252,7 +252,7 @@ func (p *Plan) buildHost() (*Stage, error) {
 		case r.Owned:
 			hp.rules = append(hp.rules, r.Line)
 		default:
-			p.Kept = append(p.Kept, fmt.Sprintf("%s: ufw rule `%s`, which does not carry this deployment's tag", p.Site, r.Line))
+			p.Kept = append(p.Kept, fmt.Sprintf("%s: ufw rule kept; it does not carry this deployment's tag. The rule is `%s`", p.Site, r.Line))
 		}
 	}
 
@@ -289,7 +289,7 @@ func (p *Plan) buildHost() (*Stage, error) {
 			rendered++
 		}
 		if data := hp.root.files - rendered; data > 0 {
-			p.Kept = append(p.Kept, fmt.Sprintf("%s: what is left of %s once the files above are deleted: %d file(s) apply did not write, the data in its bind mounts (Eg: a database, an object store). --delete-data deletes it", p.Site, d.Root(), data))
+			p.Kept = append(p.Kept, fmt.Sprintf("%s: data left in %s; --delete-data deletes it. What is left once the files above are deleted: %d file(s) apply did not write, the data in its bind mounts (Eg: a database, an object store)", p.Site, d.Root(), data))
 		}
 	}
 
@@ -394,7 +394,7 @@ func (p *Plan) probeKeys(t apply.Transport, hp *hostPlan) error {
 		candidates = append(candidates, raw)
 	}
 	if len(candidates) > 0 && len(candidates) == total {
-		p.Kept = append(p.Kept, fmt.Sprintf("%s: SSH key lines kept in %s; delete them yourself once another way in exists. Deleting the key(s) %s lists would leave %s with no authorized key, and nobody could log in over SSH again", p.Site, kp.file, kp.record, user))
+		p.Kept = append(p.Kept, fmt.Sprintf("%s: SSH key lines kept; delete them yourself once another way in exists. They are in %s: deleting the key(s) %s lists would leave %s with no authorized key, and nobody could log in over SSH again", p.Site, kp.file, kp.record, user))
 		candidates = nil
 	}
 	kp.lines = candidates

@@ -258,7 +258,7 @@ func TestAFileEditedOnTheHostIsKept(t *testing.T) {
 	if len(entries) != 2 || entries[0].Path != strings.TrimPrefix(docsEnv, "/") {
 		t.Errorf("manifest = %+v, want the edited file's entry kept", entries)
 	}
-	if !strings.Contains(strings.Join(ex.Kept, "\n"), docsEnv+" kept; delete it by hand") {
+	if !strings.Contains(strings.Join(ex.Kept, "\n"), docsEnv+", edited on the host") {
 		t.Errorf("kept = %v", ex.Kept)
 	}
 }
@@ -475,6 +475,34 @@ func TestTheExecutorReportsEachStep(t *testing.T) {
 	for _, e := range rec.Events {
 		if e.Kind == "fail" {
 			t.Errorf("a clean removal failed %q", e.Text)
+		}
+	}
+}
+
+// What a removal leaves for the operator shows its first sentence without
+// --verbose, so every such sentence stays within 100 characters.
+func TestTheLeftForYouHintsStayShort(t *testing.T) {
+	cfg, hosts := world(t)
+	hosts["home-a"].files[docsEnv] = "SECRET_KEY=edited\n"
+	p, err := Build(cfg, "docs", probe(t, cfg, "docs", hosts, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep, err := Build(cfg, "docs", probe(t, cfg, "docs", hosts, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := &config.Secrets{Apps: map[string]map[string]any{"docs": {
+		"s3_access_key_id": "GKx", "s3_secret_access_key": "y", "previous_s3_access_key_id": "GKz", "previous_s3_secret_access_key": "w", "secret_key": "k",
+	}}}
+	ex := executor(hosts)
+	if err := ex.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+	lines := append(Remains(p, secrets, ex.Kept), Remains(keep, secrets, nil)...)
+	for _, line := range lines {
+		if hint, _, _ := strings.Cut(line, ". "); len(hint) > 100 {
+			t.Errorf("%d characters: %s", len(hint), hint)
 		}
 	}
 }

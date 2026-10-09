@@ -256,7 +256,7 @@ func (e *Executor) files(h Host, d deployment.Deployment, s SitePlan) error {
 				e.open.Detail("%s", p)
 			}
 		case "kept":
-			e.Kept = append(e.Kept, fmt.Sprintf("%s: %s kept; delete it by hand once nothing needs it, then run this again. It was edited on the host since apply wrote it, so it stays with its manifest entry", s.Site, p))
+			e.Kept = append(e.Kept, fmt.Sprintf("%s: an edited file kept; delete it by hand once nothing needs it, then run this again. It is %s, edited on the host since apply wrote it, so it stays with its manifest entry", s.Site, p))
 		}
 	}
 	for _, f := range s.Files {

@@ -574,9 +574,9 @@ func (p *Plan) Remains() []string {
 		}
 	}
 	if addr := p.cfg.Sites[p.Site].PublicAddress; addr != "" {
-		out = append(out, fmt.Sprintf("DNS: records dns init made pointing at %s stay until `paisans dns prune --execute` deletes them", addr))
+		out = append(out, fmt.Sprintf("DNS: records pointing at %s stay; `paisans dns prune --execute` deletes them. dns init made them", addr))
 	} else {
-		out = append(out, "DNS: any record dns init made pointing at this host stays until `paisans dns prune --execute` deletes it")
+		out = append(out, "DNS: records pointing at this host stay; `paisans dns prune --execute` deletes them. dns init made them")
 	}
 	out = append(out, p.Notes...)
 	out = append(out, p.Kept...)

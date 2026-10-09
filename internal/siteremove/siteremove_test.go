@@ -227,3 +227,16 @@ func (w *world) publicKey(site string) string {
 	}
 	return k
 }
+
+// What a removal leaves for the operator shows its first sentence without
+// --verbose, so every such sentence stays within 100 characters.
+func TestTheLeftForYouHintsStayShort(t *testing.T) {
+	w := setup(t)
+	for _, opts := range []siteremove.Options{{}, {HostGone: true}} {
+		for _, line := range w.mustBuild("home-b", opts).Remains() {
+			if hint, _, _ := strings.Cut(line, ". "); len(hint) > 100 {
+				t.Errorf("%d characters: %s", len(hint), hint)
+			}
+		}
+	}
+}

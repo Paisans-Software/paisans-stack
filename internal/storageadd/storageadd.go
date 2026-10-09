@@ -395,11 +395,17 @@ func (p *Plan) noteOwed() error {
 			return err
 		}
 		if n := len(sp.Writes()); n > 0 {
-			p.Notes = append(p.Notes, fmt.Sprintf(
-				"%s: app configuration differs from the render in %d file(s); run `paisans apply --site %s` when that is acceptable. It brings them up to date and recreates those apps, Eg: for S3_ENDPOINT after storage.garage.sites was reordered", name, n, name))
+			p.Notes = append(p.Notes, appConfigNote(name, n))
 		}
 	}
 	return nil
+}
+
+// appConfigNote is what a join leaves for the operator when an app's .env on
+// site no longer matches the render. Its first sentence is what shows without
+// --verbose, so it carries the command.
+func appConfigNote(site string, files int) string {
+	return fmt.Sprintf("%s: apps out of date in %d file(s); run `paisans apply --site %s` when acceptable. It brings the app configuration up to date and recreates those apps, Eg: for S3_ENDPOINT after storage.garage.sites was reordered", site, files, site)
 }
 
 // appEnvFiles is every app .env the render places on site.

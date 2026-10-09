@@ -504,3 +504,12 @@ func TestBuildStopsOnAProbeThatNeverReachedTheHost(t *testing.T) {
 		}
 	}
 }
+
+// What a join leaves for the operator shows its first sentence without
+// --verbose, so that sentence stays short.
+func TestTheLeftForYouHintStaysShort(t *testing.T) {
+	hint, _, _ := strings.Cut(storageadd.AppConfigNote("home-a", 12), ". ")
+	if len(hint) > 100 {
+		t.Errorf("%d characters: %s", len(hint), hint)
+	}
+}
