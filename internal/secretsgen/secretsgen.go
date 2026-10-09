@@ -137,15 +137,32 @@ func Fill(cfg *config.Config, secrets *config.Secrets) (Result, error) {
 		site := secrets.Sites[name]
 		if site.WireGuardPrivateKey != "" {
 			note(false, "sites."+name+".wireguard_private_key")
-			continue
+		} else {
+			key, err := wireGuardPrivateKey()
+			if err != nil {
+				return result, err
+			}
+			site.WireGuardPrivateKey = key
+			note(true, "sites."+name+".wireguard_private_key")
 		}
-		key, err := wireGuardPrivateKey()
-		if err != nil {
-			return result, err
+		// The site's heartbeat token: what its host pushes to every monitor
+		// with, at https://<monitor>/ping/<token>, and what each monitor's
+		// seed names for the site. 16 random bytes, hex, which is the shape
+		// the uptime fork's seed takes a token in (src/lib/sitePayload.js
+		// insertSite at 1.1.0-oidc.4). Kept once set, like every generated
+		// secret: a replaced token is a host pushing at a URL the monitor no
+		// longer knows, which it reports as the site being down.
+		if site.HeartbeatToken != "" {
+			note(false, "sites."+name+".heartbeat_token")
+		} else {
+			token, err := hexSecret(16)
+			if err != nil {
+				return result, err
+			}
+			site.HeartbeatToken = token
+			note(true, "sites."+name+".heartbeat_token")
 		}
-		site.WireGuardPrivateKey = key
 		secrets.Sites[name] = site
-		note(true, "sites."+name+".wireguard_private_key")
 	}
 
 	// Every app connects as its own role with its own password. There is no

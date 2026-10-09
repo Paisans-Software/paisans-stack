@@ -861,10 +861,10 @@ func worldConfig(t *testing.T, edits ...func(string) string) (*config.Config, *c
 	if err != nil {
 		t.Fatal(err)
 	}
-	secrets.Sites["home-c"] = config.SiteSecrets{WireGuardPrivateKey: "REREREREREREREREREREREREREREREREREREREREREQ="}
+	secrets.Sites["home-c"] = config.SiteSecrets{WireGuardPrivateKey: "REREREREREREREREREREREREREREREREREREREREREQ=", HeartbeatToken: "6666666666666666666666666666ffff"}
 	// box is a site only some worlds declare.
-	secrets.Sites["box"] = config.SiteSecrets{WireGuardPrivateKey: "RUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUU="}
-	secrets.Sites["home-d"] = config.SiteSecrets{WireGuardPrivateKey: "RkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkY="}
+	secrets.Sites["box"] = config.SiteSecrets{WireGuardPrivateKey: "RUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUU=", HeartbeatToken: "7777777777777777777777777777aaaa"}
+	secrets.Sites["home-d"] = config.SiteSecrets{WireGuardPrivateKey: "RkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkY=", HeartbeatToken: "8888888888888888888888888888bbbb"}
 	return cfg, secrets, path
 }
 

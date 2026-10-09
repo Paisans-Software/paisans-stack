@@ -56,6 +56,10 @@ type GarageSecrets struct {
 
 type SiteSecrets struct {
 	WireGuardPrivateKey string `yaml:"wireguard_private_key"`
+	// HeartbeatToken is what the site's host pushes to every monitor with,
+	// and what each monitor's seed names for the site: 32 lowercase hex
+	// characters, generated at init. README, "Monitoring".
+	HeartbeatToken string `yaml:"heartbeat_token"`
 }
 
 type OIDCClient struct {

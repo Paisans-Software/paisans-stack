@@ -28,8 +28,11 @@ func (s *Secrets) Get(key string) (string, bool) {
 			"admin_token": s.Storage.Garage.AdminToken,
 			"rpc_secret":  s.Storage.Garage.RPCSecret,
 		}[parts[2]]
-	case len(parts) == 3 && parts[0] == "sites" && parts[2] == "wireguard_private_key":
-		value = s.Sites[parts[1]].WireGuardPrivateKey
+	case len(parts) == 3 && parts[0] == "sites":
+		value = map[string]string{
+			"wireguard_private_key": s.Sites[parts[1]].WireGuardPrivateKey,
+			"heartbeat_token":       s.Sites[parts[1]].HeartbeatToken,
+		}[parts[2]]
 	case len(parts) == 3 && parts[0] == "apps":
 		value, _ = s.Apps[parts[1]][parts[2]].(string)
 	case len(parts) == 2 && parts[0] == "external":
@@ -70,12 +73,16 @@ func (s *Secrets) Set(key, value string) error {
 		default:
 			return fmt.Errorf("%s: Garage has no secret named %q", key, parts[2])
 		}
-	case len(parts) == 3 && parts[0] == "sites" && parts[2] == "wireguard_private_key":
+	case len(parts) == 3 && parts[0] == "sites" && (parts[2] == "wireguard_private_key" || parts[2] == "heartbeat_token"):
 		if s.Sites == nil {
 			s.Sites = map[string]SiteSecrets{}
 		}
 		site := s.Sites[parts[1]]
-		site.WireGuardPrivateKey = value
+		if parts[2] == "heartbeat_token" {
+			site.HeartbeatToken = value
+		} else {
+			site.WireGuardPrivateKey = value
+		}
 		s.Sites[parts[1]] = site
 	case len(parts) == 3 && parts[0] == "apps" && secretName.MatchString(parts[1]) && secretName.MatchString(parts[2]):
 		if s.Apps == nil {
