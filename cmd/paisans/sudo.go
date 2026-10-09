@@ -50,8 +50,19 @@ func terminalAvailable() bool {
 }
 
 // promptOnTerminal reads a sudo password from the controlling terminal with
-// echo off.
+// echo off, with the reporter's drawing held. The first sudo command runs
+// inside an open step, so without the hold the spinner's next frame would
+// erase the prompt and leave the operator watching a spinner that waits on
+// them without saying so.
 func promptOnTerminal(host string) (string, error) {
+	resume := holdOutput()
+	defer resume()
+	return readPassword(host)
+}
+
+// readPassword asks on the controlling terminal. Tests replace it, since a
+// test has no terminal to type into.
+var readPassword = func(host string) (string, error) {
 	tty, err := openTTY()
 	if err != nil {
 		return "", err

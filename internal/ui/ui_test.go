@@ -234,3 +234,84 @@ func TestOverlappingStepsEachStopTheirOwnSpinner(t *testing.T) {
 		t.Errorf("finished lines missing: %q", b.String())
 	}
 }
+
+// A prompt on the terminal (a sudo password, an ssh host key) would be wiped
+// by the next spinner frame. While held, the spinner line is cleared and no
+// frame draws; resuming draws the open step again.
+func TestHoldClearsSpinnerAndStopsFramesUntilResumed(t *testing.T) {
+	var b strings.Builder
+	r := ui.NewForTest(&b, false, true, clock())
+	s := r.Step("check mesh subnet")
+	resume := ui.Hold(r)
+	if !strings.HasSuffix(b.String(), "\r\x1b[K") {
+		t.Fatalf("holding did not clear the spinner line: %q", b.String())
+	}
+	held := b.String()
+	ui.Frame(r)
+	if b.String() != held {
+		t.Fatalf("a frame drew while held: %q", b.String()[len(held):])
+	}
+	resume()
+	if !strings.Contains(b.String()[len(held):], "check mesh subnet") {
+		t.Fatalf("resuming did not draw the step again: %q", b.String()[len(held):])
+	}
+	resumed := b.String()
+	ui.Frame(r)
+	if b.String() == resumed {
+		t.Fatal("frames did not restart after resume")
+	}
+	resume() // a second call must not release someone else's hold
+	s.Done("")
+}
+
+// Holds nest: the spinner draws again only once every hold is released.
+func TestNestedHoldsResumeOnlyAtTheLast(t *testing.T) {
+	var b strings.Builder
+	r := ui.NewForTest(&b, false, true, clock())
+	r.Step("a")
+	outer := ui.Hold(r)
+	inner := ui.Hold(r)
+	inner()
+	held := b.String()
+	ui.Frame(r)
+	if b.String() != held {
+		t.Fatalf("drew with a hold still in place: %q", b.String()[len(held):])
+	}
+	outer()
+	ui.Frame(r)
+	if b.String() == held {
+		t.Fatal("did not draw once every hold was released")
+	}
+}
+
+// Plain output has no spinner, and Discard and Recorder draw nothing, so a
+// hold there writes nothing.
+func TestHoldIsANoOpWithoutASpinner(t *testing.T) {
+	var b strings.Builder
+	r := ui.NewForTest(&b, false, false, clock())
+	r.Step("a")
+	ui.Hold(r)()
+	ui.Hold(ui.Discard)()
+	ui.Hold(&ui.Recorder{})()
+	if b.String() != "" {
+		t.Fatalf("a plain hold wrote %q", b.String())
+	}
+}
+
+// A section or an item said while a step is drawing must not land on the
+// spinner's line.
+func TestSectionAndItemClearTheSpinnerLine(t *testing.T) {
+	for name, say := range map[string]func(ui.Reporter){
+		"section": func(r ui.Reporter) { r.Section("home-b") },
+		"item":    func(r ui.Reporter) { r.Item("recreate app") },
+	} {
+		var b strings.Builder
+		r := ui.NewForTest(&b, false, true, clock())
+		r.Step("a")
+		before := b.String()
+		say(r)
+		if !strings.HasPrefix(b.String()[len(before):], "\r\x1b[K") {
+			t.Errorf("%s printed onto the spinner line: %q", name, b.String()[len(before):])
+		}
+	}
+}

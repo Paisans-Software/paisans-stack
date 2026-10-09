@@ -131,3 +131,11 @@ func InnerCommand(remote string) (string, bool) {
 func NewPlanForTest(r ui.Reporter) *Plan             { return &Plan{Report: r} }
 func StepForTest(p *Plan, title string) ui.Step      { return p.step(title) }
 func SayForTest(p *Plan, format string, args ...any) { p.say(format, args...) }
+
+// ForgetContacts forgets which hosts have answered, so each test starts from
+// a run that has reached none.
+func ForgetContacts() {
+	contactedMu.Lock()
+	defer contactedMu.Unlock()
+	contacted = map[string]bool{}
+}

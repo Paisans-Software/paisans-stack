@@ -2448,6 +2448,16 @@ for its own password.
 
 The prompt reads `/dev/tty` with echo off, not stdin, because stdin may
 already carry a value (`secrets set` and `app admin create` read one from it).
+
+While the prompt waits, the progress display is held. The first sudo command
+runs inside an open step, and that step's spinner redraws its line every tenth
+of a second, which would erase the prompt and leave the operator watching a
+spinner that waits on them without saying so. ssh asks on the terminal itself
+as well, to accept a host key it does not know, so every connection attempt to
+a host is made with the display held until that host has answered once. A key
+whose passphrase ssh asks for on every connection is the one prompt this does
+not cover: after the first connection the spinner runs while ssh asks, and can
+draw over the question. A key held by an agent (above) is never asked for.
 The password is checked once with `sudo -k -S -p '' true`, and every later
 command runs as `sudo -k -S -p '' sh -c '<command>'` with the password as the
 first line of that ssh session's stdin:

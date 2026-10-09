@@ -65,6 +65,26 @@ func NewPlain(w io.Writer, verbose bool) Reporter {
 	return newWriter(w, verbose, false)
 }
 
+// Holder is a reporter that draws on a terminal between lines, and can be
+// asked to stop for a while.
+type Holder interface {
+	// Hold clears what is drawn and draws nothing more until resume is
+	// called. Holds nest; drawing restarts once every one is resumed.
+	Hold() (resume func())
+}
+
+// Hold pauses r's drawing while something else uses the terminal: a password
+// prompt, or ssh asking to accept a host key. The spinner redraws its line
+// every tick, which would erase the prompt and leave the operator looking at
+// a spinner that waits on them without saying so. A reporter that draws
+// nothing between lines needs no pause, and resume does nothing.
+func Hold(r Reporter) (resume func()) {
+	if h, ok := r.(Holder); ok {
+		return h.Hold()
+	}
+	return func() {}
+}
+
 // Discard reports nothing.
 var Discard Reporter = discard{}
 

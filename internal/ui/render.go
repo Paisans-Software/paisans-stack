@@ -33,6 +33,9 @@ type writer struct {
 
 	open   *step
 	frame_ int
+	// held counts the holds in place (see Hold). While any is, nothing is
+	// drawn, so a prompt on the terminal stays readable.
+	held int
 }
 
 func newWriter(w io.Writer, verbose, terminal bool) *writer {
@@ -55,6 +58,7 @@ func (r *writer) Verbose() bool { return r.verbose }
 func (r *writer) Section(title string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.interruptLocked()
 	fmt.Fprintf(r.w, "%s\n", title)
 }
 
@@ -119,8 +123,12 @@ func (r *writer) frame() {
 	r.drawLocked()
 }
 
+// drawLocked draws the open step's spinner line, unless a hold is in place.
 func (r *writer) drawLocked() {
 	s := r.open
+	if s == nil || r.held > 0 {
+		return
+	}
 	elapsed := r.now().Sub(s.started)
 	fmt.Fprintf(r.w, "%s  %s %s", clear, frames[r.frame_%len(frames)], pad(s.title))
 	if elapsed >= time.Second {
@@ -189,6 +197,7 @@ func (r *writer) mark(ok bool) string {
 func (r *writer) Item(title string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.interruptLocked()
 	if r.terminal {
 		fmt.Fprintf(r.w, "  · %s\n", title)
 		return
@@ -219,10 +228,40 @@ func (r *writer) Refuse(hint, explanation string) {
 	} else {
 		fmt.Fprintf(r.w, "  FAIL %s\n", hint)
 	}
-	for _, line := range strings.Split(strings.TrimSpace(explanation), "\n") {
+	r.explainLocked(explanation)
+}
+
+// explainLocked prints the lines that belong to a hint at every verbosity,
+// aligned under the hint's text rather than under its mark.
+func (r *writer) explainLocked(text string) {
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
 		if line != "" {
 			fmt.Fprintf(r.w, "       %s\n", line)
 		}
+	}
+}
+
+// Hold clears the spinner line and draws nothing until every hold is
+// resumed, then draws the open step again. Plain output draws nothing between
+// lines, so there it does nothing. Each resume releases its own hold once,
+// however often it is called, so a deferred resume beside an explicit one
+// cannot release a hold that belongs to someone else.
+func (r *writer) Hold() (resume func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.terminal {
+		return func() {}
+	}
+	r.held++
+	r.interruptLocked()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.held--
+			r.drawLocked()
+		})
 	}
 }
 

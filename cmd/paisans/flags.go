@@ -22,6 +22,7 @@ func commonFlags(fs *flag.FlagSet) func() ui.Reporter {
 			r = ui.New(os.Stdout, *verbose)
 		}
 		routeRetries(r)
+		routeHolds(r)
 		return r
 	}
 }
@@ -32,6 +33,21 @@ func commonFlags(fs *flag.FlagSet) func() ui.Reporter {
 // because stdout there carries data a script reads and a retry line beside
 // it would corrupt it.
 func routeRetries(r ui.Reporter) { apply.SetRetryLog(detailWriter{r}) }
+
+// holdOutput pauses the drawing of the reporter a command reports through,
+// for as long as something else asks on the terminal. routeHolds points it at
+// the reporter that draws, as routeRetries does for the retry lines, so that
+// a command that moved its report to stderr holds the spinner it actually
+// shows.
+var holdOutput = func() (resume func()) { return func() {} }
+
+// routeHolds holds r around the sudo password prompt and around ssh's first
+// connection to each host, where ssh itself may ask to accept a host key.
+func routeHolds(r ui.Reporter) {
+	hold := func() (resume func()) { return ui.Hold(r) }
+	holdOutput = hold
+	apply.SetPromptHold(hold)
+}
 
 // detailWriter turns each line written to it into a detail of the reporter.
 type detailWriter struct{ r ui.Reporter }
@@ -54,5 +70,6 @@ func errReporter(r ui.Reporter) ui.Reporter {
 	}
 	e := ui.New(os.Stderr, r.Verbose())
 	routeRetries(e)
+	routeHolds(e)
 	return e
 }

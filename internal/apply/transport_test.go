@@ -3,6 +3,7 @@ package apply_test
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -229,5 +230,47 @@ func TestOnlyAConnectionFailureIsRetried(t *testing.T) {
 		if errors.Is(err, apply.ErrUnreachable) {
 			t.Errorf("%q (exit %d) was called unreachable", a.out, a.exit)
 		}
+	}
+}
+
+// ssh asks on the terminal itself on a first connection: a host key to
+// accept, or a key's passphrase. The progress display is held around every
+// attempt until the host has answered once, so the question stays readable,
+// and is not held again for that host, so the spinner runs for the rest.
+func TestTheFirstConnectionToAHostHoldsTheDisplay(t *testing.T) {
+	apply.ForgetContacts()
+	t.Cleanup(apply.ForgetContacts)
+	held := false
+	apply.SetPromptHold(func() func() {
+		held = true
+		return func() { held = false }
+	})
+	t.Cleanup(func() { apply.SetPromptHold(nil) })
+	var during []bool
+	answers := []sshAnswer{{sshTimeout, 255}, {"ok\n", 0}, {"ok\n", 0}, {"ok\n", 0}}
+	calls := 0
+	restore := apply.FakeSSH(func([]string, string) (string, int) {
+		during = append(during, held)
+		a := answers[calls]
+		calls++
+		return a.out, a.exit
+	}, []time.Duration{time.Second}, func(time.Duration) {}, io.Discard)
+	t.Cleanup(restore)
+
+	a := apply.SSHTransport{Destination: "home-a"}
+	if _, err := a.Run("true"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run("true"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (apply.SSHTransport{Destination: "home-b"}).Run("true"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []bool{true, true, false, true}; !reflect.DeepEqual(during, want) {
+		t.Errorf("held during each ssh: %v, want %v (retried first contact, later command, another host's first)", during, want)
+	}
+	if held {
+		t.Error("the display was left held")
 	}
 }
