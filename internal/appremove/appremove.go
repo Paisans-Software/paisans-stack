@@ -31,6 +31,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/garage"
@@ -269,12 +270,35 @@ type Plan struct {
 	Client     ClientPlan
 	Database   *DatabasePlan
 	Storage    *StoragePlan
+	// Monitors is every monitor site's uptime stack, applied last so that
+	// its monitors.json, rendered without the app, drops the app's checks
+	// (see apply.MonitorReseed). Build leaves it nil, since it is planned
+	// from the render and the sites rather than from the probes; the caller
+	// sets it with PlanMonitors.
+	Monitors []*apply.MonitorReseed
 }
 
-// Empty reports whether nothing of the app was found anywhere.
+// PlanMonitors plans the monitors' reseed for the configuration the app has
+// left, reading each monitor site and changing none.
+func (p *Plan) PlanMonitors(cfg *config.Config, rendered *render.Plan, acmeModule string, transports map[string]apply.Transport) error {
+	reseeds, err := apply.PlanMonitorReseeds(cfg, rendered, acmeModule, transports)
+	if err != nil {
+		return fmt.Errorf("app remove: %w", err)
+	}
+	p.Monitors = reseeds
+	return nil
+}
+
+// Empty reports whether nothing of the app was found anywhere, and no
+// monitor still checks it.
 func (p *Plan) Empty() bool {
 	for _, s := range p.Sites {
 		if !s.Empty() {
+			return false
+		}
+	}
+	for _, m := range p.Monitors {
+		if m.Pending() {
 			return false
 		}
 	}

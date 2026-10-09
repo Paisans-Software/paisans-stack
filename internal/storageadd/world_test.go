@@ -144,6 +144,35 @@ func (h *host) run(command, stdin string) (string, error) {
 		return h.garage(g)
 	}
 	switch {
+	// apply's plumbing around a stack action, for the monitor's reseed
+	case strings.Contains(command, " ps --all --format json"):
+		return `{"Service":"x","Name":"x","State":"running","Health":""}` + "\n", nil
+	case strings.HasPrefix(command, "rm -f '"):
+		delete(h.files, strings.Trim(strings.TrimPrefix(command, "rm -f "), "'"))
+		return "", nil
+	case strings.HasPrefix(command, "for n in "):
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for n in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			fmt.Fprintf(&b, "absent %s\n", strings.Trim(q, "'"))
+		}
+		return b.String(), nil
+	case strings.HasPrefix(command, "for r in ") && strings.Contains(command, ".Config.Volumes"):
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			fmt.Fprintf(&b, "volumes %s null\n", strings.Trim(q, "'"))
+		}
+		return b.String(), nil
+	case strings.HasPrefix(command, "for r in "):
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			ref := strings.Trim(q, "'")
+			d := sha256.Sum256([]byte(ref))
+			fmt.Fprintf(&b, "present sha256:%s %s\n", hex.EncodeToString(d[:]), ref)
+		}
+		return b.String(), nil
 	case command == "docker compose -f /srv/paisans/f2a9/infra/compose.yaml stop garage":
 		h.running = false
 		return "", nil

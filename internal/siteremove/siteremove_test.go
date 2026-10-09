@@ -44,8 +44,8 @@ func TestTheDryRunPlansEveryStageAndChangesNothing(t *testing.T) {
 		before[name] = len(h.files)
 	}
 	p := w.mustBuild("home-b", siteremove.Options{})
-	if len(p.Stages) != 4 {
-		t.Fatalf("want 4 stages, got %d", len(p.Stages))
+	if len(p.Stages) != 5 {
+		t.Fatalf("want 5 stages, got %d", len(p.Stages))
 	}
 	for _, want := range []struct {
 		stage            int

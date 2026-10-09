@@ -362,6 +362,11 @@ func Build(cfg *config.Config, secrets *config.Secrets, site string, transports 
 	p.notePocketID(host)
 	p.Stages = append(p.Stages, host)
 	p.Stages = append(p.Stages, p.buildConfig())
+	monitor, err := p.buildMonitor()
+	if err != nil {
+		return nil, err
+	}
+	p.Stages = append(p.Stages, monitor)
 	return p, nil
 }
 
@@ -460,6 +465,11 @@ func Execute(p *Plan) error {
 }
 
 func (p *Plan) fail(st *Stage, err error) error {
+	if st.Number == monitorStage {
+		// The configuration no longer declares the site, so there is no
+		// site remove to run again; the stage's own error names the apply.
+		return fmt.Errorf("site remove %s stopped at stage %d (%s): %v", p.Site, st.Number, st.Name, err)
+	}
 	return fmt.Errorf("site remove %s stopped at stage %d (%s), and nothing after it ran: %v\nFix the cause and run site remove again: it resumes at the first stage with anything left to do", p.Site, st.Number, st.Name, err)
 }
 

@@ -81,6 +81,7 @@ func TestRulesFire(t *testing.T) {
 		{"uptime-needs-an-admin-group", "uptime-needs-an-admin-group", validate.Refuse},
 		{"smtp-on-a-kind-without-mail", "smtp-on-a-kind-without-mail", validate.Refuse},
 		{"uptime-without-smtp", "uptime-without-smtp", validate.Warn},
+		{"no-uptime-monitor", "no-uptime-monitor", validate.Warn},
 		{"monitor-on-gateway", "monitor-on-gateway", validate.Refuse},
 		{"monitor-on-witness", "monitor-on-witness", validate.Refuse},
 		{"monitor-shares-a-site", "monitor-shares-a-site", validate.Warn},

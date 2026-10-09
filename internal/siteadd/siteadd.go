@@ -63,6 +63,9 @@ type Plan struct {
 	// where an image the toolkit renders may be what something else runs
 	// from.
 	KeepImages bool
+	// SharedSites are the monitor sites the host check found shared, whose
+	// reseed keeps its images the same way.
+	SharedSites map[string]bool
 
 	cfg        *config.Config
 	secrets    *config.Secrets
@@ -224,6 +227,11 @@ func Build(cfg *config.Config, secrets *config.Secrets, newSite string, transpor
 		return nil, err
 	}
 	p.Stages = append(p.Stages, replicas)
+	monitor, err := p.buildMonitor(rendered)
+	if err != nil {
+		return nil, err
+	}
+	p.Stages = append(p.Stages, monitor)
 
 	if err := p.noteOwed(rendered, members); err != nil {
 		return nil, err

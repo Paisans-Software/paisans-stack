@@ -58,6 +58,8 @@ func (p *Plan) changedFiles(site string) (moved []string, owed []string) {
 		old, had := before[rel]
 		switch {
 		case had && old == f.Content:
+		case p.reseeded(site, rel):
+			// The monitor's own stack is applied whole by stage 5.
 		case !had:
 			owed = append(owed, "/"+rel+" is rendered now and was not before")
 		case rel == p.dep().WireGuardConf(), rel == p.haproxyFile():

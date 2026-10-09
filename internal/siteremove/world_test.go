@@ -163,6 +163,36 @@ func (h *host) Run(command string) (string, error) {
 	case command == "true":
 		return "", nil
 
+	// apply's plumbing around a stack action, for the monitor's reseed
+	case strings.HasPrefix(command, "rm -f '"):
+		delete(h.files, strings.Trim(strings.TrimPrefix(command, "rm -f "), "'"))
+		return "", nil
+	case strings.HasPrefix(command, "for n in "):
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for n in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			fmt.Fprintf(&b, "absent %s\n", strings.Trim(q, "'"))
+		}
+		return b.String(), nil
+	case strings.HasPrefix(command, "for r in ") && strings.Contains(command, ".Config.Volumes"):
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			fmt.Fprintf(&b, "volumes %s null\n", strings.Trim(q, "'"))
+		}
+		return b.String(), nil
+	case strings.HasPrefix(command, "for r in "):
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			fmt.Fprintf(&b, "present sha256:%s %s\n", hexSum(strings.Trim(q, "'")), strings.Trim(q, "'"))
+		}
+		return b.String(), nil
+	case command == "docker image ls --no-trunc --format json":
+		return "", nil
+	case strings.HasSuffix(command, root+"/status/compose.yaml restart"):
+		return "", nil
+
 	// patroni.env on a replica, and the witness's etcd container
 	case strings.Contains(command, "exec -T patroni printenv ETCD3_HOSTS"):
 		if !h.patroniUp {

@@ -446,6 +446,7 @@ site that holds it. Founder decision.
 | `monitor` with no uptime app pinned to it | refused | `monitor-without-uptime` |
 | an uptime app pinned to a site without `monitor` | refused | `uptime-needs-a-monitor-site` |
 | `monitor` without `public_address` | refused | `monitor-without-public-address` |
+| no app of kind `uptime` at all | warned | `no-uptime-monitor` |
 
 On the gateway the monitor goes dark with the edge it is meant to watch. On
 the witness, etcd's tiebreaker and the thing that reports etcd losing quorum
@@ -617,6 +618,27 @@ from this configuration and the fork reconciles it at every start:
 Every other app's public check now runs from a machine that is not the
 gateway, so a dead gateway shows as every public check failing while the
 direct checks stay green.
+
+**Topology commands reseed the monitor.** The seed is correct whenever the
+monitor site is applied, and nothing else applies it: `apply` is one site at
+a time, and `site add`, `site remove`, `storage add` and `app remove` move
+files on the sites they change, which the monitor's is not. Left there, a
+monitor keeps pinging a site that is gone and alerting for it until somebody
+applies the monitor by hand, and never pings a site that joined. So each of
+those commands ends with one more stage, the monitor: every monitor site's
+`uptime` stack applied on its own (`apply --only <app>`), which writes the
+seed rendered from the configuration as it now stands and restarts the
+monitor on it, and the fork then adds the checks that are new and deletes
+the ones whose site or app is gone. The stage's gate reads the seed back and
+holds the stack to `apply`'s health gate. It is the last stage on purpose:
+the change itself is done without it, and an out of date monitor is a
+nuisance, not a wrong cluster, so a failure there stops nothing that already
+passed and names the exact `apply` that finishes it. A deployment with no
+monitor site skips the stage, and `validate` warns that nothing watches it
+(`no-uptime-monitor`): a first install may have one machine, and the monitor
+needs a second, so it is a warning rather than a refusal. Every one of these
+commands therefore has to reach the monitor's host, and host checks it as
+`apply` would.
 
 Monitors the file creates are tagged `managed` and belong to it. Monitors an
 admin makes by hand, and the channels an admin attaches to any monitor, are
@@ -1680,8 +1702,10 @@ plans only what differs, in gated stages: the nodes as they are, the
 replication reset when one is needed, connect, one layout version with each
 node in a zone named after its site (only distinct zones spread copies across
 sites), sync, provisioning planned by `storage init`'s own planner and found
-present, the gateway's media routes, and a smoke test that writes a probe and
-reads it back through every node and through the app's own media hostname. The design, with
+present, the gateway's media routes, a smoke test that writes a probe and
+reads it back through every node and through the app's own media hostname,
+and last the monitor's reseed, so that a site that exists for Garage alone
+gets its ping (see *Topology commands reseed the monitor*). The design, with
 Garage v1.0.1's source behind each gate, is
 `docs/specs/2026-10-07-multisite-garage.md`.
 
@@ -3776,6 +3800,15 @@ through a temporary file moved into place, keeping every entry that is not
 the app's. An entry whose file is already gone is dropped, which is what a
 run stopped between the two leaves.
 
+**The monitor is reseeded last.** Every monitor site's `uptime` stack is
+applied on its own once the app is off every host, so the seed rendered
+without the app replaces the one that still checked it and the restarted
+monitor deletes those checks (see *Topology commands reseed the monitor*).
+That is the one step `app remove` runs on a site the app never ran on, and it
+is planned from the render and the monitor's host rather than from the left
+over marks. A failure there comes after everything of the app's is gone and
+names the `apply` that finishes it.
+
 **It leaves three things and says so.** The app's secrets stay in the secrets
 file, which it never edits, so they are listed for removal with `sops`. Its
 DNS records stay until `paisans dns prune --execute` deletes the ones
@@ -3838,6 +3871,7 @@ So a join is staged, and every stage is a gate:
 | 5. Synchronous mode, when configured | a `Sync Standby` exists |
 | 6. HAProxy backends | HAProxy routes only to the primary |
 | 7. Each existing replica's `patroni.env`, one at a time | the replica streams again |
+| 8. The monitor's seed, with the new site | the monitor runs on a seed that matches the render |
 
 Failing at stage 2 rolls back cleanly: drop the peer entries, leave the running
 cluster untouched. Failing at stage 3 or later is harder to undo, which is
@@ -3884,6 +3918,7 @@ skipped and why.
 | 5. Cluster configuration | `patronictl edit-config --force -q -s synchronous_mode=true -s synchronous_mode_strict=<value>` when the live values differ | a member with the role `Sync Standby` |
 | 6. HAProxy | `haproxy.cfg` as a scoped `apply`; the site's cluster database apps stopped, HAProxy alone restarted, the apps started and each through `apply`'s health gate | the statistics list every cluster site, the leader `UP` and every replica `DOWN` |
 | 7. Replicas' `patroni.env` | on each existing replica, one at a time: `patroni.env` as a scoped `apply`, then `up -d --no-deps --force-recreate patroni`; nothing when the cluster had no replica | the replica runs with the new `ETCD3_HOSTS`, and its own Patroni, asked through its REST API from inside the container, answers `running` and `streaming` before the next is touched; `patronictl list` reads a member key the old process may have written, so it is not asked |
+| 8. Monitor | every monitor site's `uptime` stack applied on its own (`apply --only <app>`), so its `monitors.json` gains the new site's ping and direct checks and the monitor restarts on it; skipped when no site holds the monitor role (see *Topology commands reseed the monitor*) | the seed on the host matches the render and the stack is healthy; a failure here stops nothing of the join and names the `apply` that finishes it |
 
 **Learners, one at a time.** A full voter added to a cluster of one makes the
 quorum two before it has started; if it then fails to start, the cluster stops.
@@ -4002,9 +4037,11 @@ paisans site remove home-b --host-gone --execute       # the host is never comin
 | a host that does not answer over ssh | what is on it cannot be read; fix ssh, or say `--host-gone` |
 | `--delete-data` without a terminal, or with `--host-gone` | the same rule as `app remove`; and nothing is deleted on a host that is not reached |
 
-**Four stages, each ending at a gate.** Each is planned from live state, so a
+**Five stages, each ending at a gate.** Each is planned from live state, so a
 stage already done plans no steps, its gate is still checked, and a re-run
 after a fixed problem resumes at the first stage with anything left to do.
+The last one is the exception, since the stage before it is what makes a
+re-run impossible: a failure there names the `apply` that finishes it.
 
 | Stage | What runs | Gate |
 |-------|-----------|------|
@@ -4012,6 +4049,7 @@ after a fixed problem resumes at the first stage with anything left to do.
 | 2. Out of the cluster | `etcdctl member remove`, then the site's etcd stopped; with two data sites and a witness, the witness's member next (below); on every remaining site, the files whose render changes with the site gone, by scoped `apply`: `psns-<token>.conf` (`wg syncconf`), `haproxy.cfg` (HAProxy restarted with its database apps stopped around it, as `site add` does) and the gateway's routes (validated, then Caddy reloaded); then each remaining replica's `patroni.env`, one at a time, as `site add`'s stage 7 does | the voters are exactly the end state's and all healthy; no remaining site has the site's key as a WireGuard peer; HAProxy lists exactly the end state's cluster sites with the leader `UP`; each replica streaming again before the next |
 | 3. Clean the host | below; skipped with `--host-gone`. When the site holds the active Pocket ID instance, the plan says that once this stage stops it, sign in is unavailable for a few seconds while a standby takes over, up to about 90 seconds if the instance does not stop cleanly | checked before the keys go: nothing of this deployment's left but what the plan said it keeps |
 | 4. Config | the site taken out of `paisans.yaml`: its block, its name in `cluster.sites`, `etcd.members` and `storage.garage.sites`, its capacity; with two data sites and a witness, the witness out of `etcd.members` and its `witness` role, in the same write; every other byte as it was | the file loads and no longer declares it |
+| 5. Monitor | every remaining monitor site's `uptime` stack applied on its own, so its `monitors.json`, rendered from the end state, no longer names the site and the restarted monitor deletes its ping and direct checks; skipped when no site holds the monitor role (see *Topology commands reseed the monitor*). The monitor site itself is never the one removed, since its app is pinned to it | the seed on the host matches the render and the stack is healthy; a failure here comes after the removal and names the `apply` that finishes it |
 
 **Two data sites and a witness go to one voter.** Taking one data site out of
 two and a witness would leave two etcd voters, and two are worse than one. With

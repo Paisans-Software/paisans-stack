@@ -272,6 +272,11 @@ func Build(cfg *config.Config, secrets *config.Secrets, transports map[string]ap
 	if smoke := p.buildSmoke(); smoke != nil {
 		p.Stages = append(p.Stages, smoke)
 	}
+	monitor, err := p.buildMonitor()
+	if err != nil {
+		return nil, err
+	}
+	p.Stages = append(p.Stages, monitor)
 	for i, st := range p.Stages {
 		st.Number = i + 1
 	}

@@ -64,6 +64,25 @@ func (c *checker) monitorRoles() {
 	}
 }
 
+// nothingWatches warns when the deployment declares no app of kind uptime.
+// README.md: "The monitor has a site of its own".
+//
+// Every other rule here is about where a monitor may run, and a deployment
+// with none passes all of them. That is allowed, since a first install may
+// have one machine and the monitor needs a second, but it is a risk worth a
+// line in every validate: a gateway or a database that dies is then noticed
+// by a member, not by a check. A warning rather than a refusal, because the
+// deployment is coherent without one.
+func (c *checker) nothingWatches() {
+	for _, name := range c.cfg.AppNames() {
+		if c.cfg.Apps[name].Kind == config.KindUptime {
+			return
+		}
+	}
+	c.warn("no-uptime-monitor", "apps",
+		"declares no app of kind uptime, so nothing watches this deployment: a site, the gateway or the database going down is noticed by a member before an admin. Give a second machine roles: [monitor] with a public_address, pin an uptime app to it, and apply it (README.md, \"Monitoring\").")
+}
+
 // hostsUptime reports whether an uptime app is pinned to a site.
 func (c *checker) hostsUptime(site string) bool {
 	for _, name := range c.cfg.PinnedTo(site) {

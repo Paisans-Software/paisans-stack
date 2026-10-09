@@ -113,6 +113,9 @@ func (h *host) Run(command string) (string, error) {
 			fmt.Errorf("%s: %w after 3 attempts: exit status 255", h.name, apply.ErrUnreachable)
 	}
 	switch {
+	case strings.HasPrefix(command, "rm -f '"):
+		delete(h.files, strings.Trim(strings.TrimPrefix(command, "rm -f "), "'"))
+		return "", nil
 	case strings.HasPrefix(command, "for n in "):
 		// How each stack's compose network is addressed: no stack has one
 		// yet, in this world.
@@ -388,8 +391,9 @@ func endState(t *testing.T) (*config.Config, *config.Secrets) {
 }
 
 // newWorld is the deployment before the join: home-a alone in the cluster
-// and in etcd, vm a gateway only, home-b prepared and empty. home-a and vm
-// were applied by a whole apply of the configuration as it was then.
+// and in etcd, vm a gateway only, watch the monitor, home-b prepared and
+// empty. home-a, vm and watch were applied by a whole apply of the
+// configuration as it was then.
 func newWorld(t *testing.T) *world {
 	t.Helper()
 	cfg, secrets := endState(t)
@@ -411,7 +415,7 @@ func newWorld(t *testing.T) *world {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"home-a", "vm"} {
+	for _, name := range []string{"home-a", "vm", "watch"} {
 		p, err := apply.Build(name, rendered, "", w.hosts[name])
 		if err != nil {
 			t.Fatal(err)

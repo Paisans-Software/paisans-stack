@@ -11,6 +11,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/siteremove"
 	"github.com/paisans-software/paisans-stack/internal/validate"
@@ -98,6 +99,11 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		}
 		transports[name] = removeSiteHost(cfg.Sites[name], *sudo)
 		claim = append(claim, name)
+	}
+	// The monitor's stack is applied last, with the site out of its seed,
+	// so each monitor site is host checked as apply would check it.
+	if _, err := gateSites(stdout, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
+		return err
 	}
 	plan, err := siteremove.Build(cfg, secrets, site, transports, opts)
 	if err != nil {
