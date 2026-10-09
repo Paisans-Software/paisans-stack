@@ -617,16 +617,7 @@ func runApply(args []string) error {
 		return err
 	}
 
-	members, found, err := apply.ProbeEtcdMembers(cfg, *site, transports)
-	if err != nil {
-		return err
-	}
-	if found {
-		if err := apply.EtcdRefusal(cfg, plan, members); err != nil {
-			return err
-		}
-	}
-	if err := apply.WitnessFirstRefusal(cfg, plan, founding, running); err != nil {
+	if err := apply.EtcdGates(cfg, plan, transports, founding, running); err != nil {
 		return err
 	}
 

@@ -129,7 +129,18 @@ func EtcdMemberSite(cfg *config.Config, m EtcdMember) string {
 // ProbeEtcdMembers finds the live membership from the first of these sites
 // whose etcd answers, trying site first. found is false when no etcd runs on
 // any of them, which is a deployment not started yet.
-func ProbeEtcdMembers(cfg *config.Config, site string, transports map[string]Transport) (members []EtcdMember, found bool, err error) {
+//
+// founding is whether site's own etcd member is being founded, from
+// ReadEtcdInitial. Only then is a member that is running but has no leader
+// passed over rather than reported as an error. `member list` is
+// linearizable in etcd v3.5.16 and waits for a leader, and a founding member
+// has none until a second founding member starts: the witness, applied
+// first, is alone and leaderless until the first data site's etcd joins it.
+// A founding cluster's membership is fixed by --initial-cluster from the
+// configuration, so there is nothing for EtcdRefusal to compare yet. The
+// member counts as leaderless only when EtcdLeaderless says so; a failed
+// `member list` alone is never read as one.
+func ProbeEtcdMembers(cfg *config.Config, site string, transports map[string]Transport, founding bool) (members []EtcdMember, found bool, err error) {
 	order := []string{site}
 	for _, name := range cfg.Etcd.Members {
 		if name != site {
@@ -143,6 +154,11 @@ func ProbeEtcdMembers(cfg *config.Config, site string, transports map[string]Tra
 		}
 		members, running, err := ReadEtcdMembers(t, cfg.Deployment())
 		if err != nil {
+			if founding {
+				if leaderless, lerr := EtcdLeaderless(t, cfg.Deployment()); lerr == nil && leaderless {
+					continue
+				}
+			}
 			return nil, false, fmt.Errorf("%s: %w", name, err)
 		}
 		if running {
@@ -152,9 +168,56 @@ func ProbeEtcdMembers(cfg *config.Config, site string, transports map[string]Tra
 	return nil, false, nil
 }
 
+// EtcdLeaderless reports whether this host's etcd member answers and knows
+// of no leader. It asks `etcdctl endpoint status`, the Maintenance Status
+// RPC, which the member answers from its own state without a leader, unlike
+// `member list`. A leader of 0 is raft's "none", and etcdctl's JSON printer
+// leaves the field out when it is 0. An error means the member did not
+// answer, which says nothing about its leader.
+func EtcdLeaderless(t Transport, d deployment.Deployment) (bool, error) {
+	out, err := t.Run(Etcdctl(d, "endpoint status -w json"))
+	if err != nil {
+		return false, fmt.Errorf("asking etcd for its status: %w", err)
+	}
+	// The output is combined with stderr, where etcdctl logs warnings, so
+	// the JSON is read from the line it starts on.
+	text := strings.TrimSpace(out)
+	if i := strings.Index(text, "\n["); i >= 0 && !strings.HasPrefix(text, "[") {
+		text = text[i+1:]
+	}
+	var status []struct {
+		Endpoint string `json:"Endpoint"`
+		Status   struct {
+			Leader uint64 `json:"leader"`
+		} `json:"Status"`
+	}
+	if err := json.Unmarshal([]byte(text), &status); err != nil {
+		return false, fmt.Errorf("etcd's endpoint status is not JSON: %w\n%s", err, out)
+	}
+	if len(status) != 1 {
+		return false, fmt.Errorf("etcd's endpoint status names %d endpoints, want 1:\n%s", len(status), out)
+	}
+	return status[0].Status.Leader == 0, nil
+}
+
+// EtcdContainerRunning reports whether this host's etcd container runs. It
+// asks Docker, not etcd, so it answers the same for a member with no leader.
+func EtcdContainerRunning(t Transport, d deployment.Deployment) (bool, error) {
+	command := fmt.Sprintf(
+		"if %s ps --status running --quiet etcd 2>/dev/null | grep -q .; then echo running; else echo %s; fi",
+		d.ComposeCmd(infraStack), noEtcd)
+	out, err := t.Run(command)
+	if err != nil {
+		return false, fmt.Errorf("asking docker whether etcd runs: %w", err)
+	}
+	return strings.TrimSpace(out) != noEtcd, nil
+}
+
 // EtcdRunning asks every configured etcd member with a transport whether its
 // etcd container runs, keyed by site. It is asked only when a member is being
-// founded, so an ordinary apply reaches no more hosts than it did.
+// founded, so an ordinary apply reaches no more hosts than it did. It asks
+// Docker rather than etcd, because a founding member alone has no leader and
+// etcd would not answer for it.
 func EtcdRunning(cfg *config.Config, transports map[string]Transport) (map[string]bool, error) {
 	running := map[string]bool{}
 	for _, name := range cfg.Etcd.Members {
@@ -162,13 +225,29 @@ func EtcdRunning(cfg *config.Config, transports map[string]Transport) (map[strin
 		if !ok {
 			continue
 		}
-		_, up, err := ReadEtcdMembers(t, cfg.Deployment())
+		up, err := EtcdContainerRunning(t, cfg.Deployment())
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 		running[name] = up
 	}
 	return running, nil
+}
+
+// EtcdGates runs apply's two etcd refusals in order: EtcdRefusal against the
+// live membership, then WitnessFirstRefusal. founding and running are as
+// WitnessFirstRefusal takes them.
+func EtcdGates(cfg *config.Config, plan *Plan, transports map[string]Transport, founding bool, running map[string]bool) error {
+	members, found, err := ProbeEtcdMembers(cfg, plan.Site, transports, founding)
+	if err != nil {
+		return err
+	}
+	if found {
+		if err := EtcdRefusal(cfg, plan, members); err != nil {
+			return err
+		}
+	}
+	return WitnessFirstRefusal(cfg, plan, founding, running)
 }
 
 // FoundingUnstarted lists the other members of etcd.members whose etcd does
