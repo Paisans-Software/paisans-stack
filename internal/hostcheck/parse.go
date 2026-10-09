@@ -110,6 +110,9 @@ type Container struct {
 	Service string
 	// Deployment is the id in its deployment label, "" for none.
 	Deployment string
+	// Image is the ID of the image it was created from, sha256:..., which
+	// cleaning a host removes once no container on it uses the image.
+	Image string
 	// PID is its main process, 0 when it is not running.
 	PID int
 	// Networks are the Docker networks it is attached to, by name and
@@ -126,6 +129,7 @@ type Container struct {
 type inspectedContainer struct {
 	ID       string                     `json:"id"`
 	Name     string                     `json:"name"`
+	Image    string                     `json:"image"`
 	PID      int                        `json:"pid"`
 	Labels   map[string]string          `json:"labels"`
 	Networks map[string]json.RawMessage `json:"networks"`
@@ -142,7 +146,7 @@ func parseContainers(out string) ([]Container, error) {
 		if err := json.Unmarshal(line, &in); err != nil {
 			return err
 		}
-		c := Container{ID: in.ID, Name: strings.TrimPrefix(in.Name, "/"), Project: in.Labels[composeProject], Service: in.Labels[composeService], Deployment: in.Labels[deployment.Label], PID: in.PID}
+		c := Container{ID: in.ID, Name: strings.TrimPrefix(in.Name, "/"), Project: in.Labels[composeProject], Service: in.Labels[composeService], Deployment: in.Labels[deployment.Label], Image: in.Image, PID: in.PID}
 		for name := range in.Networks {
 			c.Networks = append(c.Networks, name)
 		}

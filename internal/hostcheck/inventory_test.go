@@ -236,3 +236,20 @@ func TestInspectReadsWhatTheOwnershipReportNeeds(t *testing.T) {
 		t.Errorf("manifest files %+v", inv.ManifestFiles)
 	}
 }
+
+func TestContainerCarriesItsImageID(t *testing.T) {
+	h := caddyHost()
+	h.answers["docker inspect"] = `{"id":"abc","name":"/paisans-f2a9-talk-app-1","image":"sha256:1111","pid":0,"labels":{},"networks":{},"ports":{}}` + "\n"
+	inv := inspect(t, h)
+	if len(inv.Containers) != 1 || inv.Containers[0].Image != "sha256:1111" {
+		t.Fatalf("got %+v", inv.Containers)
+	}
+}
+
+func TestTheContainerProbeAsksForTheImage(t *testing.T) {
+	h := caddyHost()
+	inspect(t, h)
+	if !strings.Contains(strings.Join(h.ran, "\n"), `"image":{{json .Image}}`) {
+		t.Error("the container probe does not ask docker inspect for .Image")
+	}
+}
