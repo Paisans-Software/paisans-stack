@@ -10,6 +10,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
 	"github.com/paisans-software/paisans-stack/internal/registry"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // rule answers any command containing match. The first matching rule wins,
@@ -160,9 +161,9 @@ func refusedDetail(t *testing.T, r Report, site, name string) string {
 }
 
 func printed(r Report) string {
-	var b strings.Builder
-	r.Print(&b)
-	return b.String()
+	rec := &ui.Recorder{Verbose_: true}
+	r.Show(rec)
+	return rec.Lines()
 }
 
 func TestAHealthyJoinPassesEveryCheck(t *testing.T) {
@@ -535,5 +536,32 @@ func TestARegistryConflictIsRefused(t *testing.T) {
 		if strings.Contains(c, "flock") {
 			t.Errorf("preflight claimed the host: %s", c)
 		}
+	}
+}
+
+// Each check is a step titled by what it looked at. A refusal carries the
+// first sentence as its hint and the advice after it as its explanation, so
+// the operator learns what to fix without a second run.
+func TestShowReportsEachCheckAsAStep(t *testing.T) {
+	rec := &ui.Recorder{}
+	Report{Checks: []Check{
+		{Site: "home-b", Name: "clock", Detail: "synchronised"},
+		{Site: "home-b", Name: "ports", Detail: "already in use: 80. Find the owner with `sudo ss -ltnup`", Refused: true},
+		{Site: "home-b", Name: "rtt", Detail: "to vm: 40 ms. Consider raising etcd.heartbeat_ms", Warned: true},
+	}}.Show(rec)
+	for _, want := range [][2]string{{"done", "check clock home-b"}, {"fail", "check ports home-b"}, {"refuse", "already in use: 80"}, {"warn", "to vm: 40 ms"}} {
+		if !rec.Has(want[0], want[1]) {
+			t.Errorf("no %s %q:\n%s", want[0], want[1], rec.Lines())
+		}
+	}
+	if i := rec.Index("refuse", "already in use: 80"); rec.Events[i].Extra != "Find the owner with `sudo ss -ltnup`" {
+		t.Errorf("the advice is the refusal's explanation, got %q", rec.Events[i].Extra)
+	}
+}
+
+func TestSummaryCountsPassesWarningsAndRefusals(t *testing.T) {
+	got := Report{Checks: []Check{{}, {}, {Warned: true}, {Refused: true}}}.Summary()
+	if got != "2 checks passed, 1 warning, 1 refused." {
+		t.Errorf("got %q", got)
 	}
 }

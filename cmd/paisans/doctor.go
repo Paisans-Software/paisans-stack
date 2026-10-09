@@ -4,7 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -75,8 +74,7 @@ func runDoctor(args []string) error {
 	}
 
 	report := doctor.Diagnose(cfg, gatherDoctor(cfg, sites, transports))
-	fmt.Fprintln(os.Stdout)
-	report.Print(os.Stdout)
+	report.Show(r)
 	if report.Failed() {
 		return fmt.Errorf("doctor: %d finding(s) marked FAIL", report.Count(doctor.Fail))
 	}

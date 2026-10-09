@@ -15,11 +15,12 @@
 package doctor
 
 import (
+	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Level is how bad a finding is.
@@ -101,27 +102,81 @@ func (r Report) Count(l Level) int {
 	return n
 }
 
-// Print writes the report: a header, each section with its findings, and the
-// promise that nothing was changed, which is also true when doctor fails.
-func (r Report) Print(w io.Writer) {
-	fmt.Fprintf(w, "doctor: %d site(s), %d reached\n", r.Sites, r.Reached)
+// Show reports the findings: each check is a step titled by what it looked
+// at, whose result is the short finding. A check that passed, was skipped or
+// is only worth knowing ends done. A warning ends failed beside a warning
+// carrying the finding; a failure ends failed beside a refusal carrying the
+// finding and its recovery, since the operator is reading this in an outage
+// and must have the advice without asking for it. A finding's further lines
+// are details of a step that passed, the detail of a warning and the
+// explanation of a failure.
+func (r Report) Show(rep ui.Reporter) {
+	rep.Detail("%d site(s), %d reached", r.Sites, r.Reached)
 	for _, section := range sections {
-		var printed bool
+		var opened bool
 		for _, f := range r.Findings {
 			if f.Section != section {
 				continue
 			}
-			if !printed {
-				fmt.Fprintln(w, section)
-				printed = true
+			if !opened {
+				rep.Section(section)
+				opened = true
 			}
-			fmt.Fprintf(w, "  %-4s  %s\n", f.Level, f.Line)
-			for _, more := range f.More {
-				fmt.Fprintf(w, "        %s\n", more)
-			}
+			r.show(rep, f)
 		}
 	}
-	fmt.Fprintln(w, "Changes nothing.")
+	rep.Detail("doctor changes nothing")
+	rep.Result("%s", r.Summary())
+}
+
+func (r Report) show(rep ui.Reporter, f Finding) {
+	title, result := f.Title()
+	s := rep.Step(title)
+	switch f.Level {
+	case Warn:
+		s.Fail(errors.New(f.Line))
+		rep.Warn(f.Line, strings.Join(f.More, "\n"))
+	case Fail:
+		s.Fail(errors.New(f.Line))
+		rep.Refuse(f.Line, strings.Join(f.More, "\n"))
+	default:
+		for _, more := range f.More {
+			s.Detail("%s", more)
+		}
+		s.Done(result)
+	}
+}
+
+// Title is the check's name, "check <section> <subject>" when the line
+// names a subject before its first colon (a site, "leader", "version"), and
+// the finding's text as the result. A subject is one short word: a longer
+// prefix is the finding's own sentence, not a name.
+func (f Finding) Title() (title, result string) {
+	subject, rest, ok := strings.Cut(f.Line, ": ")
+	if ok && subject != "" && len(subject) <= 20 && !strings.ContainsAny(subject, " ()`") {
+		return "check " + f.Section + " " + subject, rest
+	}
+	return "check " + f.Section, f.Line
+}
+
+// Summary is the closing line: how many checks passed, warned and failed.
+func (r Report) Summary() string {
+	passed := r.Count(OK) + r.Count(Info) + r.Count(Skip)
+	parts := []string{fmt.Sprintf("%d %s passed", passed, plural(passed, "check"))}
+	if n := r.Count(Warn); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", n, plural(n, "warning")))
+	}
+	if n := r.Count(Fail); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", n))
+	}
+	return strings.Join(parts, ", ") + "."
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
 }
 
 // Input is everything the hosts said, gathered by cmd/paisans.

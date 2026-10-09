@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
@@ -43,8 +42,9 @@ func runPreflight(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "preflight for adding %s\n", *site)
-	report.Print(os.Stdout)
+	r.Section("preflight " + *site)
+	report.Show(r)
+	r.Result("%s", report.Summary())
 	if report.Refused() {
 		return fmt.Errorf("preflight refused adding %s: fix what is marked REFUSED and run it again", *site)
 	}
