@@ -183,3 +183,14 @@ func TestTheDNSLineSaysByHand(t *testing.T) {
 		t.Errorf("forced, undeclared: %q", got)
 	}
 }
+
+// Cleaning through another user leaves the keys host prepare added for the
+// deployment's own user, and the report says which --ssh cleans them.
+func TestKeysOfAnotherUserAreReported(t *testing.T) {
+	w := setup(t)
+	dest, _ := config.ParseDestination("root@192.0.2.12")
+	p := forced(t, w, w.cfg, "home-b", dest, siteremove.Options{})
+	if !strings.Contains(strings.Join(p.Remains(), "\n"), "--ssh ubuntu@192.0.2.12") {
+		t.Errorf("the ubuntu user's keys are not reported:\n%s", strings.Join(p.Remains(), "\n"))
+	}
+}

@@ -453,6 +453,14 @@ func (h *host) Run(command string) (string, error) {
 		}
 		h.rules = kept
 		return "Rule deleted\n", nil
+	case strings.Contains(command, "/etc/paisans/authorized_keys.*.paisans-f2a9.owned"):
+		var b strings.Builder
+		for _, p := range h.sortedFiles() {
+			if strings.HasPrefix(p, "/etc/paisans/authorized_keys.") && strings.HasSuffix(p, ".paisans-f2a9.owned") {
+				b.WriteString(p + "\n")
+			}
+		}
+		return b.String(), nil
 	case strings.Contains(command, "/etc/paisans/authorized_keys.ubuntu.paisans-*.owned"):
 		var b strings.Builder
 		for _, p := range h.sortedFiles() {

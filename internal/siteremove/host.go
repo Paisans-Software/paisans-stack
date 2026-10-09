@@ -362,6 +362,21 @@ func (p *Plan) probeKeys(t apply.Transport, hp *hostPlan) error {
 	d := p.dep()
 	user := p.cfg.Sites[p.Site].SSH.User
 	kp := keyPlan{user: user, record: hostprep.OwnedKeysPath(d, user)}
+	// Records this deployment made for another login user are that user's
+	// to clean: only the keys of the user reached here are read.
+	listed, err := t.Run(fmt.Sprintf(`for f in %s; do [ -f "$f" ] && echo "$f"; done; true`, hostprep.OwnedKeysPrefixGlob(d)))
+	if err != nil {
+		return fmt.Errorf("site remove %s: listing this deployment's key records: %w", p.Site, err)
+	}
+	for _, path := range strings.Fields(listed) {
+		if path == kp.record {
+			continue
+		}
+		other := hostprep.OwnedKeysUser(d, path)
+		reach := p.cfg.Sites[p.Site].Destination()
+		reach.User = other
+		p.Kept = append(p.Kept, keysOtherUserKept(p.Site, path, reach.String()))
+	}
 	content, found, err := t.ReadFile(kp.record)
 	if err != nil {
 		return fmt.Errorf("site remove %s: reading %s: %w", p.Site, kp.record, err)

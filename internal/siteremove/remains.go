@@ -60,6 +60,10 @@ func keyLinesKept(site, file, record, user string) string {
 	return fmt.Sprintf("%s: SSH key lines kept; delete them yourself once another way in exists. They are in %s: deleting the key(s) %s lists would leave %s with no authorized key, and nobody could log in over SSH again", site, file, record, user)
 }
 
+func keysOtherUserKept(site, record, reach string) string {
+	return fmt.Sprintf("%s: another user's SSH keys kept; clean them by running again as that user. The record is %s; run again with --ssh %s", site, record, reach)
+}
+
 func secretsLeft(site string) string {
 	return fmt.Sprintf("secrets: run `paisans secrets prune` once nothing needs sites.%s. It holds its WireGuard key and heartbeat token, and this command never edits the secrets file", site)
 }
