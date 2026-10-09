@@ -61,7 +61,7 @@ func keyLinesKept(site, file, record, user string) string {
 }
 
 func secretsLeft(site string) string {
-	return fmt.Sprintf("secrets: remove sites.%s from the secrets file with sops. It is its WireGuard key, and this command never edits the file, so remove it once nothing needs it", site)
+	return fmt.Sprintf("secrets: run `paisans secrets prune` once nothing needs sites.%s. It holds its WireGuard key and heartbeat token, and this command never edits the secrets file", site)
 }
 
 func dnsLeft(addr string) string {

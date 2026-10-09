@@ -192,3 +192,95 @@ func mustSecrets(t *testing.T, path string) *config.Secrets {
 	}
 	return s
 }
+
+// writeFixtureSecrets is a deployment directory with the fixture
+// configuration and the fixture secrets, changed by edit.
+func writeFixtureSecrets(t *testing.T, edit func(*config.Secrets)) (configPath, secretsPath string) {
+	t.Helper()
+	configPath, secretsPath = secretsDir(t, "")
+	secrets, err := config.LoadSecrets(fixtureSecretsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit(secrets)
+	if err := config.WriteSecrets(secretsPath, secrets, nil); err != nil {
+		t.Fatal(err)
+	}
+	return configPath, secretsPath
+}
+
+func TestSecretsPruneListsThenRemovesOnlyOrphans(t *testing.T) {
+	configPath, secretsPath := writeFixtureSecrets(t, func(s *config.Secrets) {
+		if s.Sites == nil {
+			s.Sites = map[string]config.SiteSecrets{}
+		}
+		s.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "x"}
+		if s.OIDCClients == nil {
+			s.OIDCClients = map[string]config.OIDCClient{}
+		}
+		s.OIDCClients["uptime"] = config.OIDCClient{ClientID: "abc", ClientSecret: "do-not-print"}
+	})
+	out := captureStdout(t, func() {
+		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, want := range []string{"sites.monitor-a", "oidc_clients.uptime", "still exists at Pocket ID"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry run does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "do-not-print") {
+		t.Fatal("a secret value was printed")
+	}
+	if s, _ := config.LoadSecrets(secretsPath); s.Sites["monitor-a"].WireGuardPrivateKey == "" {
+		t.Fatal("the dry run changed the file")
+	}
+	captureStdout(t, func() {
+		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	s, err := config.LoadSecrets(secretsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Sites["monitor-a"]; ok {
+		t.Error("sites.monitor-a is still there")
+	}
+	if _, ok := s.OIDCClients["uptime"]; ok {
+		t.Error("oidc_clients.uptime is still there")
+	}
+	if _, ok := s.Sites["home-a"]; !ok {
+		t.Error("a declared site's secrets were pruned")
+	}
+}
+
+// An encrypted file with no recipient beside it is refused rather than
+// written back in plaintext.
+func TestSecretsPruneNeverDecryptsTheFile(t *testing.T) {
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath, secretsPath := secretsDir(t, "")
+	keyFile := filepath.Join(filepath.Dir(secretsPath), "key.txt")
+	if err := os.WriteFile(keyFile, []byte(identity.String()+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+	secrets := &config.Secrets{Version: 1, Sites: map[string]config.SiteSecrets{"monitor-a": {WireGuardPrivateKey: "x"}}}
+	if err := config.WriteSecrets(secretsPath, secrets, []string{identity.Recipient().String()}); err != nil {
+		t.Fatal(err)
+	}
+	var runErr error
+	captureStdout(t, func() {
+		runErr = runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"})
+	})
+	if runErr == nil || !strings.Contains(runErr.Error(), "plaintext") {
+		t.Fatalf("err = %v", runErr)
+	}
+	if s, _ := config.LoadSecrets(secretsPath); !s.Encrypted || s.Sites["monitor-a"].WireGuardPrivateKey == "" {
+		t.Error("the file was changed")
+	}
+}

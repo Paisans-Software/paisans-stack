@@ -296,3 +296,30 @@ func TestInitReportsStepsAndWhatIsOwed(t *testing.T) {
 		t.Errorf("a second run does not say nothing was written:\n%s", again.Lines())
 	}
 }
+
+// A secret naming a site paisans.yaml no longer declares is warned about by
+// key, and init leaves it for `secrets prune`.
+func TestInitWarnsAboutOrphanedSecrets(t *testing.T) {
+	path, out := initWorld(t, nil, fakeSites(), nil)
+	secrets, err := config.LoadSecrets(fixtureSecretsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "not-a-real-key-0003"}
+	secretsPath := filepath.Join(filepath.Dir(path), "secrets.enc.yaml")
+	if err := config.WriteSecrets(secretsPath, secrets, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := runInitQuietly(t, path); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Lines(), "secrets: sites.monitor-a names a site paisans.yaml does not declare") {
+		t.Errorf("no warning:\n%s", out.Lines())
+	}
+	if strings.Contains(out.Lines(), "not-a-real-key-0003") {
+		t.Error("a secret value was printed")
+	}
+	if s, _ := config.LoadSecrets(secretsPath); s.Sites["monitor-a"].WireGuardPrivateKey == "" {
+		t.Error("init removed the orphan")
+	}
+}

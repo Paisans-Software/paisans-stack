@@ -61,3 +61,12 @@ func TestDockerRefusingAnImageIsReportedNotFatal(t *testing.T) {
 		t.Errorf("Docker's reason is not reported:\n%s", strings.Join(p.Remains(), "\n"))
 	}
 }
+
+// The report points at `secrets prune` for the removed site's secrets.
+func TestTheReportPointsAtSecretsPrune(t *testing.T) {
+	w := setup(t)
+	p := w.mustBuild("home-b", siteremove.Options{})
+	if !strings.Contains(strings.Join(p.Remains(), "\n"), "paisans secrets prune") {
+		t.Errorf("no pointer at secrets prune:\n%s", strings.Join(p.Remains(), "\n"))
+	}
+}

@@ -62,6 +62,7 @@ Usage:
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
   paisans dns prune [--config paisans.yaml] [--secrets secrets.enc.yaml] [--name <fqdn>]... [--execute]
   paisans secrets set <dotted.key> [--config paisans.yaml] [--secrets secrets.enc.yaml] < value
+  paisans secrets prune [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
   paisans app admin create --app <pocket-id app> --username <u> --email <e>
                [--first-name <f>] [--last-name <l>] [--login-link]
                [--config paisans.yaml] [--secrets secrets.enc.yaml]
@@ -380,6 +381,7 @@ func runInit(args []string) error {
 	case err != nil:
 		return err
 	}
+	warnOrphans(r, cfg, secrets)
 
 	filled, err := secretsgen.Fill(cfg, secrets)
 	if err != nil {
@@ -546,6 +548,7 @@ func runApply(args []string) error {
 	if !secrets.Encrypted {
 		warnUnencrypted(r, *secretsPath)
 	}
+	warnOrphans(r, cfg, secrets)
 	// apply does not call secretsgen.Fill either, and this is the path that
 	// actually reaches a host: a malformed key has to stop here, not just
 	// print a confusing failure partway through provisioning on the machine.
