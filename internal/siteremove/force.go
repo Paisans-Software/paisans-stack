@@ -30,7 +30,7 @@ func BuildForced(cfg *config.Config, secrets *config.Secrets, site string, dest 
 		return nil, fmt.Errorf("site remove %s: --force cleans one host, and --host-gone reaches none. Drop one of them", site)
 	}
 	declared, isDeclared := cfg.Sites[site]
-	p := &Plan{Site: site, Options: o, secrets: secrets, transports: map[string]apply.Transport{site: t}}
+	p := &Plan{Site: site, Options: o, secrets: secrets, transports: map[string]apply.Transport{site: t}, forced: true, declared: isDeclared}
 	p.Current = isDeclared && declared.Destination() == dest
 
 	if out, err := t.Run("true"); err != nil {

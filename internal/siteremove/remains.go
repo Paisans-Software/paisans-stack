@@ -66,9 +66,9 @@ func secretsLeft(site string) string {
 
 func dnsLeft(addr string) string {
 	if addr == "" {
-		addr = "this host"
+		addr = "the address this host had"
 	}
-	return fmt.Sprintf("DNS: records pointing at this host stay; `paisans dns prune --execute` deletes them. They point at %s, and dns init made them", addr)
+	return fmt.Sprintf("DNS: records pointing at this host stay; delete them at the DNS provider by hand. They point at %s, and dns init made them; dns prune deletes only a record whose address paisans.yaml still declares", addr)
 }
 
 func ownedNote(site, owed string) string {

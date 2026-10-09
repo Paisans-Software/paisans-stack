@@ -155,3 +155,31 @@ func TestForcedKnowsTheSitesOwnHostByItsRegistryEntry(t *testing.T) {
 		t.Error("home-b's host reached by another spelling is not marked as its own")
 	}
 }
+
+func dnsLines(p *siteremove.Plan) string {
+	var out []string
+	for _, l := range p.Remains() {
+		if strings.HasPrefix(l, "DNS:") {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// DNS records are deleted at the provider by hand: dns prune deletes only a
+// record whose address is still declared. A site still declared keeps its
+// records, so a forced run on it says nothing about them.
+func TestTheDNSLineSaysByHand(t *testing.T) {
+	w := setup(t)
+	full := dnsLines(w.mustBuild("home-b", siteremove.Options{}))
+	if !strings.Contains(full, "by hand") || strings.Contains(full, "`paisans dns prune --execute` deletes") {
+		t.Errorf("full removal: %q", full)
+	}
+	if got := dnsLines(forced(t, w, w.cfg, "home-b", w.cfg.Sites["home-b"].Destination(), siteremove.Options{})); got != "" {
+		t.Errorf("forced, still declared: %q", got)
+	}
+	dest, _ := config.ParseDestination("ubuntu@192.0.2.10")
+	if got := dnsLines(forced(t, w, w.cfg.WithoutSite("vm"), "vm", dest, siteremove.Options{})); !strings.Contains(got, "by hand") {
+		t.Errorf("forced, undeclared: %q", got)
+	}
+}
