@@ -72,7 +72,7 @@ func runStorageRotateKey(args []string) error {
 
 	transports := map[string]apply.Transport{}
 	for _, name := range cfg.SiteNames() {
-		transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
+		transports[name] = siteTransport(name, cfg.Sites[name], "", *sudo)
 	}
 	// The switch is an apply of the app on every site it runs on, so each
 	// of those is host checked first, as apply checks it.

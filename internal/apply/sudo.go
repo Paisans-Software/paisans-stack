@@ -29,9 +29,10 @@ const sudoWithPassword = "sudo -k -S -p ''"
 // kept in memory only, and reaches the host on the stdin of each ssh
 // session, never on a command line.
 type SudoAuth struct {
-	// Prompt asks the operator for the password of the host it names. Nil
-	// means there is no terminal to ask on, and a host that wants a password
-	// is refused.
+	// Prompt asks the operator for the password of the host it names: the
+	// site, the destination and the host's own name, as far as each is known
+	// (see promptLabel). Nil means there is no terminal to ask on, and a host
+	// that wants a password is refused.
 	Prompt func(host string) (string, error)
 
 	mu       sync.Mutex
@@ -96,7 +97,7 @@ func (a *SudoAuth) resolve(t SSHTransport) (string, error) {
 	if a.Prompt == nil {
 		return "", a.refuse(fmt.Errorf("%s: sudo asks for a password, and there is no terminal to ask on. paisans asks for a sudo password only on a terminal, so an unattended run needs sudo without one: a sudoers rule giving the ssh user NOPASSWD. That makes the ssh key alone enough for root on this host, which is a decision about the host rather than about one run", t.Describe()))
 	}
-	password, err := a.Prompt(t.Describe())
+	password, err := a.Prompt(t.promptLabel())
 	if err != nil {
 		return "", a.refuse(fmt.Errorf("%s: reading the sudo password: %w", t.Describe(), err))
 	}
@@ -114,6 +115,48 @@ func (a *SudoAuth) resolve(t SSHTransport) (string, error) {
 	}
 	a.settled, a.password = true, password
 	return password, nil
+}
+
+// promptLabel names the host a sudo password is asked for: the site, the
+// destination ssh reached and the name the host gives itself, as far as each
+// is known. Eg: `site home-a (ubuntu@192.0.2.10, host home-a-01)`, or
+// `box, host home-a-01` for a transport that names no site.
+//
+// The site name comes from paisans.yaml and says which site the operator
+// meant; the hostname comes from the host and says which machine answered.
+// An address alone says neither, and an operator who does not recognise it
+// cannot tell whether they are about to type a password into the wrong box.
+func (t SSHTransport) promptLabel() string {
+	where := t.Describe()
+	if host := t.hostname(); host != "" {
+		where += ", host " + host
+	}
+	if t.Site == "" {
+		return where
+	}
+	return "site " + t.Site + " (" + where + ")"
+}
+
+// hostname asks the host its name, or returns "" when it does not give one
+// that looks like a hostname. The answer is printed on the operator's
+// terminal, so anything beyond letters, digits, dots, hyphens and
+// underscores is dropped rather than shown: a host must not be able to write
+// terminal escapes into the prompt that asks for its own password.
+func (t SSHTransport) hostname() string {
+	out, err := t.run("uname -n", nil)
+	if err != nil {
+		return ""
+	}
+	name := strings.TrimSpace(out)
+	if name == "" || len(name) > 253 {
+		return ""
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_') {
+			return ""
+		}
+	}
+	return name
 }
 
 // ErrSudo marks a host where sudo cannot be used in this run: it refused the

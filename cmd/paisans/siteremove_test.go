@@ -14,7 +14,7 @@ import (
 func noSiteHosts(t *testing.T) {
 	t.Helper()
 	saved := removeSiteHost
-	removeSiteHost = func(config.Site, bool) apply.Transport {
+	removeSiteHost = func(string, config.Site, bool) apply.Transport {
 		t.Fatal("a host was reached")
 		return nil
 	}

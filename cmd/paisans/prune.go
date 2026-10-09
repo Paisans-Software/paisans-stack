@@ -50,7 +50,7 @@ func runPrune(args []string) error {
 		return fmt.Errorf("prune: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
 	}
 
-	transport := siteTransport(declared, *destination, *sudo)
+	transport := siteTransport(*site, declared, *destination, *sudo)
 	if _, err := hostGate(os.Stdout, cfg, *site, transport); err != nil {
 		return err
 	}

@@ -539,7 +539,7 @@ func runApply(args []string) error {
 		return err
 	}
 
-	transport := siteTransport(declared, *destination, *sudo)
+	transport := siteTransport(*site, declared, *destination, *sudo)
 	done := apply.Step(os.Stdout, "checking", "nothing on %s overlaps the mesh subnet", *site)
 	err = checkMeshLive(cfg, *site, transport)
 	done(err)
@@ -587,7 +587,7 @@ func runApply(args []string) error {
 	if contains(cfg.Etcd.Members, *site) {
 		for _, name := range cfg.Etcd.Members {
 			if name != *site {
-				transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
+				transports[name] = siteTransport(name, cfg.Sites[name], "", *sudo)
 			}
 		}
 	}
@@ -661,7 +661,7 @@ func runApply(args []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", written, plan.Transport)
 	if err := checkStandby(cfg, acted, *site, transport, func(name string) apply.Transport {
-		return siteTransport(cfg.Sites[name], "", *sudo)
+		return siteTransport(name, cfg.Sites[name], "", *sudo)
 	}); err != nil {
 		return err
 	}
@@ -788,7 +788,7 @@ func runStorageInit(args []string) error {
 		return err
 	}
 
-	transport := siteTransport(declared, *destination, *sudo)
+	transport := siteTransport(*site, declared, *destination, *sudo)
 	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
@@ -843,7 +843,7 @@ func runHostPrepare(args []string) error {
 		return fmt.Errorf("host prepare: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
 	}
 
-	transport := siteTransport(declared, *destination, *sudo)
+	transport := siteTransport(*site, declared, *destination, *sudo)
 	done := apply.Step(os.Stdout, "checking", "nothing on %s overlaps the mesh subnet", *site)
 	err = checkMeshLive(cfg, *site, transport)
 	done(err)
@@ -1128,10 +1128,14 @@ func (l *pathList) Set(value string) error {
 // --ssh override verbatim. The override replaces the whole section rather
 // than one part of it, so what is used is always either everything the file
 // says or exactly what the operator typed, never a blend of the two.
-func siteTransport(site config.Site, override string, sudo bool) apply.SSHTransport {
+//
+// name is the site's name in paisans.yaml. The transport carries it so that
+// a sudo password prompt names the site it is for; it plays no part in
+// reaching the host.
+func siteTransport(name string, site config.Site, override string, sudo bool) apply.SSHTransport {
 	var t apply.SSHTransport
 	if override != "" {
-		t = apply.SSHTransport{Destination: override, Sudo: sudo}
+		t = apply.SSHTransport{Site: name, Destination: override, Sudo: sudo}
 	} else {
 		// validate has already refused a bad key, so problems are empty here.
 		keys, _ := site.SSH.Keys()
@@ -1139,7 +1143,7 @@ func siteTransport(site config.Site, override string, sudo bool) apply.SSHTransp
 		for i, k := range keys {
 			lines[i] = k.Line
 		}
-		t = apply.SSHTransport{User: site.SSH.User, Host: site.SSHHost(), Port: site.SSH.PortOrDefault(), PublicKeys: lines, Sudo: sudo}
+		t = apply.SSHTransport{Site: name, User: site.SSH.User, Host: site.SSHHost(), Port: site.SSH.PortOrDefault(), PublicKeys: lines, Sudo: sudo}
 	}
 	if sudo {
 		t.Auth = sudoAuthFor(t.Describe())

@@ -21,7 +21,9 @@ import (
 )
 
 // removeHost is how `app remove` reaches a site. Tests replace it.
-var removeHost = func(site config.Site, sudo bool) appremove.Host { return siteTransport(site, "", sudo) }
+var removeHost = func(name string, site config.Site, sudo bool) appremove.Host {
+	return siteTransport(name, site, "", sudo)
+}
 
 // removeClients is Pocket ID's API on site, for `app remove`. It goes
 // through clientAPI, the same path `oidc client create` takes.
@@ -94,7 +96,7 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	hosts := map[string]appremove.Host{}
 	in := appremove.Input{DeleteData: *deleteData}
 	for _, site := range cfg.SiteNames() {
-		hosts[site] = removeHost(cfg.Sites[site], *sudo)
+		hosts[site] = removeHost(site, cfg.Sites[site], *sudo)
 		st, err := appremove.ProbeSite(cfg, app, site, hosts[site])
 		if err != nil {
 			return fmt.Errorf("app remove: %w. Every site is read before anything changes, so nothing was changed", err)
@@ -165,21 +167,21 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	touched := map[string]registry.Runner{}
 	for _, s := range plan.Sites {
 		if !s.Empty() {
-			touched[s.Site] = registryHost(cfg.Sites[s.Site], "", *sudo)
+			touched[s.Site] = registryHost(s.Site, cfg.Sites[s.Site], "", *sudo)
 		}
 	}
 	if plan.Client.Delete != nil {
-		touched[plan.Client.Site] = registryHost(cfg.Sites[plan.Client.Site], "", *sudo)
+		touched[plan.Client.Site] = registryHost(plan.Client.Site, cfg.Sites[plan.Client.Site], "", *sudo)
 	}
 	if db := plan.Database; db != nil && (db.DropDatabase || db.DropRole) {
-		touched[db.Leader] = registryHost(cfg.Sites[db.Leader], "", *sudo)
+		touched[db.Leader] = registryHost(db.Leader, cfg.Sites[db.Leader], "", *sudo)
 	}
 	if st := plan.Storage; st != nil && (len(st.Buckets) > 0 || len(st.Keys) > 0) {
-		touched[st.Anchor] = registryHost(cfg.Sites[st.Anchor], "", *sudo)
+		touched[st.Anchor] = registryHost(st.Anchor, cfg.Sites[st.Anchor], "", *sudo)
 	}
 	for _, m := range plan.Monitors {
 		if m.Pending() {
-			touched[m.Site] = registryHost(cfg.Sites[m.Site], "", *sudo)
+			touched[m.Site] = registryHost(m.Site, cfg.Sites[m.Site], "", *sudo)
 		}
 	}
 	if err := claimHosts(cfg, *execute, touched); err != nil {

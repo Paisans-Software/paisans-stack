@@ -18,7 +18,9 @@ import (
 )
 
 // removeSiteHost is how `site remove` reaches a site. Tests replace it.
-var removeSiteHost = func(site config.Site, sudo bool) apply.Transport { return siteTransport(site, "", sudo) }
+var removeSiteHost = func(name string, site config.Site, sudo bool) apply.Transport {
+	return siteTransport(name, site, "", sudo)
+}
 
 // runSiteRemove takes one site out of the running deployment, stage by stage:
 // its data moved off, its cluster memberships removed, its host cleaned and
@@ -97,7 +99,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		if name == site && *hostGone {
 			continue
 		}
-		transports[name] = removeSiteHost(cfg.Sites[name], *sudo)
+		transports[name] = removeSiteHost(name, cfg.Sites[name], *sudo)
 		claim = append(claim, name)
 	}
 	// The monitor's stack is applied last, with the site out of its seed,

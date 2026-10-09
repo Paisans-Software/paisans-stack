@@ -72,7 +72,7 @@ func runSiteAdd(args []string) error {
 
 	transports := map[string]apply.Transport{}
 	for _, name := range cfg.SiteNames() {
-		transports[name] = siteTransport(cfg.Sites[name], "", *sudo)
+		transports[name] = siteTransport(name, cfg.Sites[name], "", *sudo)
 	}
 	// The site being added is the one whose host the join changes from
 	// nothing; every other site already runs the deployment, and each is

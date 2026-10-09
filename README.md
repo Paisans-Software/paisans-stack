@@ -2431,8 +2431,18 @@ fail at once instead of waiting for a password, so the answer is immediate.
 it from the operator, once per site per run, on the controlling terminal:
 
 ```
-sudo password for ubuntu@203.0.113.10:
+sudo password for site home-a (ubuntu@203.0.113.10, host home-a-01):
 ```
+
+The prompt names the site as `paisans.yaml` does and the name the host gives
+itself (`uname -n`), beside the address ssh reached. An address alone is often
+one the operator does not recognise, and typing a root password needs
+certainty about which machine is asking: the site name says which site the
+toolkit meant, and the hostname says which machine answered. The hostname is
+left out when the host does not give one or gives anything beyond letters,
+digits, dots, hyphens and underscores, because it is printed on the
+operator's terminal and a host must not write terminal escapes into the prompt
+for its own password.
 
 The prompt reads `/dev/tty` with echo off, not stdin, because stdin may
 already carry a value (`secrets set` and `app admin create` read one from it).
