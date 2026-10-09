@@ -600,7 +600,7 @@ from this configuration and the fork reconciles it at every start:
 * every site but the monitor's own gets a **ping** over the mesh.
 * every site Pocket ID runs on gets a check on its **admin reconciler**, which
   fails while the `admins` group has fewer than two members (see *The admin
-  reconciler keeps two administrators in `admins`*).
+  reconciler keeps `admins` equal to Pocket ID's administrators*).
 * the monitor checks no container of its own, which could only ever pass,
   but it does check its own public URL, `https://<hostname>/healthz`: it is
   alive whenever it can run that check, so what the check proves is the path
@@ -3180,7 +3180,7 @@ its cache is per site, its scheduled tasks run per site until the fork's
 scheduler lock lands, and the second site's web workers serve only during a
 failover. Its sessions are in Postgres and survive one.
 
-### The admin reconciler keeps two administrators in `admins`
+### The admin reconciler keeps `admins` equal to Pocket ID's administrators
 
 A community whose identity provider has one administrator is one lost passkey
 away from nobody being able to run it. So the `pocket-id` kind runs a second
@@ -3198,8 +3198,33 @@ Pocket ID, which starts alongside it), and:
   write is `PUT /api/users/:id/user-groups`, which replaces the user's whole
   set, so the reconciler reads the user again just before it and sends the groups
   it finds plus `admins`;
+* **removes every member of `admins` who is disabled or no longer a Pocket ID
+  administrator**, the same two kinds of user left alone: an LDAP managed
+  user's groups are the sync's in both directions, and the static key's user
+  is the reconciler's own credential. The write is the same route, after the
+  same fresh read, sending the groups it finds minus `admins`. Without this,
+  demoting or disabling an administrator in Pocket ID would leave them an
+  administrator of every app that reads `admins`, such as Mbin and the uptime
+  monitor, for as long as the group kept them;
 * **counts the members of `admins`**, disabled users and the static key's
   user left out.
+
+**A removal never leaves `admins` without an enabled member.** The reconciler
+acts on what one read of Pocket ID says, and a group it emptied on a wrong
+answer would lock every administrator out of every app at once, with nobody
+left inside to fix it. So adds come before removals in a pass, which keeps a
+swap of the only member for a new administrator from passing through empty;
+and a removal that would leave no enabled member is skipped, logged, and named
+in `/healthz`. When every member is due and no administrator can be added,
+the members go in username order and the last one stays, so the one kept is
+the same on every pass. A pass in which an add failed removes nobody, since
+the group may be short of the administrator that add was for. A user list
+Pocket ID did not answer in full is no view to remove anyone on: the list is
+read page by page, and a pass whose read fails at any page writes nothing and
+retries in a minute. A user the list happens to miss only makes the pass more
+cautious, never less: an administrator left out is one fewer counted towards
+the floor, and a member left out is one not removed until the next pass.
+Founder decision, 2026-10-08.
 
 `/healthz`, published on the site's mesh address at port 1412, serves the
 last pass: 200 with two or more members, 503 with fewer, on a failed write,
@@ -3212,15 +3237,16 @@ which fails only when the pass loop has hung: a new deployment has no `admins`
 group until someone makes one, and `apply`'s health gate must not hold the
 Pocket ID stack back on it.
 
-**The reconciler's one write is approved once, not per write.** An agent
+**The reconciler's two writes are approved once, not per write.** An agent
 needs a human for every change to Pocket ID's groups; the reconciler is a
 service the deployment runs, approved as a whole when its design was
 (`docs/deployment-agent-rules.md`, *Services the deployment runs*).
-Pocket ID administrators are the community's administrators, so putting them
-in `admins` changes nobody's power, only which apps recognise it. The reconciler
-never removes anyone, never changes a user, and never creates or deletes a
-group, and its tests fail on any other request that writes. Founder decision,
-recorded in `docs/decisions.md`.
+Pocket ID administrators are the community's administrators, so keeping
+`admins` equal to them changes nobody's power, only which apps recognise it.
+The reconciler never changes a user, never creates or deletes a group, never
+writes an LDAP managed user's groups, and never removes the last enabled
+member, and its tests fail on any other request that writes. Every write is
+logged on one line. Founder decisions, recorded in `docs/decisions.md`.
 
 **It reaches Pocket ID as `app` on the stack's own network**, with the
 `STATIC_API_KEY` the same `.env` already carries, so the key is on no host and

@@ -111,8 +111,8 @@ The tiers above govern actions: what an agent, or a person at a keyboard,
 does to a running deployment. Some changes the tiers gate are instead made by
 a service the deployment runs, on its own schedule, with no agent involved.
 The admin reconciler is one: it adds every identity provider administrator to
-the admin group. That is a different context, and the tiers do not apply to it
-write by write.
+the admin group and removes members who are none. That is a different context,
+and the tiers do not apply to it write by write.
 
 **A service is approved once, as a whole.** A human approves its design, and
 it is deployed. What it may change is then fixed in its code rather than
