@@ -107,6 +107,60 @@ func (p *Plan) containersCommand() string {
 	return fmt.Sprintf(`set -e; ids=$(docker ps -aq --no-trunc %[1]s); if [ -n "$ids" ]; then docker stop $ids >/dev/null; %[2]s $ids >/dev/null; fi; nets=$(docker network ls -q --no-trunc %[1]s); if [ -n "$nets" ]; then docker network rm $nets >/dev/null; fi`, filter, rm)
 }
 
+// planImages finds the images only this deployment ran: those its containers
+// run from, and those its compose files name, which the manifest proves are
+// its own. The files find them even after a run stopped between removing the
+// containers and removing their images. An image any other container uses,
+// running or stopped, whoever's it is, is kept.
+func (p *Plan) planImages(t apply.Transport, hp *hostPlan, inv *hostcheck.Inventory, refs []string) error {
+	if !hp.dockerPresent {
+		return nil
+	}
+	d := p.dep()
+	ours, theirs := map[string]bool{}, map[string]bool{}
+	for _, c := range inv.Containers {
+		if c.Image == "" {
+			continue
+		}
+		if c.Deployment == d.ID {
+			ours[c.Image] = true
+		} else {
+			theirs[c.Image] = true
+		}
+	}
+	ids, err := apply.ProbeImages(dedupe(refs), t)
+	if err != nil {
+		return fmt.Errorf("site remove %s: %w", p.Site, err)
+	}
+	for _, id := range ids {
+		if id != "" {
+			ours[id] = true
+		}
+	}
+	for id := range ours {
+		if theirs[id] {
+			p.Kept = append(p.Kept, imageKept(p.Site, id, "a container this deployment does not own runs from it"))
+			continue
+		}
+		hp.images = append(hp.images, id)
+	}
+	sort.Strings(hp.images)
+	return nil
+}
+
+func dedupe(list []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range list {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // imagesCommand removes each image by ID, without -f, and answers per image,
 // so an image Docker refuses (one a container still runs from) is reported
 // rather than failing the stage.
@@ -197,25 +251,6 @@ func (p *Plan) buildHost() (*Stage, error) {
 			p.Kept = append(p.Kept, containerKept(p.Site, c.Name))
 		}
 	}
-	ours, theirs := map[string]bool{}, map[string]bool{}
-	for _, c := range inv.Containers {
-		if c.Image == "" {
-			continue
-		}
-		if c.Deployment == d.ID {
-			ours[c.Image] = true
-		} else {
-			theirs[c.Image] = true
-		}
-	}
-	for id := range ours {
-		if theirs[id] {
-			p.Kept = append(p.Kept, imageKept(p.Site, id, "a container this deployment does not own runs from it"))
-			continue
-		}
-		hp.images = append(hp.images, id)
-	}
-	sort.Strings(hp.images)
 	for _, n := range inv.Networks {
 		switch {
 		case n.Deployment == d.ID:
@@ -235,6 +270,7 @@ func (p *Plan) buildHost() (*Stage, error) {
 	}
 
 	edited := false
+	var refs []string
 	for _, e := range inv.ManifestFiles {
 		if strings.ContainsAny(e.Path, "'\n") {
 			return nil, fmt.Errorf("site remove %s: the manifest names %q, which this command will not put in a command line", p.Site, e.Path)
@@ -249,6 +285,13 @@ func (p *Plan) buildHost() (*Stage, error) {
 			f.State = appremove.Gone
 		case sum(content) == e.SHA256:
 			f.State = appremove.Remove
+			if strings.HasSuffix(e.Path, "/compose.yaml") {
+				named, err := apply.ComposeImages(content)
+				if err != nil {
+					return nil, fmt.Errorf("site remove %s: reading the images /%s names: %w", p.Site, e.Path, err)
+				}
+				refs = append(refs, named...)
+			}
 		default:
 			f.State = appremove.Edited
 			edited = true
@@ -257,6 +300,9 @@ func (p *Plan) buildHost() (*Stage, error) {
 		hp.files = append(hp.files, f)
 	}
 	sort.Slice(hp.files, func(i, j int) bool { return hp.files[i].Entry.Path < hp.files[j].Entry.Path })
+	if err := p.planImages(t, hp, inv, refs); err != nil {
+		return nil, err
+	}
 	hp.wireguard = inv.ManifestWireGuard || contains(inv.Links, d.Interface())
 
 	out, err := t.Run(p.unitsCommand())

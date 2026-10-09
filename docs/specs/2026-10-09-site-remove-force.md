@@ -87,7 +87,7 @@ images. Every match is by this deployment's id, or the token taken from it:
 |---|---|---|
 | containers and networks | the label `community.paisans.deployment=<id>` | yes |
 | named volumes | the same label | only with `--delete-data` |
-| images | run only by the containers above | yes, by ID; Docker refuses one in use |
+| images | run by the containers above, or named by a compose file the manifest proves, and used by no other container | yes, by ID; Docker refuses one in use |
 | rendered files | an entry in this deployment's manifest whose hash the file still has | yes; an edited file is kept and named |
 | `wg-quick@psns-<token>` and its config | the token in the name, and the file's hash | yes |
 | units and drop-ins | `paisans-<token>-*` under `/etc/systemd/system` | yes |
@@ -142,14 +142,16 @@ Any other host is not asked about: nothing in the configuration counts on it.
 
 ## Images
 
-Cleaning reads the image of every container it is about to remove. After the
-containers are gone, each of those images is removed unless a container still
-on the host uses it, whoever's that container is. The image is removed by ID,
-without `--force`, so Docker refuses an image in use rather than the toolkit
-judging it; a refusal is reported as kept, with Docker's reason. Images this
-deployment pulled but no container uses are not found this way. Those are left
-by an `apply` that failed before its containers started, and `apply` prunes
-what it supersedes already.
+Cleaning reads the image of every container it is about to remove, and every
+image named by a compose file whose manifest entry and hash prove it is this
+deployment's. The files find the images even when a run stopped after the
+containers were removed and before their images were, or an `apply` pulled an
+image no container started from: the files are deleted after the images. After
+the containers are gone, each of those images is removed unless a container
+still on the host uses it, running or stopped, whoever's that container is. The
+image is removed by ID, without `--force`, so Docker refuses an image in use
+rather than the toolkit judging it; a refusal is reported as kept, with
+Docker's reason.
 
 ## Orphaned secrets
 

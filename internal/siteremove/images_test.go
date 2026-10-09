@@ -1,6 +1,7 @@
 package siteremove_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -68,5 +69,29 @@ func TestTheReportPointsAtSecretsPrune(t *testing.T) {
 	p := w.mustBuild("home-b", siteremove.Options{})
 	if !strings.Contains(strings.Join(p.Remains(), "\n"), "paisans secrets prune") {
 		t.Errorf("no pointer at secrets prune:\n%s", strings.Join(p.Remains(), "\n"))
+	}
+}
+
+// A run stopped after the containers went, before their images did, still
+// finds the images on the next run: the compose files the manifest proves are
+// this deployment's name them.
+func TestImagesAreFoundAfterTheContainersWent(t *testing.T) {
+	w := setup(t)
+	b := w.hosts["home-b"]
+	var kept []hostcheck.Container
+	for _, c := range b.containers {
+		if c.Deployment != ourID {
+			kept = append(kept, c)
+		}
+	}
+	b.containers = kept
+	compose := b.files[root+"/talk/compose.yaml"]
+	ref := regexp.MustCompile(`(?m)^    image: (\S+)`).FindStringSubmatch(compose)
+	if ref == nil {
+		t.Fatalf("no image in talk's compose.yaml:\n%s", compose)
+	}
+	p := w.mustBuild("home-b", siteremove.Options{})
+	if !hasStep(p, 3, "home-b", "remove", "sha256:"+hexSum(ref[1])) {
+		t.Fatalf("%s is not planned for removal:\n%s", ref[1], printed(p))
 	}
 }
