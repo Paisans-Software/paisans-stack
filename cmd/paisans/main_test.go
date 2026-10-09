@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/garage"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // garage-key-is-malformed has to stop `render`, not only `init`: `render` and
@@ -68,19 +69,20 @@ func TestRunStorageInitRefusesAMalformedGarageKeyBeforeReachingAHost(t *testing.
 	}
 }
 
-// printGaragePlan is the one thing that puts a provisioning plan on the
-// operator's terminal, and a key import step's command carries that app's S3
-// secret as a positional argument because `garage key import` takes no other
-// form. Printing Step.Command would put the secret in a scrollback buffer and
-// a log every time an operator ran a dry run, which is the ordinary case
-// rather than a failure. It prints Describe, and this test is what keeps it
+// Plan.Show is the one thing that puts a provisioning plan on the operator's
+// terminal, and a key import step's command carries that app's S3 secret as
+// a positional argument because `garage key import` takes no other form.
+// Reporting Step.Command would put the secret in a scrollback buffer and a
+// log every time an operator ran a dry run, which is the ordinary case
+// rather than a failure. It reports Describe, and this test is what keeps it
 // that way: a future field added to the plan's output has to be checked here
-// before it reaches a screen.
-func TestPrintGaragePlanPrintsNoSecret(t *testing.T) {
+// before it reaches a screen. Reporting a run holds to the same rule.
+func TestGaragePlanReportsNoSecret(t *testing.T) {
 	const secret = "e1d9a0a2e1d9a0a2e1d9a0a2e1d9a0a2e1d9a0a2e1d9a0a2e1d9a0a2e1d9a0a2"
 	plan := &garage.Plan{
 		Site: "home-a",
 		Steps: []garage.Step{{
+			Title:    "import key for talk",
 			Describe: "import the S3 key for talk",
 			Command:  "docker compose -f /srv/paisans/f2a9/infra/compose.yaml exec -T garage /garage key import GKfacadefacadefacadefacade " + secret + " --yes -n talk",
 			Secret:   secret,
@@ -88,18 +90,30 @@ func TestPrintGaragePlanPrintsNoSecret(t *testing.T) {
 		Present: []string{"bucket: talk-uploads already exists"},
 	}
 
-	printed := captureStdout(t, func() { printGaragePlan(plan) })
+	rec := &ui.Recorder{Verbose_: true}
+	plan.Show(rec)
+	if err := garage.Report(plan, echoHost{}, rec); err != nil {
+		t.Fatal(err)
+	}
 
-	if strings.Contains(printed, secret) {
-		t.Errorf("printGaragePlan put an S3 secret on the terminal:\n%s", printed)
+	if strings.Contains(rec.Lines(), secret) {
+		t.Errorf("the reporter was given an S3 secret:\n%s", rec.Lines())
 	}
-	if !strings.Contains(printed, "import the S3 key for talk") {
-		t.Errorf("printGaragePlan must still say what the step does:\n%s", printed)
+	if !rec.Has("item", "import key for talk") || !rec.Has("detail", "import the S3 key for talk") {
+		t.Errorf("the plan must still say what the step does:\n%s", rec.Lines())
 	}
-	if !strings.Contains(printed, "bucket: talk-uploads already exists") {
-		t.Errorf("printGaragePlan must still report what was already there:\n%s", printed)
+	if !rec.Has("detail", "bucket: talk-uploads already exists") {
+		t.Errorf("the plan must still report what was already there:\n%s", rec.Lines())
+	}
+	if !rec.Has("done", "import key for talk") {
+		t.Errorf("the run must report the step done:\n%s", rec.Lines())
 	}
 }
+
+type echoHost struct{}
+
+func (echoHost) Run(string) (string, error) { return "", nil }
+func (echoHost) Describe() string           { return "ubuntu@home-a" }
 
 // captureStdout runs fn with os.Stdout redirected to a pipe and returns what
 // was written, restoring os.Stdout afterwards. printGaragePlan writes to

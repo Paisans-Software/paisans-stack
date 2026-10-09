@@ -22,6 +22,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Transport is the one place this package talks to a machine. It is defined
@@ -49,6 +50,10 @@ func Command(d deployment.Deployment) string {
 
 // Step is one command this plan still needs to run, in order.
 type Step struct {
+	// Title is the step's short name, an imperative verb and its object, as
+	// the operator sees it by default. Describe is its sentence, shown with
+	// --verbose.
+	Title string
 	// Describe is one line, shown to the operator before the command runs.
 	// It never carries a credential, so it is the only field of this struct
 	// that is safe to print unconditionally.
@@ -230,10 +235,12 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 	default:
 		capacity := cfg.Storage.Garage.CapacityFor(site)
 		plan.Steps = append(plan.Steps, Step{
+			Title:    "assign layout role",
 			Describe: fmt.Sprintf("assign %s a role in the cluster layout", site),
 			Command:  fmt.Sprintf("%s layout assign -z %s -c %s %s", Command(d), site, capacity, nodeID),
 		})
 		plan.Steps = append(plan.Steps, Step{
+			Title:    "apply layout",
 			Describe: fmt.Sprintf("apply the layout at version %d", version+1),
 			Command:  fmt.Sprintf("%s layout apply --version %d", Command(d), version+1),
 		})
@@ -265,6 +272,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 		bucketAbsent := state.Absent
 		if bucketAbsent {
 			plan.Steps = append(plan.Steps, Step{
+				Title:    "create bucket for " + name,
 				Describe: fmt.Sprintf("create the bucket for %s", name),
 				Command:  fmt.Sprintf("%s bucket create %s", Command(d), bucket),
 			})
@@ -313,6 +321,7 @@ func Build(site string, cfg *config.Config, secrets *config.Secrets, t Transport
 				plan.Present = append(plan.Present, fmt.Sprintf("website: %s already allows website access", bucket))
 			} else {
 				plan.Steps = append(plan.Steps, Step{
+					Title:    "allow website for " + name,
 					Describe: fmt.Sprintf("allow website access on %s's bucket%s", name, unread),
 					Command:  fmt.Sprintf("%s bucket website --allow %s", Command(d), bucket),
 				})
@@ -369,6 +378,7 @@ func KeyPresent(t Transport, d deployment.Deployment, keyID string) (bool, error
 // error text that Secret already fixes.
 func ImportStep(d deployment.Deployment, app, keyID, secretKey string) Step {
 	return Step{
+		Title:    "import key for " + app,
 		Describe: fmt.Sprintf("import the S3 key %s for %s", keyID, app),
 		Command:  fmt.Sprintf("%s key import %s %s --yes -n %s", Command(d), keyID, secretKey, app),
 		Secret:   secretKey,
@@ -380,6 +390,7 @@ func ImportStep(d deployment.Deployment, app, keyID, secretKey string) Step {
 // changes nothing.
 func GrantStep(d deployment.Deployment, app, bucket, keyID string) Step {
 	return Step{
+		Title:    "grant key for " + app,
 		Describe: fmt.Sprintf("grant %s's key %s read/write/owner on its bucket", app, keyID),
 		Command:  fmt.Sprintf("%s bucket allow --read --write --owner %s --key %s", Command(d), bucket, keyID),
 	}
@@ -397,6 +408,7 @@ func GrantStep(d deployment.Deployment, app, bucket, keyID string) Step {
 // retiring, and only after the new one is proven.
 func DeleteKeyStep(d deployment.Deployment, keyID string) Step {
 	return Step{
+		Title:    "delete key",
 		Describe: fmt.Sprintf("delete the S3 key %s from Garage", keyID),
 		Command:  fmt.Sprintf("%s key delete --yes %s", Command(d), keyID),
 	}
@@ -522,16 +534,43 @@ func SecretString(secrets *config.Secrets, app, key string) (string, bool) {
 // its callers inspects a transport error with errors.Is or errors.As, so the
 // chain buys nothing here and costs a credential in a log.
 func Execute(plan *Plan, t Transport) error {
+	return Report(plan, t, ui.Discard)
+}
+
+// Report is Execute reporting each step to r as it runs: the step's title,
+// ended done or failed, with its sentence as a detail. Only Describe ever
+// reaches r, never Command, which may carry a credential.
+func Report(plan *Plan, t Transport, r ui.Reporter) error {
 	for _, step := range plan.Steps {
+		s := r.Step(step.Title)
+		s.Detail("%s", step.Describe)
 		out, err := t.Run(step.Command)
 		if err == nil {
+			s.Done("")
 			continue
 		}
 		detail := redact(err.Error(), step.Secret)
 		if trimmed := strings.TrimSpace(redact(out, step.Secret)); trimmed != "" && !strings.Contains(detail, trimmed) {
 			detail += ": " + trimmed
 		}
-		return errors.New(step.Describe + ": " + detail)
+		failed := errors.New(step.Describe + ": " + detail)
+		s.Fail(failed)
+		return failed
 	}
 	return nil
+}
+
+// Show reports the plan under the section the caller has opened for the
+// site: each step still to run as an item with its sentence as a detail, and
+// what was already there as details. Like Report it reports Describe and
+// never Command, which may carry an S3 secret, and a dry run is the ordinary
+// case.
+func (p *Plan) Show(r ui.Reporter) {
+	for _, step := range p.Steps {
+		r.Item(step.Title)
+		r.Detail("create    %s", step.Describe)
+	}
+	for _, present := range p.Present {
+		r.Detail("present   %s", present)
+	}
 }

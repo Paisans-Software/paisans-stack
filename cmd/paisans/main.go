@@ -826,6 +826,7 @@ func runStorageInit(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
+	r.Section(fmt.Sprintf("%s (%s)", *site, transport.Describe()))
 	if err := claimHosts(r, cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
@@ -833,19 +834,24 @@ func runStorageInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	printGaragePlan(plan)
+	// A dry run is the plan. --execute reports progress instead, and shows
+	// the plan first only with --verbose, since its steps say the same.
+	if !*execute || r.Verbose() {
+		plan.Show(r)
+	}
 
 	if !*execute {
 		if len(plan.Steps) == 0 {
+			r.Result("%s is provisioned. Nothing to do.", *site)
 			return nil
 		}
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	if err := garage.Execute(plan, transport); err != nil {
+	if err := garage.Report(plan, transport, r); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\nprovisioned %d step(s) on %s\n", len(plan.Steps), *site)
+	r.Result("Provisioned %s on %s.", plural(len(plan.Steps), "step"), *site)
 	return nil
 }
 
@@ -929,16 +935,6 @@ func runHostPrepare(args []string) error {
 	}
 	r.Result("Prepared %s.", *site)
 	return nil
-}
-
-func printGaragePlan(plan *garage.Plan) {
-	fmt.Fprintf(os.Stdout, "%s\n", plan.Site)
-	for _, step := range plan.Steps {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "create", step.Describe)
-	}
-	for _, present := range plan.Present {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "present", present)
-	}
 }
 
 // runDNSInit creates the public DNS records a deployment needs, at the

@@ -164,6 +164,7 @@ func parseBucketState(out string) BucketState {
 // v1.0.1); it removes every key's grant on it as it goes.
 func DeleteBucketStep(d deployment.Deployment, bucket string) Step {
 	return Step{
+		Title:    "delete bucket " + bucket,
 		Describe: fmt.Sprintf("delete the bucket %s from Garage", bucket),
 		Command:  fmt.Sprintf("%s bucket delete --yes %s", Command(d), bucket),
 	}
