@@ -18,6 +18,7 @@ sites:
   home-a:
     roles: [data, apps]
     address: 10.44.0.1
+    endpoint: home-a.example.org:51820
     ssh:
       host: home-a.local
       user: ubuntu

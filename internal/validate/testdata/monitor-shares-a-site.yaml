@@ -18,6 +18,7 @@ sites:
   home-a:
     roles: [data, apps, monitor]
     address: 10.44.0.1
+    endpoint: home-a.example.org:51820
     public_address: 203.0.113.20
     ssh:
       host: home-a.local

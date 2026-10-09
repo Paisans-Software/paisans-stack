@@ -803,6 +803,7 @@ func worldConfig(t *testing.T, edits ...func(string) string) (*config.Config, *c
     roles: [data]
     address: 10.44.0.5
     public_address: 203.0.113.50
+    endpoint: 203.0.113.50:51820
     ssh:
       host: home-c.local
       user: ubuntu

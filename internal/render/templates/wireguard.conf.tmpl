@@ -12,8 +12,8 @@ ListenPort = {{ .ListenPort }}
 PrivateKey = {{ .PrivateKey }}
 {{- if .IsRelay }}
 # This site has a stable endpoint, so it relays traffic between sites that
-# have none. Both homes are behind NAT with changing addresses and neither can
-# dial the other.
+# have none: two sites behind NAT with changing addresses cannot dial each
+# other.
 PostUp = sysctl -w net.ipv4.ip_forward=1
 {{- end }}
 {{- range .Peers }}

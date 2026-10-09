@@ -92,6 +92,7 @@ func TestRulesFire(t *testing.T) {
 		{"ingress-listen-public", "ingress-listen-public", validate.Refuse},
 		{"ingress-listen-bypasses-firewall", "ingress-listen-bypasses-firewall", validate.Warn},
 		{"ingress-external-serves-one-app", "ingress-external-serves-one-app", validate.Refuse},
+		{"voters-share-a-relay", "voters-share-a-relay", validate.Refuse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
@@ -272,6 +273,104 @@ func TestRefusalMessagesAreActionable(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("two-etcd-voters did not fire")
+	}
+}
+
+// The voters that survive any one site must still dial each other. Each case
+// is the valid fixture reshaped: what matters is how many voters have an
+// endpoint, not which site holds the witness.
+func TestVotersShareARelay(t *testing.T) {
+	const rule = "voters-share-a-relay"
+	addSite := func(cfg *config.Config, name, address string) {
+		site := cfg.Sites["home-b"]
+		site.Address = address
+		site.Endpoint = ""
+		cfg.Sites[name] = site
+	}
+	cases := []struct {
+		name    string
+		change  func(*config.Config)
+		refused bool
+		mention []string
+	}{
+		{
+			name:   "one home with an endpoint is accepted",
+			change: func(*config.Config) {},
+		},
+		{
+			name: "no home with an endpoint is refused, naming the relay and the fix",
+			change: func(cfg *config.Config) {
+				site := cfg.Sites["home-a"]
+				site.Endpoint = ""
+				cfg.Sites["home-a"] = site
+			},
+			refused: true,
+			mention: []string{"vm", "home-a", "home-b", "endpoint"},
+		},
+		{
+			// Three data voters and no witness: the one site with an
+			// endpoint is the relay for the other two, so its loss strands
+			// them exactly as the witness's does above.
+			name: "three data voters with one endpoint is refused",
+			change: func(cfg *config.Config) {
+				addSite(cfg, "home-c", "10.44.0.5")
+				cfg.Cluster.Sites = []string{"home-a", "home-b", "home-c"}
+				cfg.Etcd.Members = []string{"home-a", "home-b", "home-c"}
+				vm := cfg.Sites["vm"]
+				vm.Roles = []config.Role{config.RoleGateway}
+				cfg.Sites["vm"] = vm
+			},
+			refused: true,
+			mention: []string{"home-a", "home-b", "home-c"},
+		},
+		{
+			name: "three data voters with two endpoints is accepted",
+			change: func(cfg *config.Config) {
+				addSite(cfg, "home-c", "10.44.0.5")
+				cfg.Cluster.Sites = []string{"home-a", "home-b", "home-c"}
+				cfg.Etcd.Members = []string{"home-a", "home-b", "home-c"}
+				vm := cfg.Sites["vm"]
+				vm.Roles = []config.Role{config.RoleGateway}
+				cfg.Sites["vm"] = vm
+				b := cfg.Sites["home-b"]
+				b.Endpoint = "home-b.example.org:51820"
+				cfg.Sites["home-b"] = b
+			},
+		},
+		{
+			// A declined witness leaves one voter, and one voter has
+			// nobody to be partitioned from.
+			name: "one voter is not this rule's concern",
+			change: func(cfg *config.Config) {
+				site := cfg.Sites["home-a"]
+				site.Endpoint = ""
+				cfg.Sites["home-a"] = site
+				cfg.Etcd.Members = []string{"home-a"}
+				vm := cfg.Sites["vm"]
+				vm.Roles = []config.Role{config.RoleGateway}
+				cfg.Sites["vm"] = vm
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := load(t, "valid")
+			tc.change(cfg)
+			result := validate.Check(cfg)
+			if result.Has(rule) != tc.refused {
+				t.Fatalf("%s fired: %v, want %v. findings: %v", rule, result.Has(rule), tc.refused, result.Findings)
+			}
+			for _, f := range result.Findings {
+				if f.Rule != rule {
+					continue
+				}
+				for _, m := range tc.mention {
+					if !strings.Contains(f.Message, m) {
+						t.Errorf("the refusal does not mention %q: %s", m, f.Message)
+					}
+				}
+			}
+		})
 	}
 }
 

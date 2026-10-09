@@ -44,6 +44,17 @@ func (s Site) ListenPort() int {
 	return port
 }
 
+// PeersDirectly reports whether this site and another exchange WireGuard
+// traffic without a relay: one of them has an endpoint, so the other dials
+// it. Two sites with no endpoint never peer at all; their traffic goes
+// through the first site that has one, in sorted order, which is the one
+// path between them and is gone when that site is. The render lays out
+// exactly this, and validate's quorum rule reads the same predicate, so the
+// two cannot disagree about which sites reach each other.
+func (s Site) PeersDirectly(other Site) bool {
+	return s.Endpoint != "" || other.Endpoint != ""
+}
+
 // SetMesh writes mesh.subnet and the named sites' addresses into the
 // declaration at path, and leaves every other byte as it was: each value is
 // replaced where it stands, in the quoting it was written in, so comments,

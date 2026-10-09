@@ -25,8 +25,8 @@ func appliedHost(t *testing.T) *fakeHost {
 	return host
 }
 
-// withNewPeer is the fixture with home-b given an endpoint, which changes the
-// peer list in home-a's psns-f2a9.conf.
+// withNewPeer is the fixture with home-b moved to another endpoint, which
+// changes the peer list in home-a's psns-f2a9.conf.
 func withNewPeer(t *testing.T) func(*config.Config) {
 	return func(cfg *config.Config) {
 		site := cfg.Sites["home-b"]

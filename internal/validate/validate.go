@@ -119,6 +119,7 @@ func Check(cfg *config.Config) Result {
 
 	c.witnessSharesFailureDomain()
 	c.twoVoters()
+	c.votersShareARelay()
 	c.undeclaredSites()
 	c.placementShape()
 	c.outlineBucketName()
@@ -212,6 +213,71 @@ func (c *checker) twoVoters() {
 			"exactly two etcd voters (%s and %s). Two voters are strictly worse than one: a majority of two is two, so either failing stops the cluster. Declare one member, or three.",
 			c.cfg.Etcd.Members[0], c.cfg.Etcd.Members[1])
 	}
+}
+
+// votersShareARelay refuses a mesh in which losing one site cuts the voters
+// that would otherwise hold quorum off from each other.
+//
+// Two sites with no endpoint never peer directly (config.Site.PeersDirectly):
+// their traffic relays through the first site that has one, and that path
+// has no fallback. A voter with an endpoint reaches every other voter, so
+// the voters that survive losing any one site still reach each other exactly
+// when at least one of them has an endpoint, which with three or more voters
+// means at least two of them do. With fewer, there is a site whose loss
+// leaves every surviving voter alone, 1 of n and no majority: the database
+// goes read-only on every site, even when the lost site held no data and
+// was "only" the relay. Two voters are refused on their own, and one has
+// nobody to be partitioned from.
+func (c *checker) votersShareARelay() {
+	var voters, dialled []string
+	for _, name := range c.cfg.Etcd.Members {
+		site, ok := c.cfg.Sites[name]
+		if !ok {
+			continue // undeclaredSites reports this
+		}
+		voters = append(voters, name)
+		if site.Endpoint != "" {
+			dialled = append(dialled, name)
+		}
+	}
+	sort.Strings(voters)
+	sort.Strings(dialled)
+	if len(voters) < 3 || len(dialled) >= 2 {
+		return
+	}
+	var relays []string
+	for _, name := range c.cfg.SiteNames() {
+		if c.cfg.Sites[name].Endpoint != "" {
+			relays = append(relays, name)
+		}
+	}
+	stranded := without(voters, dialled)
+	fix := fmt.Sprintf("Give a second voter a stable endpoint (sites.<name>.endpoint; for a home connection a dynamic DNS name and a forwarded UDP port is enough), so that the voters surviving any one loss dial each other directly. Here that is any of %s.", strings.Join(stranded, ", "))
+	switch {
+	case len(dialled) == 1:
+		c.refuse("voters-share-a-relay", "etcd.members",
+			"declares %d voters, and only %s has an endpoint. %s have none, so they reach each other only through %s, and losing %s leaves each of them alone, 1 of %d and no majority: the database goes read-only on every site. %s",
+			len(voters), dialled[0], strings.Join(stranded, " and "), dialled[0], dialled[0], len(voters), fix)
+	case len(relays) > 0:
+		c.refuse("voters-share-a-relay", "etcd.members",
+			"declares %d voters and none of them has an endpoint, so they reach each other only through %s, and losing %s leaves every voter alone, 1 of %d and no majority: the database goes read-only on every site. %s",
+			len(voters), relays[0], relays[0], len(voters), fix)
+	default:
+		c.refuse("voters-share-a-relay", "etcd.members",
+			"declares %d voters and no site has an endpoint, so no two of them can ever peer: WireGuard needs one side to know where to send the first packet. %s",
+			len(voters), fix)
+	}
+}
+
+// without returns the names in all that are not in some, in all's order.
+func without(all, some []string) []string {
+	var out []string
+	for _, name := range all {
+		if !slices.Contains(some, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // clusterSiteWithoutData refuses a cluster member that does not hold the data
