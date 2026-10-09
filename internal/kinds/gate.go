@@ -196,14 +196,14 @@ var gates = map[config.Kind]GateSpec{
 	// The sign-in flow itself: gating it would gate the login.
 	config.KindPocketID:    {Gateable: false},
 	config.KindOAuth2Proxy: {Gateable: false},
-	// Its checks and alerts run whatever the gate's state; only its own pages
-	// sit behind the gate. Its health route is dedicated, so it stays open.
-	config.KindUptime: {
-		Gateable: true,
-		// Push heartbeats, from machines with no session: the URL carries
-		// the monitor's own token (templates/uptime/caddy.snippet.tmpl).
-		OpenPaths: []string{"/ping/*"},
-	},
+	// The monitor is what an admin opens when the sites it watches are down.
+	// The gate signs in at the identity provider on those sites, so a gated
+	// monitor is unreadable at exactly the moment it exists for, and its
+	// break glass password sign-in (README, "Sign in", under the uptime
+	// kind) would sit behind the sign-in it is the fallback for. Its own
+	// OIDC client admits only settings.admin_group, so the gate would add no
+	// access control, only a dependency.
+	config.KindUptime: {Gateable: false},
 }
 
 // GateFor returns a kind's gate record. A kind with none recorded is not

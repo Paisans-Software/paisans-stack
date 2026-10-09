@@ -645,7 +645,9 @@ monitors added by hand.
 **Sign in** is the identity provider, admitting exactly the group named in
 `settings.admin_group`, which is required. Password sign in stays on as the
 break glass: Pocket ID is one of the things being watched, and a monitor you
-cannot open while it is down is no use. `ADMIN_PASS` is generated at `init`.
+cannot open while it is down is no use. `ADMIN_PASS` is generated at `init`. For the same reason the monitor cannot sit behind the visibility gate
+(`visibility-gate-on-ungateable-kind`): the gate signs in through Pocket ID,
+and would put the break glass behind the sign-in it is the fallback for.
 
 **It starts as root and drops.** `apply` writes the seed through `sudo`, so it
 is root's, 0600, because it carries the SMTP password; the data directory is a
@@ -1532,13 +1534,18 @@ gate covers everything, and three classes go to the app without it:
 
 | Class | Matched by | Who authenticates it |
 |---|---|---|
-| ActivityPub | `Accept` or `Content-Type` naming `application/activity+json` or `application/ld+json` | the app, by signed fetch against its allow list |
+| ActivityPub read | a `GET` whose `Accept` names `application/activity+json` or `application/ld+json` | the app, by signed fetch against its allow list; Caddy passes back only an ActivityPub, JSON-LD or JRD answer, and turns any other success into an empty 404 |
+| ActivityPub delivery | a `POST` whose `Content-Type` names either, on the kind's inboxes only | the app, which verifies the delivery's signature |
 | Open paths | the kind's open paths: its OIDC callback, a native app's OAuth chain, federation discovery, the assets those pages load, a dedicated health route | nothing; they hold no private content |
-| Token paths | the kind's token paths **and** an `Authorization` header | the app, which refuses a token it did not issue |
+| Token paths | the kind's token paths **and** `Authorization: Bearer` | the app, which refuses a token it did not issue |
 
 Everything else is redirected to sign in when there is no session, `curl`
 included, and to the gate's `/pending` page when the session belongs to
-someone who is not yet a member. Which paths a kind needs open is knowledge
+someone who is not yet a member. Every hostname, gated or not, strips
+`X-Auth-Request-*` from the inbound request before anything else sees it:
+those headers are only ever the gate's verified answer, and an app that
+trusted one on an ungated hostname would be trusting whoever sent the
+request. Which paths a kind needs open is knowledge
 about that application, so it lives in `internal/kinds` beside the rest, read
 off the pinned tag's source with a citation for each. A token path is recorded
 only once the kind's source shows a token that reads content cannot be had
@@ -1622,7 +1629,13 @@ Matrix hostname must never be gated: a Matrix client is not a browser and will
 not follow a redirect to a passkey prompt, so gating a homeserver's API or its
 `.well-known` apex breaks federation and every client's login, not just one
 member's. Pocket ID and the gate itself are the sign-in flow, so gating either
-gates the login. Leaving gating to a hand edited include means that failure
+gates the login. The monitor is what an admin opens when the sites it watches
+are down, and the gate signs in at the identity provider on those sites, so a
+gated monitor is unreadable at exactly the moment it exists for, and its break
+glass password sign-in (see *Uptime monitoring*) would sit behind the sign-in
+it is the fallback for; its own OIDC client already admits only
+`settings.admin_group`, so the gate would add no access control, only a
+dependency. Leaving gating to a hand edited include means that failure
 shows up as clients mysteriously unable to log in, with nothing in the
 configuration saying why. A declared `visibility_gate: public` makes the
 absence of a gate a fact about the app that a reviewer can see, rather than an

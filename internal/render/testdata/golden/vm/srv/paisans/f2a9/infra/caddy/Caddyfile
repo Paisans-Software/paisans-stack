@@ -90,54 +90,90 @@ import /etc/caddy/snippets/gate-gates.caddy
 
 blog-media.example.org {
 	import upstream_unavailable
+	# Stripped here as on a gated hostname: nothing that reaches an app may
+	# name a user unless the gate put the name there, and an ungated app that
+	# trusted the header would otherwise trust whoever sent the request.
+	request_header -X-Auth-Request-*
 	import /etc/caddy/snippets/blog-media.caddy
 }
 
 
 blog.example.org {
 	import upstream_unavailable
+	# Stripped here as on a gated hostname: nothing that reaches an app may
+	# name a user unless the gate put the name there, and an ungated app that
+	# trusted the header would otherwise trust whoever sent the request.
+	request_header -X-Auth-Request-*
 	import /etc/caddy/snippets/blog.caddy
 }
 
 
 chat.example.org {
 	import upstream_unavailable
+	# Stripped here as on a gated hostname: nothing that reaches an app may
+	# name a user unless the gate put the name there, and an ungated app that
+	# trusted the header would otherwise trust whoever sent the request.
+	request_header -X-Auth-Request-*
 	import /etc/caddy/snippets/chat.caddy
 }
 
 
 docs-media.example.org {
 	import upstream_unavailable
+	# Stripped here as on a gated hostname: nothing that reaches an app may
+	# name a user unless the gate put the name there, and an ungated app that
+	# trusted the header would otherwise trust whoever sent the request.
+	request_header -X-Auth-Request-*
 	import /etc/caddy/snippets/docs-media.caddy
 }
 
 
 docs.example.org {
 	import upstream_unavailable
+	# Stripped here as on a gated hostname: nothing that reaches an app may
+	# name a user unless the gate put the name there, and an ungated app that
+	# trusted the header would otherwise trust whoever sent the request.
+	request_header -X-Auth-Request-*
 	import /etc/caddy/snippets/docs.caddy
 }
 
 
 example.org {
 	import upstream_unavailable
+	# Stripped here as on a gated hostname: nothing that reaches an app may
+	# name a user unless the gate put the name there, and an ungated app that
+	# trusted the header would otherwise trust whoever sent the request.
+	request_header -X-Auth-Request-*
 	import /etc/caddy/snippets/chat-wellknown.caddy
 }
 
 
 gate.example.org {
 	import upstream_unavailable
+	# Stripped here as on a gated hostname: nothing that reaches an app may
+	# name a user unless the gate put the name there, and an ungated app that
+	# trusted the header would otherwise trust whoever sent the request.
+	request_header -X-Auth-Request-*
 	import /etc/caddy/snippets/gate.caddy
 }
 
 
 id.example.org {
 	import upstream_unavailable
+	# Stripped here as on a gated hostname: nothing that reaches an app may
+	# name a user unless the gate put the name there, and an ungated app that
+	# trusted the header would otherwise trust whoever sent the request.
+	request_header -X-Auth-Request-*
 	import /etc/caddy/snippets/auth.caddy
 }
 
 
 talk-media.example.org {
 	import upstream_unavailable
+	# Stripped here as on a gated hostname: nothing that reaches an app may
+	# name a user unless the gate put the name there, and an ungated app that
+	# trusted the header would otherwise trust whoever sent the request.
+	request_header -X-Auth-Request-*
 	import /etc/caddy/snippets/talk-media.caddy
 }
 
@@ -247,6 +283,10 @@ talk.example.org {
 
 web.example.org {
 	import upstream_unavailable
+	# Stripped here as on a gated hostname: nothing that reaches an app may
+	# name a user unless the gate put the name there, and an ungated app that
+	# trusted the header would otherwise trust whoever sent the request.
+	request_header -X-Auth-Request-*
 	import /etc/caddy/snippets/web.caddy
 }
 

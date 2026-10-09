@@ -68,7 +68,9 @@ carries no body from the app.
 
 Each class is its own `handle` with a named matcher, and Caddy keeps those in
 the order they are written. Every handle strips `X-Auth-Request-*` from the
-inbound request first, so nothing upstream of the gate can name a user.
+inbound request first, so nothing upstream of the gate can name a user. An
+ungated host block strips it too, so an app on any hostname sees the header
+only when the gate put it there.
 
 ### ActivityPub reads are filtered
 
@@ -131,11 +133,15 @@ type GateSpec struct {
 }
 ```
 
-`Gateable` is false for `synapse`, `pocket-id` and `oauth2-proxy`: a Matrix
-client and a federating homeserver will not follow a redirect to a passkey
-prompt, and the other two are the sign-in flow itself. A gate on any of them is
-refused (`visibility-gate-on-ungateable-kind`). Every kind has a record, and a
-test fails for a kind without one.
+`Gateable` is false for `synapse`, `pocket-id`, `oauth2-proxy` and `uptime`: a
+Matrix client and a federating homeserver will not follow a redirect to a
+passkey prompt, Pocket ID and the gate are the sign-in flow itself, and the
+monitor is what an admin opens when the sites the gate signs in through are
+down, so a gated monitor is unreadable at exactly the moment it exists for
+and its break glass password sign-in would sit behind the sign-in it is the
+fallback for. A gate on any of them is refused
+(`visibility-gate-on-ungateable-kind`). Every kind has a record, and a test
+fails for a kind without one.
 
 The kind's health route is added to its open paths when it is a dedicated
 route, never when it is `/`.
@@ -145,7 +151,6 @@ route, never when it is `/`.
 | `mbin` | OIDC (`/oauth/*`), the native app's chain (`/authorize /consent /token /login`), discovery (webfinger, host-meta, nodeinfo, `/i/actor`, contexts), the sign-in page's assets | `/i/inbox /f/inbox /u/*/inbox /m/*/inbox` | none | `/` and `/login` to `/oauth/oidc/connect`, unless `PHPSESSID` or `REMEMBERME` |
 | `writefreely` | OIDC (`/oauth/*`), discovery (webfinger, host-meta, nodeinfo), the sign-in page's assets | `/api/collections/*/inbox` | none | `/login` always, `/` unless `wfu`, to `/oauth/generic` |
 | `outline` | OIDC (`/auth/oidc`, `/auth/oidc.callback`, `/auth/redirect`, never `/auth/*`, which would open email sign-in), OAuth discovery, registration and token endpoints, `/_health` | none | `/api/*`, `/mcp` | none: its sign-in screen redirects itself when OIDC is the only provider |
-| `uptime` | push heartbeats (`/ping/*`), whose URL carries the monitor's token, and the health route | none | none | none |
 | `element` | the health route | none | none | none |
 
 Each entry is cited in `internal/kinds/gate.go` against the pinned tag.
