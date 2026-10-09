@@ -166,7 +166,7 @@ func (p *Plan) probeHandover(t apply.Transport, inv *hostcheck.Inventory, report
 			return nil, fmt.Errorf("site remove %s: %s records a hand over by another deployment, so this gateway's Caddy cannot be handed over there. Nothing was changed", p.Site, markerPath)
 		}
 		h.done = true
-		p.Kept = append(p.Kept, p.handoverKept(h))
+		p.Kept = append(p.Kept, p.handoverKept(h)...)
 		return h, nil
 	}
 	for _, c := range inv.Containers {
@@ -219,16 +219,12 @@ func (p *Plan) probeHandover(t apply.Transport, inv *hostcheck.Inventory, report
 			return nil, fmt.Errorf("site remove %s: %s holds %s, which the hand over does not write, so the directory is somebody else's. Nothing was changed", p.Site, handoverDir, name)
 		}
 	}
-	p.Kept = append(p.Kept, p.handoverKept(h))
+	p.Kept = append(p.Kept, p.handoverKept(h)...)
 	return h, nil
 }
 
-func (p *Plan) handoverKept(h *handover) string {
-	line := fmt.Sprintf("%s: %s, Caddy handed over to the host's owner for %s. Its data directory holds the certificates and keys of every hostname this deployment's Caddy served. paisans never touches %s again", p.Site, handoverDir, render.HostSitesDir, handoverDir)
-	if h.env {
-		line += fmt.Sprintf(". %s/caddy.env holds a copy of the DNS provider token (secrets external.acme_dns_token): a credential this deployment no longer controls, left on the host for the owner. Rotate it at the provider once the owner has a token of their own", handoverDir)
-	}
-	return line
+func (p *Plan) handoverKept(h *handover) []string {
+	return handoverKept(p.Site, handoverDir, h.env)
 }
 
 // handOver runs the hand over: write, validate in a one-off container, stop

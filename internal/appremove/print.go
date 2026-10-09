@@ -128,12 +128,12 @@ func Remains(p *Plan, secrets *config.Secrets, kept []string) []string {
 			keys = append(keys, "oidc_clients."+p.App)
 		}
 		if len(keys) > 0 {
-			out = append(out, fmt.Sprintf("secrets: remove %[2]s's entries from the secrets file with sops. This command never edits it, so remove them once nothing needs them: %[1]s", strings.Join(keys, ", "), p.App))
+			out = append(out, secretsLeft(p.App, strings.Join(keys, ", ")))
 		}
 	}
-	out = append(out, "DNS: its hostnames' records stay; `paisans dns prune --execute` deletes them. dns init made them")
+	out = append(out, dnsLeft)
 	if !p.DeleteData {
-		out = append(out, "data: its data is kept; `paisans app remove "+p.App+" --delete-data --execute` deletes it. Kept: its database, its Garage bucket and key, its named volumes and what it wrote under its stack directory")
+		out = append(out, dataKept(p.App))
 	}
 	out = append(out, p.Client.Kept...)
 	if p.Database != nil {

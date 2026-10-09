@@ -570,14 +570,10 @@ func (p *Plan) Remains() []string {
 	var out []string
 	if p.secrets != nil {
 		if _, ok := p.secrets.Sites[p.Site]; ok {
-			out = append(out, fmt.Sprintf("secrets: remove sites.%s (its WireGuard key) from the secrets file with sops. This command never edits it, so remove it once nothing needs it", p.Site))
+			out = append(out, secretsLeft(p.Site))
 		}
 	}
-	if addr := p.cfg.Sites[p.Site].PublicAddress; addr != "" {
-		out = append(out, fmt.Sprintf("DNS: records pointing at %s stay; `paisans dns prune --execute` deletes them. dns init made them", addr))
-	} else {
-		out = append(out, "DNS: records pointing at this host stay; `paisans dns prune --execute` deletes them. dns init made them")
-	}
+	out = append(out, dnsLeft(p.cfg.Sites[p.Site].PublicAddress))
 	out = append(out, p.Notes...)
 	out = append(out, p.Kept...)
 	return out

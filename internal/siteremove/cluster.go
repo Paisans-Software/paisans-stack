@@ -119,7 +119,7 @@ func (p *Plan) buildCluster() (*Stage, error) {
 	for _, name := range p.end.SiteNames() {
 		moved, owed := p.changedFiles(name)
 		for _, o := range owed {
-			p.Notes = append(p.Notes, fmt.Sprintf("%s: run `paisans apply --site %s` when that is acceptable. %s", name, name, o))
+			p.Notes = append(p.Notes, ownedNote(name, o))
 		}
 		t := p.transports[name]
 		c := &siteChange{site: name}
@@ -257,7 +257,7 @@ func (p *Plan) replicaEnvs(st *Stage) ([]*apply.ReplicaEnv, error) {
 	for _, name := range p.end.Cluster.Sites {
 		if name == p.endLeader() {
 			if renderedContent(p.full, name, rel) != renderedContent(p.rendered, name, rel) {
-				p.Notes = append(p.Notes, name+": "+apply.LeaderPatroniEnvNote(name))
+				p.Notes = append(p.Notes, apply.LeaderPatroniEnvNote(name))
 			}
 			continue
 		}

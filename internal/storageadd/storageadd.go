@@ -405,7 +405,7 @@ func (p *Plan) noteOwed() error {
 // site no longer matches the render. Its first sentence is what shows without
 // --verbose, so it carries the command.
 func appConfigNote(site string, files int) string {
-	return fmt.Sprintf("%s: apps out of date in %d file(s); run `paisans apply --site %s` when acceptable. It brings the app configuration up to date and recreates those apps, Eg: for S3_ENDPOINT after storage.garage.sites was reordered", site, files, site)
+	return fmt.Sprintf("%s: run `paisans apply --site %s` when acceptable. Its apps are out of date in %d file(s); their configuration differs from the render, Eg: S3_ENDPOINT after storage.garage.sites was reordered, and the apply brings it up to date and recreates those apps", site, site, files)
 }
 
 // appEnvFiles is every app .env the render places on site.

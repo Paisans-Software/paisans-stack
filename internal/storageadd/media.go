@@ -170,7 +170,7 @@ func (pr *probe) redact(s string) string {
 func (p *Plan) buildSmoke() *Stage {
 	pr := p.publicProbe()
 	if pr == nil {
-		p.Notes = append(p.Notes, "no app serves objects publicly, so there is no bucket to put a probe through and the smoke test is skipped")
+		p.Notes = append(p.Notes, mediaNote)
 		return nil
 	}
 	first := p.nodes[0]
@@ -324,3 +324,7 @@ func (p *Plan) stopTest(pr *probe) (err error) {
 	}
 	return nil
 }
+
+// mediaNote is what a join leaves when there is nothing to probe. Its first
+// sentence shows without --verbose.
+const mediaNote = "smoke test skipped: no app serves objects publicly. There is no bucket to put a probe through"

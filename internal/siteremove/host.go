@@ -180,7 +180,7 @@ func (p *Plan) buildHost() (*Stage, error) {
 		if c.Deployment == d.ID {
 			hp.containers = append(hp.containers, c.Name)
 		} else {
-			p.Kept = append(p.Kept, fmt.Sprintf("%s: container %s, which does not carry this deployment's label", p.Site, c.Name))
+			p.Kept = append(p.Kept, containerKept(p.Site, c.Name))
 		}
 	}
 	for _, n := range inv.Networks {
@@ -189,14 +189,14 @@ func (p *Plan) buildHost() (*Stage, error) {
 			hp.networks = append(hp.networks, n.Name)
 		case n.Name == "bridge" || n.Name == "host" || n.Name == "none":
 		default:
-			p.Kept = append(p.Kept, fmt.Sprintf("%s: network %s, which does not carry this deployment's label", p.Site, n.Name))
+			p.Kept = append(p.Kept, networkKept(p.Site, n.Name))
 		}
 	}
 	for _, v := range inv.Volumes {
 		if v.Deployment == d.ID && !v.Anonymous {
 			hp.volumes = append(hp.volumes, v.Name)
 			if !p.DeleteData {
-				p.Kept = append(p.Kept, fmt.Sprintf("%s: volume %s, this deployment's data. --delete-data deletes it", p.Site, v.Name))
+				p.Kept = append(p.Kept, volumeKept(p.Site, v.Name))
 			}
 		}
 	}
@@ -219,7 +219,7 @@ func (p *Plan) buildHost() (*Stage, error) {
 		default:
 			f.State = appremove.Edited
 			edited = true
-			p.Kept = append(p.Kept, fmt.Sprintf("%s: /%s, edited on the host since apply wrote it. Delete it by hand once nothing needs it", p.Site, e.Path))
+			p.Kept = append(p.Kept, editedFileKept(p.Site, e.Path))
 		}
 		hp.files = append(hp.files, f)
 	}
@@ -248,11 +248,11 @@ func (p *Plan) buildHost() (*Stage, error) {
 	for _, r := range rules {
 		switch {
 		case r.Owned && r.SSH:
-			p.Kept = append(p.Kept, fmt.Sprintf("%s: SSH allow rule kept; delete it yourself once nothing logs in through it. With incoming denied, deleting `%s` cuts the next connection", p.Site, r.Line))
+			p.Kept = append(p.Kept, sshAllowKept(p.Site, r.Line))
 		case r.Owned:
 			hp.rules = append(hp.rules, r.Line)
 		default:
-			p.Kept = append(p.Kept, fmt.Sprintf("%s: ufw rule kept; it does not carry this deployment's tag. The rule is `%s`", p.Site, r.Line))
+			p.Kept = append(p.Kept, ufwRuleKept(p.Site, r.Line))
 		}
 	}
 
@@ -277,7 +277,7 @@ func (p *Plan) buildHost() (*Stage, error) {
 	switch {
 	case !hp.root.exists:
 	case p.DeleteData && edited:
-		p.Kept = append(p.Kept, fmt.Sprintf("%s: %s and everything in it, because a file in it was edited on the host", p.Site, d.Root()))
+		p.Kept = append(p.Kept, rootEditedKept(p.Site, d.Root()))
 	case !p.DeleteData:
 		rendered := 0
 		for _, e := range inv.ManifestFiles {
@@ -289,7 +289,7 @@ func (p *Plan) buildHost() (*Stage, error) {
 			rendered++
 		}
 		if data := hp.root.files - rendered; data > 0 {
-			p.Kept = append(p.Kept, fmt.Sprintf("%s: data left in %s; --delete-data deletes it. What is left once the files above are deleted: %d file(s) apply did not write, the data in its bind mounts (Eg: a database, an object store)", p.Site, d.Root(), data))
+			p.Kept = append(p.Kept, dataLeft(p.Site, d.Root(), data))
 		}
 	}
 
@@ -362,7 +362,7 @@ func (p *Plan) probeKeys(t apply.Transport, hp *hostPlan) error {
 	}
 	fields := strings.Split(strings.TrimSpace(entry), ":")
 	if len(fields) < 7 || fields[5] == "" {
-		p.Kept = append(p.Kept, fmt.Sprintf("%s: the keys %s lists, since %s has no passwd entry to find its authorized_keys by", p.Site, kp.record, user))
+		p.Kept = append(p.Kept, keysNoPasswd(p.Site, kp.record, user))
 		hp.keys = kp
 		return nil
 	}
@@ -388,13 +388,13 @@ func (p *Plan) probeKeys(t apply.Transport, hp *hostPlan) error {
 			continue
 		}
 		if others[key.Fingerprint] {
-			p.Kept = append(p.Kept, fmt.Sprintf("%s: key %s in %s, which another deployment's record lists too: both added it as this one line", p.Site, key.Fingerprint, kp.file))
+			p.Kept = append(p.Kept, keySharedKept(p.Site, key.Fingerprint, kp.file))
 			continue
 		}
 		candidates = append(candidates, raw)
 	}
 	if len(candidates) > 0 && len(candidates) == total {
-		p.Kept = append(p.Kept, fmt.Sprintf("%s: SSH key lines kept; delete them yourself once another way in exists. They are in %s: deleting the key(s) %s lists would leave %s with no authorized key, and nobody could log in over SSH again", p.Site, kp.file, kp.record, user))
+		p.Kept = append(p.Kept, keyLinesKept(p.Site, kp.file, kp.record, user))
 		candidates = nil
 	}
 	kp.lines = candidates

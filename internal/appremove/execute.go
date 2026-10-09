@@ -159,12 +159,12 @@ func (e *Executor) execute(p *Plan) error {
 			return fmt.Errorf("%s: %s: %w: %s", s.Site, dir, err, firstLine(out))
 		}
 		if p.DeleteData && !deleteDir {
-			e.Kept = append(e.Kept, fmt.Sprintf("%s: %s and its data, because a file in it was edited on the host", s.Site, dir))
+			e.Kept = append(e.Kept, dirEdited(s.Site, dir))
 		}
 		if dd, err := probeDir(h, dir); err != nil {
 			return fmt.Errorf("%s: %w", s.Site, err)
 		} else if dd.Exists {
-			e.Kept = append(e.Kept, fmt.Sprintf("%s: %s, %d file(s), %s, not written by apply", s.Site, dir, dd.Files, size(dd.Bytes)))
+			e.Kept = append(e.Kept, dirData(s.Site, dir, dd.Files, size(dd.Bytes)))
 		}
 		if p.DeleteData {
 			e.work("delete volumes").Detail("volumes %s", strings.Join(s.Volumes, ", "))
@@ -256,7 +256,7 @@ func (e *Executor) files(h Host, d deployment.Deployment, s SitePlan) error {
 				e.open.Detail("%s", p)
 			}
 		case "kept":
-			e.Kept = append(e.Kept, fmt.Sprintf("%s: an edited file kept; delete it by hand once nothing needs it, then run this again. It is %s, edited on the host since apply wrote it, so it stays with its manifest entry", s.Site, p))
+			e.Kept = append(e.Kept, fileEdited(s.Site, p))
 		}
 	}
 	for _, f := range s.Files {

@@ -311,7 +311,7 @@ func TestTheClientIsDeletedOnlyByItsRecordedID(t *testing.T) {
 			t.Errorf("%s: delete %q kept %v", name, got, cp.Kept)
 		}
 		for _, k := range cp.Kept {
-			if !strings.Contains(k, "Delete it as a Pocket ID administrator") {
+			if !strings.Contains(k, "delete it in Pocket ID if it served only docs") {
 				t.Errorf("%s: kept without saying how to delete it: %s", name, k)
 			}
 		}
@@ -364,7 +364,7 @@ func TestDeleteDataDropsTheDatabaseAndBucket(t *testing.T) {
 	if !p.Database.DropDatabase || !p.Database.DropRole || len(p.Storage.Buckets) != 1 || p.Storage.Buckets[0].Name != "docs-uploads" {
 		t.Fatalf("plan: db %+v storage %+v", p.Database, p.Storage)
 	}
-	if !strings.Contains(strings.Join(p.Storage.Kept, "\n"), "bucket shared: also granted to key(s) GK000000000000000000000002") {
+	if !strings.Contains(strings.Join(p.Storage.Kept, "\n"), "The bucket is shared, and the keys are GK000000000000000000000002") {
 		t.Errorf("kept = %v", p.Storage.Kept)
 	}
 	clients := &fakeClients{}
@@ -500,8 +500,20 @@ func TestTheLeftForYouHintsStayShort(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := append(Remains(p, secrets, ex.Kept), Remains(keep, secrets, nil)...)
+	// Every producer, with the longest inputs a real deployment gives it:
+	// 20-character names, 36-character client IDs, 63-character database
+	// names and several foreign key IDs.
+	site, long, uuid, path := strings.Repeat("s", 20), strings.Repeat("n", 63), strings.Repeat("u", 36), "/"+strings.Repeat("p", 59)
+	keys := []string{"GK" + strings.Repeat("a", 24), "GK" + strings.Repeat("b", 24), "GK" + strings.Repeat("c", 24)}
+	lines = append(lines,
+		clientKept(site, long, uuid, "pocket-id on "+site, "its ID is not the one recorded under oidc_clients."+site),
+		databaseNotApps(long), databaseDeclared(long, long), databaseForeign(long, site, long), roleKept(long, site),
+		keyDeclared(uuid), bucketUnread(long), bucketGranted(long, keys), bucketAliases(long, 99, 99),
+		dirEdited(site, path), dirData(site, path, 99999, "999.9 GiB"), fileEdited(site, path),
+		secretsLeft(site, strings.Repeat("apps.x.y, ", 20)), dnsLeft, dataKept(site))
 	for _, line := range lines {
-		if hint, _, _ := strings.Cut(line, ". "); len(hint) > 100 {
+		hint, _, _ := strings.Cut(line, ". ")
+		if len(hint) > 100 {
 			t.Errorf("%d characters: %s", len(hint), hint)
 		}
 	}
