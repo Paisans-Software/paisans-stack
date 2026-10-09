@@ -22,6 +22,7 @@ import (
 // its own ssh section.
 func runSiteAdd(args []string) error {
 	fs := flag.NewFlagSet("site add", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, "actually run the stages, stopping at the first gate that fails")
@@ -35,6 +36,8 @@ func runSiteAdd(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if site == "" && fs.NArg() > 0 {
 		site = fs.Arg(0)
 	} else if fs.NArg() > 0 {

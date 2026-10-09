@@ -42,6 +42,7 @@ var removeClients = func(cfg *config.Config, site, key string) appremove.Clients
 // again by somebody who did not mean it, and a typed name cannot.
 func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	fs := flag.NewFlagSet("app remove", flag.ContinueOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, "actually stop, remove and delete")
@@ -55,6 +56,8 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if app == "" && fs.NArg() > 0 {
 		app = fs.Arg(0)
 		if err := fs.Parse(fs.Args()[1:]); err != nil {

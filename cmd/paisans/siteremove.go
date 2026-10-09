@@ -32,6 +32,7 @@ var removeSiteHost = func(name string, site config.Site, sudo bool) apply.Transp
 // at a terminal, for the reason app remove does.
 func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	fs := flag.NewFlagSet("site remove", flag.ContinueOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, "actually run the stages, stopping at the first gate that fails")
@@ -45,6 +46,8 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if site == "" && fs.NArg() > 0 {
 		site = fs.Arg(0)
 		if err := fs.Parse(fs.Args()[1:]); err != nil {

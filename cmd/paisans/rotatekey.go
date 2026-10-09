@@ -22,6 +22,7 @@ import (
 // prints the plan, and changes anything only with --execute.
 func runStorageRotateKey(args []string) error {
 	fs := flag.NewFlagSet("storage rotate-key", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	appName := fs.String("app", "", "the app whose S3 key to replace, by the name it has in the configuration")
@@ -30,6 +31,8 @@ func runStorageRotateKey(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if fs.NArg() > 0 {
 		return fmt.Errorf("storage rotate-key: name the app with --app. %q is extra", fs.Arg(0))
 	}

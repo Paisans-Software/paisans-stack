@@ -46,11 +46,14 @@ func runSecretsSet(args []string, stdin io.Reader) error {
 	}
 	key := args[0]
 	fs := flag.NewFlagSet("secrets set", flag.ContinueOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if fs.NArg() > 0 {
 		return fmt.Errorf("secrets set: the value is read from stdin and never from an argument, which shell history and `ps` would both keep. Got extra argument(s)")
 	}

@@ -24,11 +24,14 @@ func runIngress(args []string) error {
 	}
 	sub := args[0]
 	fs := flag.NewFlagSet("ingress "+sub, flag.ContinueOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	appName := fs.String("app", "", "the app pinned to a monitor site, by the name it has in the configuration")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if fs.NArg() > 0 {
 		return fmt.Errorf("ingress %s: unexpected argument(s) %s", sub, strings.Join(fs.Args(), " "))
 	}

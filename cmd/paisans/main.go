@@ -287,10 +287,13 @@ func main() {
 
 func runValidate(args []string) error {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err
@@ -317,12 +320,15 @@ func runValidate(args []string) error {
 // credentials to stand it up with.
 func runInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	sudo := fs.Bool("sudo", true, "read each site through sudo, since the host registry is root's")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	// The id comes first: everything a host holds is named from it, and a
 	// declaration without one cannot even be loaded. One that exists is never
 	// replaced.
@@ -418,12 +424,15 @@ func reportOwed(filled secretsgen.Result) {
 
 func runRender(args []string) error {
 	fs := flag.NewFlagSet("render", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the sops encrypted secrets (default: secrets.enc.yaml beside the config)")
 	out := fs.String("out", "", "directory to write artifacts into")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if *out == "" {
 		return fmt.Errorf("render: --out is required. Artifacts are written to a local directory and pushed by a later step")
 	}
@@ -480,6 +489,7 @@ func runRender(args []string) error {
 // its client, so `--execute` creates and records it like any other secret.
 func runApply(args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	site := fs.String("site", "", "the site to apply, by the name it has in the configuration")
@@ -497,6 +507,8 @@ func runApply(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	needFree, err := apply.ParseSize(*minFree)
 	if err != nil {
 		return fmt.Errorf("apply: --min-free: %w", err)
@@ -744,6 +756,7 @@ func planSiteApply(cfg *config.Config, secrets *config.Secrets, site string, tra
 // reachable to be asked what it already has.
 func runStorageInit(args []string) error {
 	fs := flag.NewFlagSet("storage init", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	site := fs.String("site", "", "the site to provision, by the name it has in the configuration")
@@ -753,6 +766,8 @@ func runStorageInit(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if *site == "" {
 		return fmt.Errorf("storage init: --site is required. A site at a time is deliberate, the same reason apply takes one")
 	}
@@ -817,6 +832,7 @@ func runStorageInit(args []string) error {
 // with --execute. It needs no secrets; nothing it installs is a credential.
 func runHostPrepare(args []string) error {
 	fs := flag.NewFlagSet("host prepare", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	site := fs.String("site", "", "the site to prepare, by the name it has in the configuration")
 	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
@@ -825,6 +841,8 @@ func runHostPrepare(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if *site == "" {
 		return fmt.Errorf("host prepare: --site is required. A site at a time is deliberate, the same reason apply takes one")
 	}
@@ -1055,6 +1073,7 @@ func runDNSPrune(args []string) error {
 // so a configuration that cannot name its records is refused offline.
 func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagSet)) (*config.Config, []dns.Want, dns.Provider, bool, error) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	reporter := commonFlags(fs)
 	for _, add := range extra {
 		add(fs)
 	}
@@ -1064,6 +1083,8 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 	if err := fs.Parse(args); err != nil {
 		return nil, nil, nil, false, err
 	}
+	r := reporter()
+	_ = r
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {

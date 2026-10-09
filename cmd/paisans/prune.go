@@ -25,6 +25,7 @@ import (
 // surprises depending on the engine (Docker Engine 23.0 release notes).
 func runPrune(args []string) error {
 	fs := flag.NewFlagSet("prune", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	site := fs.String("site", "", "the site to prune, by the name it has in the configuration")
 	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
@@ -33,6 +34,8 @@ func runPrune(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if *site == "" {
 		return fmt.Errorf("prune: --site is required. A site at a time is deliberate, the same reason apply takes one")
 	}

@@ -24,6 +24,7 @@ import (
 // of work is the cluster. docs/specs/2026-10-07-multisite-garage.md.
 func runStorageAdd(args []string) error {
 	fs := flag.NewFlagSet("storage add", flag.ExitOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, "actually run the stages, stopping at the first gate that fails or waits")
@@ -34,6 +35,8 @@ func runStorageAdd(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if fs.NArg() > 0 {
 		return fmt.Errorf("storage add: takes no site; it joins every site in storage.garage.sites. %q is extra", fs.Arg(0))
 	}

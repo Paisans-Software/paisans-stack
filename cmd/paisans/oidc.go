@@ -38,6 +38,7 @@ func runOIDC(args []string) error {
 // app like any other secret.
 func runOIDCClientCreate(args []string) error {
 	fs := flag.NewFlagSet("oidc client create", flag.ContinueOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	appName := fs.String("app", "", "the app the client is for, by the name it has in the configuration")
@@ -48,6 +49,8 @@ func runOIDCClientCreate(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if fs.NArg() > 0 {
 		return fmt.Errorf("oidc client create: unexpected argument(s) %s", strings.Join(fs.Args(), " "))
 	}

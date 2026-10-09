@@ -59,6 +59,7 @@ func runApp(args []string) error {
 // on, so the refusal points at this command run against Pocket ID.
 func runAppAdminCreate(args []string, stdin io.Reader) error {
 	fs := flag.NewFlagSet("app admin create", flag.ContinueOnError)
+	reporter := commonFlags(fs)
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file, read for pocket-id's API key (default: secrets.enc.yaml beside the config)")
 	appName := fs.String("app", "", "the app, by the name it has in the configuration")
@@ -73,6 +74,8 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	r := reporter()
+	_ = r
 	if fs.NArg() > 0 {
 		return fmt.Errorf("app admin create takes flags only. Got extra argument(s): %s", strings.Join(fs.Args(), " "))
 	}
