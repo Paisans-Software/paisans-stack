@@ -206,17 +206,15 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 	if err != nil {
 		return err
 	}
+	if forcedNothingToDo(r, plan, dest) {
+		return nil
+	}
 	if !a.execute || r.Verbose() {
 		plan.Show(r)
 	}
 	if !a.execute {
 		reportRemains(r, plan.Remains())
 		r.Result("Nothing changed. Re-run with --execute to apply.")
-		return nil
-	}
-	if !plan.Pending() {
-		reportRemains(r, plan.Remains())
-		r.Result("%s holds nothing of this deployment. Nothing changed.", dest)
 		return nil
 	}
 	var what []string
@@ -238,6 +236,17 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 	reportRemains(r, plan.Remains())
 	r.Result("%s is cleaned of this deployment. %s and the secrets file are unchanged.", dest, a.config)
 	return nil
+}
+
+// forcedNothingToDo ends a forced run on a host that holds nothing of this
+// deployment, dry run or not: there is nothing to run again, and what the
+// host's owner keeps there is not this command's to list.
+func forcedNothingToDo(r ui.Reporter, plan *siteremove.Plan, dest config.Destination) bool {
+	if plan.Pending() {
+		return false
+	}
+	r.Result("%s holds nothing of this deployment. Nothing to do.", dest)
+	return true
 }
 
 // chooseHost is the host --force cleans: --ssh when given, any host, else the

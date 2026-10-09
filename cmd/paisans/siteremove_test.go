@@ -8,6 +8,8 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/siteremove"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // noSiteHosts fails the test if `site remove` reaches for any host.
@@ -111,5 +113,22 @@ func TestSiteRemoveForceRefusesBeforeReachingAHost(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: err = %v, want %q", args, err, want)
 		}
+	}
+}
+
+// A host holding nothing of this deployment ends the run without a re-run
+// hint, dry run or not.
+func TestForcedOnAnEmptyHostSaysNothingToDo(t *testing.T) {
+	plan := &siteremove.Plan{Site: "home-b", Stages: []*siteremove.Stage{{Number: 3, Name: "clean the host"}}}
+	rec := &ui.Recorder{}
+	if !forcedNothingToDo(rec, plan, config.Destination{User: "admin", Host: "192.0.2.1", Port: 22}) {
+		t.Fatal("an empty plan was not ended")
+	}
+	if out := rec.Lines(); strings.Contains(out, "--execute") || !strings.Contains(out, "holds nothing of this deployment") {
+		t.Errorf("printed:\n%s", out)
+	}
+	plan.Stages[0].Steps = []siteremove.Step{{Site: "home-b", Verb: "remove"}}
+	if forcedNothingToDo(&ui.Recorder{}, plan, config.Destination{}) {
+		t.Error("a plan with steps was ended")
 	}
 }
