@@ -19,9 +19,12 @@ func reportFindings(r ui.Reporter, path string, result validate.Result) {
 	}
 	r.Section(path)
 	for _, f := range result.Findings {
-		detail := f.Message
+		// The key goes first because many explanations are written to follow
+		// it ("is %q, which ..."), and it says which site or app the
+		// finding is about.
+		detail := fmt.Sprintf("%s: %s", f.Key, f.Message)
 		if r.Verbose() {
-			detail = fmt.Sprintf("%s (%s, %s)", f.Message, f.Key, f.Rule)
+			detail += fmt.Sprintf(" (%s)", f.Rule)
 		}
 		if f.Level == validate.Refuse {
 			r.Refuse(f.Hint, detail)

@@ -274,17 +274,17 @@ func (c *checker) votersShareARelay() {
 	switch {
 	case len(dialled) == 1:
 		c.refuse("voters-share-a-relay", "etcd.members",
-			"etcd voters reach each other only through one relay",
+			"only one etcd voter has an endpoint",
 			"declares %d voters, and only %s has an endpoint. %s have none, so they reach each other only through %s, and losing %s leaves each of them alone, 1 of %d and no majority: the database goes read-only on every site. %s",
 			len(voters), dialled[0], strings.Join(stranded, " and "), dialled[0], dialled[0], len(voters), fix)
 	case len(relays) > 0:
 		c.refuse("voters-share-a-relay", "etcd.members",
-			"etcd voters reach each other only through one relay",
+			"no etcd voter has an endpoint, so they peer through a relay",
 			"declares %d voters and none of them has an endpoint, so they reach each other only through %s, and losing %s leaves every voter alone, 1 of %d and no majority: the database goes read-only on every site. %s",
 			len(voters), relays[0], relays[0], len(voters), fix)
 	default:
 		c.refuse("voters-share-a-relay", "etcd.members",
-			"etcd voters reach each other only through one relay",
+			"no etcd voter has an endpoint and no relay exists",
 			"declares %d voters and no site has an endpoint, so no two of them can ever peer: WireGuard needs one side to know where to send the first packet. %s",
 			len(voters), fix)
 	}
