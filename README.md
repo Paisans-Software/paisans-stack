@@ -2826,6 +2826,19 @@ afterwards must never hold up a data site's apply: riding out that outage is
 what the witness is for. The gate reads the record on the site being applied
 rather than the live cluster, so it costs an ordinary apply no extra host.
 
+**A founding member alone has no leader, and the gates do not ask it for one.**
+The witness, applied first, runs etcd by itself until the first data site's
+member joins, and until then `etcdctl member list` times out: it is
+linearizable in etcd v3.5.16 and waits for a leader. So whether a member runs
+is asked of Docker (`compose ps --status running etcd`), not of etcd. The check
+against the live membership asks `member list` as always; when that fails on a
+member while this site is being founded, `apply` asks the same member
+`etcdctl endpoint status`, which answers without a leader, and passes over it
+only if that reports no leader. A founding cluster's membership is
+`--initial-cluster` from the configuration, so there is nothing to compare yet.
+A member that answers neither is an error, and so is a leaderless member when
+this site is past founding: that is a cluster in trouble, not one being born.
+
 ### `apply` creates each clustered app's role and database
 
 Step 6 needs something step 5 does not provide. Patroni creates its superuser,

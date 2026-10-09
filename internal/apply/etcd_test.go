@@ -2,6 +2,7 @@ package apply_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -179,13 +180,134 @@ func TestProbeEtcdMembers(t *testing.T) {
 	cfg := fixtureConfig(t)
 	quiet := &scriptHost{fakeHost: newHost(), answer: "__PAISANS_NO_ETCD__\n"}
 	live := &scriptHost{fakeHost: newHost(), answer: memberListOne}
-	members, found, err := apply.ProbeEtcdMembers(cfg, "vm", map[string]apply.Transport{"vm": quiet, "home-a": live})
+	members, found, err := apply.ProbeEtcdMembers(cfg, "vm", map[string]apply.Transport{"vm": quiet, "home-a": live}, false)
 	if err != nil || !found || len(members) != 1 {
 		t.Fatalf("%v %v %v", members, found, err)
 	}
-	_, found, err = apply.ProbeEtcdMembers(cfg, "vm", map[string]apply.Transport{"vm": quiet})
+	_, found, err = apply.ProbeEtcdMembers(cfg, "vm", map[string]apply.Transport{"vm": quiet}, false)
 	if err != nil || found {
 		t.Errorf("no etcd anywhere reported a membership: %v %v", found, err)
+	}
+}
+
+// etcdHost is a host whose etcd container is running or not, and whose etcd
+// either has a leader or is a founding member alone, the way etcd v3.5.16
+// answers each: `member list` times out without a leader, and `endpoint
+// status` answers with leader 0. statusFails makes `endpoint status` fail
+// too, as a member that answers nothing does.
+type etcdHost struct {
+	*fakeHost
+	up, leaderless, statusFails bool
+}
+
+const deadline = `{"level":"warn","msg":"retrying of unary invoker failed","error":"rpc error: code = DeadlineExceeded desc = context deadline exceeded"}
+Error: context deadline exceeded`
+
+func (h *etcdHost) Run(command string) (string, error) {
+	h.commands = append(h.commands, command)
+	switch {
+	case strings.Contains(command, "member list -w json"):
+		if !h.up {
+			return "__PAISANS_NO_ETCD__\n", nil
+		}
+		if h.leaderless {
+			return deadline, fmt.Errorf("exit status 1")
+		}
+		return memberListOne, nil
+	case strings.Contains(command, "endpoint status -w json"):
+		if !h.up || h.statusFails {
+			return deadline, fmt.Errorf("exit status 1")
+		}
+		leader := `,"leader":12345678901234567890`
+		if h.leaderless {
+			leader = ""
+		}
+		return `{"level":"warn","msg":"a line etcdctl logs first"}
+[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":1,"member_id":2},"version":"3.5.16"` + leader + `,"raftTerm":2}}]`, nil
+	case strings.Contains(command, "ps --status running --quiet etcd"):
+		if h.up {
+			return "running\n", nil
+		}
+		return "__PAISANS_NO_ETCD__\n", nil
+	}
+	return h.fakeHost.Run(command)
+}
+
+// The first data site of a new deployment is applied after the witness,
+// whose etcd runs alone with no leader. It is not refused: the witness counts
+// as running without asking etcd, the membership probe passes over a
+// leaderless founding member, and the plan carries the founding stop naming
+// the data site still to apply.
+func TestAFoundingDataSiteGetsPastALeaderlessWitness(t *testing.T) {
+	cfg := fixtureConfig(t)
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), newHost())
+	if err != nil {
+		t.Fatal(err)
+	}
+	witness := &etcdHost{fakeHost: newHost(), up: true, leaderless: true}
+	transports := map[string]apply.Transport{
+		"home-a": &etcdHost{fakeHost: newHost()},
+		"home-b": &etcdHost{fakeHost: newHost()},
+		"vm":     witness,
+	}
+	running, err := apply.EtcdRunning(cfg, transports)
+	if err != nil {
+		t.Fatalf("asking which members run: %v", err)
+	}
+	for _, c := range witness.commands {
+		if strings.Contains(c, "etcdctl") {
+			t.Errorf("asking whether etcd runs called etcdctl: %s", c)
+		}
+	}
+	if !running["vm"] || running["home-b"] {
+		t.Fatalf("running: %v", running)
+	}
+	if got := apply.FoundingUnstarted(cfg, "home-a", running); len(got) != 1 || got[0] != "home-b" {
+		t.Errorf("the founding stop names %v, want [home-b]", got)
+	}
+	if err := apply.EtcdGates(cfg, p, transports, true, running); err != nil {
+		t.Errorf("a founding data site was refused behind a leaderless witness: %v", err)
+	}
+}
+
+// Outside founding, a member with no leader is a cluster in trouble, not one
+// being born, and apply stops on it as it always has.
+func TestALeaderlessEtcdStopsAnApplyPastFounding(t *testing.T) {
+	cfg := fixtureConfig(t)
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), newHost())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transports := map[string]apply.Transport{
+		"home-a": &etcdHost{fakeHost: newHost(), up: true, leaderless: true},
+		"home-b": &etcdHost{fakeHost: newHost(), up: true, leaderless: true},
+		"vm":     &etcdHost{fakeHost: newHost(), up: true, leaderless: true},
+	}
+	err = apply.EtcdGates(cfg, p, transports, false, nil)
+	if err == nil || !strings.Contains(err.Error(), "asking etcd for its members") {
+		t.Errorf("a leaderless etcd past founding was let through: %v", err)
+	}
+}
+
+// A member whose `member list` failed is passed over only when `endpoint
+// status` confirms it has no leader. One that answers neither is an error,
+// founding or not: a failed probe says nothing about the host.
+func TestAnUnansweredEtcdIsNeverReadAsLeaderless(t *testing.T) {
+	cfg := fixtureConfig(t)
+	transports := map[string]apply.Transport{
+		"home-a": &etcdHost{fakeHost: newHost()},
+		"vm":     &etcdHost{fakeHost: newHost(), up: true, leaderless: true, statusFails: true},
+	}
+	_, _, err := apply.ProbeEtcdMembers(cfg, "home-a", transports, true)
+	if err == nil || !strings.HasPrefix(err.Error(), "vm: ") {
+		t.Errorf("an etcd answering nothing was passed over: %v", err)
+	}
+	if _, err := apply.EtcdLeaderless(transports["vm"], apply.Fixture); err == nil {
+		t.Error("a failed endpoint status reported a leader state")
+	}
+	led := &etcdHost{fakeHost: newHost(), up: true}
+	if leaderless, err := apply.EtcdLeaderless(led, apply.Fixture); err != nil || leaderless {
+		t.Errorf("a member with a leader: leaderless %v, %v", leaderless, err)
 	}
 }
 
