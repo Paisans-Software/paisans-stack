@@ -60,6 +60,11 @@ type Report struct {
 	Inventory *Inventory
 	// SSHPort is the site's ssh.port, for the firewall advice.
 	SSHPort int
+	// deploymentID is whose objects count as the toolkit's, for
+	// ForeignContainer.
+	deploymentID string
+	iface        string
+	port         int
 }
 
 // Shared reports whether the host is shared, so that a command touches only
@@ -166,11 +171,8 @@ func (o owners) socket(s Socket) holder {
 // loopback Postgres does not make a host shared, but the toolkit's own
 // loopback bind on its port would fail.
 func Classify(claims Claims, inv *Inventory) *Report {
-	r := &Report{Site: claims.Site, Host: inv.Host, Inventory: inv, SSHPort: claims.SSHPort}
-	o := owners{inv: inv, id: claims.Deployment.ID, byID: map[string]Container{}, iface: claims.Interface, port: claims.ListenPort}
-	for _, c := range inv.Containers {
-		o.byID[c.ID] = c
-	}
+	r := &Report{Site: claims.Site, Host: inv.Host, Inventory: inv, SSHPort: claims.SSHPort, deploymentID: claims.Deployment.ID, iface: claims.Interface, port: claims.ListenPort}
+	o := r.owners()
 	seen := map[Conflict]bool{}
 	conflict := func(c Conflict) {
 		if !seen[c] {
@@ -274,6 +276,47 @@ func Classify(claims Claims, inv *Inventory) *Report {
 		r.Class = Shared
 	}
 	return r
+}
+
+func (r *Report) owners() owners {
+	o := owners{inv: r.Inventory, id: r.deploymentID, byID: map[string]Container{}, iface: r.iface, port: r.port}
+	for _, c := range r.Inventory.Containers {
+		o.byID[c.ID] = c
+	}
+	return o
+}
+
+// ForeignContainer is the container that is not the toolkit's and holds
+// proto/port on any address, by the same reading the classification uses: a
+// listener in its cgroup (a host network container), its docker-proxy, or a
+// port it publishes whether or not anything listens. It is how apply finds
+// the web server in front of a monitor in ingress mode external.
+func (r *Report) ForeignContainer(proto string, port int) (Container, bool) {
+	if r == nil || r.Inventory == nil {
+		return Container{}, false
+	}
+	o := r.owners()
+	for _, s := range r.Inventory.Sockets {
+		if s.Proto != proto || s.Port != port {
+			continue
+		}
+		if s.PID > 0 {
+			if c, ok := o.byID[r.Inventory.Cgroups[s.PID]]; ok && !o.ours(c.Deployment) {
+				return c, true
+			}
+		}
+	}
+	for _, c := range r.Inventory.Containers {
+		if o.ours(c.Deployment) {
+			continue
+		}
+		for _, b := range c.Bindings {
+			if b.Proto == proto && b.Port == port {
+				return c, true
+			}
+		}
+	}
+	return Container{}, false
 }
 
 // foreign lists what is neither the deployment's nor the base system's. An

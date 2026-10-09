@@ -203,7 +203,11 @@ func Build(cfg *config.Config, secrets *config.Secrets, transports map[string]ap
 		}
 	}
 
-	rendered, err := render.Build(cfg, secrets)
+	proxies, err := apply.HostProxyOptions(cfg, transports)
+	if err != nil {
+		return nil, err
+	}
+	rendered, err := render.Build(cfg, secrets, proxies...)
 	if err != nil {
 		return nil, err
 	}

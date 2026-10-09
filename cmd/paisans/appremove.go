@@ -145,7 +145,11 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		if _, err := gateSites(stdout, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
 			return err
 		}
-		rendered, err := render.Build(cfg, secrets)
+		proxies, err := apply.HostProxyOptions(cfg, transports)
+		if err != nil {
+			return err
+		}
+		rendered, err := render.Build(cfg, secrets, proxies...)
 		if err != nil {
 			return err
 		}

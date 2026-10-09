@@ -82,6 +82,11 @@ type appValues struct {
 	IngressListen  string
 	IngressNetwork string
 	IngressGateway string
+	// ProxyNetwork is the existing network of the web server in front of
+	// the app, which it joins as ProxyAlias, when apply found that server on
+	// a Docker network of its own. Empty otherwise. See HostProxy.
+	ProxyNetwork string
+	ProxyAlias   string
 
 	// MeshAddress is the mesh address of the site this instance runs on. A
 	// published port binds it and nothing else, and a clustered app reaches
@@ -346,6 +351,12 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	v.IngressListen = ingressListen(p.cfg, planned.Name)
 	if v.IngressListen != "" {
 		v.IngressNetwork, v.IngressGateway = IngressNetwork, IngressGateway
+		if proxy, ok := p.hostProxy[planned.Name]; ok {
+			v.ProxyNetwork, v.ProxyAlias = proxy.Network, ProxyAlias(p.cfg, planned.Name)
+			if proxy.Address != "" {
+				v.TrustProxy += "," + proxy.Address + "/32"
+			}
+		}
 	}
 	v.ServerName = planned.Hostname
 	if delegated := app.Hostnames[kinds.WellknownRole]; delegated != "" {

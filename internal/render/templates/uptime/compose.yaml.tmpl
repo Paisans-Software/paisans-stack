@@ -41,6 +41,17 @@ services:
     ports:
       - "{{ .MeshAddress }}:{{ .App.Port }}:{{ .App.Port }}"
 {{- end }}
+{{- if .ProxyNetwork }}
+    # Also on the network of the web server in front of it, which runs in a
+    # container of its own and cannot reach the host's loopback. It proxies
+    # to {{ .ProxyAlias }} there. The network is that server's: external
+    # here, so compose joins it and never creates or removes it.
+    networks:
+      default: {}
+      proxy:
+        aliases:
+          - {{ .ProxyAlias }}
+{{- end }}
     volumes:
       - {{ .DataPath }}/data:/data
       - {{ .DataPath }}/monitors.json:/seed/monitors.json:ro
@@ -59,4 +70,9 @@ networks:
       config:
         - subnet: {{ .IngressNetwork }}
           gateway: {{ .IngressGateway }}
+{{- end }}
+{{- if .ProxyNetwork }}
+  proxy:
+    name: {{ .ProxyNetwork }}
+    external: true
 {{- end }}

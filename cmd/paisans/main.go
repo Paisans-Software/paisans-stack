@@ -494,6 +494,7 @@ func runApply(args []string) error {
 	minFree := fs.String("min-free", "3G", "free space Docker's data root must have before a stack pulls an image, Eg: 2G")
 	keepImages := fs.Bool("keep-images", false, "leave the images this apply supersedes on the host, Eg: to keep one to roll back to")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
+	approveProxy := fs.Bool("approve-external-proxy", false, "on a monitor in ingress mode external, add the site block to the host's own Caddy without asking on the terminal, for an unattended run")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -553,6 +554,13 @@ func runApply(args []string) error {
 	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
+	// The web server in front of a monitor in ingress mode external, read
+	// before the render, because a server on a Docker network of its own
+	// changes how the app is rendered: it joins that network.
+	edge, renderOptions, err := planEdge(cfg, *site, host, transport, only, *approveProxy)
+	if err != nil {
+		return err
+	}
 
 	// The identity step: every app this site starts that signs in through
 	// Pocket ID gets its client ensured before it renders. Planned here,
@@ -573,7 +581,7 @@ func runApply(args []string) error {
 	// Build rather than onto the plan it returns, so planning announces what
 	// it reads from the host as Execute announces what it does there.
 	planFor := func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
-		return planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...), apply.Progress(os.Stdout)})...)
+		return planSiteApply(cfg, secrets, *site, transport, renderOptions, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...), apply.Progress(os.Stdout)})...)
 	}
 	plan, err := planWithClients(clients, func(hold []string) (*apply.Plan, error) { return planFor(hold, nil) }, *execute)
 	if err != nil {
@@ -616,13 +624,14 @@ func runApply(args []string) error {
 	if err := printLeftovers(os.Stdout, cfg, *site, host.Inventory, plan); err != nil {
 		return err
 	}
+	edge.print(os.Stdout)
 
 	if err := apply.EtcdGates(cfg, plan, transports, founding, running); err != nil {
 		return err
 	}
 
 	if !*execute {
-		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone && (clients == nil || clients.steps == 0) {
+		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone && (clients == nil || clients.steps == 0) && !edge.pending() {
 			return clients.result()
 		}
 		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
@@ -660,12 +669,19 @@ func runApply(args []string) error {
 		written += len(p.Writes())
 	}
 	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", written, plan.Transport)
+	if err := edge.execute(transport, os.Stdout); err != nil {
+		return err
+	}
 	if err := checkStandby(cfg, acted, *site, transport, func(name string) apply.Transport {
 		return siteTransport(name, cfg.Sites[name], "", *sudo)
 	}); err != nil {
 		return err
 	}
-	return clients.result()
+	edgeErr := edge.result(os.Stdout)
+	if err := clients.result(); err != nil {
+		return err
+	}
+	return edgeErr
 }
 
 // checkStandby is the deployment level gate after an apply that acted on a
@@ -704,11 +720,14 @@ func checkStandby(cfg *config.Config, plan *apply.Plan, site string, transport a
 // and the databases it bootstraps. `storage rotate-key` switches an app with
 // exactly this, scoped by apply.Only, so a rotation's switch is the apply an
 // operator would have typed rather than a second path to the same host.
-func planSiteApply(cfg *config.Config, secrets *config.Secrets, site string, transport apply.Transport, options ...apply.Option) (*apply.Plan, error) {
+//
+// renderOptions are facts read from the host that the render needs, as
+// planEdge returns them; nil for none.
+func planSiteApply(cfg *config.Config, secrets *config.Secrets, site string, transport apply.Transport, renderOptions []render.Option, options ...apply.Option) (*apply.Plan, error) {
 	// An etcd member keeps the flags it was born with, read from its host,
 	// so that etcd.members growing never changes a running member's compose
 	// file. See render.EtcdInitialPath.
-	var renderOptions []render.Option
+	renderOptions = slices.Clone(renderOptions)
 	if contains(cfg.Etcd.Members, site) {
 		initial, found, err := apply.ReadEtcdInitial(transport, cfg.Deployment())
 		if err != nil {

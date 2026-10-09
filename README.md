@@ -500,9 +500,11 @@ sites:
   refuses a mesh over it (`ingress-network-overlaps-mesh`), and the host
   check refuses a host where a foreign network or route already holds it.
   The certificate and its renewal belong to whoever runs that web server: the
-  toolkit cannot know how an unfamiliar server obtains one, and must not edit
-  a configuration it does not own. `docs/guides/behind-your-own-web-server.md`
-  walks through it.
+  toolkit cannot know how an unfamiliar server obtains one. It changes nothing
+  of that server's configuration but one site block per hostname, and only
+  when the server is a Caddy in a container it can read and the operator says
+  yes at the terminal (see *`apply` adds the site block to a Caddy already on
+  the host*). `docs/guides/behind-your-own-web-server.md` walks through it.
 
 `listen` belongs to `mode: external` alone, which cannot work without it
 (`ingress-listen-mode`). Docker publishes a port with its own iptables rules,
@@ -570,6 +572,146 @@ from where the check runs, says nothing about the port: one conclusive answer
 still passes, naming the family that could not be reached (commonly IPv6 from
 a home connection), and with none the check fails as inconclusive. In `mode: paisans` there is nothing to hand off, and `check`
 runs only the first two.
+
+#### `apply` adds the site block to a Caddy already on the host
+
+A machine that already serves 80 and 443 usually does it with a Caddy in a
+container, and copying a block out of `ingress show` into its Caddyfile by
+hand is the step an operator gets wrong or forgets after changing `listen`. So
+on a monitor in ingress mode external, `apply` looks at that server, and when
+it is a Caddy it can safely add to, it offers to add the block itself. It asks
+first, every time, because the server is not the toolkit's. Founder decision.
+
+**Finding it, read only.** The host check has already named every foreign
+container and what it holds. `apply` takes the one holding 443/tcp, through
+its cgroup (a host network container), its `docker-proxy` or the ports it
+publishes, and reads it with `docker inspect`, naming only the fields it
+needs: the image, the command line, the network mode, the networks with its
+address on each, and the mounts. The container's environment is never read,
+since it may hold credentials. `caddy version` run inside it decides whether
+it is Caddy: an image name says nothing about what a custom build runs. A
+`docker exec` failing for any reason but a missing `caddy` program is a
+failure to look, which stops the plan, as any probe does (see *Never infer
+host state from a failed probe*). The Caddyfile is the `--config` argument,
+read through the container's bind mount from the host, and only its top
+level is read: its `import` lines, its site addresses and a global `admin`
+line.
+
+**What it can add to, and what it hands back.** A Caddy 2 container, running,
+loading a Caddyfile (`--adapter caddyfile`, or a file Caddy reads as one by
+its name) that is bind mounted from the host, with its admin endpoint on. Any
+other server is left alone and the plan says why, then prints the block for
+its owner: no container on 443 (a web server installed on the host itself),
+a container that is not Caddy, a JSON or API managed configuration, a
+Caddyfile inside the image or a volume, where an edit would be lost when the
+container is recreated, and `admin off`, where a change could only take
+effect through a restart. A Caddyfile that already has a site block for the
+hostname, which the toolkit did not write, is left alone too: Caddy refuses a
+configuration with two blocks for one address, and it refuses all of it, so
+the reload would take every site on that server down.
+
+**How that Caddy reaches the app** depends on its network:
+
+| Its network | Upstream in the block | What else changes |
+|---|---|---|
+| the host's (`network_mode: host`) | `listen`, as declared | nothing: its loopback is the host's |
+| a user defined network | `paisans-<token>-<app>:<port>` on that network | the app joins it; `TRUST_PROXY` adds the Caddy's address there |
+| Docker's default bridge alone | none | held: the host's loopback is not its own, and nothing can join it by name |
+| another container's (`container:`) | none | held: where it can reach depends on a container the toolkit knows nothing about |
+
+On a user defined network, the app's compose file declares that network
+`external`, under the alias `paisans-<token>-<app>`, which carries the token
+and so cannot be another deployment's name. Compose joins an external network
+and never creates, changes or removes it, so the owner's network stays theirs.
+The Caddy then dials the container directly, and its connections arrive from
+its own address on that network rather than from the pinned network's gateway,
+so `TRUST_PROXY` names both, each `/32`: the login rate limiter needs exactly
+the proxy trusted and nothing wider. That address is read at every apply of
+the site. A Caddy its owner recreates may come back on another one, and until
+the site is applied again the app trusts the old address, which fails closed:
+every visitor counts as one client, and no other container can claim to be a
+proxy. Every other command that renders the monitor, the reseed at the end of
+a topology change above all, renders it with the network and address the last
+apply deployed, read from the app's compose file and environment on the host,
+so a `site add` never takes the monitor off the network its server reaches it
+on.
+
+**Where the block goes.** A directory the Caddyfile already imports is
+preferred, because a file of the toolkit's own there leaves every byte of the
+owner's Caddyfile as it was. That is a top level `import` with one wildcard,
+in its last element, of a directory bind mounted from the host; the file is
+the pattern with `paisans-<token>` in place of the wildcard (`paisans-f2a9.caddy`
+for `import sites/*.caddy`), and its first line names the deployment's id.
+Without one, the block is appended to the Caddyfile between two lines:
+
+```
+# BEGIN paisans-f2a9 deployment f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01: written by `paisans apply`. Do not edit between these lines; apply rewrites them.
+status.example.org {
+	@refused path /status* /badge/* /metrics /metrics/ /api/v1/*
+	respond @refused 404
+	reverse_proxy 127.0.0.1:8480
+}
+# END paisans-f2a9
+```
+
+Only what lies between those lines is ever replaced, so a later apply with a
+new `listen` rewrites the block and nothing the owner added since. The markers
+carry the full id, as every label does: a marker with this token and another
+id is another deployment's, and is refused rather than read as this one's.
+The block is `ingress show`'s Caddy snippet without its certificate line,
+since that Caddy obtains the certificate itself, as it does for its other
+sites.
+
+**Asking.** A dry run prints the server, its network, the file and the change
+as removed and added lines, and changes nothing. With `--execute` the change
+waits until the site's stacks are applied and healthy, then the same lines are
+shown on the controlling terminal, `/dev/tty` as the sudo password prompt
+uses, followed by `[y/N]`. Only `y` or `yes` writes.
+
+| The operator | What happens |
+|---|---|
+| answers yes | written, validated and reloaded, below |
+| answers no, or anything else | nothing written; listed under `held back from this apply:` with the block, and the run succeeds, since the operator chose it |
+| has no terminal (cron, CI) | nothing written; the rest of the apply finishes, the block is printed under `held back from this apply:`, and the run fails, so an unattended apply that left the monitor unserved does not read as a success |
+| passed `--approve-external-proxy` | not asked; the change is still printed |
+
+`--approve-external-proxy` exists for an unattended run whose operator has
+read the dry run, the way `--overwrite` names one file it may replace. A run
+with `--only` that leaves out the monitor leaves its server alone as well.
+
+**Writing, checking and reloading.** The file is read again and compared
+with what the plan read; a file changed since is not written, and a fresh
+apply plans against what it holds. A Caddyfile is copied first, to
+`<file>.paisans-backup-<UTC time>` beside it with its owner and mode; the
+toolkit's own file in an import directory needs no backup. Every write is in
+place, `cat >` rather than a file moved over the old one, because a Caddyfile
+bind mounted on its own is mounted by its inode, and a file moved over it is
+never seen inside the container. Then, in the owner's container:
+
+```sh
+docker exec <container> caddy validate --config <path> --adapter caddyfile
+docker exec <container> caddy reload   --config <path> --adapter caddyfile
+```
+
+`reload` hands the configuration to the running Caddy through its admin
+endpoint (`--address` when the Caddyfile sets one), which swaps it in without
+dropping a connection. When either fails, the file is put back from the
+backup, or the toolkit's new file is removed, and the apply stops with
+Caddy's own message: a refused configuration is never left on disk for the
+owner's next reload to trip over. The container is never restarted,
+recreated or stopped, and its networks, volumes and every other line of its
+configuration are left as they were.
+
+**Checking the result.** `curl` on the host asks for `https://<hostname>/healthz`
+with `--resolve` to the address that Caddy's 443 binds (loopback when it binds
+every address), so the answer is that server's and its certificate's rather
+than DNS's. It asks up to six times, ten seconds apart. A 2xx or 3xx is
+reported; anything else, commonly a TLS error while the certificate is still
+being issued, is reported with `paisans ingress check --app <name>` to run
+once it has had time, and never fails the apply.
+
+A second apply that finds the block as wanted plans nothing for the server
+and asks nothing.
 
 **Moving an existing monitor.** A deployment whose uptime hostname already has
 an A record pointing at the gateway gets a `conflict` from `dns init` once the
