@@ -1641,6 +1641,19 @@ reason an unknown hostname role is: the import would name a snippet nothing
 renders, and Caddy fails to load its entire configuration over one missing
 import, taking every hostname down rather than one.
 
+**The members gate admits one group, named once.** The `oauth2-proxy` app's
+`settings.members_group` (`members` when absent) is the group its enforcing
+instance admits, and nothing in the toolkit creates that group at the identity
+provider: it has to exist there under exactly that name, or every member meets
+the pending page. An app that reads a member group of its own from the
+`groups` claim (Eg: Mbin's `OAUTH_OIDC_MEMBER_GROUP`) restricts its Pocket ID
+client to that group, so when a member-gated app's group and the gate's
+differ, someone in one and not the other is admitted by one check and refused
+by the other: sent to the pending page for an app that would admit them, or
+past the gate to be refused by the app's own sign-in. That is warned about
+(`visibility-gate-group-mismatch`) rather than refused, because the two can
+differ on purpose, with the gate's group wider than the app's.
+
 ### `storage init` provisions object storage
 
 `apply` renders files and reconciles them against a manifest it wrote; that is

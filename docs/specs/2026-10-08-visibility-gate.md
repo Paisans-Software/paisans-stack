@@ -48,6 +48,13 @@ an unknown key, and a deployment is redeployed rather than converted.
 (`visibility-gate-provisional`), because it admits every signed-in visitor,
 including people who have not been accepted into the community.
 
+`member` admits the group the gate app's `settings.members_group` names,
+`members` when absent (`render.GateMembersGroup`). Nothing creates that group
+at the identity provider. A member-gated app whose own member group (Eg:
+Mbin's `OAUTH_OIDC_MEMBER_GROUP`) is a different name is warned about
+(`visibility-gate-group-mismatch`): someone in one group and not the other is
+admitted by one check and refused by the other.
+
 ## What reaches the app without a gate session
 
 On a gated hostname, Caddy sends a request to the app without asking the gate

@@ -44,7 +44,7 @@ var settingOwners = []settingOwner{
 	{config.KindMbin, "S3_BUCKET", ".env", "s3_bucket"},
 	{config.KindMbin, "S3_REGION", ".env", "s3_region"},
 
-	{config.KindOAuth2Proxy, "OAUTH2_PROXY_ALLOWED_GROUPS", "compose.yaml", "members_group"},
+	{config.KindOAuth2Proxy, "OAUTH2_PROXY_ALLOWED_GROUPS", "compose.yaml", GateMembersGroupSetting},
 
 	{config.KindOutline, "AWS_REGION", ".env", "s3_region"},
 	{config.KindOutline, "AWS_S3_FORCE_PATH_STYLE", ".env", "s3_force_path_style"},

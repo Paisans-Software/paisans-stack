@@ -169,6 +169,7 @@ func Check(cfg *config.Config) Result {
 	c.publicAddress()
 	c.watchdogOffOnDataSite()
 	c.visibilityGateProvisional()
+	c.visibilityGateGroupMismatch()
 
 	sort.SliceStable(c.findings, func(i, j int) bool {
 		if c.findings[i].Level != c.findings[j].Level {
@@ -906,7 +907,11 @@ func (c *checker) gateWithoutAGate() {
 // restrict access: it ends client login and federation outright. Pocket ID and
 // the gate itself are the sign-in flow, so gating either gates the login. The
 // failure in every case reads as something mysteriously unable
-// to sign in, with nothing in the configuration saying why.
+// to sign in, with nothing in the configuration saying why. The monitor is
+// what an admin opens when the sites it watches are down, and the gate signs
+// in at the identity provider on those sites, so a gated monitor is
+// unreadable at exactly the moment it exists for; its break glass password
+// sign-in would sit behind the sign-in it is the fallback for.
 //
 // Access control for these lives elsewhere: for a homeserver at the identity
 // provider, where the group restriction decides who may be provisioned an
@@ -942,6 +947,49 @@ func (c *checker) visibilityGateWithoutSignedFetch() {
 		c.refuse("visibility-gate-without-signed-fetch", fmt.Sprintf("apps.%s.visibility_gate", name),
 			"is %q, but this %s app federates and the toolkit records no way for it to refuse an unsigned ActivityPub read. The gate leaves ActivityPub requests to the app, and anyone can send an ActivityPub Accept header, so every page would be readable as JSON by anyone. Turn federation off for this app, or set visibility_gate: public. A WriteFreely checks signatures only in private mode, so for one this also means private is not false.",
 			app.VisibilityGate, app.Kind)
+	}
+}
+
+// visibilityGateGroupMismatch warns about a member-gated app whose own member
+// group is not the group the gate admits.
+//
+// The members gate admits the group named by the gate app's members_group
+// setting, members by default. An app that reads a member group of its own
+// from the groups claim restricts its Pocket ID client to that group. When
+// the two names differ, someone in the app's group and not the gate's is
+// sent to the pending page for an app that would admit them, and someone in
+// the gate's group and not the app's passes the gate to be refused by the
+// app's own sign-in. Nothing in the toolkit creates the gate's group, so a
+// misspelling here is also how every member lands on the pending page. The
+// two can legitimately differ, which is why this warns rather than refuses.
+func (c *checker) visibilityGateGroupMismatch() {
+	gateGroup := ""
+	for _, name := range c.cfg.AppNames() {
+		if c.cfg.Apps[name].Kind != config.KindOAuth2Proxy {
+			continue
+		}
+		gateGroup = render.GateMembersGroup(c.cfg.Apps[name])
+		break
+	}
+	if gateGroup == "" {
+		return
+	}
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Gate() != config.GateMember {
+			continue
+		}
+		spec, ok := kinds.OIDCClient(app.Kind, app.Hostname)
+		if !ok {
+			continue
+		}
+		_, member := spec.Groups(app)
+		if member == "" || member == gateGroup {
+			continue
+		}
+		c.warn("visibility-gate-group-mismatch", fmt.Sprintf("apps.%s.visibility_gate", name),
+			"is member, so the gate admits the group %q, but this app's own member group is %q. Someone in one group and not the other is admitted by one check and refused by the other. Name the same group in both, or accept that the two differ on purpose.",
+			gateGroup, member)
 	}
 }
 
