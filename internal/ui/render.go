@@ -31,9 +31,8 @@ type writer struct {
 	now      func() time.Time
 	tick     time.Duration
 
-	open    *step
-	frame_  int
-	stopped chan struct{}
+	open   *step
+	frame_ int
 }
 
 func newWriter(w io.Writer, verbose, terminal bool) *writer {
@@ -46,6 +45,9 @@ type step struct {
 	started time.Time
 	details []string
 	ended   bool
+	// stop closes when this step's spinner must stop. It lives on the step,
+	// not the writer, so ending one step cannot stop another step's spinner.
+	stop chan struct{}
 }
 
 func (r *writer) Verbose() bool { return r.verbose }
@@ -59,20 +61,28 @@ func (r *writer) Section(title string) {
 func (r *writer) Step(title string) Step {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// A step that opens while another is still open has no end to wait for
+	// from the caller's side, so the earlier spinner stops here. Two spinners
+	// drawing one line would interleave; the earlier step still prints its
+	// own line when it ends.
+	if prev := r.open; prev != nil && prev.stop != nil {
+		close(prev.stop)
+		prev.stop = nil
+	}
 	s := &step{r: r, title: title, started: r.now()}
 	r.open = s
 	if r.terminal {
 		r.frame_ = 0
 		r.drawLocked()
 		if r.tick > 0 {
-			r.stopped = make(chan struct{})
-			go r.spin(r.stopped)
+			s.stop = make(chan struct{})
+			go r.spin(s, s.stop)
 		}
 	}
 	return s
 }
 
-func (r *writer) spin(stop chan struct{}) {
+func (r *writer) spin(s *step, stop chan struct{}) {
 	t := time.NewTicker(r.tick)
 	defer t.Stop()
 	for {
@@ -80,9 +90,22 @@ func (r *writer) spin(stop chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
-			r.frame()
+			r.spinFrame(s, stop)
 		}
 	}
+}
+
+// spinFrame draws a tick only while its own step is still the open one. A
+// tick can be waiting on the mutex when its step ends, and it must not draw
+// over whatever step came next.
+func (r *writer) spinFrame(s *step, stop chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.open != s || s.stop != stop || !r.terminal {
+		return
+	}
+	r.frame_++
+	r.drawLocked()
 }
 
 // frame draws the next spinner frame for the open step, if there is one.
@@ -125,8 +148,8 @@ func (s *step) end(ok bool, result string) {
 		return
 	}
 	s.ended = true
-	stop := r.stopped
-	r.stopped = nil
+	stop := s.stop
+	s.stop = nil
 	if r.open == s {
 		r.open = nil
 	}

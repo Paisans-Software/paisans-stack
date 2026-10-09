@@ -3,6 +3,7 @@ package ui_test
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -151,5 +152,85 @@ func TestRecorderKeepsOrder(t *testing.T) {
 	}
 	if !rec.Has("detail", "an environment file changed") {
 		t.Fatal("step detail not recorded")
+	}
+}
+
+// syncBuf lets a test read output while a spinner goroutine may be drawing
+// into it. A bare strings.Builder would race with the goroutine under -race.
+type syncBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// waitFor polls until cond holds, so a test does not depend on how many ticks
+// the scheduler happens to fit into a fixed sleep.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// assertSilent fails if any output is written over a window of spinner ticks.
+func assertSilent(t *testing.T, b *syncBuf, what string) {
+	t.Helper()
+	before := b.String()
+	time.Sleep(20 * time.Millisecond)
+	if after := b.String(); after != before {
+		t.Errorf("%s: output grew: %q", what, after[len(before):])
+	}
+}
+
+// A spinner with a real tick runs on its own goroutine. Ending the step must
+// stop it, so nothing is drawn once Done returns.
+func TestSpinnerStopsWhenStepEnds(t *testing.T) {
+	var b syncBuf
+	r := ui.NewForTestTick(&b, false, true, time.Now, time.Millisecond)
+	s := r.Step("recreate infra")
+	waitFor(t, "spinner ticks", func() bool { return strings.Count(b.String(), "recreate infra") >= 2 })
+	s.Done("")
+	assertSilent(t, &b, "after Done")
+}
+
+// Two steps open at once must not share a spinner. Opening the second stops
+// the first's spinner, so the first's frames stop appearing; ending either
+// step must not stop the other's, and once both have ended nothing draws.
+func TestOverlappingStepsEachStopTheirOwnSpinner(t *testing.T) {
+	var b syncBuf
+	r := ui.NewForTestTick(&b, false, true, time.Now, time.Millisecond)
+	first := r.Step("first step")
+	waitFor(t, "first spinner ticks", func() bool { return strings.Count(b.String(), "first step") >= 2 })
+
+	second := r.Step("second step")
+	mark := b.String()
+	waitFor(t, "second spinner ticks", func() bool { return strings.Count(b.String(), "second step") >= 2 })
+	if strings.Contains(b.String()[len(mark):], "first step") {
+		t.Fatalf("earlier step's spinner kept drawing after a later step opened: %q", b.String()[len(mark):])
+	}
+
+	first.Done("")
+	mark = b.String()
+	waitFor(t, "second spinner after first ended", func() bool { return strings.Count(b.String(), "second step") > strings.Count(mark, "second step") })
+
+	second.Done("")
+	assertSilent(t, &b, "after both steps ended")
+	if !strings.Contains(b.String(), "✓") {
+		t.Errorf("finished lines missing: %q", b.String())
 	}
 }
