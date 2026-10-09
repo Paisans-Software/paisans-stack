@@ -195,6 +195,9 @@ func (e *Executor) execute(p *Plan) error {
 			return err
 		}
 	}
+	// The monitor's reseed is not a step of the removal above, so the last of
+	// those ends first: a failure here must not mark an unrelated line.
+	e.idle()
 	for _, m := range p.Monitors {
 		if m.Pending() {
 			e.section("%s (the monitor)", m.Site)
@@ -253,7 +256,7 @@ func (e *Executor) files(h Host, d deployment.Deployment, s SitePlan) error {
 				e.open.Detail("%s", p)
 			}
 		case "kept":
-			e.Kept = append(e.Kept, fmt.Sprintf("%s: %s, edited on the host since apply wrote it, kept with its manifest entry. Delete it by hand once nothing needs it, and run this again", s.Site, p))
+			e.Kept = append(e.Kept, fmt.Sprintf("%s: %s kept; delete it by hand once nothing needs it, then run this again. It was edited on the host since apply wrote it, so it stays with its manifest entry", s.Site, p))
 		}
 	}
 	for _, f := range s.Files {

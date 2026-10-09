@@ -258,7 +258,7 @@ func TestAFileEditedOnTheHostIsKept(t *testing.T) {
 	if len(entries) != 2 || entries[0].Path != strings.TrimPrefix(docsEnv, "/") {
 		t.Errorf("manifest = %+v, want the edited file's entry kept", entries)
 	}
-	if !strings.Contains(strings.Join(ex.Kept, "\n"), docsEnv+", edited on the host") {
+	if !strings.Contains(strings.Join(ex.Kept, "\n"), docsEnv+" kept; delete it by hand") {
 		t.Errorf("kept = %v", ex.Kept)
 	}
 }

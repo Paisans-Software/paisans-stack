@@ -119,7 +119,17 @@ func TestAFailedReseedNamesTheApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	monitors(t, cfg, secrets, hosts, p)
-	err = executor(hosts).Execute(p)
+	rec := &ui.Recorder{}
+	ex := executor(hosts)
+	ex.Report = rec
+	err = ex.Execute(p)
+	// Only the monitor's own line fails: the removal step before it ended
+	// done and is not marked for the reseed's error.
+	for _, e := range rec.Events {
+		if e.Kind == "fail" && !strings.HasPrefix(e.Text, "apply ") {
+			t.Errorf("the failure marked %q, not the reseed:\n%s", e.Text, rec.Lines())
+		}
+	}
 	var me *MonitorError
 	if !errors.As(err, &me) || !strings.Contains(err.Error(), "paisans apply --site watch --only status --execute") {
 		t.Fatalf("want the monitor's failure naming the apply, got %v", err)

@@ -38,6 +38,10 @@ type Step struct {
 	// Text is the whole step, commands included. A dry run shows it only with
 	// --verbose.
 	Text string
+	// Level is "warn" or "refuse" for a step that is a finding rather than
+	// work: a dry run reports it as a warning or a refusal so it shows without
+	// --verbose.
+	Level string
 	// Title is the step as a line of its own. It is empty for a step that
 	// has none worth the name, which then reads as its verb and site. Steps
 	// that follow each other with one title are listed as one item.
@@ -392,7 +396,7 @@ func (p *Plan) noteOwed() error {
 		}
 		if n := len(sp.Writes()); n > 0 {
 			p.Notes = append(p.Notes, fmt.Sprintf(
-				"%s's app configuration differs from the render in %d file(s), Eg: S3_ENDPOINT after storage.garage.sites was reordered. `paisans apply --site %s` brings it up to date and recreates those apps; run it when that is acceptable", name, n, name))
+				"%s: app configuration differs from the render in %d file(s); run `paisans apply --site %s` when that is acceptable. It brings them up to date and recreates those apps, Eg: for S3_ENDPOINT after storage.garage.sites was reordered", name, n, name))
 		}
 	}
 	return nil
@@ -501,6 +505,14 @@ func (p *Plan) Show(r ui.Reporter) {
 		}
 		last := ""
 		for _, step := range st.Steps {
+			switch step.Level {
+			case "refuse":
+				r.Refuse(step.title(), step.Text)
+				continue
+			case "warn":
+				r.Warn(step.title(), step.Text)
+				continue
+			}
 			if t := step.title(); t != last {
 				r.Item(t)
 				last = t
@@ -509,9 +521,6 @@ func (p *Plan) Show(r ui.Reporter) {
 		}
 		r.Item("gate: " + st.Short)
 		r.Detail("%s", st.Gate)
-	}
-	for _, note := range p.Notes {
-		r.Detail("note: %s", note)
 	}
 }
 

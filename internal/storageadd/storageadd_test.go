@@ -244,7 +244,14 @@ func TestASiteWithoutGarageIsSentToApply(t *testing.T) {
 	w.provisioned(2, "home-a")
 	delete(w.hosts["home-b"].files, storageadd.GarageToml)
 
-	err := storageadd.Execute(w.build(storageadd.Options{}))
+	p := w.build(storageadd.Options{})
+	// The dry run says so without --verbose: it is a refusal, not a detail.
+	rec := &ui.Recorder{}
+	p.Show(rec)
+	if !rec.Has("refuse", "home-b has no garage.toml yet") {
+		t.Errorf("the dry run hides the missing garage.toml:\n%s", rec.Lines())
+	}
+	err := storageadd.Execute(p)
 	if err == nil || !strings.Contains(err.Error(), "paisans apply --site home-b") {
 		t.Fatalf("expected to be sent to apply, got %v", err)
 	}

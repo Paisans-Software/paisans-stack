@@ -36,12 +36,20 @@ func (p *Plan) buildNodes() *Stage {
 		Gate:  "every Garage site has a garage.toml and its node answers, every deployed replication factor matches the configuration or --change-replication was given, and no site without a role is listed ahead of one with a role",
 	}
 	for _, n := range p.nodes {
-		var text string
+		var text, level, title string
+		title = "read Garage on " + n.site
 		switch {
 		case !n.deployed:
-			text = "no garage.toml yet"
+			text = fmt.Sprintf("Run `paisans apply --site %s` first: it writes %s and starts Garage there", n.site, garageToml(p.dep()))
+			level, title = "refuse", n.site+" has no garage.toml yet"
 		case !n.answers():
 			text = fmt.Sprintf("garage.toml at replication %d; the node does not answer: %s", n.factor, n.answerErr)
+			// A reset starts a stopped node again, so only outside one is the
+			// silence a problem the gate refuses.
+			level, title = "warn", "Garage on "+n.site+" does not answer"
+			if !p.reset {
+				level = "refuse"
+			}
 		default:
 			role := "no role"
 			if n.hasRole {
@@ -49,7 +57,7 @@ func (p *Plan) buildNodes() *Stage {
 			}
 			text = fmt.Sprintf("node %s, garage.toml at replication %d, layout version %d, %s", n.short(), n.factor, n.version, role)
 		}
-		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "read", Title: "read Garage on " + n.site, Text: text})
+		st.Steps = append(st.Steps, Step{Site: n.site, Verb: "read", Level: level, Title: title, Text: text})
 	}
 	st.gate = func() error {
 		var problems []string

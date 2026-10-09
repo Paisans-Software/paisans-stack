@@ -33,6 +33,10 @@ type Step struct {
 	// Text is the whole step, commands included. A dry run shows it only with
 	// --verbose.
 	Text string
+	// Level is "warn" or "refuse" for a step that is a finding rather than
+	// work: a dry run reports it as a warning or a refusal so it shows without
+	// --verbose.
+	Level string
 	// Title is the step as a line of its own. It is empty for a step that
 	// has none worth the name, which then reads as its verb and site.
 	Title string
@@ -368,14 +372,14 @@ func (p *Plan) buildPreflight() *Stage {
 		return st
 	}
 	for _, c := range p.Preflight.Checks {
-		verb := "pass"
+		verb, level := "pass", ""
 		switch {
 		case c.Refused:
-			verb = "refuse"
+			verb, level = "refuse", "refuse"
 		case c.Warned:
-			verb = "warn"
+			verb, level = "warn", "warn"
 		}
-		st.Steps = append(st.Steps, Step{Site: c.Site, Verb: verb, Title: c.Name + " on " + c.Site, Text: verb + ": " + c.Detail})
+		st.Steps = append(st.Steps, Step{Site: c.Site, Verb: verb, Level: level, Title: c.Name + " on " + c.Site, Text: c.Detail})
 	}
 	st.gate = func() error {
 		if !p.Preflight.Refused() {
@@ -543,6 +547,14 @@ func (p *Plan) Show(r ui.Reporter) {
 		}
 		last := ""
 		for _, step := range st.Steps {
+			switch step.Level {
+			case "refuse":
+				r.Refuse(step.title()+" refused", step.Text)
+				continue
+			case "warn":
+				r.Warn(step.title(), step.Text)
+				continue
+			}
 			if t := step.title(); t != last {
 				r.Item(t)
 				last = t
@@ -554,9 +566,6 @@ func (p *Plan) Show(r ui.Reporter) {
 		if st.OnFailure != "" {
 			r.Detail("rollback: %s", st.OnFailure)
 		}
-	}
-	for _, note := range p.Notes {
-		r.Detail("note: %s", note)
 	}
 }
 

@@ -248,7 +248,7 @@ func (p *Plan) buildHost() (*Stage, error) {
 	for _, r := range rules {
 		switch {
 		case r.Owned && r.SSH:
-			p.Kept = append(p.Kept, fmt.Sprintf("%s: ufw rule `%s`, the SSH allow. With incoming denied, deleting it cuts the next connection; delete it yourself once nothing logs in through it", p.Site, r.Line))
+			p.Kept = append(p.Kept, fmt.Sprintf("%s: SSH allow rule kept; delete it yourself once nothing logs in through it. With incoming denied, deleting `%s` cuts the next connection", p.Site, r.Line))
 		case r.Owned:
 			hp.rules = append(hp.rules, r.Line)
 		default:
@@ -394,7 +394,7 @@ func (p *Plan) probeKeys(t apply.Transport, hp *hostPlan) error {
 		candidates = append(candidates, raw)
 	}
 	if len(candidates) > 0 && len(candidates) == total {
-		p.Kept = append(p.Kept, fmt.Sprintf("%s: the key(s) %s lists in %s, because deleting them would leave %s with no authorized key, and nobody could log in over SSH again. Delete them yourself once another way in exists", p.Site, kp.record, kp.file, user))
+		p.Kept = append(p.Kept, fmt.Sprintf("%s: SSH key lines kept in %s; delete them yourself once another way in exists. Deleting the key(s) %s lists would leave %s with no authorized key, and nobody could log in over SSH again", p.Site, kp.file, kp.record, user))
 		candidates = nil
 	}
 	kp.lines = candidates
@@ -645,6 +645,6 @@ func (p *Plan) verifyHost(t apply.Transport) error {
 // the report.
 func (p *Plan) hostGoneLeft() string {
 	d := p.dep()
-	return fmt.Sprintf("%s: the host was not reached (--host-gone). If it ever comes back it still holds this deployment's containers and networks (label %s), %s and its manifest, %s and /%s, units and drop-ins named %s-* under /etc/systemd/system, ufw rules commented %s:, the keys %s lists and that record, and its entry in %s. Nothing it runs can reach the cluster: no remaining site has it as a WireGuard peer, and its etcd member is gone. Clean it by hand, or reinstall it",
+	return fmt.Sprintf("%s: host not reached (--host-gone); clean it by hand, or reinstall it. If it ever comes back it still holds this deployment's containers and networks (label %s), %s and its manifest, %s and /%s, units and drop-ins named %s-* under /etc/systemd/system, ufw rules commented %s:, the keys %s lists and that record, and its entry in %s. Nothing it runs can reach the cluster: no remaining site has it as a WireGuard peer, and its etcd member is gone",
 		p.Site, d.LabelFilter(), d.Root(), d.WireGuardUnit(), d.WireGuardConf(), d.Prefix(), d.Prefix(), hostprep.OwnedKeysPath(d, p.cfg.Sites[p.Site].SSH.User), registry.Path)
 }

@@ -37,7 +37,7 @@ func PatroniEnv(d deployment.Deployment) string { return d.RelPath(infraStack, "
 // LeaderPatroniEnvNote is what a command that leaves the leader's
 // patroni.env out of date says about it.
 func LeaderPatroniEnvNote(site string) string {
-	return fmt.Sprintf("%s leads, so its patroni.env is left with the etcd hosts it started with: recreating its Patroni now would be a failover. It is picked up at the leader's next restart, which `paisans apply --site %s` makes when a failover is acceptable, Eg: after switching the leader to another site. Until then nothing depends on it: Patroni reads that list only to reach etcd at start, and from then on asks etcd for its members (Patroni v4.1.0, patroni/dcs/etcd.py, _refresh_machines_cache)", site, site)
+	return fmt.Sprintf("%s leads; run `paisans apply --site %s` when a failover is acceptable. Its patroni.env is left with the etcd hosts it started with, since recreating its Patroni now would be a failover. It is picked up at the leader's next restart, which that apply makes, Eg: after switching the leader to another site. Until then nothing depends on it: Patroni reads that list only to reach etcd at start, and from then on asks etcd for its members (Patroni v4.1.0, patroni/dcs/etcd.py, _refresh_machines_cache)", site, site)
 }
 
 // ReplicaEnv is one replica site's patroni.env brought up to date: the file

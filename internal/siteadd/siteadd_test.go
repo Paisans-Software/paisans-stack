@@ -6,6 +6,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/preflight"
 	"github.com/paisans-software/paisans-stack/internal/siteadd"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
@@ -442,6 +443,28 @@ func TestAJoinReportsStagesStepsAndGates(t *testing.T) {
 	for _, e := range rec.Events {
 		if e.Kind == "fail" || e.Kind == "warn" {
 			t.Errorf("a clean join reported %s %q", e.Kind, e.Text)
+		}
+	}
+}
+
+// A refused or warned preflight check shows in a dry run without --verbose,
+// as the refusal or warning it is.
+func TestADryRunShowsPreflightFindingsByDefault(t *testing.T) {
+	defer siteadd.SetFast()()
+	defer siteadd.SetPreflight(preflight.Report{Checks: []preflight.Check{
+		{Site: "home-b", Name: "ports", Detail: "51820/udp is held by another service", Refused: true},
+		{Site: "home-b", Name: "disk", Detail: "9 GiB free", Warned: true},
+	}})()
+	w := newWorld(t)
+	p := build(t, w)
+	rec := &ui.Recorder{}
+	p.Show(rec)
+	if !rec.Has("refuse", "ports on home-b") || !rec.Has("warn", "disk on home-b") {
+		t.Errorf("preflight findings are not reported:\n%s", rec.Lines())
+	}
+	for _, e := range rec.Events {
+		if e.Kind == "refuse" && !strings.Contains(e.Extra, "51820/udp") {
+			t.Errorf("the refusal lacks its explanation: %+v", e)
 		}
 	}
 }

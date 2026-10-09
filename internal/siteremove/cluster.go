@@ -119,7 +119,7 @@ func (p *Plan) buildCluster() (*Stage, error) {
 	for _, name := range p.end.SiteNames() {
 		moved, owed := p.changedFiles(name)
 		for _, o := range owed {
-			p.Notes = append(p.Notes, fmt.Sprintf("%s: %s. `paisans apply --site %s` brings it up to date when that is acceptable", name, o, name))
+			p.Notes = append(p.Notes, fmt.Sprintf("%s: run `paisans apply --site %s` when that is acceptable. %s", name, name, o))
 		}
 		t := p.transports[name]
 		c := &siteChange{site: name}

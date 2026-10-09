@@ -477,7 +477,7 @@ func (p *Plan) buildRetire(oldPresent bool) *Stage {
 		Gate:  fmt.Sprintf("Garage no longer holds %s, and the secrets no longer hold a previous pair for %s", p.OldKeyID, p.App),
 	}
 	if oldPresent {
-		st.Steps = append(st.Steps, Step{"delete the old key from Garage", fmt.Sprintf("delete %s from Garage on %s: garage key delete --yes %s", p.OldKeyID, p.Anchor, p.OldKeyID)})
+		st.Steps = append(st.Steps, Step{"delete the old key " + p.OldKeyID + " from Garage", fmt.Sprintf("delete %s from Garage on %s: garage key delete --yes %s", p.OldKeyID, p.Anchor, p.OldKeyID)})
 	}
 	st.Steps = append(st.Steps, Step{"remove the previous pair from the secrets", fmt.Sprintf("remove apps.%s.%s and %s from the secrets, and write the file", p.App, previousID, previousKey)})
 	st.run = func() error {
@@ -491,7 +491,7 @@ func (p *Plan) buildRetire(oldPresent bool) *Stage {
 			return err
 		}
 		if present {
-			p.work("delete the old key from Garage")
+			p.work("delete the old key " + p.OldKeyID + " from Garage")
 			if err := garage.Execute(&garage.Plan{Site: p.Anchor, Steps: []garage.Step{garage.DeleteKeyStep(p.opts.Config.Deployment(), p.OldKeyID)}}, p.garage); err != nil {
 				return err
 			}

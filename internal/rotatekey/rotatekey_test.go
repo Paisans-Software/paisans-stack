@@ -328,7 +328,7 @@ func TestAFullRotationRunsInOrder(t *testing.T) {
 	for _, want := range []string{
 		"section: switch talk on home-a",
 		"done: write the new key to the secrets",
-		"done: delete the old key from Garage",
+		"done: delete the old key " + oldID + " from Garage",
 		"done: gate: new key writes and reads",
 		"done: gate: old key is gone",
 	} {
