@@ -41,6 +41,8 @@ type settingOwner struct {
 var settingOwners = []settingOwner{
 	{config.KindElement, "brand", "config.json", "brand"},
 
+	{config.KindMbin, "OAUTH_OIDC_ADMIN_GROUP", ".env", "admin_group"},
+	{config.KindMbin, "OAUTH_OIDC_MEMBER_GROUP", ".env", "member_group"},
 	{config.KindMbin, "S3_BUCKET", ".env", "s3_bucket"},
 	{config.KindMbin, "S3_REGION", ".env", "s3_region"},
 

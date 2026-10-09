@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -215,7 +216,7 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 			}
 		}
 		if len(missing) > 0 {
-			p.Steps = append(p.Steps, Step{Kind: AllowGroups, Line: fmt.Sprintf("allow groups %s on client %s: PUT /api/oidc/clients/<id>/allowed-user-groups with the groups it allows now, plus these", strings.Join(missing, ", "), d.App)})
+			p.Steps = append(p.Steps, Step{Kind: AllowGroups, Line: fmt.Sprintf("allow groups %s on client %s: PUT /api/oidc/clients/<id>/allowed-user-groups with exactly %s", strings.Join(missing, ", "), d.App, strings.Join(d.groups(), ", "))})
 		} else {
 			p.Present = append(p.Present, fmt.Sprintf("present client %s allows %s", d.App, strings.Join(d.groups(), ", ")))
 		}
@@ -258,8 +259,8 @@ func (d Desired) setByToolkit(launchURL string) bool {
 }
 
 // newClient is exactly what a create sends, and what the plan prints. A
-// confidential client: Mbin holds a secret, and a public client cannot have
-// one (service/oidc_service.go:352-354).
+// confidential client: every app here holds a secret, and a public client
+// cannot have one (service/oidc_service.go:312 at v2.14.0).
 func (d Desired) newClient() pocketid.NewOIDCClient {
 	return pocketid.NewOIDCClient{
 		Name:              d.App,
@@ -270,25 +271,53 @@ func (d Desired) newClient() pocketid.NewOIDCClient {
 	}
 }
 
+// checkExisting is why an existing client cannot be the app's, or nil. It
+// refuses a client that differs from the spec in either direction: one that
+// allows less than the app needs cannot sign anyone in, and one that allows
+// more than the app needs is a privilege leak. An extra callback lets a sign
+// in started at this app finish at another host, and an extra allowed group
+// admits people the member group was meant to keep out. Neither is narrowed,
+// since a client somebody shaped by hand is not this command's to reshape;
+// both are named so a person can.
 func checkExisting(d Desired, c *pocketid.OIDCClient) error {
 	var wrong []string
 	found := false
+	var extraCallbacks []string
 	for _, u := range c.CallbackURLs {
 		if u == d.CallbackURL {
 			found = true
+		} else {
+			extraCallbacks = append(extraCallbacks, u)
 		}
 	}
 	if !found {
 		wrong = append(wrong, fmt.Sprintf("its callback URLs %v do not include %s", c.CallbackURLs, d.CallbackURL))
 	}
+	if len(extraCallbacks) > 0 {
+		wrong = append(wrong, fmt.Sprintf("its callback URLs allow more than the app's %s: %s, which would let a sign in started here finish elsewhere", d.CallbackURL, strings.Join(extraCallbacks, ", ")))
+	}
 	if d.PKCE && !c.PkceEnabled {
 		wrong = append(wrong, "PKCE is off, and the app always sends a code challenge")
+	}
+	if !d.PKCE && c.PkceEnabled {
+		wrong = append(wrong, "PKCE is on, which makes Pocket ID refuse every request without a code challenge (oidc/authorization_service.go:750-755 at v2.14.0), and the app never sends one")
 	}
 	if c.IsPublic {
 		wrong = append(wrong, "it is a public client, which cannot hold the secret the app signs in with")
 	}
 	if d.restricted() && !c.IsGroupRestricted {
 		wrong = append(wrong, fmt.Sprintf("it is not restricted to groups, and the app's configuration names a member group, %s", d.MemberGroup))
+	}
+	if d.restricted() {
+		var extraGroups []string
+		for _, g := range c.AllowedUserGroups {
+			if !slices.Contains(d.groups(), g.Name) {
+				extraGroups = append(extraGroups, g.Name)
+			}
+		}
+		if len(extraGroups) > 0 {
+			wrong = append(wrong, fmt.Sprintf("it allows more than the app's groups %s: %s, whose members the member group was meant to keep out", strings.Join(d.groups(), ", "), strings.Join(extraGroups, ", ")))
+		}
 	}
 	if len(wrong) == 0 {
 		return nil
@@ -335,10 +364,10 @@ func Execute(p *Plan, c *pocketid.Client, rec Recorder, newSecret func() (string
 		case SetLaunchURL:
 			err = c.SetLaunchURL(client.ID, d.LaunchURL)
 		case AllowGroups:
+			// Exactly the app's groups. checkExisting has refused a client
+			// allowing any other, so nothing is dropped here that was not
+			// already a refusal.
 			ids := map[string]bool{}
-			for _, g := range client.AllowedUserGroups {
-				ids[g.ID] = true
-			}
 			for _, name := range d.groups() {
 				if groups[name] == nil {
 					err = fmt.Errorf("group %s was not created", name)

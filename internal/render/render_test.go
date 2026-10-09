@@ -2923,3 +2923,45 @@ func TestThePendingPageHoldsTheNameOnOneLine(t *testing.T) {
 		t.Errorf("a newline in the community name reached the page:\n%s", gate)
 	}
 }
+
+// Mbin's .env carries the two group names the fork reads from the groups
+// claim, with the toolkit's defaults, so the client's restriction and the
+// app's own gate name the same groups without anything declared.
+func TestMbinEnvCarriesItsGroupsByDefault(t *testing.T) {
+	plan, err := render.Build(fixture(t), fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range plan.Files {
+		if !strings.HasSuffix(f.Path, "/srv/paisans/f2a9/talk/.env") {
+			continue
+		}
+		for _, want := range []string{"OAUTH_OIDC_ADMIN_GROUP=admins\n", "OAUTH_OIDC_MEMBER_GROUP=members\n"} {
+			if !strings.Contains(f.Content, want) {
+				t.Errorf("%s lacks %q", f.Path, strings.TrimSpace(want))
+			}
+		}
+		return
+	}
+	t.Fatal("no talk/.env was rendered")
+}
+
+// The gate's members instance admits kinds.MembersGroup when nothing is
+// declared, the same default every member facing app's client is restricted
+// to, so an empty declaration on both sides names one group.
+func TestGateAdmitsTheDefaultMemberGroup(t *testing.T) {
+	plan, err := render.Build(fixture(t), fixtureSecrets(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range plan.Files {
+		if !strings.HasSuffix(f.Path, "/srv/paisans/f2a9/gate/compose.yaml") {
+			continue
+		}
+		if !strings.Contains(f.Content, `OAUTH2_PROXY_ALLOWED_GROUPS: "`+kinds.MembersGroup+`"`) {
+			t.Errorf("%s does not admit %s by default", f.Path, kinds.MembersGroup)
+		}
+		return
+	}
+	t.Fatal("no gate/compose.yaml was rendered")
+}

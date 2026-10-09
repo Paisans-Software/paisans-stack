@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -13,7 +14,9 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
 )
 
-// idpFake is a Pocket ID with no clients until one is created.
+// idpFake is a Pocket ID with the fixture's recorded clients (docs, blog)
+// already in place with live secrets, the groups members and admins, and no
+// talk client until one is created.
 type idpFake struct {
 	destination string
 	commands    []string
@@ -23,6 +26,33 @@ type idpFake struct {
 	// launch is the launch URL a create must send. Empty means Mbin's
 	// default, the fork's connect route.
 	launch string
+	groups []pocketid.Group
+	others map[string]*pocketid.OIDCClient
+}
+
+var searchParam = regexp.MustCompile(`search=([A-Za-z0-9_-]*)`)
+
+func newIDPFake() *idpFake {
+	groups := []pocketid.Group{{ID: "g-members", Name: "members"}, {ID: "g-admins", Name: "admins"}}
+	launch := func(s string) *string { return &s }
+	return &idpFake{groups: groups, others: map[string]*pocketid.OIDCClient{
+		"docs": {ID: "fixture-not-a-secret-docs-id", Name: "docs", CallbackURLs: []string{"https://docs.example.org/auth/oidc.callback"},
+			IsGroupRestricted: true, AllowedUserGroups: groups, LaunchURL: launch("https://docs.example.org")},
+		"blog": {ID: "fixture-not-a-secret-blog-id", Name: "blog", CallbackURLs: []string{"https://blog.example.org/oauth/callback/generic"},
+			IsGroupRestricted: true, AllowedUserGroups: groups, LaunchURL: launch("https://blog.example.org")},
+	}}
+}
+
+func (f *idpFake) byID(id string) *pocketid.OIDCClient {
+	if f.client != nil && f.client.ID == id {
+		return f.client
+	}
+	for _, c := range f.others {
+		if c.ID == id {
+			return c
+		}
+	}
+	return nil
 }
 
 func (f *idpFake) Describe() string { return f.destination }
@@ -33,26 +63,63 @@ func (f *idpFake) RunInput(command, stdin string) (string, error) {
 		return fmt.Sprintf("%s\npaisans-http-status:%d", raw, status), nil
 	}
 	get := strings.Contains(stdin, `request = "GET"`)
+	search := ""
+	if m := searchParam.FindStringSubmatch(stdin); m != nil {
+		search = m[1]
+	}
+	idOf := func(route string) string {
+		i := strings.Index(stdin, route)
+		rest := stdin[i+len(route):]
+		return rest[:strings.IndexAny(rest, `/"`)]
+	}
 	switch {
 	case get && strings.Contains(stdin, "/api/oidc/clients?"):
 		var data []pocketid.OIDCClient
-		if f.client != nil {
+		if f.client != nil && strings.Contains(f.client.Name, search) {
 			data = append(data, *f.client)
+		}
+		for _, c := range f.others {
+			if strings.Contains(c.Name, search) {
+				data = append(data, *c)
+			}
 		}
 		return reply(200, map[string]any{"data": data, "pagination": map[string]int{"totalPages": 1}})
 	case get && strings.Contains(stdin, "/secrets\""):
+		id := idOf("/api/oidc/clients/")
 		var out []pocketid.ClientSecret
-		for _, p := range f.prefixes {
-			out = append(out, pocketid.ClientSecret{Prefix: p, IsActive: true})
+		if f.client != nil && id == f.client.ID {
+			for _, p := range f.prefixes {
+				out = append(out, pocketid.ClientSecret{Prefix: p, IsActive: true})
+			}
+		} else if f.byID(id) != nil {
+			out = append(out, pocketid.ClientSecret{Prefix: "fixt", IsActive: true})
 		}
 		return reply(200, out)
 	case get && strings.Contains(stdin, "/api/oidc/clients/"):
-		return reply(200, f.client)
+		return reply(200, f.byID(idOf("/api/oidc/clients/")))
+	case get && strings.Contains(stdin, "/api/user-groups"):
+		var data []pocketid.Group
+		for _, g := range f.groups {
+			if strings.Contains(g.Name, search) {
+				data = append(data, g)
+			}
+		}
+		return reply(200, map[string]any{"data": data, "pagination": map[string]int{"totalPages": 1}})
 	case strings.Contains(stdin, "/secrets\""):
 		f.mutated = true
 		i := strings.Index(stdin, `{\"secret\":\"`) + len(`{\"secret\":\"`)
 		f.prefixes = append(f.prefixes, stdin[i:i+4])
 		return reply(201, map[string]string{})
+	case strings.Contains(stdin, "/allowed-user-groups\""):
+		f.mutated = true
+		c := f.byID(idOf("/api/oidc/clients/"))
+		c.AllowedUserGroups = nil
+		for _, g := range f.groups {
+			if strings.Contains(stdin, g.ID) {
+				c.AllowedUserGroups = append(c.AllowedUserGroups, g)
+			}
+		}
+		return reply(200, c)
 	case strings.Contains(stdin, "/api/oidc/clients\""):
 		f.mutated = true
 		launch := f.launch
@@ -62,7 +129,8 @@ func (f *idpFake) RunInput(command, stdin string) (string, error) {
 		if !strings.Contains(stdin, `\"launchURL\":\"`+launch+`\"`) {
 			return reply(400, map[string]string{"error": "no launch URL"})
 		}
-		f.client = &pocketid.OIDCClient{ID: "c-1", Name: "talk", CallbackURLs: []string{"https://talk.example.org/oauth/oidc/verify"}, PkceEnabled: true, LaunchURL: &launch}
+		f.client = &pocketid.OIDCClient{ID: "c-1", Name: "talk", CallbackURLs: []string{"https://talk.example.org/oauth/oidc/verify"}, PkceEnabled: true, LaunchURL: &launch,
+			IsGroupRestricted: strings.Contains(stdin, `\"isGroupRestricted\":true`)}
 		return reply(201, f.client)
 	}
 	return reply(404, map[string]string{"error": "no route"})
@@ -70,7 +138,7 @@ func (f *idpFake) RunInput(command, stdin string) (string, error) {
 
 func withIDPFake(t *testing.T) *idpFake {
 	t.Helper()
-	fake := &idpFake{}
+	fake := newIDPFake()
 	withRegistryFake(t)
 	saved := oidcTransport
 	oidcTransport = func(tr apply.SSHTransport) pocketid.Transport {
@@ -159,8 +227,10 @@ func TestOIDCClientCreateExecuteRecordsTheSecretWithoutPrintingIt(t *testing.T) 
 
 func TestOIDCClientCreateRefusesAKindItDoesNotKnow(t *testing.T) {
 	fake := withIDPFake(t)
-	err := runOIDCClientCreate([]string{"--config", fixtureConfig(), "--secrets", tempSecrets(t), "--app", "docs"})
-	if err == nil || !strings.Contains(err.Error(), "Implemented kinds: mbin") {
+	// web is an Element client, which authenticates at the homeserver and
+	// holds no client of its own.
+	err := runOIDCClientCreate([]string{"--config", fixtureConfig(), "--secrets", tempSecrets(t), "--app", "web"})
+	if err == nil || !strings.Contains(err.Error(), "Implemented kinds: mbin, outline, writefreely, uptime") {
 		t.Fatalf("got %v", err)
 	}
 	if len(fake.commands) != 0 {

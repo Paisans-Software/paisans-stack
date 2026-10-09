@@ -591,3 +591,30 @@ func TestTheDNSTokenIsOwedForAMonitorsOwnCaddy(t *testing.T) {
 	}
 	t.Fatal("a monitor in ingress mode paisans needs the token, and it was not owed")
 }
+
+// Outline's and WriteFreely's clients are created by apply like Mbin's, and
+// their owed text names the callback each app really serves, that PKCE is
+// off, and that the group restriction at Pocket ID is the whole control,
+// since neither app reads a groups claim.
+func TestOutlineAndWriteFreelyOwedClientsNameTheirCallbackAndRestriction(t *testing.T) {
+	owed := owedBy(t, load(t), &config.Secrets{})
+	cases := map[string][]string{
+		"oidc_clients.docs": {"https://docs.example.org/auth/oidc.callback", "PKCE off", "paisans apply", "restricted", "reads no groups claim"},
+		"oidc_clients.blog": {"https://blog.example.org/oauth/callback/generic", "PKCE off", "paisans apply", "restricted", "reads no groups claim"},
+	}
+	for name, wants := range cases {
+		why, ok := owed[name]
+		if !ok {
+			t.Errorf("%s is not owed", name)
+			continue
+		}
+		for _, want := range wants {
+			if !strings.Contains(why, want) {
+				t.Errorf("%s does not say %q:\n%s", name, want, why)
+			}
+		}
+		if strings.Contains(why, "/oauth/callback\"") || strings.Contains(why, "/oauth/callback ") {
+			t.Errorf("%s offers the callback no kind uses:\n%s", name, why)
+		}
+	}
+}

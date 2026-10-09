@@ -262,6 +262,20 @@ func (v appValues) SettingBool(key string, fallback bool) bool {
 // toolkit's default, so a template never repeats the default itself.
 func (v appValues) MbinQueue() string { return kinds.MbinQueue(v.set) }
 
+// OIDCAdminGroup and OIDCMemberGroup are the groups the app's client at
+// Pocket ID admits, from the kind's client spec, so that the template renders
+// the same names the client is restricted to and never repeats a default.
+func (v appValues) OIDCAdminGroup() string  { admin, _ := v.oidcGroups(); return admin }
+func (v appValues) OIDCMemberGroup() string { _, member := v.oidcGroups(); return member }
+
+func (v appValues) oidcGroups() (admin, member string) {
+	spec, ok := kinds.OIDCClient(v.App.Kind, v.App.Hostname)
+	if !ok {
+		return "", ""
+	}
+	return spec.Groups(config.App{Kind: v.App.Kind, Hostname: v.App.Hostname, Settings: v.set})
+}
+
 // Image returns the reference a service runs, so a compose template never
 // decides for itself.
 func (v appValues) Image(service string) string { return v.App.Images[service] }
