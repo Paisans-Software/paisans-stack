@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 )
@@ -18,7 +19,9 @@ import (
 // site they change. There is no flag to skip it: what holds a claim is
 // moved, or the configuration is changed.
 func hostGate(w io.Writer, cfg *config.Config, site string, t hostcheck.Transport) (*hostcheck.Report, error) {
+	done := apply.Step(w, "checking", "%s's host (%s)", site, t.Describe())
 	report, err := hostcheck.Run(cfg, site, t)
+	done(err)
 	if err != nil {
 		return nil, err
 	}

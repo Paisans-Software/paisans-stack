@@ -296,6 +296,19 @@ compared first, so a conflict is found before a single byte is written; an apply
 that wrote files as it discovered them could leave a stack half updated and then
 refuse.
 
+**Every step on the host is announced as it starts.** Reading the rendered
+files, the image and disk probe, each write, the gateway gates, each stack's
+action, its health wait and its prune, and the database bootstrap each print a
+line to `Plan.Progress` before their command runs, finished with `done` or
+`failed` and the time taken. A pull or a health wait takes minutes on a real
+site, and an apply that spoke only once it was finished looked hung for all of
+them; a line written first also names the step an apply stopped in. `Build`
+takes the writer through `apply.Progress`, so planning announces its reads as
+`Execute` announces its changes, and `apply.Step` gives a command's own work
+outside a plan (the mesh and host checks) the same form. A note said while a
+step is open starts its own line, and the step's ending follows on another.
+Raw command output is not streamed: it stays captured, and a failure quotes it.
+
 **A file edited on the host is a conflict, and a conflict stops the whole
 apply.** Rendered files are build artifacts and nothing edits them in place, so
 a file that differs from what the last apply recorded is a change somebody made
