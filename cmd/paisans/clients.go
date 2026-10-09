@@ -153,12 +153,20 @@ type clientStep struct {
 	// heldOverwrites are --overwrite paths the last pass did not write,
 	// because their stack was held back.
 	heldOverwrites []string
+	// signupGroups are the Pocket ID app's signup_default_groups, when this
+	// site runs it, which apply resolves to IDs (see ensureGroups). Empty
+	// otherwise.
+	signupGroups []string
+	// groupsErr is why the last ensure could not put a signup group in
+	// place. It fails the apply once the rest of the site is done.
+	groupsErr error
 }
 
 // newClientStep is the identity step for site, or nil when the deployment
 // declares no pocket-id app, or the site runs no app with a client shape
-// among those --only names. Without a Pocket ID there is no client to make,
-// and an app is applied as it always was, without sign in. It refuses, before
+// among those --only names and no Pocket ID with signup_default_groups.
+// Without a Pocket ID there is no client to make, and an app is applied as it
+// always was, without sign in. It refuses, before
 // Pocket ID is asked anything, a secrets file a new client could not be
 // written back into: encrypted, with no recipient beside it. The secret is
 // written before Pocket ID is sent it, so a run that cannot write must not
@@ -176,8 +184,11 @@ func newClientStep(cfg *config.Config, site, destination, secretsPath string, se
 		if _, ok := kinds.OIDCClient(cfg.Apps[name].Kind, cfg.Apps[name].Hostname); ok {
 			c.apps = append(c.apps, name)
 		}
+		if name == c.idp {
+			c.signupGroups = kinds.PocketIDSignupGroups(cfg.Apps[name].Settings)
+		}
 	}
-	if len(c.apps) == 0 {
+	if len(c.apps) == 0 && len(c.signupGroups) == 0 {
 		return nil, nil
 	}
 	recipients, err := config.Recipients(filepath.Dir(secretsPath))
@@ -194,12 +205,21 @@ func newClientStep(cfg *config.Config, site, destination, secretsPath string, se
 	if secrets.Encrypted && len(recipients) == 0 && len(missing) > 0 {
 		return nil, fmt.Errorf("apply: %s is encrypted, but no %s beside it names a recipient, so the client %s needs could not be written back encrypted. Nothing was changed", secretsPath, config.SOPSConfigName, strings.Join(missing, ", "))
 	}
+	var unrecorded []string
+	for _, g := range c.signupGroups {
+		if secrets.PocketIDGroups[g] == "" {
+			unrecorded = append(unrecorded, g)
+		}
+	}
+	if secrets.Encrypted && len(recipients) == 0 && len(unrecorded) > 0 {
+		return nil, fmt.Errorf("apply: %s is encrypted, but no %s beside it names a recipient, so the ID of signup group %s could not be written back encrypted. Nothing was changed", secretsPath, config.SOPSConfigName, strings.Join(unrecorded, ", "))
+	}
 	c.reset()
 	return c, nil
 }
 
 func (c *clientStep) reset() {
-	c.held, c.refused, c.steps = map[string]string{}, map[string]error{}, 0
+	c.held, c.refused, c.steps, c.groupsErr = map[string]string{}, map[string]error{}, 0, nil
 }
 
 // recorded reports whether the secrets file holds both halves of app's
@@ -250,16 +270,21 @@ func (c *clientStep) heldApps() []string {
 // app back, since the apply will start it before the clients are made.
 func (c *clientStep) ensure(execute, waiting bool) error {
 	c.reset()
-	fmt.Fprintf(os.Stdout, "\nOIDC clients for %s, before they start\n", strings.Join(c.apps, ", "))
+	if len(c.apps) > 0 {
+		fmt.Fprintf(os.Stdout, "\nOIDC clients for %s, before they start\n", strings.Join(c.apps, ", "))
+	}
 	key, _ := c.secrets.Apps[c.idp]["static_api_key"].(string)
 	if key == "" {
 		sites := render.AppSites(c.cfg)[c.idp]
-		c.cannotAsk(c.apps, fmt.Sprintf("secrets apps.%s.static_api_key is missing, so Pocket ID's API cannot be called. Run `paisans init` to generate it, apply %s (where %s runs) so Pocket ID has it, then apply this site again", c.idp, strings.Join(sites, " and "), c.idp), false)
+		why := fmt.Sprintf("secrets apps.%s.static_api_key is missing, so Pocket ID's API cannot be called. Run `paisans init` to generate it, apply %s (where %s runs) so Pocket ID has it, then apply this site again", c.idp, strings.Join(sites, " and "), c.idp)
+		c.cannotAsk(c.apps, why, false)
+		c.groupsCannotAsk(c.signupGroups, why, false)
 		return nil
 	}
 	where, err := c.pocketIDWhere()
 	if err != nil {
 		c.cannotAsk(c.apps, unreachable(err), waiting)
+		c.groupsCannotAsk(c.signupGroups, unreachable(err), waiting)
 		return nil
 	}
 	destination := ""
@@ -273,12 +298,20 @@ func (c *clientStep) ensure(execute, waiting bool) error {
 		plan *oidcclient.Plan
 	}
 	var plans []planned
+	// creating is every group a client plan creates, which a dry run's
+	// group lines then name as made by that step rather than planning a
+	// second create.
+	creating := map[string]bool{}
+	// down is why Pocket ID stopped answering part way, so the groups are
+	// not asked about either.
+	down := ""
 	for i, app := range c.apps {
 		desired, _ := clientDesired(app, c.cfg.Apps[app], false)
 		recorded := recordedClient(c.secrets, app)
 		state, err := probeClient(api, desired)
 		if err != nil {
-			c.cannotAsk(c.apps[i:], unreachable(fmt.Errorf("Pocket ID on %s could not be asked: %w", where, err)), waiting)
+			down = unreachable(fmt.Errorf("Pocket ID on %s could not be asked: %w", where, err))
+			c.cannotAsk(c.apps[i:], down, waiting)
 			break
 		}
 		if err := keepsRecorded(app, recorded, state); err != nil {
@@ -292,9 +325,19 @@ func (c *clientStep) ensure(execute, waiting bool) error {
 		}
 		printClientPlan(app, c.idp, where, plan)
 		c.steps += len(plan.Steps)
+		for _, step := range plan.Steps {
+			if step.Kind == oidcclient.CreateGroup {
+				creating[step.Group] = true
+			}
+		}
 		plans = append(plans, planned{app, plan})
 	}
 	if !execute {
+		if down != "" {
+			c.groupsCannotAsk(c.signupGroups, down, waiting)
+		} else {
+			c.ensureGroups(api, where, false, creating, waiting)
+		}
 		return nil
 	}
 
@@ -331,6 +374,13 @@ func (c *clientStep) ensure(execute, waiting bool) error {
 				fmt.Fprintf(os.Stderr, "paisans: %s is PLAINTEXT, because no %s beside it names an age recipient.\n", c.secretsPath, config.SOPSConfigName)
 			}
 		}
+	}
+	// After the clients, so that a group a client step just created is
+	// found rather than created twice.
+	if down != "" {
+		c.groupsCannotAsk(c.signupGroups, down, false)
+	} else {
+		c.ensureGroups(api, where, true, nil, false)
 	}
 	return nil
 }
@@ -451,6 +501,9 @@ func (c *clientStep) result() error {
 		}
 	}
 	if len(c.refused) == 0 {
+		if c.groupsErr != nil {
+			return fmt.Errorf("apply: the rest of %s was applied, but %v", c.site, c.groupsErr)
+		}
 		return nil
 	}
 	var names, reasons []string
@@ -459,6 +512,9 @@ func (c *clientStep) result() error {
 			names = append(names, app)
 			reasons = append(reasons, app+": "+err.Error())
 		}
+	}
+	if c.groupsErr != nil {
+		reasons = append(reasons, c.groupsErr.Error())
 	}
 	return fmt.Errorf("apply: the rest of %s was applied, but %s was refused, and stays held back until its client at Pocket ID is fixed:\n  %s", c.site, strings.Join(names, ", "), strings.Join(reasons, "\n  "))
 }

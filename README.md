@@ -1356,15 +1356,35 @@ password is a secret: `apps.<app>.smtp_password` when present, otherwise
 `external.smtp_password`, which `init` lists as owed once something resolves a
 mail host.
 
-Today only the uptime monitor reads it (`kinds.SendsMail`). An `smtp:` block on
-any other kind is refused, `smtp-on-a-kind-without-mail`, because an override
-nothing reads is ignored without a word. Pocket ID keeps its own SMTP settings
-in its database and is set in its admin UI; rendering it from this block would
-be a change to that kind, and would add it to the list.
+Two kinds read it (`kinds.SendsMail`): the uptime monitor, which puts it in
+its seed file, and Pocket ID, which takes it as `SMTP_HOST`, `SMTP_PORT`,
+`SMTP_TLS`, `SMTP_USER`, `SMTP_PASSWORD` and `SMTP_FROM` in its `.env` (see
+*Pocket ID's configuration is rendered from paisans.yaml*). The password goes
+into that `.env` beside the other credentials it already carries, written
+0600 like every rendered file that holds a secret, and quoted so that a `$` or
+a `#` a mail provider issued arrives as issued. An `smtp:` block on any other
+kind is refused, `smtp-on-a-kind-without-mail`, because an override nothing
+reads is ignored without a word.
+
+Two fields mean slightly less to Pocket ID than to the monitor, because of
+what Pocket ID can express:
+
+* **`from_name` is not used.** Pocket ID has no sender name setting; its mail
+  goes out under its application name (`email/module.go:212` at tag
+  `v2.14.0`), which is `settings.app_name`. A `from_name` on the Pocket ID
+  app's own `smtp:` block is therefore a warning,
+  `pocket-id-smtp-from-name`, naming `app_name` instead. The deployment's
+  `from_name` is not warned about, since the monitor uses it.
+* **`from_address` must be an address alone.** Pocket ID refuses to start
+  unless `SMTP_FROM` is an email address (`dto/app_config_dto.go:30`), so
+  `validate` refuses anything else for it, `pocket-id-smtp-from-not-an-email`.
+  A host with no sender at all starts and sends mail with an empty sender,
+  which is a warning, `pocket-id-smtp-without-sender`.
 
 There is no `security: none`. Nothing needs it, and the uptime fork cannot say
 it: its `smtp_secure` is nodemailer's boolean `secure`, and `false` already
-means STARTTLS.
+means STARTTLS. Pocket ID is given `SMTP_TLS=tls` for `tls` and `starttls`
+otherwise, which is also what the port defaults assume.
 
 ### Rendered configuration is a build artifact
 
@@ -3663,6 +3683,136 @@ when it is a terminal, so an interactive run never waits on it.
 The calls go through Pocket ID's REST API with its static API key; see *The
 toolkit administers Pocket ID through its static API key*.
 
+### Pocket ID's configuration is rendered from paisans.yaml
+
+The `pocket-id` kind always renders `UI_CONFIG_DISABLED=true`, and every
+application setting Pocket ID has is then rendered too, from
+`apps.<app>.settings` and the `smtp:` block. Founder decision, 2026-10-08.
+With that variable set, Pocket ID v2.14.0 reads its whole application
+configuration from the environment at startup and ignores what its database
+holds (`backend/internal/appconfig/service.go:33-40`, `:205-249`); a variable
+left unset takes Pocket ID's own default (`appconfig/model.go:120-175`).
+
+The reason is the one behind every rendered file (see *Rendered configuration
+is a build artifact*). A setting made in the admin page lives in the database,
+where nobody reviews it, a diff does not show it and `paisans.yaml` does not
+know it. Rendered, it is one reviewed line, every instance of a Pocket ID on
+more than one apps site reads the same `.env`, so a promoted standby signs
+people in exactly as the active one did, and restoring the database cannot
+quietly roll a setting back.
+
+**What is locked is the Application Configuration admin page and nothing
+else.** Its form is read only and its update API refuses
+(`service.go:120-123`, `:157-159`). Users, groups and their members, OIDC
+clients, custom claims, signup tokens, the logo and branding images, and the
+test email are untouched by the variable and are administered in the admin UI
+as before. A value set in the admin page before the variable was rendered is
+ignored from the first start with it, not carried over: declare it here.
+
+**Changing a setting is a config edit and an apply.** Edit
+`apps.<app>.settings`, then `paisans apply --site <site>` for each site the app
+runs on. The `.env` changes, so the apply recreates Pocket ID's containers,
+which is a restart of a few seconds during which nobody can sign in.
+
+| Setting | Variable | Takes |
+|---|---|---|
+| `app_name` | `APP_NAME` | 2 to 30 characters; also the sender name on its mail |
+| `session_duration` | `SESSION_DURATION` | minutes, 1 to 43200 |
+| `home_page_url` | `HOME_PAGE_URL` | where a signed in person lands, Eg: `/settings/apps` |
+| `emails_verified` | `EMAILS_VERIFIED` | `true` or `false` |
+| `accent_color` | `ACCENT_COLOR` | a CSS colour, or `default` |
+| `disable_animations` | `DISABLE_ANIMATIONS` | `true` or `false` |
+| `allow_own_account_edit` | `ALLOW_OWN_ACCOUNT_EDIT` | `true` or `false` |
+| `allow_user_signups` | `ALLOW_USER_SIGNUPS` | `disabled`, `withToken` or `open` |
+| `signup_default_groups` | `SIGNUP_DEFAULT_USER_GROUP_IDS` | a list of group names; see below |
+| `require_user_email` | `REQUIRE_USER_EMAIL` | `true` or `false` |
+| `email_login_notification` | `EMAIL_LOGIN_NOTIFICATION_ENABLED` | `true` or `false` |
+| `email_one_time_access_as_unauthenticated` | `EMAIL_ONE_TIME_ACCESS_AS_UNAUTHENTICATED_ENABLED` | `true` or `false` |
+| `email_one_time_access_as_admin` | `EMAIL_ONE_TIME_ACCESS_AS_ADMIN_ENABLED` | `true` or `false` |
+| `email_api_key_expiration` | `EMAIL_API_KEY_EXPIRATION_ENABLED` | `true` or `false` |
+| `email_verification` | `EMAIL_VERIFICATION_ENABLED` | `true` or `false` |
+| `webauthn_user_verification` | `WEBAUTHN_USER_VERIFICATION` | `required` or `preferred` |
+| `webauthn_allow_synced_passkeys` | `WEBAUTHN_ALLOW_SYNCED_PASSKEYS` | `true` or `false` |
+| `webauthn_authenticator_attachment` | `WEBAUTHN_AUTHENTICATOR_ATTACHMENT` | `any`, `platform` or `cross-platform` |
+
+Mail settings come from the `smtp:` block, not from here (see *Mail is
+declared once and overridden per app*). `file_backend` is the one setting
+older than the rest (see *Pocket ID runs on every apps site, and one of them
+is active*).
+
+```yaml
+apps:
+  auth:
+    kind: pocket-id
+    hostname: id.example.org
+    placement: cluster
+    settings:
+      file_backend: database
+      app_name: Example ID
+      session_duration: 10080        # a week
+      home_page_url: /settings/apps
+      allow_user_signups: withToken
+      signup_default_groups: [provisional]
+      email_one_time_access_as_unauthenticated: true
+      email_verification: true
+```
+
+**Pocket ID checks every value when it starts, and will not start on one it
+refuses** (`validateEnvConfig`, `service.go:252-279`, which applies the admin
+page's API rules in `dto/app_config_dto.go:16-64`). A bad value would show up
+as a Pocket ID restarting in a loop on every apps site at once, after the
+apply, so `validate` refuses it first: `pocket-id-setting-invalid`, naming the
+key. Where the admin page's form is stricter than its API (an application name
+of at least 2 characters, a session of at most 30 days), the form's rule is
+the one checked, because those are the values Pocket ID was built to be given.
+An email toggle turned on without an SMTP host and sender is refused too,
+`pocket-id-email-without-smtp`, as the admin page refuses it: Pocket ID would
+start and every mail the toggle promises would fail. A setting under a key the
+kind does not read is a warning, `pocket-id-setting-unknown`, because for this
+kind it is most likely a misspelt option that nothing else can now set.
+
+**What the table does not model goes under `config`, by variable name.** LDAP,
+`SIGNUP_DEFAULT_CUSTOM_CLAIMS`, `CIMD_URL_ALLOWLIST` and
+`SMTP_SKIP_CERT_VERIFY` are placed in the `.env` as written and checked by
+nobody but Pocket ID at startup (see *A config key is placed, not
+interpreted*). LDAP is not supported in practice, because its bind password is
+a credential and a credential is refused in `config`
+(`config-key-looks-like-a-secret`). A variable the kind renders from a setting
+or from the `smtp:` block is refused in `config` whether or not that setting is
+declared, `pocket-id-config-key-has-a-setting`, so each value has one place to
+be changed.
+
+#### Signup default groups are resolved by apply
+
+`signup_default_groups` names the groups every new user is put in. Pocket ID
+puts a user in them when the user is created without groups of their own,
+whether by signing up or by an administrator (`service/user_service.go:337-345`,
+`:365-401`). It takes them as a JSON array of group IDs, and a group's ID
+exists only once the group does, on the running instance. So the names are
+declared and the IDs are found by `apply`, which records them in the secrets
+file under `pocket_id_groups.<name>`, beside the client IDs under
+`oidc_clients`, and `render` reads them from there. Recording rather than
+looking up at render time keeps `render` a function of the two files: every
+instance renders the same list, and a dry run renders what the apply will.
+
+The step runs on every apply of a site that runs Pocket ID, within the
+identity step (see *`oidc client create` makes an app's client at Pocket ID*).
+On `--execute` Pocket ID is started first with the IDs recorded so far, and
+once it answers, each name is looked up at the active instance. A group that
+does not exist is created, exactly as the client step creates the groups a
+client admits, and its ID recorded; a group whose recorded ID differs from the
+instance's, as after a database started afresh, has the instance's recorded in
+its place. Pocket ID skips an ID it does not hold without a word
+(`user_service.go:374-379`), so a stale ID left in place would quietly put new
+users in nothing. The site is then planned again, the `.env` carries the IDs,
+and Pocket ID is recreated with them. A dry run prints each group's line
+(`present`, `record` or `create`) and changes nothing. Once every ID is
+recorded and present, a re-run plans nothing.
+
+A Pocket ID that cannot be asked holds nothing back and fails nothing: a
+recorded ID is rendered as it is, and a name with none is left out of the
+`.env`, which says so in a comment, until a re-run resolves it.
+
 ### The toolkit administers Pocket ID through its static API key
 
 Pocket ID is the one application whose first administrator and whose clients
@@ -3718,7 +3868,9 @@ site that runs Pocket ID, `--execute` starts the infrastructure and Pocket ID
 first, with every other app stack held back, waits until exactly one Pocket ID
 instance answers `/healthz`, ensures the clients, and only then plans the site
 again and starts the rest, so each app renders the credentials just recorded.
-On any other site the clients come first. A dry run probes and prints the
+On any other site the clients come first. On a site that runs Pocket ID the
+step also resolves its signup default groups, after the clients (see *Signup
+default groups are resolved by apply*). A dry run probes and prints the
 client lines with the rest of the plan and sends nothing; on a site whose
 Pocket ID is not running yet it says the clients are made once it answers.
 

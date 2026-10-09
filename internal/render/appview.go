@@ -159,6 +159,11 @@ type appValues struct {
 	// that sends mail (kinds.SendsMail) and zero when no host resolves.
 	SMTP smtpValues
 
+	// PocketID is the pocket-id kind's application configuration from its
+	// settings and its recorded signup group IDs (pocketid.go). Populated
+	// only for that kind.
+	PocketID pocketIDConfig
+
 	// UptimeSeed is the uptime kind's monitors.json, built from the whole
 	// deployment (uptime.go). Populated only for that kind.
 	UptimeSeed string
@@ -390,6 +395,13 @@ func (p *planner) values(planned plannedApp, app config.App) (appValues, error) 
 	}
 	if kinds.SendsMail(planned.Kind) {
 		v.SMTP = p.smtpFor(planned.Name)
+	}
+	if planned.Kind == config.KindPocketID {
+		pid, err := p.pocketIDConfigFor(planned.Name, app)
+		if err != nil {
+			return appValues{}, err
+		}
+		v.PocketID = pid
 	}
 	if planned.Kind == config.KindUptime {
 		seed, err := p.uptimeSeed(planned.Name)

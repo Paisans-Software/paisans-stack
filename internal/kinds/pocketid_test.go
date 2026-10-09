@@ -44,3 +44,26 @@ func TestAnUnknownImageGetsTheDefaultMarker(t *testing.T) {
 		t.Errorf("StandbyMarker(custom) = %q, %v; want %q, false", got, known, want)
 	}
 }
+
+// Each Pocket ID setting is one key and one variable, and no variable is
+// rendered from two places, so a refusal can always name the one owner.
+func TestPocketIDSettingsAreOneToOne(t *testing.T) {
+	keys, envs := map[string]bool{}, map[string]bool{}
+	for _, s := range kinds.PocketIDSettings {
+		if keys[s.Key] || envs[s.Env] {
+			t.Errorf("%s / %s is declared twice", s.Key, s.Env)
+		}
+		keys[s.Key], envs[s.Env] = true, true
+		if owner, ok := kinds.PocketIDEnvOwner(s.Env); !ok || owner != "settings."+s.Key {
+			t.Errorf("%s is owned by %q", s.Env, owner)
+		}
+		if s.Type == kinds.SettingChoice && len(s.Choices) == 0 {
+			t.Errorf("%s is a choice of nothing", s.Key)
+		}
+	}
+	for _, env := range append([]string{kinds.PocketIDSignupGroupsEnv, kinds.PocketIDUIConfigDisabledEnv}, kinds.PocketIDSMTPEnv...) {
+		if envs[env] {
+			t.Errorf("%s is in the settings table and rendered elsewhere too", env)
+		}
+	}
+}

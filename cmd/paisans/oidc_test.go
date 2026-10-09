@@ -28,18 +28,27 @@ type idpFake struct {
 	launch string
 	groups []pocketid.Group
 	others map[string]*pocketid.OIDCClient
+	// created is every group name a POST /api/user-groups created, in order.
+	created []string
 }
 
 var searchParam = regexp.MustCompile(`search=([A-Za-z0-9_-]*)`)
 
+// groupNameParam is the name in a group create's body, as it appears quoted
+// inside curl's configuration.
+var groupNameParam = regexp.MustCompile(`\\"name\\":\\"([^\\"]+)\\"`)
+
 func newIDPFake() *idpFake {
-	groups := []pocketid.Group{{ID: "g-members", Name: "members"}, {ID: "g-admins", Name: "admins"}}
+	// members and newcomers carry the IDs the fixture secrets record under
+	// pocket_id_groups, so the signup group step finds nothing to do unless
+	// a test changes one side.
+	groups := []pocketid.Group{{ID: "fixture-group-members-id", Name: "members"}, {ID: "g-admins", Name: "admins"}, {ID: "fixture-group-newcomers-id", Name: "newcomers"}}
 	launch := func(s string) *string { return &s }
 	return &idpFake{groups: groups, others: map[string]*pocketid.OIDCClient{
 		"docs": {ID: "fixture-not-a-secret-docs-id", Name: "docs", CallbackURLs: []string{"https://docs.example.org/auth/oidc.callback"},
-			IsGroupRestricted: true, AllowedUserGroups: groups, LaunchURL: launch("https://docs.example.org")},
+			IsGroupRestricted: true, AllowedUserGroups: groups[:2], LaunchURL: launch("https://docs.example.org")},
 		"blog": {ID: "fixture-not-a-secret-blog-id", Name: "blog", CallbackURLs: []string{"https://blog.example.org/oauth/callback/generic"},
-			IsGroupRestricted: true, AllowedUserGroups: groups, LaunchURL: launch("https://blog.example.org")},
+			IsGroupRestricted: true, AllowedUserGroups: groups[:2], LaunchURL: launch("https://blog.example.org")},
 	}}
 }
 
@@ -110,6 +119,16 @@ func (f *idpFake) RunInput(command, stdin string) (string, error) {
 		i := strings.Index(stdin, `{\"secret\":\"`) + len(`{\"secret\":\"`)
 		f.prefixes = append(f.prefixes, stdin[i:i+4])
 		return reply(201, map[string]string{})
+	case strings.Contains(stdin, "/api/user-groups\""):
+		f.mutated = true
+		m := groupNameParam.FindStringSubmatch(stdin)
+		if m == nil {
+			return reply(400, map[string]string{"error": "no name"})
+		}
+		g := pocketid.Group{ID: "g-" + m[1], Name: m[1], FriendlyName: m[1]}
+		f.groups = append(f.groups, g)
+		f.created = append(f.created, m[1])
+		return reply(201, g)
 	case strings.Contains(stdin, "/allowed-user-groups\""):
 		f.mutated = true
 		c := f.byID(idOf("/api/oidc/clients/"))
