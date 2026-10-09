@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // inventoryHost answers only the host check's probes, and records every
@@ -68,17 +68,21 @@ func hostCheckFixture(t *testing.T) *config.Config {
 
 const ufwUp = "Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n"
 
-// A conflict is refused with its report printed, and nothing but the
+// A conflict is refused with the conflict named in the error, which prints
+// at any verbosity, the host check's step marked failed, and nothing but the
 // inventory's own probes reached the host.
 func TestTheGateRefusesAConflictHavingOnlyLooked(t *testing.T) {
 	h := webHost(ufwUp)
-	var out bytes.Buffer
-	_, err := hostGate(&out, hostCheckFixture(t), "edge", h)
+	rec := &ui.Recorder{}
+	_, err := hostGate(rec, hostCheckFixture(t), "edge", h)
 	if err == nil || !strings.Contains(err.Error(), "nothing was changed") {
 		t.Fatalf("got %v", err)
 	}
-	if !strings.Contains(out.String(), "CONFLICT  *:80/tcp (Caddy): claimed by sites.edge.roles (gateway), held by process nginx (pid 900)") {
-		t.Errorf("the report does not name the conflict:\n%s", out.String())
+	if !strings.Contains(err.Error(), "*:80/tcp (Caddy): claimed by sites.edge.roles (gateway), held by process nginx (pid 900)") {
+		t.Errorf("the refusal does not name the conflict: %v", err)
+	}
+	if !rec.Has("fail", "host check") {
+		t.Errorf("the host check is not marked failed:\n%s", rec.Lines())
 	}
 	probes := []string{"id -u", "docker version", "dpkg-query", "ss -Hltnup", "/proc/", "ip -o link", "ip -j route", "ufw status verbose", "is-active firewalld", "/srv/caddy.d/"}
 	for _, c := range h.ran {
@@ -92,26 +96,39 @@ func TestTheGateRefusesAConflictHavingOnlyLooked(t *testing.T) {
 	}
 }
 
-// The host check is a dozen probes over ssh before anything else is said,
-// so it is announced as it starts, ahead of the report it prints.
-func TestTheGateAnnouncesTheCheckBeforeItsReport(t *testing.T) {
-	var out bytes.Buffer
-	if _, err := hostGate(&out, hostCheckFixture(t), "home-a", webHost(ufwUp)); err != nil {
+// The host check is one step whose result is the host's class, with what it
+// found as the step's details.
+func TestTheGateIsOneStepWhoseResultIsTheClass(t *testing.T) {
+	rec := &ui.Recorder{Verbose_: true}
+	if _, err := hostGate(rec, hostCheckFixture(t), "home-a", webHost(ufwUp)); err != nil {
 		t.Fatal(err)
 	}
-	first, _, _ := strings.Cut(out.String(), "\n")
-	if !strings.HasPrefix(first, "  ok   check home-a host") {
-		t.Errorf("the first line is not the check's announcement:\n%s", out.String())
+	i := rec.Index("done", "host check")
+	if i < 0 || rec.Events[i].Extra != "shared" {
+		t.Fatalf("the host check did not end with its class:\n%s", rec.Lines())
+	}
+	if !rec.Has("detail", "firewall  ufw active, incoming deny") {
+		t.Errorf("the firewall is not a detail:\n%s", rec.Lines())
+	}
+
+	empty := webHost(ufwUp)
+	empty.answers["ss -Hltnup"], empty.answers["/proc/"] = "", ""
+	clean := &ui.Recorder{}
+	if _, err := hostGate(clean, hostCheckFixture(t), "home-a", empty); err != nil {
+		t.Fatal(err)
+	}
+	if i := clean.Index("done", "host check"); i < 0 || clean.Events[i].Extra != "clean" {
+		t.Errorf("an empty host did not end clean:\n%s", clean.Lines())
 	}
 }
 
 // A shared host is let through only with its firewall already up.
 func TestTheGateNeedsASharedHostsFirewall(t *testing.T) {
 	cfg := hostCheckFixture(t)
-	if _, err := hostGate(&bytes.Buffer{}, cfg, "home-a", webHost("Status: inactive\n")); err == nil || !strings.Contains(err.Error(), "ufw is inactive") {
+	if _, err := hostGate(ui.Discard, cfg, "home-a", webHost("Status: inactive\n")); err == nil || !strings.Contains(err.Error(), "ufw is inactive") {
 		t.Errorf("got %v", err)
 	}
-	report, err := hostGate(&bytes.Buffer{}, cfg, "home-a", webHost(ufwUp))
+	report, err := hostGate(ui.Discard, cfg, "home-a", webHost(ufwUp))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,10 +143,10 @@ func TestGateSitesChecksEachAndNamesTheShared(t *testing.T) {
 	cfg := hostCheckFixture(t)
 	hosts := map[string]*inventoryHost{"home-a": webHost(ufwUp), "edge": webHost(ufwUp)}
 	reach := func(site string) hostcheck.Transport { return hosts[site] }
-	if _, err := gateSites(&bytes.Buffer{}, cfg, []string{"home-a", "edge"}, reach); err == nil {
+	if _, err := gateSites(ui.Discard, cfg, []string{"home-a", "edge"}, reach); err == nil {
 		t.Fatal("a conflict on edge was not refused")
 	}
-	shared, err := gateSites(&bytes.Buffer{}, cfg, []string{"home-a"}, reach)
+	shared, err := gateSites(ui.Discard, cfg, []string{"home-a"}, reach)
 	if err != nil {
 		t.Fatal(err)
 	}

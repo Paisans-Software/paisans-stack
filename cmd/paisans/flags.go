@@ -14,8 +14,18 @@ import (
 func commonFlags(fs *flag.FlagSet) func() ui.Reporter {
 	verbose := fs.Bool("verbose", false, "show the detail behind each step: reasons, values and command output")
 	fs.BoolVar(verbose, "v", false, "short for --verbose")
-	return func() ui.Reporter { return ui.New(os.Stdout, *verbose) }
+	return func() ui.Reporter {
+		if reporterOverride != nil {
+			return reporterOverride
+		}
+		return ui.New(os.Stdout, *verbose)
+	}
 }
+
+// reporterOverride, when set, is the reporter every command uses in place of
+// stdout's. A test sets it to a ui.Recorder, so it asserts on the steps and
+// items a command reports rather than on how they are drawn.
+var reporterOverride ui.Reporter
 
 // errReporter is r's verbosity on stderr, for a command whose stdout carries
 // data that a script reads.

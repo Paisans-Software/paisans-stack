@@ -143,7 +143,7 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		for _, site := range cfg.MonitorSites() {
 			transports[site] = hosts[site]
 		}
-		if _, err := gateSites(stdout, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
+		if _, err := gateSites(r, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
 			return err
 		}
 		rendered, err := render.Build(cfg, secrets)
@@ -185,7 +185,7 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 			touched[m.Site] = registryHost(m.Site, cfg.Sites[m.Site], "", *sudo)
 		}
 	}
-	if err := claimHosts(cfg, *execute, touched); err != nil {
+	if err := claimHosts(r, cfg, *execute, touched); err != nil {
 		return err
 	}
 

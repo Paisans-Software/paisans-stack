@@ -82,19 +82,19 @@ func runSiteAdd(args []string) error {
 	if _, ok := cfg.Sites[site]; !ok {
 		return fmt.Errorf("site add: %s declares no site %q. Declared sites are %s", *configPath, site, strings.Join(cfg.SiteNames(), ", "))
 	}
-	host, err := hostGate(os.Stdout, cfg, site, transports[site])
+	host, err := hostGate(r, cfg, site, transports[site])
 	if err != nil {
 		return err
 	}
 	// The monitor's stack is applied last, with the new site in its seed,
 	// so each monitor site is host checked as apply would check it.
-	shared, err := gateSites(os.Stdout, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] })
+	shared, err := gateSites(r, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] })
 	if err != nil {
 		return err
 	}
 	// Site add writes to every site: the mesh, HAProxy and etcd change on
 	// each, not only on the new one.
-	if err := claimSites(cfg, *execute, *sudo, cfg.SiteNames()...); err != nil {
+	if err := claimSites(r, cfg, *execute, *sudo, cfg.SiteNames()...); err != nil {
 		return err
 	}
 	plan, err := siteadd.Build(cfg, secrets, site, transports)

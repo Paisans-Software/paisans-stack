@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 func TestVerboseFlagShortAndLong(t *testing.T) {
@@ -51,4 +53,14 @@ func assertEveryFlagSetHasCommonFlags(t *testing.T) {
 			t.Errorf("%s: %d FlagSet(s) but %d commonFlags call(s)", f, sets, common)
 		}
 	}
+}
+
+// withRecorder makes every command run in this test report to a recorder,
+// so the test asserts on steps and items rather than on how they are drawn.
+func withRecorder(t *testing.T, verbose bool) *ui.Recorder {
+	t.Helper()
+	rec := &ui.Recorder{Verbose_: verbose}
+	reporterOverride = rec
+	t.Cleanup(func() { reporterOverride = nil })
+	return rec
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // emptyHost is a machine with nothing on it, which is all a plan for a first
@@ -130,22 +132,103 @@ func TestAFreshSitePlanShowsTheDatabaseBeforeTheApp(t *testing.T) {
 	}
 	plan.WithDatabases(databases)
 
-	printed := captureStdout(t, func() { printPlan(plan) })
-	t.Log("\n" + printed)
+	rec := &ui.Recorder{Verbose_: true}
+	listPlan(rec, plan)
+	t.Log("\n" + rec.Lines())
 
-	order := []string{"mesh ", "recreate  infra", "check     infra:", "wait ", "bootstrap database talk", "recreate  talk", "check     talk:"}
+	order := []string{"start mesh", "recreate infra", "wait for infra", "wait for Patroni primary", "bootstrap database talk", "recreate talk", "wait for talk"}
 	last := -1
 	for _, want := range order {
-		i := strings.Index(printed, want)
+		i := rec.Index("item", want)
 		if i < 0 {
-			t.Fatalf("the plan does not show %q:\n%s", want, printed)
+			t.Fatalf("the plan does not show %q:\n%s", want, rec.Lines())
 		}
 		if i < last {
-			t.Errorf("%q is shown out of order:\n%s", want, printed)
+			t.Errorf("%q is shown out of order:\n%s", want, rec.Lines())
 		}
 		last = i
 	}
-	if password, _ := secrets.Apps["talk"]["database_password"].(string); strings.Contains(printed, password) {
+	if password, _ := secrets.Apps["talk"]["database_password"].(string); strings.Contains(rec.Lines(), password) {
 		t.Error("the plan printed a database password")
+	}
+}
+
+// freshPlan is the plan for a first apply of freshSite on home-a, reached
+// through t and reporting to r, as runApply builds it.
+func freshPlan(tb testing.TB, r ui.Reporter, t apply.Transport) *apply.Plan {
+	tb.Helper()
+	path := filepath.Join(tb.TempDir(), "paisans.yaml")
+	if err := os.WriteFile(path, []byte(freshSite), 0o600); err != nil {
+		tb.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	secrets := &config.Secrets{Version: 1}
+	if _, err := secretsgen.Fill(cfg, secrets); err != nil {
+		tb.Fatal(err)
+	}
+	plan, err := planSiteApply(cfg, secrets, "home-a", t, apply.Report(r))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return plan
+}
+
+// failingHost is emptyHost, except that a command containing match fails
+// with message, as a daemon's refusal comes back over ssh.
+type failingHost struct {
+	emptyHost
+	match, message string
+}
+
+func (h failingHost) Run(command string) (string, error) {
+	if strings.Contains(command, h.match) {
+		return h.message + "\n", errors.New(h.message)
+	}
+	// No container runs yet, which is what a stack's `ps` says before its
+	// first `up`.
+	if strings.HasSuffix(command, " ps --all --format json") {
+		return "", nil
+	}
+	return h.emptyHost.Run(command)
+}
+
+func (h failingHost) RunInput(command, stdin string) (string, error) {
+	if strings.Contains(command, h.match) {
+		return h.message + "\n", errors.New(h.message)
+	}
+	return h.emptyHost.RunInput(command, stdin)
+}
+
+// failOn is a host on which the command containing match fails with message.
+func failOn(match, message string) apply.Transport {
+	return failingHost{match: match, message: message}
+}
+
+// executeForTest plans freshSite on home-a through t and executes it,
+// reporting both to r.
+func executeForTest(tb testing.TB, r ui.Reporter, t apply.Transport) error {
+	tb.Helper()
+	return apply.Execute(freshPlan(tb, r, t), t)
+}
+
+// A step that fails is the last step the operator sees end, and the error
+// returned for main to print carries the host's own words.
+func TestExecuteFailureShowsFailedStepAndFullError(t *testing.T) {
+	rec := &ui.Recorder{}
+	err := executeForTest(t, rec, failOn("infra/compose.yaml up -d", "Error response from daemon: port is already allocated"))
+	if err == nil || !strings.Contains(err.Error(), "port is already allocated") {
+		t.Fatalf("error lost its detail: %v", err)
+	}
+	last := -1
+	for i, e := range rec.Events {
+		if e.Kind == "done" || e.Kind == "fail" {
+			last = i
+		}
+	}
+	if last < 0 || rec.Events[last].Kind != "fail" || rec.Events[last].Text != "recreate infra" {
+		t.Fatalf("last ended step is not the failed one:\n%s", rec.Lines())
 	}
 }

@@ -34,7 +34,7 @@ func runFailoverTest(args []string) error {
 	}
 	// The switchover runs on the data sites, and the restart after it on
 	// the apps sites.
-	if err := claimSites(cfg, *execute, *sudo, union(cfg.Cluster.Sites, cfg.AppsSites())...); err != nil {
+	if err := claimSites(r, cfg, *execute, *sudo, union(cfg.Cluster.Sites, cfg.AppsSites())...); err != nil {
 		return err
 	}
 	return failover.Run(cfg, failover.Options{

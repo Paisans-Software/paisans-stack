@@ -114,7 +114,7 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	// so only a run that will change something claims it, through sudo,
 	// since the registry is root's.
 	if *execute {
-		if err := claimHosts(cfg, true, map[string]registry.Runner{where: registryHost(where, cfg.Sites[where], *destination, true)}); err != nil {
+		if err := claimHosts(r, cfg, true, map[string]registry.Runner{where: registryHost(where, cfg.Sites[where], *destination, true)}); err != nil {
 			return err
 		}
 	}

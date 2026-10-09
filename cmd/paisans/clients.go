@@ -15,6 +15,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // The path from an app's declaration to its client at Pocket ID, shared by
@@ -111,18 +112,20 @@ func buildClient(d oidcclient.Desired, rec oidcclient.Recorded, state oidcclient
 	return plan, nil
 }
 
-// printClientPlan shows one app's client: what is present, and each
-// mutation with what it sends. Warnings go to stderr.
-func printClientPlan(app, idp, where string, plan *oidcclient.Plan) {
-	fmt.Fprintf(os.Stdout, "%s's client at %s on %s (pocket-id)\n", app, idp, where)
+// listClientPlan shows one app's client in a dry run: each mutation as an
+// item, with what it sends as its detail, and what is already present as
+// details, since only what would change is a line by default.
+func listClientPlan(r ui.Reporter, app, idp, where string, plan *oidcclient.Plan) {
+	r.Detail("%s's client at %s on %s (pocket-id)", app, idp, where)
 	for _, line := range plan.Present {
-		fmt.Fprintf(os.Stdout, "  %s\n", line)
+		r.Detail("%s", line)
 	}
 	for _, step := range plan.Steps {
-		fmt.Fprintf(os.Stdout, "  %s\n", step.Line)
+		r.Item(step.Title)
+		r.Detail("%s", step.Detail)
 	}
 	for _, w := range plan.Warnings {
-		fmt.Fprintf(os.Stderr, "paisans: warning: %s\n", w)
+		r.Warn(w, "")
 	}
 }
 
@@ -134,6 +137,8 @@ func printClientPlan(app, idp, where string, plan *oidcclient.Plan) {
 // 2026-10-08), so apply does not ask again. It never rotates a secret;
 // `oidc client create --rotate-secret` does.
 type clientStep struct {
+	// report is where the step's plan and progress go.
+	report      ui.Reporter
 	cfg         *config.Config
 	site        string
 	destination string
@@ -171,9 +176,9 @@ type clientStep struct {
 // written back into: encrypted, with no recipient beside it. The secret is
 // written before Pocket ID is sent it, so a run that cannot write must not
 // start.
-func newClientStep(cfg *config.Config, site, destination, secretsPath string, secrets *config.Secrets, only []string) (*clientStep, error) {
+func newClientStep(r ui.Reporter, cfg *config.Config, site, destination, secretsPath string, secrets *config.Secrets, only []string) (*clientStep, error) {
 	sites := render.AppSites(cfg)
-	c := &clientStep{cfg: cfg, site: site, destination: destination, secretsPath: secretsPath, secrets: secrets, idp: pocketIDApp(cfg)}
+	c := &clientStep{report: r, cfg: cfg, site: site, destination: destination, secretsPath: secretsPath, secrets: secrets, idp: pocketIDApp(cfg)}
 	if c.idp == "" {
 		return nil, nil
 	}
@@ -218,6 +223,14 @@ func newClientStep(cfg *config.Config, site, destination, secretsPath string, se
 	return c, nil
 }
 
+// reporter is the step's report, or ui.Discard for a step made without one.
+func (c *clientStep) reporter() ui.Reporter {
+	if c.report == nil {
+		return ui.Discard
+	}
+	return c.report
+}
+
 func (c *clientStep) reset() {
 	c.held, c.refused, c.steps, c.groupsErr = map[string]string{}, map[string]error{}, 0, nil
 }
@@ -260,7 +273,9 @@ func (c *clientStep) heldApps() []string {
 }
 
 // ensure plans every app's client and, with execute, puts it in place and
-// records it, printing each plan as `oidc client create` does. Without
+// records it, one step per mutation. A dry run lists each plan as `oidc
+// client create` does; with execute it is listed only with --verbose, since
+// the steps that carry it out say the same. Without
 // execute, Pocket ID is only read. It returns an error only for a refusal of
 // the whole step, made before Pocket ID is sent anything; a refused app is
 // held back and reported by result.
@@ -270,8 +285,9 @@ func (c *clientStep) heldApps() []string {
 // app back, since the apply will start it before the clients are made.
 func (c *clientStep) ensure(execute, waiting bool) error {
 	c.reset()
+	r := c.reporter()
 	if len(c.apps) > 0 {
-		fmt.Fprintf(os.Stdout, "\nOIDC clients for %s, before they start\n", strings.Join(c.apps, ", "))
+		r.Detail("OIDC clients for %s, before they start", strings.Join(c.apps, ", "))
 	}
 	key, _ := c.secrets.Apps[c.idp]["static_api_key"].(string)
 	if key == "" {
@@ -323,7 +339,13 @@ func (c *clientStep) ensure(execute, waiting bool) error {
 			c.refuse(app, err)
 			continue
 		}
-		printClientPlan(app, c.idp, where, plan)
+		if !execute || r.Verbose() {
+			listClientPlan(r, app, c.idp, where, plan)
+		} else {
+			for _, w := range plan.Warnings {
+				r.Warn(w, "")
+			}
+		}
 		c.steps += len(plan.Steps)
 		for _, step := range plan.Steps {
 			if step.Kind == oidcclient.CreateGroup {
@@ -364,12 +386,12 @@ func (c *clientStep) ensure(execute, waiting bool) error {
 			continue
 		}
 		rec := &secretsRecorder{app: p.app, path: c.secretsPath, secrets: c.secrets, recipients: c.recipients}
+		p.plan.Report = r
 		if err := oidcclient.Execute(p.plan, api, rec, secretsgen.ClientSecret); err != nil {
 			c.refuse(p.app, err)
 			continue
 		}
 		if rec.wrote {
-			fmt.Fprintf(os.Stdout, "  recorded oidc_clients.%s.client_id and oidc_clients.%s.client_secret\n", p.app, p.app)
 			if len(c.recipients) == 0 {
 				fmt.Fprintf(os.Stderr, "paisans: %s is PLAINTEXT, because no %s beside it names an age recipient.\n", c.secretsPath, config.SOPSConfigName)
 			}
@@ -438,8 +460,10 @@ func unreachable(err error) string {
 // Pocket ID answers finishes it.
 func (c *clientStep) cannotAsk(apps []string, why string, waiting bool) {
 	if waiting {
-		fmt.Fprintf(os.Stdout, "  %-9s client for %s once pocket-id %s on %s has started and answers, before %s starts. It does not answer yet: %s\n",
-			"ensure", strings.Join(apps, ", "), c.idp, c.site, strings.Join(apps, ", "), why)
+		r := c.reporter()
+		r.Item("ensure OIDC clients after " + c.idp + " starts")
+		r.Detail("client for %s once pocket-id %s on %s has started and answers, before %s starts. It does not answer yet: %s",
+			strings.Join(apps, ", "), c.idp, c.site, strings.Join(apps, ", "), why)
 		c.steps++
 		return
 	}
@@ -542,7 +566,6 @@ func planWithClients(c *clientStep, plan func(hold []string) (*apply.Plan, error
 	if err := c.ensure(false, c.pocketIDHere()); err != nil {
 		return nil, err
 	}
-	fmt.Fprintln(os.Stdout)
 	held := c.heldApps()
 	if len(held) == 0 {
 		return full, nil
@@ -573,14 +596,20 @@ func executeWithClients(c *clientStep, pass sitePass) ([]*apply.Plan, error) {
 		if err != nil {
 			return nil, err
 		}
-		fmt.Fprintf(os.Stdout, "\nstarting %s's Pocket ID, and what it runs on, before the apps that sign in through it\n", c.site)
+		// A step around the pass, whose own steps report within it: it
+		// ends once Pocket ID and what it runs on are up, with how long
+		// that took.
+		s := c.reporter().Step("start pocket-id")
+		s.Detail("starting %s's Pocket ID, and what it runs on, before the apps that sign in through it", c.site)
 		if err := pass.execute(first); err != nil {
+			s.Fail(err)
 			return nil, err
 		}
+		s.Done("")
 		plans = append(plans, first)
 		if err := c.waitForPocketID(); err != nil {
 			c.reset()
-			fmt.Fprintf(os.Stdout, "\nOIDC clients for %s, before they start\n", strings.Join(c.apps, ", "))
+			c.reporter().Detail("OIDC clients for %s, before they start", strings.Join(c.apps, ", "))
 			c.cannotAsk(c.apps, unreachable(err), false)
 		} else if err := c.ensure(true, false); err != nil {
 			return plans, err
@@ -593,8 +622,6 @@ func executeWithClients(c *clientStep, pass sitePass) ([]*apply.Plan, error) {
 		return plans, err
 	}
 	c.heldOverwrites = final.HeldOverwrites
-	fmt.Fprintf(os.Stdout, "\nthe site, rendered with the clients in place\n")
-	printPlan(final)
 	if err := pass.execute(final); err != nil {
 		return plans, err
 	}

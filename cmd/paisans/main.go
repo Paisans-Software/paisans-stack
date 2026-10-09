@@ -29,6 +29,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -551,22 +552,24 @@ func runApply(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
+	r.Section(fmt.Sprintf("%s (%s)", *site, transport.Describe()))
 	done := r.Step("check mesh subnet")
-	done.Detail("nothing on %s overlaps the mesh subnet", *site)
 	err = checkMeshLive(cfg, *site, transport)
 	if err != nil {
 		done.Fail(err)
 	} else {
+		// Only once it is true: a check that could not run found nothing.
+		done.Detail("nothing on %s overlaps the mesh subnet", *site)
 		done.Done("")
 	}
 	if err != nil {
 		return err
 	}
-	host, err := hostGate(os.Stdout, cfg, *site, transport)
+	host, err := hostGate(r, cfg, *site, transport)
 	if err != nil {
 		return err
 	}
-	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+	if err := claimHosts(r, cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
 
@@ -574,7 +577,7 @@ func runApply(args []string) error {
 	// Pocket ID gets its client ensured before it renders. Planned here,
 	// read only, so the dry run shows it and an app it must hold back is
 	// left out of the plan below.
-	clients, err := newClientStep(cfg, *site, *destination, *secretsPath, secrets, only)
+	clients, err := newClientStep(r, cfg, *site, *destination, *secretsPath, secrets, only)
 	if err != nil {
 		return err
 	}
@@ -586,10 +589,19 @@ func runApply(args []string) error {
 	}
 	// planFor plans the site holding back the named app stacks, as a later
 	// pass after the done ones. See executeWithClients. The reporter goes to
-	// Build rather than onto the plan it returns, so planning announces what
-	// it reads from the host as Execute announces what it does there.
+	// Build, so planning announces what it reads from the host as Execute
+	// announces what it does there. Only the first plan reports its reads: a
+	// later pass reads the same host again, and saying so twice is noise.
+	// Every plan reports its own Execute.
+	reads := r
 	planFor := func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
-		return planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...), apply.Report(r)})...)
+		p, err := planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...), apply.Report(reads)})...)
+		reads = ui.Discard
+		if err != nil {
+			return nil, err
+		}
+		p.Report = r
+		return p, nil
 	}
 	plan, err := planWithClients(clients, func(hold []string) (*apply.Plan, error) { return planFor(hold, nil) }, *execute)
 	if err != nil {
@@ -628,8 +640,12 @@ func runApply(args []string) error {
 			plan.Bootstrap.EtcdUnstarted = apply.FoundingUnstarted(cfg, *site, running)
 		}
 	}
-	printPlan(plan)
-	if err := printLeftovers(os.Stdout, cfg, *site, host.Inventory, plan); err != nil {
+	// A dry run is the plan. --execute reports progress instead, and shows
+	// the plan first only with --verbose, since its steps say the same.
+	if !*execute || r.Verbose() {
+		listPlan(r, plan)
+	}
+	if err := printLeftovers(r, cfg, *site, host.Inventory, plan); err != nil {
 		return err
 	}
 
@@ -638,11 +654,13 @@ func runApply(args []string) error {
 	}
 
 	if !*execute {
+		err := clients.result()
 		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone && (clients == nil || clients.steps == 0) {
-			return clients.result()
+			r.Result("%s is up to date. Nothing to apply.", *site)
+			return err
 		}
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
-		return clients.result()
+		r.Result("Nothing changed. Re-run with --execute to apply.")
+		return err
 	}
 
 	plans := []*apply.Plan{plan}
@@ -675,13 +693,14 @@ func runApply(args []string) error {
 		acted.Actions = append(acted.Actions, p.Actions...)
 		written += len(p.Writes())
 	}
-	fmt.Fprintf(os.Stdout, "\napplied %d file(s) to %s\n", written, plan.Transport)
 	if err := checkStandby(cfg, acted, *site, transport, func(name string) apply.Transport {
 		return siteTransport(name, cfg.Sites[name], "", *sudo)
 	}); err != nil {
 		return err
 	}
-	return clients.result()
+	err = clients.result()
+	r.Result("Applied %s to %s.", plural(written, "file"), *site)
+	return err
 }
 
 // checkStandby is the deployment level gate after an apply that acted on a
@@ -807,7 +826,7 @@ func runStorageInit(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
-	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+	if err := claimHosts(r, cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
 	plan, err := garage.Build(*site, cfg, secrets, transport)
@@ -875,11 +894,11 @@ func runHostPrepare(args []string) error {
 	if err != nil {
 		return err
 	}
-	host, err := hostGate(os.Stdout, cfg, *site, transport)
+	host, err := hostGate(r, cfg, *site, transport)
 	if err != nil {
 		return err
 	}
-	if err := claimHosts(cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
+	if err := claimHosts(r, cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
 	var options []hostprep.Option
@@ -913,83 +932,6 @@ func printGaragePlan(plan *garage.Plan) {
 	}
 	for _, present := range plan.Present {
 		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "present", present)
-	}
-}
-
-func printPlan(plan *apply.Plan) {
-	fmt.Fprintf(os.Stdout, "%s (%s)\n", plan.Site, plan.Transport)
-	for _, note := range plan.Notes {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "note", note)
-	}
-	if plan.Disk != nil {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "check", plan.Disk.Describe())
-	}
-	if plan.Volumes != nil {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "check", plan.Volumes.Describe())
-		for _, u := range plan.Volumes.Uncovered {
-			fmt.Fprintf(os.Stdout, "  %-9s %s\n", "refuse", u.Describe())
-		}
-	}
-	var unchanged int
-	for _, change := range plan.Changes {
-		if change.Kind == apply.Unchanged {
-			unchanged++
-			continue
-		}
-		kind := change.Kind.String()
-		if change.Overwritten {
-			kind = "overwrite"
-		}
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", kind, change.Path)
-	}
-	if unchanged > 0 {
-		fmt.Fprintf(os.Stdout, "  %-9s %d file(s)\n", "unchanged", unchanged)
-	}
-	if plan.WireGuard != apply.WireGuardNone {
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n", "mesh", plan.WireGuard.Describe(plan.Deployment))
-	}
-	bootstrapped := plan.Bootstrap == nil
-	for _, action := range plan.Actions {
-		if action.Stack != "infra" && !bootstrapped {
-			printBootstrap(plan.Bootstrap)
-			bootstrapped = true
-		}
-		verb, stack := "restart", action.Stack
-		if action.Recreate {
-			verb = "recreate"
-		}
-		if action.Force {
-			stack += " (forced)"
-		}
-		if action.Down {
-			// Its own line, because a down is the one action here that
-			// removes the stack's network as well as its containers.
-			fmt.Fprintf(os.Stdout, "  %-9s %s, so that its compose network is created as declared\n", "down", action.Stack)
-		}
-		fmt.Fprintf(os.Stdout, "  %-9s %s\n      %s\n", verb, stack, action.Reason)
-		fmt.Fprintf(os.Stdout, "  %-9s %s: every container running, and healthy where it has a healthcheck, before anything after it moves\n", "check", action.Stack)
-		for _, prune := range plan.Prunes {
-			if prune.Stack == action.Stack {
-				fmt.Fprintf(os.Stdout, "  %-9s %s, superseded, once %s is healthy and if no container still uses it\n", "prune", prune.Ref, action.Stack)
-			}
-		}
-	}
-	if !bootstrapped {
-		printBootstrap(plan.Bootstrap)
-	}
-	if plan.HostSites {
-		fmt.Fprintf(os.Stdout, "  %-9s %s, if missing, for site blocks the host's owner adds; nothing in it is ever changed\n", "ensure", render.HostSitesDir)
-	}
-	if plan.GatewayChanging && plan.ACMEModule != "" {
-		fmt.Fprintf(os.Stdout, "  %-9s the gateway's Caddy carries %s, before anything moves\n", "check", plan.ACMEModule)
-	}
-	if plan.GatewayReload {
-		fmt.Fprintf(os.Stdout, "  %-9s the gateway, after its assembled configuration validates\n", "reload")
-	} else if plan.GatewayChanging {
-		fmt.Fprintf(os.Stdout, "  %-9s the assembled gateway configuration, before the gateway is replaced\n", "validate")
-	}
-	if conflicts := plan.Conflicts(); len(conflicts) > 0 {
-		fmt.Fprintf(os.Stdout, "\n%d file(s) were edited on the host. Nothing will be applied until that is resolved.\n", len(conflicts))
 	}
 }
 
@@ -1109,20 +1051,6 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 		return nil, nil, nil, false, err
 	}
 	return cfg, wants, provider, *execute, nil
-}
-
-// printBootstrap shows the database work where it happens: after the
-// infrastructure stack and before any app stack.
-func printBootstrap(b *apply.Bootstrap) {
-	if len(b.EtcdUnstarted) > 0 {
-		fmt.Fprintf(os.Stdout, "  %-9s after the infrastructure stack: etcd is being founded and %s runs no etcd yet, so no primary can appear. Apply %s, then this site again\n",
-			"stop", strings.Join(b.EtcdUnstarted, ", "), strings.Join(b.EtcdUnstarted, ", then "))
-		return
-	}
-	fmt.Fprintf(os.Stdout, "  %-9s for a Patroni primary at %s, up to 3 minutes; a replica leaves the rest to the leader's site\n", "wait", b.Patroni)
-	for _, db := range b.Databases {
-		fmt.Fprintf(os.Stdout, "  %-9s database %s: role %s with its password, database owned by it, creating only what is missing\n", "bootstrap", db.App, db.Role)
-	}
 }
 
 // pathList collects a repeatable flag. --overwrite takes one path each time it

@@ -1,13 +1,12 @@
 package main
 
 import (
-	"fmt"
-	"os"
 	"sort"
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/registry"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // claimHosts is what every command that writes to a host does before
@@ -15,10 +14,11 @@ import (
 // this deployment in the host registry, and a refusal stops the command with
 // nothing on any host changed. Without execute it only reads each registry
 // and refuses the same way, so a dry run shows a conflict the real run would
-// meet. Sites are claimed in name order, and a claim already made stays: it
-// is a record that this deployment is on that host, which it is about to be.
-// See internal/registry.
-func claimHosts(cfg *config.Config, execute bool, transports map[string]registry.Runner) error {
+// meet; a read changes nothing, so it is not a step of its own. Sites are
+// claimed in name order, and a claim already made stays: it is a record that
+// this deployment is on that host, which it is about to be. See
+// internal/registry.
+func claimHosts(r ui.Reporter, cfg *config.Config, execute bool, transports map[string]registry.Runner) error {
 	sites := make([]string, 0, len(transports))
 	for name := range transports {
 		sites = append(sites, name)
@@ -33,10 +33,19 @@ func claimHosts(cfg *config.Config, execute bool, transports map[string]registry
 			}
 			continue
 		}
+		// One site's claim is "claim site" under that site's section; a
+		// command claiming several names each, since they share one.
+		title := "claim site"
+		if len(sites) > 1 {
+			title = "claim " + site
+		}
+		s := r.Step(title)
+		s.Detail("claimed for deployment %s in %s", cfg.ID, registry.Path)
 		if err := registry.Claim(t, cfg, site, now); err != nil {
+			s.Fail(err)
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "paisans: %s: claimed for deployment %s in %s\n", site, cfg.ID, registry.Path)
+		s.Done("")
 	}
 	return nil
 }
@@ -50,12 +59,12 @@ var registryHost = func(name string, site config.Site, destination string, sudo 
 // claimSites is claimHosts over the named sites, each reached through its
 // own ssh section, with sudo unless the operator turned it off, since the
 // registry is root's.
-func claimSites(cfg *config.Config, execute, sudo bool, sites ...string) error {
+func claimSites(r ui.Reporter, cfg *config.Config, execute, sudo bool, sites ...string) error {
 	transports := map[string]registry.Runner{}
 	for _, name := range sites {
 		transports[name] = registryHost(name, cfg.Sites[name], "", sudo)
 	}
-	return claimHosts(cfg, execute, transports)
+	return claimHosts(r, cfg, execute, transports)
 }
 
 // union is the sorted set of every name in lists.

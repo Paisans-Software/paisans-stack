@@ -106,7 +106,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	// The monitor's stack is applied last, with the site out of its seed,
 	// so each monitor site is host checked as apply would check it.
-	if _, err := gateSites(stdout, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
+	if _, err := gateSites(r, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
 		return err
 	}
 	plan, err := siteremove.Build(cfg, secrets, site, transports, opts)
@@ -116,7 +116,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	plan.Print(stdout)
 	// Every site it reaches is written to: the cluster and the mesh change
 	// on each remaining one, and the leaving host is cleaned.
-	if err := claimSites(cfg, *execute, *sudo, claim...); err != nil {
+	if err := claimSites(r, cfg, *execute, *sudo, claim...); err != nil {
 		return err
 	}
 	if !*execute {

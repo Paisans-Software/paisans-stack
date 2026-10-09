@@ -86,7 +86,7 @@ func runOIDCClientCreate(args []string) error {
 	// so only a run that will change something claims it, through sudo,
 	// since the registry is root's.
 	if *execute {
-		if err := claimHosts(cfg, true, map[string]registry.Runner{where: registryHost(where, cfg.Sites[where], *destination, true)}); err != nil {
+		if err := claimHosts(r, cfg, true, map[string]registry.Runner{where: registryHost(where, cfg.Sites[where], *destination, true)}); err != nil {
 			return err
 		}
 	}
@@ -117,16 +117,25 @@ func runOIDCClientCreate(args []string) error {
 	if err != nil {
 		return fmt.Errorf("oidc client create: %w", err)
 	}
-	printClientPlan(*appName, idp, where, plan)
+	// A dry run lists the plan; --execute reports each mutation as it is
+	// made, and lists the plan first only with --verbose.
+	if !*execute || r.Verbose() {
+		listClientPlan(r, *appName, idp, where, plan)
+	} else {
+		for _, w := range plan.Warnings {
+			r.Warn(w, "")
+		}
+	}
 	if len(plan.Steps) == 0 {
 		return nil
 	}
 	if !*execute {
-		fmt.Fprintf(os.Stdout, "\nNothing was changed. Re-run with --execute to apply this.\n")
+		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
 
 	rec := &secretsRecorder{app: *appName, path: *secretsPath, secrets: secrets, recipients: recipients}
+	plan.Report = r
 	if err := oidcclient.Execute(plan, api, rec, secretsgen.ClientSecret); err != nil {
 		return fmt.Errorf("oidc client create: %w", err)
 	}

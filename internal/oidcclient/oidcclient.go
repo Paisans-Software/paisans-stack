@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Desired is the client an app needs, from its kind and its configuration.
@@ -133,11 +134,14 @@ const (
 	SetLaunchURL
 )
 
-// Step is one mutation and the line that shows it.
+// Step is one mutation. Title is the short line an operator sees by
+// default; Detail is what it sends, the request and its body, shown with
+// --verbose, since a body is what explains a step and is noise when it works.
 type Step struct {
-	Kind  StepKind
-	Group string
-	Line  string
+	Kind   StepKind
+	Group  string
+	Title  string
+	Detail string
 }
 
 // Plan is a probe, what is already right, and the steps that remain.
@@ -150,6 +154,9 @@ type Plan struct {
 	// Warnings are things the operator should know and the plan does not
 	// change. They do not stop the run.
 	Warnings []string
+	// Report is where Execute reports each mutation as a step. Nil reports
+	// nothing.
+	Report ui.Reporter
 }
 
 // Build decides the steps. It is a pure function of the probe and the
@@ -181,7 +188,7 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 	for _, g := range d.groups() {
 		if s.Groups[g] == nil {
 			body, _ := json.Marshal(map[string]string{"name": g, "friendlyName": g})
-			p.Steps = append(p.Steps, Step{Kind: CreateGroup, Group: g, Line: fmt.Sprintf("create group %s: POST /api/user-groups %s", g, body)})
+			p.Steps = append(p.Steps, Step{Kind: CreateGroup, Group: g, Title: "create group " + g, Detail: fmt.Sprintf("create group %s: POST /api/user-groups %s", g, body)})
 		} else {
 			p.Present = append(p.Present, "present group "+g)
 		}
@@ -189,7 +196,7 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 
 	if client == nil {
 		body, _ := json.Marshal(d.newClient())
-		p.Steps = append(p.Steps, Step{Kind: CreateClient, Line: fmt.Sprintf("create client %s: POST /api/oidc/clients %s", d.App, body)})
+		p.Steps = append(p.Steps, Step{Kind: CreateClient, Title: "create OIDC client " + d.App, Detail: fmt.Sprintf("create client %s: POST /api/oidc/clients %s", d.App, body)})
 	} else if d.LaunchURL != "" {
 		current := ""
 		if client.LaunchURL != nil {
@@ -199,7 +206,7 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 		case current == d.LaunchURL:
 			p.Present = append(p.Present, fmt.Sprintf("present client %s launch URL %s", d.App, d.LaunchURL))
 		case current == "" || d.setByToolkit(current):
-			p.Steps = append(p.Steps, Step{Kind: SetLaunchURL, Line: fmt.Sprintf("set launch URL for client %s: PUT /api/oidc/clients/%s with launchURL %q and every other field sent back as it is now", d.App, client.ID, d.LaunchURL)})
+			p.Steps = append(p.Steps, Step{Kind: SetLaunchURL, Title: "set launch URL for " + d.App, Detail: fmt.Sprintf("set launch URL for client %s: PUT /api/oidc/clients/%s with launchURL %q and every other field sent back as it is now", d.App, client.ID, d.LaunchURL)})
 		default:
 			p.Present = append(p.Present, fmt.Sprintf("present client %s launch URL %s, not %s; left as it is, since it may have been set deliberately", d.App, current, d.LaunchURL))
 			if d.LaunchURLChosen {
@@ -216,7 +223,11 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 			}
 		}
 		if len(missing) > 0 {
-			p.Steps = append(p.Steps, Step{Kind: AllowGroups, Line: fmt.Sprintf("allow groups %s on client %s: PUT /api/oidc/clients/<id>/allowed-user-groups with exactly %s", strings.Join(missing, ", "), d.App, strings.Join(d.groups(), ", "))})
+			title := "allow group " + missing[0] + " on " + d.App
+			if len(missing) > 1 {
+				title = "allow groups " + strings.Join(missing, ", ") + " on " + d.App
+			}
+			p.Steps = append(p.Steps, Step{Kind: AllowGroups, Title: title, Detail: fmt.Sprintf("allow groups %s on client %s: PUT /api/oidc/clients/<id>/allowed-user-groups with exactly %s", strings.Join(missing, ", "), d.App, strings.Join(d.groups(), ", "))})
 		} else {
 			p.Present = append(p.Present, fmt.Sprintf("present client %s allows %s", d.App, strings.Join(d.groups(), ", ")))
 		}
@@ -232,14 +243,14 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 		if client != nil && len(s.Secrets) > 0 {
 			line += fmt.Sprintf(". The %d secret(s) it holds now stay valid until deleted", len(s.Secrets))
 		}
-		p.Steps = append(p.Steps, Step{Kind: AddSecret, Line: line})
+		p.Steps = append(p.Steps, Step{Kind: AddSecret, Title: "create client secret for " + d.App, Detail: line})
 	case !pocketid.HasActiveSecret(s.Secrets, rec.ClientSecret):
 		if len(s.Secrets) >= pocketid.MaxClientSecrets {
 			return nil, fmt.Errorf("client %s already holds %d secrets, Pocket ID's limit (model/oidc.go:41). Delete an unused one before adding another", d.App, len(s.Secrets))
 		}
-		p.Steps = append(p.Steps, Step{Kind: SendRecordedSecret, Line: fmt.Sprintf("send the secret recorded at %s.client_secret, which client %s does not hold, to POST /api/oidc/clients/%s/secrets. Never printed", key, d.App, client.ID)})
+		p.Steps = append(p.Steps, Step{Kind: SendRecordedSecret, Title: "send recorded secret for " + d.App, Detail: fmt.Sprintf("send the secret recorded at %s.client_secret, which client %s does not hold, to POST /api/oidc/clients/%s/secrets. Never printed", key, d.App, client.ID)})
 	case rec.ClientID == "":
-		p.Steps = append(p.Steps, Step{Kind: RecordClientID, Line: fmt.Sprintf("record %s.client_id %s, beside a secret that is already live", key, client.ID)})
+		p.Steps = append(p.Steps, Step{Kind: RecordClientID, Title: "record client id for " + d.App, Detail: fmt.Sprintf("record %s.client_id %s, beside a secret that is already live", key, client.ID)})
 	default:
 		p.Present = append(p.Present, fmt.Sprintf("present %s.client_secret, which matches an active secret of client %s by its first %d characters", key, d.App, pocketid.SecretPrefixLength))
 	}
@@ -348,18 +359,27 @@ func Execute(p *Plan, c *pocketid.Client, rec Recorder, newSecret func() (string
 	recorded := p.Recorded
 	var secretsToHide []string
 
+	report := p.Report
+	if report == nil {
+		report = ui.Discard
+	}
 	for _, step := range p.Steps {
+		s := report.Step(step.Title)
+		s.Detail("%s", step.Detail)
+		result := ""
 		var err error
 		switch step.Kind {
 		case CreateGroup:
 			var g pocketid.Group
 			if g, err = c.CreateGroup(step.Group); err == nil {
 				groups[step.Group] = &g
+				result = "created"
 			}
 		case CreateClient:
 			var created pocketid.OIDCClient
 			if created, err = c.CreateOIDCClient(d.newClient()); err == nil {
 				client = &created
+				result = "created"
 			}
 		case SetLaunchURL:
 			err = c.SetLaunchURL(client.ID, d.LaunchURL)
@@ -389,6 +409,7 @@ func Execute(p *Plan, c *pocketid.Client, rec Recorder, newSecret func() (string
 				break
 			}
 			recorded = Recorded{ClientID: client.ID, ClientSecret: secret}
+			s.Detail("recorded oidc_clients.%s.client_id and oidc_clients.%s.client_secret", d.App, d.App)
 			if err = c.AddClientSecret(client.ID, secret); err != nil {
 				err = fmt.Errorf("%w. oidc_clients.%s holds the new secret and Pocket ID does not: re-run to send it, and do not apply %s until it has", err, d.App, d.App)
 			}
@@ -398,18 +419,24 @@ func Execute(p *Plan, c *pocketid.Client, rec Recorder, newSecret func() (string
 				if err = rec.Record(client.ID, recorded.ClientSecret); err != nil {
 					break
 				}
+				s.Detail("recorded oidc_clients.%s.client_id and oidc_clients.%s.client_secret", d.App, d.App)
 			}
 			err = c.AddClientSecret(client.ID, recorded.ClientSecret)
 		case RecordClientID:
 			secretsToHide = append(secretsToHide, recorded.ClientSecret)
-			err = rec.Record(client.ID, recorded.ClientSecret)
+			if err = rec.Record(client.ID, recorded.ClientSecret); err == nil {
+				s.Detail("recorded oidc_clients.%s.client_id and oidc_clients.%s.client_secret", d.App, d.App)
+			}
 			recorded.ClientID = client.ID
 		default:
 			err = fmt.Errorf("no step %d", step.Kind)
 		}
 		if err != nil {
-			return pocketid.Redact(fmt.Errorf("%s: %w", firstWords(step.Line), err), secretsToHide...)
+			err = pocketid.Redact(fmt.Errorf("%s: %w", firstWords(step.Detail), err), secretsToHide...)
+			s.Fail(err)
+			return err
 		}
+		s.Done(result)
 	}
 
 	// A rotation is done once its secret is sent; asking the fresh plan for
@@ -426,7 +453,7 @@ func Execute(p *Plan, c *pocketid.Client, rec Recorder, newSecret func() (string
 	if len(again.Steps) > 0 {
 		var left []string
 		for _, s := range again.Steps {
-			left = append(left, firstWords(s.Line))
+			left = append(left, firstWords(s.Detail))
 		}
 		return errors.New("the calls succeeded but a fresh probe still plans: " + strings.Join(left, "; "))
 	}

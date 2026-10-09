@@ -71,13 +71,13 @@ func runStorageAdd(args []string) error {
 	// last, on every monitor site, so each is host checked before any
 	// changes.
 	sites := union(cfg.Storage.Garage.Sites, cfg.GatewaySites(), cfg.MonitorSites())
-	shared, err := gateSites(os.Stdout, cfg, sites, func(site string) hostcheck.Transport { return transports[site] })
+	shared, err := gateSites(r, cfg, sites, func(site string) hostcheck.Transport { return transports[site] })
 	if err != nil {
 		return err
 	}
 	// Every Garage site, the gateway, which takes the media routes, and the
 	// monitor, which is reseeded.
-	if err := claimSites(cfg, *execute, *sudo, sites...); err != nil {
+	if err := claimSites(r, cfg, *execute, *sudo, sites...); err != nil {
 		return err
 	}
 	plan, err := storageadd.Build(cfg, secrets, transports, storageadd.Options{

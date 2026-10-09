@@ -1,12 +1,12 @@
 package hostcheck_test
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 func check(t *testing.T, site string, h *fakeHost) *hostcheck.Report {
@@ -18,10 +18,21 @@ func check(t *testing.T, site string, h *fakeHost) *hostcheck.Report {
 	return r
 }
 
+// shown is what the report attaches to the host check's step, and the
+// refusal it returns, which is where its conflicts are listed.
+func shown(r *hostcheck.Report) (*ui.Recorder, string) {
+	rec := &ui.Recorder{Verbose_: true}
+	r.Show(rec)
+	refusal := ""
+	if err := r.Refusal(); err != nil {
+		refusal = err.Error()
+	}
+	return rec, refusal
+}
+
 func printed(r *hostcheck.Report) string {
-	var b bytes.Buffer
-	r.Print(&b)
-	return b.String()
+	rec, refusal := shown(r)
+	return rec.Lines() + refusal
 }
 
 func wantClass(t *testing.T, r *hostcheck.Report, class hostcheck.Class) {
@@ -31,9 +42,12 @@ func wantClass(t *testing.T, r *hostcheck.Report, class hostcheck.Class) {
 	}
 }
 
+// wantLine is a line the operator is shown: a detail of the host check with
+// --verbose, or, for a conflict, part of the refusal printed in full.
 func wantLine(t *testing.T, r *hostcheck.Report, line string) {
 	t.Helper()
-	if !strings.Contains(printed(r), line) {
+	rec, refusal := shown(r)
+	if !rec.Has("detail", line) && !strings.Contains(refusal, line) {
 		t.Errorf("the report has no line %q:\n%s", line, printed(r))
 	}
 }
@@ -53,7 +67,7 @@ func TestAnEmptyDockerInstallIsClean(t *testing.T) {
 	if r.Shared() {
 		t.Error("a clean host reads as shared")
 	}
-	wantLine(t, r, "host check: home-a (ubuntu@host.example.org) is clean")
+	wantLine(t, r, "home-a (ubuntu@host.example.org) is clean")
 }
 
 // A host already running this deployment is clean: the host network
@@ -139,8 +153,8 @@ func TestAForeignCaddyBesideASiteThatDoesNotClaimItIsShared(t *testing.T) {
 func TestAForeignCaddyConflictsWithAGateway(t *testing.T) {
 	r := check(t, "edge", caddyHost())
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  *:80/tcp (Caddy): claimed by sites.edge.roles (gateway), held by container web-caddy-1 (compose project web)")
-	wantLine(t, r, "CONFLICT  *:443/tcp (Caddy): claimed by sites.edge.roles (gateway), held by container web-caddy-1 (compose project web)")
+	wantLine(t, r, "*:80/tcp (Caddy): claimed by sites.edge.roles (gateway), held by container web-caddy-1 (compose project web)")
+	wantLine(t, r, "*:443/tcp (Caddy): claimed by sites.edge.roles (gateway), held by container web-caddy-1 (compose project web)")
 	if len(r.Conflicts) != 2 {
 		t.Errorf("conflicts %v, want 80 and 443 once each", r.Conflicts)
 	}
@@ -158,8 +172,8 @@ func TestAForeignPostgresConflictsWithADataSite(t *testing.T) {
 `
 	r := check(t, "home-a", h)
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  10.44.0.1:5432/tcp (Postgres): claimed by sites.home-a.roles (data), held by process postgres (pid 1200)")
-	wantLine(t, r, "CONFLICT  127.0.0.1:5432/tcp (Postgres): claimed by sites.home-a.roles (data), held by process postgres (pid 1200)")
+	wantLine(t, r, "10.44.0.1:5432/tcp (Postgres): claimed by sites.home-a.roles (data), held by process postgres (pid 1200)")
+	wantLine(t, r, "127.0.0.1:5432/tcp (Postgres): claimed by sites.home-a.roles (data), held by process postgres (pid 1200)")
 }
 
 // A loopback listener does not make a host shared, but one on an address
@@ -187,7 +201,7 @@ func TestAForeignPublishedPortConflictsWithoutAListener(t *testing.T) {
 `, shopID)
 	r := check(t, "edge", h)
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  *:443/tcp (Caddy): claimed by sites.edge.roles (gateway), held by container proxy-nginx-1 (compose project proxy)")
+	wantLine(t, r, "*:443/tcp (Caddy): claimed by sites.edge.roles (gateway), held by container proxy-nginx-1 (compose project proxy)")
 }
 
 // A psns-f2a9 the toolkit's manifest does not record is somebody else's VPN, and
@@ -198,8 +212,8 @@ func TestAWireGuardTheToolkitDidNotWriteConflicts(t *testing.T) {
 	h.answers["ss -Hltnup"] = baseSockets + "udp UNCONN 0 0 0.0.0.0:51820 0.0.0.0:*\n"
 	r := check(t, "home-a", h)
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  interface psns-f2a9: claimed by mesh, held by an interface this deployment did not write")
-	wantLine(t, r, "CONFLICT  *:51820/udp (WireGuard): claimed by mesh, held by a kernel socket (no process)")
+	wantLine(t, r, "interface psns-f2a9: claimed by mesh, held by an interface this deployment did not write")
+	wantLine(t, r, "*:51820/udp (WireGuard): claimed by mesh, held by a kernel socket (no process)")
 }
 
 // A foreign Docker network or a route over the mesh subnet would capture
@@ -211,8 +225,8 @@ func TestSomethingOverlappingTheMeshConflicts(t *testing.T) {
 	h.answers["ip -j route"] = `[{"dst":"default","dev":"eth0"},{"dst":"10.44.0.0/16","dev":"br-` + id("6")[:12] + `"},{"dst":"10.44.0.128/25","dev":"tun0"}]`
 	r := check(t, "home-a", h)
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  subnet 10.44.0.0/16: claimed by mesh.subnet, held by docker network lab_default (compose project lab)")
-	wantLine(t, r, "CONFLICT  route 10.44.0.128/25 dev tun0: claimed by mesh.subnet, held by the host's routing table")
+	wantLine(t, r, "subnet 10.44.0.0/16: claimed by mesh.subnet, held by docker network lab_default (compose project lab)")
+	wantLine(t, r, "route 10.44.0.128/25 dev tun0: claimed by mesh.subnet, held by the host's routing table")
 	if len(r.Conflicts) != 2 {
 		t.Errorf("conflicts %v: the network's own bridge route is the network, reported once", r.Conflicts)
 	}
@@ -310,7 +324,7 @@ func TestAnIPv4MappedListenerIsItsIPv4Address(t *testing.T) {
 `
 	r := check(t, "home-a", h)
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  127.0.0.1:5432/tcp (Postgres): claimed by sites.home-a.roles (data), held by process postgres (pid 1200)")
+	wantLine(t, r, "127.0.0.1:5432/tcp (Postgres): claimed by sites.home-a.roles (data), held by process postgres (pid 1200)")
 	if len(r.Foreign) != 0 {
 		t.Errorf("a mapped loopback listener was counted as foreign: %q", r.Foreign)
 	}
@@ -324,8 +338,8 @@ func TestAForeignCaddyAndTheTwoIngressModes(t *testing.T) {
 	wantClass(t, check(t, "porch", caddyHost()), hostcheck.Shared)
 	r := check(t, "watch", caddyHost())
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  *:80/tcp (Caddy): claimed by sites.watch.roles (monitor), held by container web-caddy-1 (compose project web)")
-	wantLine(t, r, "CONFLICT  *:443/tcp (Caddy): claimed by sites.watch.roles (monitor), held by container web-caddy-1 (compose project web)")
+	wantLine(t, r, "*:80/tcp (Caddy): claimed by sites.watch.roles (monitor), held by container web-caddy-1 (compose project web)")
+	wantLine(t, r, "*:443/tcp (Caddy): claimed by sites.watch.roles (monitor), held by container web-caddy-1 (compose project web)")
 }
 
 // An external monitor's compose network is pinned, so a foreign network or a
@@ -338,8 +352,8 @@ func TestSomethingOverlappingTheIngressNetworkConflicts(t *testing.T) {
 	h.answers["ip -j route"] = `[{"dst":"default","dev":"eth0"},{"dst":"10.255.255.0/24","dev":"br-` + id("6")[:12] + `"},{"dst":"10.255.255.0/29","dev":"tun0"}]`
 	r := check(t, "porch", h)
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  subnet 10.255.255.0/24: claimed by sites.porch.ingress, held by docker network lab_default (compose project lab)")
-	wantLine(t, r, "CONFLICT  route 10.255.255.0/29 dev tun0: claimed by sites.porch.ingress, held by the host's routing table")
+	wantLine(t, r, "subnet 10.255.255.0/24: claimed by sites.porch.ingress, held by docker network lab_default (compose project lab)")
+	wantLine(t, r, "route 10.255.255.0/29 dev tun0: claimed by sites.porch.ingress, held by the host's routing table")
 	// The same network on a site with no external monitor is nobody's claim.
 	wantClass(t, check(t, "watch", h), hostcheck.Shared)
 }
@@ -355,7 +369,7 @@ func TestAStaleToolkitStackOnTheIngressNetworkConflicts(t *testing.T) {
 `, id("7"))
 	r := check(t, "porch", stale)
 	wantClass(t, r, hostcheck.Conflicted)
-	wantLine(t, r, "CONFLICT  subnet 10.255.255.0/29: claimed by sites.porch.ingress, held by docker network paisans-f2a9-status_default (compose project paisans-f2a9-status)")
+	wantLine(t, r, "subnet 10.255.255.0/29: claimed by sites.porch.ingress, held by docker network paisans-f2a9-status_default (compose project paisans-f2a9-status)")
 	wantLine(t, r, "docker compose -p paisans-f2a9-status down")
 
 	own := cleanHost()

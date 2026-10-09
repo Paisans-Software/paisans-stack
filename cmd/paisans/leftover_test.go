@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // apply's plan output ends with a "left over" section naming this
@@ -49,36 +49,47 @@ func TestTheApplyPlanListsLeftovers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	if err := printLeftovers(&out, cfg, "home-a", inv, whole); err != nil {
+	rec := &ui.Recorder{Verbose_: true}
+	if err := printLeftovers(rec, cfg, "home-a", inv, whole); err != nil {
 		t.Fatal(err)
 	}
-	printed := out.String()
-	if !strings.Contains(printed, "left over: this deployment's, no longer rendered for home-a. apply leaves each one in place.") ||
-		!strings.Contains(printed, "leftover  stack docs (compose project paisans-f2a9-docs, 1 of 1 running): paisans-f2a9-docs-app-1") ||
-		!strings.Contains(printed, "`paisans app remove docs` takes docs's off every site") ||
-		strings.Contains(printed, "talk") {
-		t.Errorf("whole plan:\n%s", printed)
+	if !warned(rec, "left over: stack docs", "stack docs (compose project paisans-f2a9-docs, 1 of 1 running): paisans-f2a9-docs-app-1") ||
+		!warned(rec, "`paisans app remove docs`", "") ||
+		!rec.Has("detail", "left over: this deployment's, no longer rendered for home-a. apply leaves each one in place.") ||
+		!rec.Has("detail", "`paisans app remove docs` takes docs's off every site") ||
+		strings.Contains(rec.Lines(), "talk") {
+		t.Errorf("whole plan:\n%s", rec.Lines())
 	}
-	if strings.Contains(printed, "docs/.env") {
-		t.Errorf("a whole plan showed the old manifest's mark, not its own:\n%s", printed)
+	if strings.Contains(rec.Lines(), "docs/.env") {
+		t.Errorf("a whole plan showed the old manifest's mark, not its own:\n%s", rec.Lines())
 	}
 
 	partial, err := apply.Build("home-a", rendered, acme.Module(cfg.ACME.Provider), emptyHost{}, apply.Only("talk"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	out.Reset()
-	if err := printLeftovers(&out, cfg, "home-a", inv, partial); err != nil {
+	rec = &ui.Recorder{Verbose_: true}
+	if err := printLeftovers(rec, cfg, "home-a", inv, partial); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "leftover  file /srv/paisans/f2a9/docs/.env, left over since 2026-10-01T00:00:00Z") ||
-		!strings.Contains(out.String(), "`paisans app remove docs`") {
-		t.Errorf("partial plan:\n%s", out.String())
+	if !warned(rec, "left over: file /srv/paisans/f2a9/docs/.env", "file /srv/paisans/f2a9/docs/.env, left over since 2026-10-01T00:00:00Z") ||
+		!warned(rec, "`paisans app remove docs`", "") {
+		t.Errorf("partial plan:\n%s", rec.Lines())
 	}
 
-	out.Reset()
-	if err := printLeftovers(&out, cfg, "home-a", &hostcheck.Inventory{}, whole); err != nil || out.Len() != 0 {
-		t.Errorf("nothing left over printed %q, %v", out.String(), err)
+	rec = &ui.Recorder{Verbose_: true}
+	if err := printLeftovers(rec, cfg, "home-a", &hostcheck.Inventory{}, whole); err != nil || len(rec.Events) != 0 {
+		t.Errorf("nothing left over printed %q, %v", rec.Lines(), err)
 	}
+}
+
+// warned reports whether rec holds a warning whose hint contains hint and
+// whose detail contains detail.
+func warned(rec *ui.Recorder, hint, detail string) bool {
+	for _, e := range rec.Events {
+		if e.Kind == "warn" && strings.Contains(e.Text, hint) && strings.Contains(e.Extra, detail) {
+			return true
+		}
+	}
+	return false
 }

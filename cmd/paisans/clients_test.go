@@ -16,6 +16,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // The recorder is the one way a client's credentials reach the secrets file,
@@ -110,7 +111,7 @@ func stepFor(t *testing.T, site, path string, only ...string) *clientStep {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := newClientStep(cfg, site, "", path, secrets, only)
+	c, err := newClientStep(stdoutReporter(), cfg, site, "", path, secrets, only)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +120,16 @@ func stepFor(t *testing.T, site, path string, only ...string) *clientStep {
 	}
 	return c
 }
+
+// liveStdout writes to whatever os.Stdout is when it is written to, so a
+// reporter made before captureOutput swaps it still lands in the capture.
+type liveStdout struct{}
+
+func (liveStdout) Write(p []byte) (int, error) { return os.Stdout.Write(p) }
+
+// stdoutReporter is a verbose plain reporter on the live stdout, so a test
+// that reads captured output sees every detail as text.
+func stdoutReporter() ui.Reporter { return ui.NewPlain(liveStdout{}, true) }
 
 // captureOutput runs fn and returns what it wrote to stdout and to stderr.
 func captureOutput(t *testing.T, fn func()) (stdout, stderr string) {
@@ -194,9 +205,11 @@ func TestApplyDryRunSendsNoMutation(t *testing.T) {
 	path := secretsWithout(t, "talk")
 	before, _ := os.ReadFile(path)
 	c := stepFor(t, "home-a", path)
-	stdout, _ := captureOutput(t, func() { c.ensure(false, c.pocketIDHere()) })
-	if !strings.Contains(stdout, "create client talk: POST /api/oidc/clients") {
-		t.Errorf("the dry run does not show the client:\n%s", stdout)
+	rec := &ui.Recorder{Verbose_: true}
+	c.report = rec
+	captureOutput(t, func() { c.ensure(false, c.pocketIDHere()) })
+	if !rec.Has("item", "create OIDC client talk") || !rec.Has("detail", "POST /api/oidc/clients") {
+		t.Errorf("the dry run does not show the client:\n%s", rec.Lines())
 	}
 	if fake.mutated {
 		t.Error("a dry run mutated Pocket ID")
@@ -306,7 +319,7 @@ func TestApplyRefusesAnUnwritableSecretsFileBeforeContactingPocketID(t *testing.
 		t.Fatal(err)
 	}
 	secrets.Encrypted = true
-	_, err = newClientStep(cfg, "home-a", "", path, secrets, nil)
+	_, err = newClientStep(stdoutReporter(), cfg, "home-a", "", path, secrets, nil)
 	if err == nil || !strings.Contains(err.Error(), "names a recipient") {
 		t.Fatalf("got %v", err)
 	}
@@ -325,7 +338,7 @@ func TestApplyHasNoIdentityStepWithoutAnAppThatSignsIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := newClientStep(cfg, "home-a", "", fixtureSecretsPath(), secrets, []string{"gate"})
+	c, err := newClientStep(stdoutReporter(), cfg, "home-a", "", fixtureSecretsPath(), secrets, []string{"gate"})
 	if err != nil || c != nil {
 		t.Errorf("got %+v, %v", c, err)
 	}
@@ -518,7 +531,7 @@ func TestApplyHasNoIdentityStepWithoutPocketID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := newClientStep(cfg, "home-a", "", filepath.Join(t.TempDir(), "secrets.yaml"), &config.Secrets{Version: 1}, nil)
+	c, err := newClientStep(stdoutReporter(), cfg, "home-a", "", filepath.Join(t.TempDir(), "secrets.yaml"), &config.Secrets{Version: 1}, nil)
 	if err != nil || c != nil {
 		t.Errorf("got %+v, %v", c, err)
 	}

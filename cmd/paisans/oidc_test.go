@@ -187,17 +187,23 @@ func TestOIDCClientCreateDryRunWritesNothing(t *testing.T) {
 	fake := withIDPFake(t)
 	path := tempSecrets(t)
 	before, _ := os.ReadFile(path)
-	var err error
-	printed := captureStdout(t, func() {
-		err = runOIDCClientCreate([]string{"--config", fixtureConfig(), "--secrets", path, "--app", "talk"})
-	})
+	rec := withRecorder(t, true)
+	err := runOIDCClientCreate([]string{"--config", fixtureConfig(), "--secrets", path, "--app", "talk"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"talk's client at auth on home-a (pocket-id)", "create client talk: POST /api/oidc/clients", `"pkceEnabled":true`, `"launchURL":"https://talk.example.org/oauth/oidc/connect"`, "create client secret for talk", "Nothing was changed"} {
-		if !strings.Contains(printed, want) {
-			t.Errorf("output lacks %q:\n%s", want, printed)
+	for _, want := range []string{"create OIDC client talk", "create client secret for talk"} {
+		if !rec.Has("item", want) {
+			t.Errorf("no item %q:\n%s", want, rec.Lines())
 		}
+	}
+	for _, want := range []string{"talk's client at auth on home-a (pocket-id)", "POST /api/oidc/clients", `"pkceEnabled":true`, `"launchURL":"https://talk.example.org/oauth/oidc/connect"`} {
+		if !rec.Has("detail", want) {
+			t.Errorf("no detail %q:\n%s", want, rec.Lines())
+		}
+	}
+	if !rec.Has("result", "Nothing changed") {
+		t.Errorf("no result:\n%s", rec.Lines())
 	}
 	if fake.mutated {
 		t.Error("a dry run mutated Pocket ID")
@@ -275,13 +281,14 @@ func TestOIDCClientCreateUsesTheDashboardLinkSetting(t *testing.T) {
 	fake := withIDPFake(t)
 	fake.launch = "https://talk.example.org/magazines"
 	path := tempSecrets(t)
+	rec := withRecorder(t, true)
 	printed := captureStdout(t, func() {
 		err = runOIDCClientCreate([]string{"--config", cfg, "--secrets", path, "--app", "talk", "--execute"})
 	})
 	if err != nil {
 		t.Fatalf("%v\n%s", err, printed)
 	}
-	if !strings.Contains(printed, `"launchURL":"https://talk.example.org/magazines"`) {
-		t.Errorf("output lacks the setting's launch URL:\n%s", printed)
+	if !rec.Has("detail", `"launchURL":"https://talk.example.org/magazines"`) {
+		t.Errorf("the request lacks the setting's launch URL:\n%s", rec.Lines())
 	}
 }

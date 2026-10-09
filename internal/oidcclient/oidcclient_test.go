@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 const testKey = "not-a-real-api-key-0003"
@@ -271,11 +272,59 @@ func TestAFreshPlanShowsEverythingAndChangesNothing(t *testing.T) {
 	if fmt.Sprint(kinds(p)) != fmt.Sprint(want) {
 		t.Fatalf("planned %v, want %v", kinds(p), want)
 	}
-	if !strings.Contains(p.Steps[1].Line, `{"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false,"launchURL":"https://talk.example.org/oauth/oidc/connect"}`) {
-		t.Errorf("the client line does not show the body: %s", p.Steps[1].Line)
+	if !strings.Contains(p.Steps[1].Detail, `{"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false,"launchURL":"https://talk.example.org/oauth/oidc/connect"}`) {
+		t.Errorf("the client line does not show the body: %s", p.Steps[1].Detail)
 	}
 	if len(f.mutations) != 0 {
 		t.Errorf("a probe mutated: %v", f.mutations)
+	}
+	var titles []string
+	for _, s := range p.Steps {
+		titles = append(titles, s.Title)
+	}
+	if want := "[create group admins create OIDC client talk create client secret for talk]"; fmt.Sprint(titles) != want {
+		t.Errorf("titles %v, want %s", titles, want)
+	}
+}
+
+// Execute reports each mutation as a step titled as the plan titles it, with
+// what it sends as the step's detail, and the record of the secret as a
+// detail of the secret's step.
+func TestExecuteReportsAStepPerMutation(t *testing.T) {
+	f := newFake()
+	p := plan(t, f, talk(), Recorded{})
+	r := &ui.Recorder{Verbose_: true}
+	p.Report = r
+	if err := Execute(p, api(f), &memRecorder{}, secretSource("reported-secret-not-real-0001")); err != nil {
+		t.Fatal(err)
+	}
+	if i := r.Index("done", "create OIDC client talk"); i < 0 || r.Events[i].Extra != "created" {
+		t.Errorf("the client step did not end created:\n%s", r.Lines())
+	}
+	if !r.Has("done", "create client secret for talk") || !r.Has("detail", "recorded oidc_clients.talk.client_id and oidc_clients.talk.client_secret") {
+		t.Errorf("the secret step or its record is missing:\n%s", r.Lines())
+	}
+	if !r.Has("detail", "POST /api/oidc/clients") {
+		t.Errorf("the request is not a detail:\n%s", r.Lines())
+	}
+	if strings.Contains(r.Lines(), "reported-secret-not-real-0001") {
+		t.Error("the secret was reported")
+	}
+}
+
+// A mutation that fails marks its step failed, and the error returned still
+// names the step.
+func TestExecuteMarksTheFailedStep(t *testing.T) {
+	f := newFake()
+	p := plan(t, f, talk(), Recorded{})
+	r := &ui.Recorder{}
+	p.Report = r
+	err := Execute(p, api(f), &memRecorder{fail: true}, secretSource("failed-secret-not-real-0001"))
+	if err == nil {
+		t.Fatal("a failed record was not an error")
+	}
+	if !r.Has("fail", "create client secret for talk") {
+		t.Errorf("the failed step is not marked:\n%s", r.Lines())
 	}
 }
 
@@ -306,7 +355,7 @@ func TestExecuteRecordsFirstAndConverges(t *testing.T) {
 		}
 	}
 	for _, s := range p.Steps {
-		if strings.Contains(s.Line, secret) {
+		if strings.Contains(s.Detail, secret) {
 			t.Error("a plan line carries the secret")
 		}
 	}
@@ -325,7 +374,7 @@ func TestRotateAddsASecretAndKeepsTheOldOne(t *testing.T) {
 	d := talk()
 	d.RotateSecret = true
 	p := plan(t, f, d, rec.rec)
-	if fmt.Sprint(kinds(p)) != fmt.Sprint([]StepKind{AddSecret}) || !strings.Contains(p.Steps[0].Line, "stay valid") {
+	if fmt.Sprint(kinds(p)) != fmt.Sprint([]StepKind{AddSecret}) || !strings.Contains(p.Steps[0].Detail, "stay valid") {
 		t.Fatalf("rotation planned %v: %v", kinds(p), p.Steps)
 	}
 	if err := Execute(p, api(f), rec, secretSource("second-secret-not-real-0002")); err != nil {
@@ -424,8 +473,8 @@ func TestAClientWithoutALaunchURLGetsOne(t *testing.T) {
 		t.Fatalf("planned %v", kinds(p))
 	}
 	want := `set launch URL for client talk: PUT /api/oidc/clients/c-1 with launchURL "https://talk.example.org/oauth/oidc/connect" and every other field sent back as it is now`
-	if p.Steps[0].Line != want {
-		t.Errorf("line %q", p.Steps[0].Line)
+	if p.Steps[0].Detail != want {
+		t.Errorf("line %q", p.Steps[0].Detail)
 	}
 	f.mutations = nil
 	if err := Execute(p, api(f), rec, func() (string, error) { return "", errors.New("must not generate") }); err != nil {
@@ -501,8 +550,8 @@ func TestAClientOnTheOldDefaultMovesToTheConnectRoute(t *testing.T) {
 	if fmt.Sprint(kinds(p)) != fmt.Sprint([]StepKind{SetLaunchURL}) {
 		t.Fatalf("planned %v", kinds(p))
 	}
-	if !strings.Contains(p.Steps[0].Line, `with launchURL "https://talk.example.org/oauth/oidc/connect"`) {
-		t.Errorf("line %q", p.Steps[0].Line)
+	if !strings.Contains(p.Steps[0].Detail, `with launchURL "https://talk.example.org/oauth/oidc/connect"`) {
+		t.Errorf("line %q", p.Steps[0].Detail)
 	}
 	if err := Execute(p, api(f), rec, func() (string, error) { return "", errors.New("must not generate") }); err != nil {
 		t.Fatal(err)
