@@ -1,9 +1,11 @@
 package apply
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/deployment"
@@ -75,7 +77,15 @@ func FakeSSH(fake func(args []string, stdin string) (out string, exit int), dela
 			b, _ := io.ReadAll(cmd.Stdin)
 			stdin = string(b)
 		}
-		out, exit := fake(cmd.Args, stdin)
+		// The fakes are written against the command as built, so they see
+		// it as the remote sh does once RemoteCommand's wrapper is undone.
+		args := append([]string(nil), cmd.Args...)
+		inner, ok := InnerCommand(args[len(args)-1])
+		if !ok {
+			panic("ssh was not given a RemoteCommand: " + args[len(args)-1])
+		}
+		args[len(args)-1] = inner
+		out, exit := fake(args, stdin)
 		io.WriteString(cmd.Stdout, out)
 		if exit != 0 {
 			return exitStatus(exit)
@@ -98,4 +108,21 @@ func SetNow(at func() time.Time) func() {
 	old := now
 	now = at
 	return func() { now = old }
+}
+
+// InnerCommand undoes RemoteCommand. ok is false when remote is not one.
+func InnerCommand(remote string) (string, bool) {
+	const prefix, suffix = `sh -c 'eval "$(printf %s `, ` | base64 -d)"'`
+	encoded, ok := strings.CutPrefix(remote, prefix)
+	if !ok {
+		return "", false
+	}
+	if encoded, ok = strings.CutSuffix(encoded, suffix); !ok {
+		return "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", false
+	}
+	return string(raw), true
 }
