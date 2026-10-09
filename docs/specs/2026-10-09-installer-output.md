@@ -60,12 +60,12 @@ paisans.yaml
 luthen-rael (ubuntu@192.0.2.10)
   ✓ host check              clean
   ✓ disk space              13.6 GiB free
-  write 8 files
-  create OIDC client uptime2
-  start mesh psns-566c
-  recreate infra
-  recreate uptime2
-  reload gateway
+  · write 8 files
+  · create OIDC client uptime2
+  · start mesh psns-566c
+  · recreate infra
+  · recreate uptime2
+  · reload gateway
 Nothing changed. Re-run with --execute to apply.
 ```
 
