@@ -1,12 +1,14 @@
 # The admin reconciler
 
-Status: approved in session on 2026-10-08, being implemented.
+Status: approved in session on 2026-10-08, being implemented. Removal was
+approved the same day, as a second founder decision.
 
 A community with one administrator is one lost passkey away from nobody being
 able to run it. The admin reconciler reports that. It is a sidecar in the
-`pocket-id` kind that keeps Pocket ID's administrators in the `admins` group
-and fails its health check when that group has fewer than two members, so the
-uptime monitor raises an incident while there is still someone who can fix it.
+`pocket-id` kind that keeps the `admins` group equal to Pocket ID's
+administrators and fails its health check when that group has fewer than two
+members, so the uptime monitor raises an incident while there is still someone
+who can fix it.
 
 ## What it does
 
@@ -23,31 +25,56 @@ start together, and the first pass can find it still starting.
    groups (`UserService.ListUsers` preloads `UserGroups`,
    `service/user_service.go:51-56` at v2.14.0), and the group named exactly
    `admins`, through `GET /api/user-groups`.
-3. **Reconcile.** Every user who is an administrator (`isAdmin`), is not
-   disabled, and is not in `admins` is added to it. Two kinds of user are left
-   out:
+3. **Add.** Every user who is an administrator (`isAdmin`), is not
+   disabled, and is not in `admins` is added to it. Two kinds of user are
+   never written, in this step or the next:
    * the static API key's synthetic user, whose ID is fixed at
      `00000000-0000-0000-0000-000000000000` (`common/reserved.go:5`) and which
      is created with `IsAdmin: true` (`apikey/service.go:240-249`). It is the
      reconciler's own credential, not a person, and it is never counted either;
    * a user with an `ldapId`, whose groups an LDAP sync owns.
-4. **Count.** The members of `admins` who are not disabled, the synthetic user
+4. **Remove.** Every member of `admins` who is disabled or is not an
+   administrator is removed from it, the same two kinds of user left alone,
+   under a floor: the group keeps at least one enabled member (the synthetic
+   user excluded, as in the count). Removals run after adds, in username
+   order; a removal the floor forbids is skipped, logged, and named in the
+   health body, so when every member is due and nobody can be added the last
+   in username order stays, the same one on every pass. A pass in which an
+   add failed removes nobody.
+5. **Count.** The members of `admins` who are not disabled, the synthetic user
    excluded. Fewer than two is unhealthy.
 
-### The one write
+### The two writes
 
-Pocket ID v2.14.0 has no call that adds one member to a group. Both routes
-that change membership replace a whole list: `PUT /api/user-groups/:id/users`
+Pocket ID v2.14.0 has no call that adds or removes one member of a group. Both
+routes that change membership replace a whole list: `PUT /api/user-groups/:id/users`
 replaces a group's members, and `PUT /api/users/:id/user-groups` replaces one
 user's groups (`controller/user_controller.go:41`). The reconciler uses the second,
 as the toolkit's `pocketid.SetUserGroups` already does, because its scope is
 one user: it reads that user again with `GET /api/users/:id` immediately before
-writing, appends the `admins` group's ID to the groups it finds, and sends the
-result.
+writing, and sends the groups it finds plus the `admins` group's ID (an add)
+or minus it (a removal). The fresh read also re-checks the rule: a user who
+changed since the list, into or out of the group or of administrator status,
+is left alone.
 
-That is the only write the reconciler makes. It never removes a user from any
-group, never creates, renames or deletes a group, and never changes a user.
-A test fails if any other non-GET request appears in its code paths.
+Those are the only writes the reconciler makes. It never creates, renames or
+deletes a group, never changes a user, never writes a user an LDAP sync
+manages, and never removes the last enabled member of `admins`. A test fails
+if any other non-GET request appears in its code paths, or if a write does
+not have one of the two shapes under its rule.
+
+### Why removals have a floor
+
+The reconciler acts on what one read says, unattended. A group it emptied on
+a wrong answer would lock every administrator out of every app that reads
+`admins` at once, with nobody left inside to fix it, which is the outage the
+reconciler exists to prevent. So the floor is one enabled member, whoever they
+are, and the order of a pass is adds first, then removals, so a swap of the
+only member for a new administrator never passes through empty. The user list
+is read page by page and a read that fails at any page fails the pass, which
+then writes nothing and retries in a minute. A user the list misses makes the
+pass more cautious, not less: an administrator left out is one fewer counted
+towards the floor, a member left out is one not removed until the next pass.
 
 ### What it reports
 
@@ -59,8 +86,8 @@ nothing.
 |---|---|---|
 | active, `admins` has two or more members, nobody left to add | 200 | the count |
 | standby | 200 | `standby` |
-| `admins` has fewer than two members | 503 | the count and the members |
-| an administrator could not be added | 503 | the user and Pocket ID's answer |
+| `admins` has fewer than two members | 503 | the count and the members, and any member kept by the floor |
+| an administrator could not be added, or a member could not be removed | 503 | the user and Pocket ID's answer |
 | no group named `admins` | 503 | `no group named admins` |
 | Pocket ID did not answer, or answered with an error | 503 | the error |
 | no pass has finished yet | 503 | `starting` |
@@ -133,22 +160,32 @@ reconciler is not an agent: it is a service the deployment runs, and
 a service once, as a whole, rather than write by write. The founder approved
 this one on 2026-10-08: Pocket ID administrators are the community's
 administrators, so putting them in `admins` changes nobody's power, only which
-apps recognise it. It is recorded in `docs/decisions.md`. A second kind of
+apps recognise it. The founder approved the removal the same day, with the
+floor above. Both are recorded in `docs/decisions.md`. A further kind of
 write in the reconciler needs its own approval, and the reconciler gives an
-agent no authority to add anyone to `admins` by hand.
+agent no authority to change `admins` by hand.
 
 ## Tests
 
 * Unit tests against a fake Pocket ID (`httptest`): a missing administrator is
   added with a fresh read before the write; the synthetic user, an LDAP user
-  and a disabled user are left out; nobody is removed; a standby does nothing;
-  no group, a failed write, a Pocket ID that does not answer, fewer than two
-  members, no pass yet and a stale pass each give 503.
+  and a disabled user are left out; a demoted and a disabled member are
+  removed with a fresh read before the write; an LDAP managed user is written
+  in neither direction; the last enabled member is never removed; when every
+  member is due one is kept, in username order; a group of disabled members
+  is left alone; a user list that fails on its second page removes nobody and
+  is retried; adds come before removals; a failed add holds removals; a
+  standby does nothing; no group, a failed write, a Pocket ID that does not
+  answer, fewer than two members, no pass yet and a stale pass each give 503.
 * A check on the write path: every non-GET request the reconciler makes is recorded,
   and the test fails unless each one is `PUT /api/users/<id>/user-groups` whose
-  body is that user's current groups plus `admins`.
+  body is that user's current groups plus `admins`, for an enabled non LDAP
+  administrator who is outside it, or minus `admins`, for a non LDAP member
+  who is disabled or not an administrator, with another enabled member still
+  in the group afterwards.
 * Render: the pocket-id golden output gains the reconciler service and the run
   directory; the uptime seed gains the reconciler checks; the port table lists 1412.
 * An integration test against a real `pocket-id:v2.14.0` container, run only
   when Docker is available, as the Garage integration test is: it creates an
-  administrator outside `admins`, runs one pass, and reads the group back.
+  administrator outside `admins`, runs one pass, and reads the group back;
+  then demotes one administrator, runs another, and reads it back again.

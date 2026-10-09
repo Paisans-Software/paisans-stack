@@ -1006,3 +1006,69 @@ in, until its API is shown not to serve anonymous reads to a token minted
 without a member. Mbin and WriteFreely keep `/` as their health route, so a
 gated one has no public check through the edge, until the pinned images carry
 the forks' `/healthz`.
+
+---
+
+## 2026-10-08: The admin reconciler removes members of `admins` who are no longer administrators, keeping one
+
+Founder decision. The design is `docs/specs/2026-10-08-admin-reconciler.md`.
+
+### What was decided
+
+The admin reconciler's write set grows from one write to two. Besides adding
+each enabled, non LDAP Pocket ID administrator to `admins`, every pass removes
+each member of `admins` who is disabled or is not a Pocket ID administrator,
+but only when the removal leaves at least one enabled member in the group.
+LDAP managed users and the static API key's user are written in neither
+direction. The approval under *Services the deployment runs* now covers
+exactly these two writes.
+
+### Why
+
+Without removal, a Pocket ID administrator who was demoted or disabled kept
+the apps' administration (Mbin reads `admins` through `OAUTH_OIDC_ADMIN_GROUP`,
+the uptime monitor through its admin group) for as long as the group kept
+them, and nothing but a human's group edit took it away. Pocket ID
+administrators are the community's administrators; the group is meant to
+equal them, in both directions.
+
+### What was weighed
+
+* **The floor is one enabled member, not one member.** A disabled member
+  cannot sign in to any app, so a group whose only remaining member is
+  disabled is as locked out as an empty one. The floor therefore counts the
+  same members the health count does: enabled, the static key's user
+  excluded. A group whose members are all disabled is left as it is.
+* **Which member is kept when all are due.** No signal in Pocket ID says
+  which former administrator is the better one to keep, so the choice is
+  made deterministic rather than clever: removals go in username order and
+  the last stays, the same one on every pass, named in the log and in
+  `/healthz`. The group is unhealthy in that state anyway, with one member
+  and no administrator to add, so the monitor raises an incident.
+* **Adds before removals.** A swap of the group's only member for a new
+  administrator then never passes through an empty group.
+* **A failed add holds removals.** The group may be short of the
+  administrator that add was for; the next pass starts over.
+* **A partial read removes nobody.** The user list is paged and the client
+  fails the whole read when any page fails, so a pass acts on the whole list
+  or not at all. A user the list silently misses only makes the pass more
+  cautious: an administrator missed is one fewer counted towards the floor,
+  and a member missed is one not removed until the next pass.
+* **LDAP managed users are untouched in both directions**, because the add
+  rule leaves them out for a reason that applies equally to removal: the
+  sync owns their groups, and a reconciler removing what a sync adds would
+  fight it every pass. A reading of "mirror the add rule" that removed LDAP
+  members was considered and set aside for that reason.
+* **`paisans app admin create` does not conflict.** It creates the account
+  as a Pocket ID administrator, or grants admin to an existing one, before it
+  joins the admin groups, so every user it puts in `admins` is one the
+  reconciler keeps there.
+
+### What was run
+
+The unit tests in `internal/adminreconciler`, with the write path check
+extended to the two shapes and their rules, and a check that no removal
+leaves the group without an enabled member. `TestRealPocketIDAdministratorIsAdded`,
+behind the `pocketid_integration` tag, against `ghcr.io/pocket-id/pocket-id:v2.14.0`:
+after the add, bob was demoted through `PUT /api/users/:id`, a second pass
+removed him from `admins` and left him in `editors`, and reported one member.

@@ -876,7 +876,8 @@ go test -tags pocketid_integration ./internal/adminreconciler/
 
 It starts the pinned Pocket ID image with a static API key, makes one
 administrator in `admins` and one outside it, runs one pass, and reads the
-groups back. Rerun it whenever the Pocket ID image is bumped: it proves what
+groups back; then demotes the second, runs another pass, and reads them
+back again. Rerun it whenever the Pocket ID image is bumped: it proves what
 the reconciler assumes about the API, and the static key's user, against the real
 thing.
 
@@ -902,7 +903,7 @@ installed, on a workstation or anywhere else.
 |------|-------|
 | `cmd/paisans` | the command, flag parsing, and how findings are printed |
 | `cmd/admin-reconciler` | the admin reconciler's binary and its image's Dockerfile: the pass loop, `/healthz`, and `healthcheck` |
-| `internal/adminreconciler` | one admin reconciler pass: who to add to `admins`, the one write, and what `/healthz` says |
+| `internal/adminreconciler` | one admin reconciler pass: who to add to `admins` and who to remove, the two writes, the floor under removals, and what `/healthz` says |
 | `internal/config` | loading `paisans.yaml`, and decrypting `secrets.enc.yaml` |
 | `internal/deployment` | a deployment's id and token, and every name, path and label derived from them |
 | `internal/registry` | a host's record of the deployments on it, and the locked claim every writing command makes |
