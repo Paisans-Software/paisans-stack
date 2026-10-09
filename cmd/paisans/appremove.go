@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,9 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/paisans-software/paisans-stack/internal/acme"
+	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/appremove"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/registry"
+	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -127,6 +132,25 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// The monitor is reseeded last, from the render without the app, so
+	// its checks of the app go with it. Each monitor site is host checked
+	// as apply would check it.
+	if len(cfg.MonitorSites()) > 0 {
+		transports := map[string]apply.Transport{}
+		for _, site := range cfg.MonitorSites() {
+			transports[site] = hosts[site]
+		}
+		if _, err := gateSites(stdout, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
+			return err
+		}
+		rendered, err := render.Build(cfg, secrets)
+		if err != nil {
+			return err
+		}
+		if err := plan.PlanMonitors(cfg, rendered, acme.Module(cfg.ACME.Provider), transports); err != nil {
+			return err
+		}
+	}
 	if plan.Empty() {
 		where := "on any site or at Pocket ID"
 		if *deleteData {
@@ -153,6 +177,11 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	if st := plan.Storage; st != nil && (len(st.Buckets) > 0 || len(st.Keys) > 0) {
 		touched[st.Anchor] = registryHost(cfg.Sites[st.Anchor], "", *sudo)
 	}
+	for _, m := range plan.Monitors {
+		if m.Pending() {
+			touched[m.Site] = registryHost(cfg.Sites[m.Site], "", *sudo)
+		}
+	}
 	if err := claimHosts(cfg, *execute, touched); err != nil {
 		return err
 	}
@@ -170,6 +199,10 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	fmt.Fprintln(stdout)
 	runner := &appremove.Executor{Hosts: hosts, Clients: clients, Progress: stdout}
 	if err := runner.Execute(plan); err != nil {
+		var me *appremove.MonitorError
+		if errors.As(err, &me) {
+			return fmt.Errorf("app remove: %w", err)
+		}
 		return fmt.Errorf("app remove: %w\nEvery step is safe to repeat: run the same command again to resume", err)
 	}
 	fmt.Fprintf(stdout, "\n%s is removed.\n", app)

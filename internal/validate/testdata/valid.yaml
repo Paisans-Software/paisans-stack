@@ -40,6 +40,16 @@ sites:
       user: ubuntu
       public_key: |
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+  # The monitor's own machine, so that something watches the deployment.
+  watch:
+    roles: [monitor]
+    address: 10.44.0.4
+    public_address: 203.0.113.20
+    ssh:
+      host: watch.example.org
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 
 cluster:
   sites: [home-a, home-b]
@@ -71,3 +81,15 @@ apps:
     placement: cluster
     settings:
       file_backend: database
+  status:
+    kind: uptime
+    hostname: status.example.org
+    placement: { pinned: watch }
+    settings:
+      admin_group: admins
+
+smtp:
+  host: smtp.example.org
+  security: starttls
+  username: status@example.org
+  from_address: status@example.org

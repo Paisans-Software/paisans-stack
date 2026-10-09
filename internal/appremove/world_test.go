@@ -45,6 +45,8 @@ type host struct {
 	networks   []hostcheck.Network
 	volumes    []hostcheck.Volume
 	sent       []string
+	// fail makes the first command containing it fail.
+	fail string
 	// db, garage and s3 are the parts of a data site.
 	db     *database
 	garage *garageNode
@@ -89,7 +91,41 @@ var (
 
 func (h *host) Run(command string) (string, error) {
 	h.sent = append(h.sent, command)
+	if h.fail != "" && strings.Contains(command, h.fail) {
+		h.fail = ""
+		return "failed by the test", fmt.Errorf("exit status 1")
+	}
 	switch {
+	// apply's plumbing around a stack action, for the monitor's reseed
+	case strings.Contains(command, " ps --all --format json"):
+		return `{"Service":"x","Name":"x","State":"running","Health":""}` + "\n", nil
+	case strings.HasSuffix(command, " up -d"), strings.HasSuffix(command, " restart"), command == "docker image ls --no-trunc --format json", strings.HasPrefix(command, "docker ps -a --format"):
+		return "", nil
+	case strings.HasPrefix(command, "rm -f '"):
+		delete(h.files, strings.Trim(strings.TrimPrefix(command, "rm -f "), "'"))
+		return "", nil
+	case strings.HasPrefix(command, "for n in "):
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for n in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			fmt.Fprintf(&b, "absent %s\n", strings.Trim(q, "'"))
+		}
+		return b.String(), nil
+	case strings.HasPrefix(command, "for r in ") && strings.Contains(command, ".Config.Volumes"):
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			fmt.Fprintf(&b, "volumes %s null\n", strings.Trim(q, "'"))
+		}
+		return b.String(), nil
+	case strings.HasPrefix(command, "for r in "):
+		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")
+		var b strings.Builder
+		for _, q := range strings.Fields(list) {
+			ref := strings.Trim(q, "'")
+			fmt.Fprintf(&b, "present sha256:%s %s\n", sum(ref), ref)
+		}
+		return b.String(), nil
 	case strings.HasPrefix(command, "d='") && strings.Contains(command, "du -sb"):
 		dir := strings.TrimSuffix(strings.TrimPrefix(strings.SplitN(command, ";", 2)[0], "d='"), "'")
 		return h.dirAnswer(dir), nil

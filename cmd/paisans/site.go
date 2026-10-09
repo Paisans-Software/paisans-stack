@@ -9,6 +9,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/siteadd"
 	"github.com/paisans-software/paisans-stack/internal/validate"
@@ -83,6 +84,12 @@ func runSiteAdd(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The monitor's stack is applied last, with the new site in its seed,
+	// so each monitor site is host checked as apply would check it.
+	shared, err := gateSites(os.Stdout, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] })
+	if err != nil {
+		return err
+	}
 	// Site add writes to every site: the mesh, HAProxy and etcd change on
 	// each, not only on the new one.
 	if err := claimSites(cfg, *execute, *sudo, cfg.SiteNames()...); err != nil {
@@ -93,6 +100,7 @@ func runSiteAdd(args []string) error {
 		return err
 	}
 	plan.KeepImages = host.Shared()
+	plan.SharedSites = shared
 	plan.Print(os.Stdout)
 
 	if !*execute {

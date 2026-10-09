@@ -274,9 +274,10 @@ What "shared" changes, and where:
 |---|---|
 | `host prepare` | `hostprep.Shared()`: the profile's `Firewall` gets `hostWide` false and plans only its own `paisans-<token>:` rules, never `ufw default` or `ufw --force enable` |
 | `apply` | `apply.KeepImages()`, as `--keep-images` |
-| `site add` | `siteadd.Plan.KeepImages`, passed to the replica stage's whole apply |
+| `site add` | `siteadd.Plan.KeepImages`, passed to the replica stage's whole apply; `siteadd.Plan.SharedSites`, the monitor sites, for the reseed's apply |
+| `site remove`, `app remove` | the monitor sites are host checked, and the reseed's apply there keeps nothing back: `apply.MonitorReseed.KeepImages` is there for a caller to set |
 | `storage rotate-key` | `apply.KeepImages()` in the switch's apply on that site |
-| `storage add` | `storageadd.Options.SharedSites`: `apply.KeepImages()` in every scoped apply on that site |
+| `storage add` | `storageadd.Options.SharedSites`: `apply.KeepImages()` in every scoped apply on that site, and in the monitor's reseed |
 | `preflight` | a `host` check line; the `prepared` check asks for the shared plan |
 
 A conflict, and a shared host whose ufw is not active with incoming denied or
@@ -591,7 +592,15 @@ undo:
   built at the moment it runs, so the manifest keeps what earlier scoped
   writes on the same host recorded, then Patroni recreated alone and gated on
   streaming. The leader's `patroni.env`, and every other changed file, is
-  reported for a later `apply`.
+  reported for a later `apply`, except the monitor's own stack, which the
+  last stage applies whole.
+* **The monitor is reseeded last, by `apply.MonitorReseed`**, which
+  `site add`, `storage add` and `app remove` share: every monitor site's
+  `uptime` stack as an `apply.Only` plan, built at the moment it runs for the
+  same reason `ReplicaEnv` is, then gated on the seed read back and the
+  stack healthy. It comes after the configuration edit, so its failure names
+  `paisans apply --site <monitor> --only <app> --execute` rather than a
+  re-run. README.md's *Topology commands reseed the monitor* is the argument.
 * **Every host removal is selected by its proof, at the moment it runs.**
   Docker objects by the label filter, files by `appremove.FilesCommand`
   (hash checked on the host), units by the `paisans-<token>-` glob, ufw rules
@@ -917,7 +926,7 @@ installed, on a workstation or anywhere else.
 | `internal/dns` | which public records a deployment needs, creating the missing ones at the DNS provider, and pruning the ones it created that nothing wants |
 | `internal/apply` | what to push to a host, what to restart, and the gates before either |
 | `internal/siteadd` | joining a new data site: six staged, gated, resumable stages |
-| `internal/siteremove` | taking a site out: its refusals, four staged, gated, resumable stages, the host's cleaning with each removal proven, and the gateway's Caddy hand over |
+| `internal/siteremove` | taking a site out: its refusals, five staged, gated, resumable stages, the host's cleaning with each removal proven, and the gateway's Caddy hand over |
 | `internal/appadmin` | an app's first administrator: probe, plan, and the per kind API calls |
 | `internal/pocketid` | Pocket ID's REST API, called through curl on the host with everything variable on stdin, or over HTTP from beside it |
 | `internal/oidcclient` | an app's client at Pocket ID: probe, plan, and record its credentials before sending its secret |

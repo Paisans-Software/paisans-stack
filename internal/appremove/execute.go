@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/garage"
 	"github.com/paisans-software/paisans-stack/internal/render"
@@ -87,9 +88,11 @@ func (e *Executor) say(format string, args ...any) {
 // Execute runs every step in order: on each site its containers and
 // networks, its files and their manifest entries, its directory and, with
 // --delete-data, its named volumes; then the client at Pocket ID; then,
-// with --delete-data, the database and the Garage buckets and keys. Each
-// step reads live state and is a no-op once done, and the first failure
-// stops the run, so running it again resumes.
+// with --delete-data, the database and the Garage buckets and keys; then
+// each monitor's reseed, last, so that a failure there stops nothing of the
+// removal and names the apply that finishes it. Each step reads live state
+// and is a no-op once done, and the first failure stops the run, so running
+// it again resumes.
 func (e *Executor) Execute(p *Plan) error {
 	d := p.Deployment
 	for _, s := range p.Sites {
@@ -150,8 +153,33 @@ func (e *Executor) Execute(p *Plan) error {
 			return err
 		}
 	}
+	for _, m := range p.Monitors {
+		if err := m.Execute(); err != nil {
+			return &MonitorError{Err: err, Monitors: p.Monitors}
+		}
+		if err := m.Gate(); err != nil {
+			return &MonitorError{Err: err, Monitors: p.Monitors}
+		}
+		if m.Pending() {
+			e.say("  %-9s %s on %s, on the seed rendered without %s", "applied", m.App, m.Site, p.App)
+		}
+	}
 	return nil
 }
+
+// MonitorError is a monitor's reseed failing, after everything of the app's
+// is gone. It names the apply that does the same, since the app itself is
+// removed and a run of this command again finds nothing but the monitor.
+type MonitorError struct {
+	Err      error
+	Monitors []*apply.MonitorReseed
+}
+
+func (e *MonitorError) Error() string {
+	return fmt.Sprintf("reseeding the monitor: %v\nThe app is removed, and only the monitor is out of date. Fix the cause and run %s, which does the same as this step", e.Err, apply.MonitorCommands(e.Monitors))
+}
+
+func (e *MonitorError) Unwrap() error { return e.Err }
 
 // files removes the app's unedited files on one site and then drops the
 // entries of every file removed or already gone, keeping every other entry.

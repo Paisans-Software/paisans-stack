@@ -90,6 +90,16 @@ func (p *Plan) Print(w io.Writer) {
 			line("keep", "%s", k)
 		}
 	}
+	for _, m := range p.Monitors {
+		if !m.Pending() {
+			fmt.Fprintf(w, "%s: the monitor's seed already matches the render without %s\n", m.Site, p.App)
+			continue
+		}
+		fmt.Fprintf(w, "%s (the monitor)\n", m.Site)
+		for _, s := range m.Steps() {
+			line(s.Verb, "%s", s.Text)
+		}
+	}
 }
 
 // Remains is what the operator still has to see to once the plan has run:

@@ -50,7 +50,7 @@ func printed(p *storageadd.Plan) string {
 func TestAFactorChangeNeedsTheFlag(t *testing.T) {
 	w := growing(t)
 	p := w.build(storageadd.Options{})
-	if got := strings.Join(stageNames(p), ","); got != "nodes,settle,reset,connect,layout,sync,provision,media routes,smoke" {
+	if got := strings.Join(stageNames(p), ","); got != "nodes,settle,reset,connect,layout,sync,provision,media routes,smoke,monitor" {
 		t.Fatalf("stages: %s", got)
 	}
 	err := storageadd.Execute(p)

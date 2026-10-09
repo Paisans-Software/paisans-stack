@@ -38,8 +38,8 @@ func TestTheDryRunPlansEveryStageAndChangesNothing(t *testing.T) {
 	w := newWorld(t)
 	p := build(t, w)
 
-	if len(p.Stages) != 7 {
-		t.Fatalf("want 7 stages, got %d", len(p.Stages))
+	if len(p.Stages) != 8 {
+		t.Fatalf("want 8 stages, got %d", len(p.Stages))
 	}
 	for _, want := range []struct {
 		stage      int

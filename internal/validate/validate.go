@@ -170,6 +170,7 @@ func Check(cfg *config.Config) Result {
 	c.gatewayOnDataSite()
 	c.pocketIDFileBackend()
 	c.uptimeWithoutSMTP()
+	c.nothingWatches()
 	c.pocketIDStandbyMarkerUnknown()
 	c.mbinRabbitMQAcrossSites()
 	c.imageForAbsentPostgres()
