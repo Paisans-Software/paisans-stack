@@ -726,6 +726,17 @@ the VM (see *`site add`: a second data site, and the one hard problem*)
 remains how a site with no endpoint reaches another with none, which is fine
 for traffic that can wait out an outage and never fine for quorum.
 
+### `cluster.sites` and the `data` role name the same sites
+
+The `data` role says a site runs Patroni and stores the database.
+`cluster.sites` is the list every HAProxy's backends are rendered from, the
+list `apply` waits on for a leader, and the membership `doctor` and `site
+add` check against. A site in one and not the other is a replica the
+deployment half has: the toolkit already refuses a cluster member without
+the role (`cluster-site-without-data-role`), and it refuses the inverse too
+(`data-site-not-in-cluster`), a data site the list leaves out, which would run
+a Patroni that nothing routes to or watches.
+
 ### Nothing here is permanent
 
 A witness holds no data, so relocating one is cheap and scriptable — remove the

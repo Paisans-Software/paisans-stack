@@ -120,6 +120,7 @@ func Check(cfg *config.Config) Result {
 	c.witnessSharesFailureDomain()
 	c.twoVoters()
 	c.votersShareARelay()
+	c.dataSiteNotInCluster()
 	c.undeclaredSites()
 	c.placementShape()
 	c.outlineBucketName()
@@ -278,6 +279,24 @@ func without(all, some []string) []string {
 		}
 	}
 	return out
+}
+
+// dataSiteNotInCluster refuses a data site the cluster list leaves out.
+//
+// The inverse of clusterSiteWithoutData, and incoherent for the same reason:
+// the data role renders Patroni on the site, while cluster.sites is where
+// every HAProxy's backends, apply's wait for a leader, site add's replica
+// list and doctor's membership check come from. A data site missing from it
+// runs a Patroni member that nothing routes to and nothing watches, so the
+// file describes a replica the deployment does not have.
+func (c *checker) dataSiteNotInCluster() {
+	for _, name := range c.cfg.DataSites() {
+		if slices.Contains(c.cfg.Cluster.Sites, name) {
+			continue
+		}
+		c.refuse("data-site-not-in-cluster", fmt.Sprintf("sites.%s.roles", name),
+			"includes data, but cluster.sites does not list %s. The data role runs Patroni on the site, and cluster.sites is what HAProxy's backends, apply's leader wait and doctor are built from, so this would be a replica nothing routes to or watches. List %s in cluster.sites, at the end if the cluster is already running, or drop the role.", name, name)
+	}
 }
 
 // clusterSiteWithoutData refuses a cluster member that does not hold the data

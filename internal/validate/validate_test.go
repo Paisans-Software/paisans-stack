@@ -93,6 +93,7 @@ func TestRulesFire(t *testing.T) {
 		{"ingress-listen-bypasses-firewall", "ingress-listen-bypasses-firewall", validate.Warn},
 		{"ingress-external-serves-one-app", "ingress-external-serves-one-app", validate.Refuse},
 		{"voters-share-a-relay", "voters-share-a-relay", validate.Refuse},
+		{"data-site-not-in-cluster", "data-site-not-in-cluster", validate.Refuse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
