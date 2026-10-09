@@ -75,7 +75,6 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if fs.NArg() > 0 {
 		return fmt.Errorf("app admin create takes flags only. Got extra argument(s): %s", strings.Join(fs.Args(), " "))
 	}
@@ -88,7 +87,7 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}

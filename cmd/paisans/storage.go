@@ -36,7 +36,6 @@ func runStorageAdd(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if fs.NArg() > 0 {
 		return fmt.Errorf("storage add: takes no site; it joins every site in storage.garage.sites. %q is extra", fs.Arg(0))
 	}
@@ -46,7 +45,7 @@ func runStorageAdd(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}

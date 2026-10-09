@@ -31,22 +31,27 @@ func (c *checker) monitorRoles() {
 		key := fmt.Sprintf("sites.%s.roles", name)
 		if site.Has(config.RoleGateway) {
 			c.refuse("monitor-on-gateway", key,
+				"monitor shares a site with the gateway",
 				"holds both monitor and gateway. The monitor's job is to report the gateway's failures, and on the same machine it goes dark with the gateway, at exactly the moment it is needed. Put the monitor on another site.")
 		}
 		if site.Has(config.RoleWitness) {
 			c.refuse("monitor-on-witness", key,
+				"monitor shares a site with the witness",
 				"holds both monitor and witness. etcd's tiebreaker and the thing that reports etcd losing quorum must not fail together, and the witness is usually the gateway machine as well. Put the monitor on another site.")
 		}
 		if site.Has(config.RoleData) || site.Has(config.RoleApps) {
 			c.warn("monitor-shares-a-site", key,
+				"monitor shares a site with data or apps",
 				"holds monitor beside data or apps. A small deployment may have no other machine, but the monitor cannot report its own host failing, so losing %s takes the database or the apps there down with nothing left to say so. A separate small machine reports it.", name)
 		}
 		if !c.hostsUptime(name) {
 			c.refuse("monitor-without-uptime", key,
+				"monitor site runs no uptime app",
 				"holds the monitor role, but no app of kind uptime is pinned to %s, so the site would run nothing the role exists for. Pin the uptime app here, or drop the role.", name)
 		}
 		if site.PublicAddress == "" {
 			c.refuse("monitor-without-public-address", fmt.Sprintf("sites.%s.public_address", name),
+				"monitor site has no public address",
 				"is not set, and %s holds the monitor role. The monitor serves its own hostname from its own address rather than through the gateway, so the address the internet reaches it on has to be declared: its hostname's DNS record points there. Declare it, for example public_address: 203.0.113.20.", name)
 		}
 	}
@@ -60,6 +65,7 @@ func (c *checker) monitorRoles() {
 			continue // undeclared-site reports a missing one
 		}
 		c.refuse("uptime-needs-a-monitor-site", fmt.Sprintf("apps.%s.placement", name),
+			"uptime app is pinned to a site without the monitor role",
 			"pins the monitor to %s, which does not hold the monitor role. The monitor runs on a site of its own role, never the gateway or the witness, and serves its own hostname rather than through the gateway. Give a site roles: [monitor] and pin it there.", app.Placement.Site)
 	}
 }
@@ -80,6 +86,7 @@ func (c *checker) nothingWatches() {
 		}
 	}
 	c.warn("no-uptime-monitor", "apps",
+		"no uptime monitor is declared",
 		"declares no app of kind uptime, so nothing watches this deployment: a site, the gateway or the database going down is noticed by a member before an admin. Give a second machine roles: [monitor] with a public_address, pin an uptime app to it, and apply it (README.md, \"Monitoring\").")
 }
 
@@ -116,6 +123,7 @@ func (c *checker) ingress() {
 		key := fmt.Sprintf("sites.%s.ingress", name)
 		if !site.Has(config.RoleMonitor) {
 			c.refuse("ingress-outside-monitor", key,
+				"ingress is declared on a site without the monitor role",
 				"is declared on %s, which does not hold the monitor role. A gateway always runs the toolkit's Caddy, and every other site is reached through the gateway, so the block would be ignored. Remove it, or give the site the monitor role.", name)
 			continue
 		}
@@ -123,10 +131,12 @@ func (c *checker) ingress() {
 		switch {
 		case mode == config.IngressPaisans && listen != "":
 			c.refuse("ingress-listen-mode", key+".listen",
+				"ingress listen does not fit its mode",
 				"is set, but the ingress mode is paisans, where the toolkit's own Caddy serves the app and nothing is published for another web server. Remove listen, or set mode: external if your own web server is to proxy to it.")
 			continue
 		case mode == config.IngressExternal && listen == "":
 			c.refuse("ingress-listen-mode", key+".listen",
+				"ingress listen does not fit its mode",
 				"is required with mode: external. It is where the app is published for your web server to proxy to, for example 127.0.0.1:8480.")
 			continue
 		case mode != config.IngressExternal:
@@ -135,11 +145,13 @@ func (c *checker) ingress() {
 		if _, network, err := net.ParseCIDR(render.IngressNetwork); err == nil {
 			if _, mesh, err := net.ParseCIDR(c.cfg.Mesh.Subnet); err == nil && (mesh.Contains(network.IP) || network.Contains(mesh.IP)) {
 				c.refuse("ingress-network-overlaps-mesh", key,
+					"ingress network overlaps the mesh subnet",
 					"puts the app on the compose network %s, which this toolkit pins so that the address your web server's connections arrive from is known, and mesh.subnet %s overlaps it. The mesh would be routed into a Docker bridge. Declare a mesh outside %s.", render.IngressNetwork, c.cfg.Mesh.Subnet, render.IngressNetwork)
 			}
 		}
 		if pinned := c.cfg.PinnedTo(name); len(pinned) > 1 {
 			c.refuse("ingress-external-serves-one-app", key+".listen",
+				"external ingress serves one app but several are pinned",
 				"publishes one app, but %s are pinned to %s. With mode: external nothing but your own web server is in front of the site, and it is handed the monitor alone, so the others would be routed by nothing. Pin them elsewhere, or use mode: paisans.", strings.Join(pinned, ", "), name)
 		}
 		host, _, ok := site.Ingress.ListenHostPort()
@@ -151,9 +163,11 @@ func (c *checker) ingress() {
 		case ip.IsLoopback():
 		case host == site.Address || (!c.cfg.Mesh.Contains(host) && (ip.IsPrivate() || cgnat.Contains(ip))):
 			c.warn("ingress-listen-bypasses-firewall", key+".listen",
+				"ingress listens on a non-loopback address the firewall misses",
 				"is %s, which is not loopback. Docker publishes a port with its own iptables rules, in front of ufw, so the firewall does not protect it: anything that can reach %s can reach the app around your web server. Prefer 127.0.0.1 when the web server runs on this machine.", listen, host)
 		default:
 			c.refuse("ingress-listen-public", key+".listen",
+				"ingress listens on a public address",
 				"is %s. The app would be published where the proxy is not in front of it, and Docker's rules bypass ufw. Use loopback (127.0.0.1), a private LAN address (RFC 1918, or 100.64.0.0/10 as Tailscale uses), or this site's own mesh address, %s.", listen, site.Address)
 		}
 	}

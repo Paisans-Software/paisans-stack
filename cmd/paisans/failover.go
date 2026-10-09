@@ -28,8 +28,7 @@ func runFailoverTest(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
-	cfg, err := loadChecked(*configPath)
+	cfg, err := loadChecked(r, *configPath)
 	if err != nil {
 		return err
 	}

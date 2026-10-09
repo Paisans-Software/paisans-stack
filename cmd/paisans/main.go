@@ -293,13 +293,15 @@ func runValidate(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stdout, *configPath, result)
+	reportFindings(r, *configPath, result)
+	if len(result.Findings) == 0 {
+		r.Result("%s: no problems found", *configPath)
+	}
 	if result.Refused() {
 		return fmt.Errorf("%s cannot be rendered: %d refusal(s) above", *configPath, len(result.Refusals()))
 	}
@@ -328,7 +330,6 @@ func runInit(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	// The id comes first: everything a host holds is named from it, and a
 	// declaration without one cannot even be loaded. One that exists is never
 	// replaced.
@@ -344,7 +345,7 @@ func runInit(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above. Secrets are not generated for a configuration that cannot be deployed", *configPath, len(result.Refusals()))
 	}
@@ -432,7 +433,6 @@ func runRender(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if *out == "" {
 		return fmt.Errorf("render: --out is required. Artifacts are written to a local directory and pushed by a later step")
 	}
@@ -441,7 +441,7 @@ func runRender(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s cannot be rendered: %d refusal(s) above", *configPath, len(result.Refusals()))
 	}
@@ -508,7 +508,6 @@ func runApply(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	needFree, err := apply.ParseSize(*minFree)
 	if err != nil {
 		return fmt.Errorf("apply: --min-free: %w", err)
@@ -522,7 +521,7 @@ func runApply(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -767,7 +766,6 @@ func runStorageInit(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if *site == "" {
 		return fmt.Errorf("storage init: --site is required. A site at a time is deliberate, the same reason apply takes one")
 	}
@@ -777,7 +775,7 @@ func runStorageInit(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -842,7 +840,6 @@ func runHostPrepare(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if *site == "" {
 		return fmt.Errorf("host prepare: --site is required. A site at a time is deliberate, the same reason apply takes one")
 	}
@@ -852,7 +849,7 @@ func runHostPrepare(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}
@@ -986,18 +983,6 @@ func printPlan(plan *apply.Plan) {
 	}
 }
 
-func report(w *os.File, path string, result validate.Result) {
-	if len(result.Findings) == 0 {
-		fmt.Fprintf(w, "%s: no problems found\n", path)
-		return
-	}
-	for _, finding := range result.Findings {
-		fmt.Fprintf(w, "%s\n\n", finding)
-	}
-	fmt.Fprintf(w, "%s: %d refusal(s), %d warning(s)\n",
-		path, len(result.Refusals()), len(result.Warnings()))
-}
-
 // runDNSInit creates the public DNS records a deployment needs, at the
 // provider acme.provider names, using the token that already answers ACME
 // challenges. It is modelled on runStorageInit: a dry run by default, and
@@ -1084,14 +1069,13 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 		return nil, nil, nil, false, err
 	}
 	r := reporter()
-	_ = r
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return nil, nil, nil, false, fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}

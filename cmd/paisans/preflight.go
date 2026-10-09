@@ -9,6 +9,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/preflight"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -28,11 +29,10 @@ func runPreflight(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if *site == "" {
 		return fmt.Errorf("preflight: --site is required: the site being added")
 	}
-	cfg, err := loadChecked(*configPath)
+	cfg, err := loadChecked(r, *configPath)
 	if err != nil {
 		return err
 	}
@@ -51,14 +51,15 @@ func runPreflight(args []string) error {
 	return nil
 }
 
-// loadChecked loads the configuration and refuses one validate refuses.
-func loadChecked(path string) (*config.Config, error) {
+// loadChecked loads the configuration and refuses one validate refuses,
+// showing its findings through r.
+func loadChecked(r ui.Reporter, path string) (*config.Config, error) {
 	cfg, err := config.Load(path)
 	if err != nil {
 		return nil, err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, path, result)
+	reportFindings(r, path, result)
 	if result.Refused() {
 		return nil, fmt.Errorf("%s was refused: %d problem(s) above", path, len(result.Refusals()))
 	}

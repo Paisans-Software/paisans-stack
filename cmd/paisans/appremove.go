@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -57,7 +56,6 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if app == "" && fs.NArg() > 0 {
 		app = fs.Arg(0)
 		if err := fs.Parse(fs.Args()[1:]); err != nil {
@@ -76,7 +74,7 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}

@@ -31,14 +31,13 @@ func runIngress(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if fs.NArg() > 0 {
 		return fmt.Errorf("ingress %s: unexpected argument(s) %s", sub, strings.Join(fs.Args(), " "))
 	}
 	if *appName == "" {
 		return fmt.Errorf("ingress %s: --app is required", sub)
 	}
-	cfg, err := loadChecked(*configPath)
+	cfg, err := loadChecked(r, *configPath)
 	if err != nil {
 		return err
 	}

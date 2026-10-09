@@ -37,7 +37,6 @@ func runSiteAdd(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if site == "" && fs.NArg() > 0 {
 		site = fs.Arg(0)
 	} else if fs.NArg() > 0 {
@@ -52,7 +51,7 @@ func runSiteAdd(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}

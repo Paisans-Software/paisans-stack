@@ -34,11 +34,13 @@ func (c *checker) publicAddress() {
 			switch {
 			case ip == nil || ip.To4() == nil:
 				c.refuse("public-address-is-not-ipv4", key,
+					"public address is not an IPv4 address",
 					"is %q, which is not an IPv4 address. It is published as an A record, so it must be the literal address the internet reaches this site on, for example 203.0.113.10. An IPv6 address goes in public_address6.",
 					site.PublicAddress)
 			default:
 				if why := notPublic(ip, c.cfg.Mesh.Contains(site.PublicAddress)); why != "" {
 					c.refuse("public-address-is-not-public", key,
+						"public address is not reachable from the internet",
 						"is %s, which %s. It is published in DNS for the whole internet to dial, so it must be the address the internet actually reaches this site on, as the router or the cloud provider reports it rather than as the host's own interface shows it.",
 						site.PublicAddress, why)
 				}
@@ -50,11 +52,13 @@ func (c *checker) publicAddress() {
 			switch {
 			case ip == nil || ip.To4() != nil:
 				c.refuse("public-address-is-not-ipv6", key,
+					"public address is not an IPv6 address",
 					"is %q, which is not an IPv6 address. It is published as an AAAA record, so it must be an IPv6 literal, for example 2001:db8::10. An IPv4 address goes in public_address.",
 					site.PublicAddress6)
 			default:
 				if why := notPublic(ip, false); why != "" {
 					c.refuse("public-address-is-not-public", key,
+						"public address is not reachable from the internet",
 						"is %s, which %s. It is published in DNS for the whole internet to dial, so it must be a global unicast address this site is reachable on.",
 						site.PublicAddress6, why)
 				}

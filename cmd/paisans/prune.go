@@ -35,7 +35,6 @@ func runPrune(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if *site == "" {
 		return fmt.Errorf("prune: --site is required. A site at a time is deliberate, the same reason apply takes one")
 	}
@@ -44,7 +43,7 @@ func runPrune(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	report(os.Stderr, *configPath, result)
+	reportFindings(r, *configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
 	}

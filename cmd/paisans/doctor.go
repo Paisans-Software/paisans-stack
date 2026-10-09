@@ -51,11 +51,10 @@ func runDoctor(args []string) error {
 		return err
 	}
 	r := reporter()
-	_ = r
 	if fs.NArg() > 0 {
 		return fmt.Errorf("doctor takes flags only. Got extra argument(s): %s", strings.Join(fs.Args(), " "))
 	}
-	cfg, err := loadChecked(*configPath)
+	cfg, err := loadChecked(r, *configPath)
 	if err != nil {
 		return err
 	}
