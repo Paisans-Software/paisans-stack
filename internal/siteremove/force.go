@@ -46,6 +46,14 @@ func BuildForced(cfg *config.Config, secrets *config.Secrets, site string, dest 
 		return nil, fmt.Errorf("site remove %s: %w", site, err)
 	}
 	if e, ok := reg.Deployments[cfg.ID]; ok {
+		// The entry names the site the host was deployed as, which is the
+		// proof of whose host this is, whatever --ssh spelled.
+		if e.Site != site {
+			if _, live := cfg.Sites[e.Site]; live {
+				return nil, fmt.Errorf("site remove %s: %s is %s's host, which paisans.yaml still declares, by this deployment's entry in its registry. Nothing was changed. To clean it, name that site: paisans site remove %s --force", site, dest, e.Site, e.Site)
+			}
+		}
+		p.Current = isDeclared && e.Site == site
 		s.Roles = nil
 		for _, r := range strings.Split(e.Roles, ",") {
 			if r != "" {

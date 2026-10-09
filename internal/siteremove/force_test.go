@@ -130,3 +130,28 @@ func TestForcedRefusesHostGone(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// A --ssh that reaches another declared site's host is refused: it would
+// take a live site down under another site's name.
+func TestForcedRefusesAnotherDeclaredSitesHost(t *testing.T) {
+	w := setup(t)
+	dest, _ := config.ParseDestination("ubuntu@192.0.2.99")
+	_, err := siteremove.BuildForced(w.cfg, w.secrets, "monitor-x", dest, w.hosts["home-b"], siteremove.Options{})
+	if err == nil || !strings.Contains(err.Error(), "home-b") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := w.hosts["home-b"].ran("docker"); n != 0 {
+		t.Errorf("home-b was changed: %d docker command(s)", n)
+	}
+}
+
+// The site's own host is known by its registry entry, however --ssh spells
+// it.
+func TestForcedKnowsTheSitesOwnHostByItsRegistryEntry(t *testing.T) {
+	w := setup(t)
+	dest, _ := config.ParseDestination("root@192.0.2.12:2222")
+	p := forced(t, w, w.cfg, "home-b", dest, siteremove.Options{})
+	if !p.Current {
+		t.Error("home-b's host reached by another spelling is not marked as its own")
+	}
+}
