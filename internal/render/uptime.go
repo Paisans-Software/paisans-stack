@@ -29,6 +29,14 @@ type seedMonitor struct {
 	IntervalSeconds  int               `json:"interval_seconds"`
 	TimeoutMS        int               `json:"timeout_ms"`
 	FailureThreshold int               `json:"failure_threshold"`
+	// A heartbeat's own fields (src/lib/sitePayload.js buildPayload and
+	// insertSite at 1.1.0-oidc.4): the token the fork sets the monitor to,
+	// rather than inventing one, the schedule kind, which is interval here
+	// and never cron, and the grace the fork adds to the interval before the
+	// site is stale.
+	HeartbeatToken        string `json:"heartbeat_token,omitempty"`
+	HeartbeatScheduleKind string `json:"heartbeat_schedule_kind,omitempty"`
+	HeartbeatGraceSeconds int    `json:"heartbeat_grace_seconds,omitempty"`
 }
 
 // Two consecutive failures before an incident, so one dropped packet on a
@@ -178,6 +186,26 @@ func (p *planner) uptimeSeed(self string) (string, error) {
 		}
 		monitors = append(monitors, seedMonitor{
 			Name: pingName(site), MonitorType: "ping", PingHost: p.sites[site].Address,
+			IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
+		})
+	}
+	// The reverse of each ping: the site's host pushes to this monitor's
+	// public hostname once a minute (see heartbeat.go), with the site's own
+	// token from the secrets, so the seed and the host agree on the URL. The
+	// fork evaluates a heartbeat every 15 s (src/monitor.js watchdogTick at
+	// 1.1.0-oidc.4) and counts failures towards the threshold the same way,
+	// so the threshold shared with every other check costs one such tick.
+	for _, site := range p.order {
+		if site == monitorSite {
+			continue
+		}
+		token, err := p.heartbeatToken(site)
+		if err != nil {
+			return "", err
+		}
+		monitors = append(monitors, seedMonitor{
+			Name: heartbeatName(site), MonitorType: "heartbeat",
+			HeartbeatToken: token, HeartbeatScheduleKind: "interval", HeartbeatGraceSeconds: heartbeatGraceSeconds,
 			IntervalSeconds: seedInterval, TimeoutMS: seedTimeoutMS, FailureThreshold: seedThreshold,
 		})
 	}

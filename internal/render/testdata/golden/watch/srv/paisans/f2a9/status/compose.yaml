@@ -15,7 +15,7 @@ services:
   app:
     labels:
       community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"
-    image: ghcr.io/paisans-software/uptime:1.1.0-oidc.3
+    image: ghcr.io/paisans-software/uptime:1.1.0-oidc.4
     restart: unless-stopped
     user: "0:0"
     # The image declares its own healthcheck on /healthz (Dockerfile at

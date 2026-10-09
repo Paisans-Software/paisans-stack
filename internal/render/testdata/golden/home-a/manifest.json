@@ -58,7 +58,7 @@
     },
     {
       "path": "srv/paisans/f2a9/infra/compose.yaml",
-      "sha256": "97fbb9f4eed3629884c6450b61af8baa7b6241a861fa24617f0c0d5c82cebe3e",
+      "sha256": "66d5d3cd99638ed2a199e99d8ffb54bcb9caaee3aa33ba19f9f99ac721384071",
       "mode": "0644"
     },
     {
@@ -74,6 +74,16 @@
     {
       "path": "srv/paisans/f2a9/infra/haproxy/haproxy.cfg",
       "sha256": "cf1119a2e05f7cbc59e808efde5a0be1bad66931056c1e7f8130287f03b17b2e",
+      "mode": "0644"
+    },
+    {
+      "path": "srv/paisans/f2a9/infra/heartbeat/heartbeat.env",
+      "sha256": "9f459f13b7c1d9bbbf80121e0a794f7e7a623895c7ed3e6b37defa48755fa821",
+      "mode": "0600"
+    },
+    {
+      "path": "srv/paisans/f2a9/infra/heartbeat/push.sh",
+      "sha256": "35988efde994dfdd49ca76390082c9001879b9e0882e58f7a8661156f08745fc",
       "mode": "0644"
     },
     {

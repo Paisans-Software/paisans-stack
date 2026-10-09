@@ -72,6 +72,22 @@ services:
       - /srv/paisans/f2a9/infra/garage/garage.toml:/etc/garage.toml:ro
       - /srv/paisans/f2a9/infra/garage/meta:/var/lib/garage/meta
       - /srv/paisans/f2a9/infra/garage/data:/var/lib/garage/data
+  # This site's heartbeat: a push a minute to every monitor off this site, at
+  # its public hostname over the internet rather than the mesh, so that the
+  # ping over the mesh and this push fail separately and the monitor can tell
+  # a torn tunnel from a dead site. The URLs carry the site's token and stay
+  # in heartbeat.env, which is 0600; this file is 0644. On the default bridge,
+  # not the host's network: it dials out and listens for nothing.
+  heartbeat:
+    labels:
+      community.paisans.deployment: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"
+    image: docker.io/curlimages/curl:8.11.1
+    restart: unless-stopped
+    env_file:
+      - heartbeat/heartbeat.env
+    entrypoint: ["/bin/sh", "/push.sh"]
+    volumes:
+      - /srv/paisans/f2a9/infra/heartbeat/push.sh:/push.sh:ro
 
 # Every network carries the deployment label too, so that what owns it is
 # read from the label rather than guessed from its name.

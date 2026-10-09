@@ -1072,3 +1072,80 @@ leaves the group without an enabled member. `TestRealPocketIDAdministratorIsAdde
 behind the `pocketid_integration` tag, against `ghcr.io/pocket-id/pocket-id:v2.14.0`:
 after the add, bob was demoted through `PUT /api/users/:id`, a second pass
 removed him from `admins` and left him in `editors`, and reported one member.
+
+---
+
+## 2026-10-09: Every watched site pushes a heartbeat to each monitor
+
+Founder decision. The design is the amendment of 2026-10-09 in
+`docs/specs/2026-10-07-uptime-monitoring.md`.
+
+### What was decided
+
+The toolkit runs one scheduled job per site: a `heartbeat` service in the
+site's infrastructure stack that once a minute requests
+`https://<monitor hostname>/ping/<token>` for every monitor off the site,
+over the internet and never the mesh. Each monitor's seed expects it
+(`<site> — heartbeat`, interval 60, grace 120, threshold 2) with the site's
+token, `sites.<site>.heartbeat_token`, generated at `init`. The uptime fork
+takes the seeded token from `1.1.0-oidc.4`, which the kind now pins. The
+spec's statement that the toolkit seeds no heartbeat because it runs no
+scheduled job is superseded.
+
+### Why
+
+The ping over the mesh is one path, and a torn tunnel, a site whose line is
+down, the monitor's own tunnel broken and a dead host all fail it the same
+way. A second path that fails independently is what tells them apart, and
+the reverse direction over the public internet is that path: ping down with
+the heartbeat fresh is the mesh; ping up with the heartbeat stale is the
+site's WAN; every ping down with every heartbeat fresh is the monitor's
+tunnel; both down is the host.
+
+### What was weighed
+
+* **A service in the stack, not a systemd timer.** It is rendered, applied,
+  reconciled and removed with everything else, leaves with the site, and
+  needs nothing on the host outside Docker. The image is curl's own, pinned
+  by tag like the stack's other images, around a rendered shell loop.
+* **Grace 120.** The fork's staleness is interval plus grace, so 180 s: one
+  push missed and the next late. A push that fails outright takes about 33 s
+  and the loop sleeps beside its pushes, so the cadence holds at one minute
+  whatever a slow or dead monitor does; 60 would be reached by one missed
+  push plus that delay.
+* **Threshold 2**, shared with every other check. The fork's watchdog runs
+  every 15 s and counts a stale heartbeat towards the threshold like any
+  failure, so it costs one tick.
+* **One token per site, shared across monitors.** The fork keeps tokens
+  unique within one instance only, so every monitor can hold the same one,
+  and a host's env file carries one URL per monitor with the one token.
+* **The monitor's own site pushes only to another monitor.** A push from the
+  host a monitor runs on can only ever arrive. With one monitor its site
+  pushes nowhere and a role-less monitor site still renders no
+  infrastructure stack; with two, each monitor site pushes to the other and
+  each seed expects the other's site, which is what notices a monitor's host
+  dying.
+* **The token is refused when missing or malformed.** The fork silently
+  replaces a token it does not accept, which would leave the host pushing at
+  a URL the monitor answers 404 to and reads as the site being down. `render`
+  refuses by name and sends the operator to `init` instead.
+* **The token stays out of the 0644 compose file.** The URLs carry it, so
+  they live in a 0600 `heartbeat.env` read through `env_file`, and the
+  script logs a failure's time and never its URL.
+* **A `heartbeat.env` change engages no gateway gate.** `up -d` replaces only
+  the service whose configuration changed, so a new monitor's URL reaching
+  the gateway site recreates the heartbeat and never Caddy.
+* **Nothing is opened in the firewall.** The push is outbound HTTPS, which
+  the host allows by default and federation already relies on.
+* **No migration.** A secrets file from before this renders nothing until
+  `init` is re-run, which fills exactly the missing tokens, as it does for
+  any site added later.
+
+### What was run
+
+`go build ./... && go vet ./... && go test ./...`, with the golden tree
+regenerated and its diff read: the `heartbeat` service and its two files on
+every watched site, three heartbeat entries in the monitor's seed, and the
+image pin. `paisans validate` on `examples/paisans.example.yaml`: 0 refusals.
+Nothing was run against a host or the registry; the fork release and curl's
+image tag are to be checked against their registries before this ships.

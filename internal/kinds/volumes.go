@@ -42,8 +42,11 @@ var ImageVolumes = map[string][]string{
 	"ghcr.io/element-hq/matrix-authentication-service:1.24.0": nil,
 	"ghcr.io/element-hq/element-web:v1.12.27":                 nil,
 	"ghcr.io/josephquigley/writefreely-wisp@sha256:4d21f45879bd98c8485eb8169ea57fbab925f0cbd5a38ac3c3bdd79901d809ea": nil,
-	"quay.io/oauth2-proxy/oauth2-proxy:v7.15.4":    nil,
-	"ghcr.io/paisans-software/uptime:1.1.0-oidc.3": {"/data"},
+	"quay.io/oauth2-proxy/oauth2-proxy:v7.15.4": nil,
+	// /data at 1.1.0-oidc.3, inspected as above; 1.1.0-oidc.4 is built from
+	// the same Dockerfile, whose only VOLUME is /data, and is to be inspected
+	// once published.
+	"ghcr.io/paisans-software/uptime:1.1.0-oidc.4": {"/data"},
 	// Declares none: cmd/admin-reconciler/Dockerfile has no VOLUME, checked with
 	// `docker image inspect` on a local build on 2026-10-08.
 	"ghcr.io/paisans-software/admin-reconciler:0.1.0@sha256:008ca36e1637062bc1bde592b3a3997d9e0642e9fabed6264ce473be6ed6574d": nil,
@@ -60,6 +63,11 @@ var ImageVolumes = map[string][]string{
 	"haproxy:3.0-alpine":                   nil,
 	"dxflrs/garage:v1.0.1":                 nil,
 	"ghcr.io/paisans-software/caddy:2.11.7@sha256:b401d1cb18074026a535a1facc5f6d9d35bc62fdff480f3b1fd91042c8e48186": nil,
+	// The per site heartbeat (internal/render/heartbeat.go). curl's image
+	// declares no VOLUME in its Dockerfile (curl/curl-container, alpine
+	// variant); recorded from the Dockerfile rather than an inspect, which
+	// is still to be run against the exact reference.
+	"docker.io/curlimages/curl:8.11.1": nil,
 }
 
 // ServiceMounts is what one compose service mounts, and from which image.

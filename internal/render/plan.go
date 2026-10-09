@@ -141,7 +141,10 @@ type siteView struct {
 	IsGarage  bool
 	// RunsCaddy is set where the toolkit's Caddy runs: a gateway, and a
 	// monitor in ingress mode paisans, which serves its own apps.
-	RunsCaddy  bool
+	RunsCaddy bool
+	// Heartbeats is every monitor off this site, which its host pushes a
+	// heartbeat to from its infrastructure stack. See heartbeat.go.
+	Heartbeats []heartbeatTarget
 	Apps       []plannedApp
 	NeedsProxy bool
 	// WatchdogOff renders Patroni without fencing and drops the device
@@ -200,17 +203,18 @@ func newPlanner(cfg *config.Config, secrets *config.Secrets) *planner {
 		site := cfg.Sites[name]
 		p.order = append(p.order, name)
 		p.sites[name] = &siteView{
-			Name:      name,
-			Address:   site.Address,
-			Endpoint:  site.Endpoint,
-			Roles:     site.Roles,
-			IsData:    site.Has(config.RoleData),
-			IsApps:    site.Has(config.RoleApps),
-			IsGateway: site.Has(config.RoleGateway),
-			IsWitness: site.Has(config.RoleWitness),
-			IsEtcd:    contains(cfg.Etcd.Members, name),
-			IsGarage:  contains(cfg.Storage.Garage.Sites, name),
-			RunsCaddy: site.RunsCaddy(),
+			Name:       name,
+			Address:    site.Address,
+			Endpoint:   site.Endpoint,
+			Roles:      site.Roles,
+			IsData:     site.Has(config.RoleData),
+			IsApps:     site.Has(config.RoleApps),
+			IsGateway:  site.Has(config.RoleGateway),
+			IsWitness:  site.Has(config.RoleWitness),
+			IsEtcd:     contains(cfg.Etcd.Members, name),
+			IsGarage:   contains(cfg.Storage.Garage.Sites, name),
+			RunsCaddy:  site.RunsCaddy(),
+			Heartbeats: heartbeatTargets(cfg, name),
 
 			WatchdogOff: site.WatchdogMode() == config.WatchdogOff,
 		}

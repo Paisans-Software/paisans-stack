@@ -318,6 +318,36 @@
       "interval_seconds": 60,
       "timeout_ms": 10000,
       "failure_threshold": 2
+    },
+    {
+      "name": "home-a — heartbeat",
+      "monitor_type": "heartbeat",
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2,
+      "heartbeat_token": "0000000000000000000000000000aaaa",
+      "heartbeat_schedule_kind": "interval",
+      "heartbeat_grace_seconds": 120
+    },
+    {
+      "name": "home-b — heartbeat",
+      "monitor_type": "heartbeat",
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2,
+      "heartbeat_token": "1111111111111111111111111111bbbb",
+      "heartbeat_schedule_kind": "interval",
+      "heartbeat_grace_seconds": 120
+    },
+    {
+      "name": "vm — heartbeat",
+      "monitor_type": "heartbeat",
+      "interval_seconds": 60,
+      "timeout_ms": 10000,
+      "failure_threshold": 2,
+      "heartbeat_token": "2222222222222222222222222222cccc",
+      "heartbeat_schedule_kind": "interval",
+      "heartbeat_grace_seconds": 120
     }
   ],
   "settings": {
