@@ -146,6 +146,9 @@ func Check(cfg *config.Config) Result {
 	c.homeserverMustBePinned()
 	c.uptimeNeedsAnAdminGroup()
 	c.adminGroupNotAdmins()
+	c.oidcMemberGroupNotAName()
+	c.oidcMemberGroupDisagreesWithGate()
+	c.oidcClientUnrestricted()
 	c.monitorRoles()
 	c.ingress()
 	c.smtpOnAKindWithoutMail()
@@ -1410,6 +1413,100 @@ func (c *checker) adminGroupNotAdmins() {
 		c.warn("admin-group-not-admins", spec.AdminGroupSource(name),
 			"is %s. The admin reconciler keeps Pocket ID's administrators in %s and alerts while it has fewer than two members, so %s's administrators are a group nobody is watching. Name %s here, or accept that this app's admin group is unwatched.",
 			admin, adminreconciler.Group, name, adminreconciler.Group)
+	}
+}
+
+// oidcMemberGroupNotAName refuses a member_group or admin_group setting that
+// is not a group name.
+//
+// A blank or non-string value is read as absent, and the kind's default
+// holds, so the client is still restricted. But the operator wrote something,
+// and what they wrote is not what the client admits; left alone, that reads
+// as a restriction to a group that does not exist.
+func (c *checker) oidcMemberGroupNotAName() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		spec, ok := kinds.OIDCClient(app.Kind, app.Hostname)
+		if !ok {
+			continue
+		}
+		for _, key := range []string{spec.MemberGroupSetting, spec.AdminGroupSetting} {
+			if key == "" {
+				continue
+			}
+			v, present := app.Settings[key]
+			if !present {
+				continue
+			}
+			if str, ok := v.(string); ok && strings.TrimSpace(str) != "" {
+				continue
+			}
+			c.refuse("oidc-member-group-not-a-name", fmt.Sprintf("apps.%s.settings.%s", name, key),
+				"is %v, which is not a group name. Name the identity provider group, or remove the key to take the kind's default. The client at Pocket ID admits exactly the groups named here, so a value that is not a name is a restriction to nothing.", v)
+		}
+	}
+}
+
+// oidcMemberGroupDisagreesWithGate refuses a member gated app whose client
+// admits a different member group than the gate does.
+//
+// Two groups decide who reads a member gated app: the gate's members
+// instance admits its members_group, and the app's client at Pocket ID admits
+// the app's member group. When they differ, someone in one and not the other
+// is let through the gate and refused by the app, or admitted by the app on a
+// path the gate does not cover, and nothing in the configuration says which
+// group "member" means. Both default to the same name, so this fires only
+// when one was changed and the other was not.
+func (c *checker) oidcMemberGroupDisagreesWithGate() {
+	gateApp := ""
+	for _, name := range c.cfg.AppNames() {
+		if c.cfg.Apps[name].Kind == config.KindOAuth2Proxy {
+			gateApp = name
+		}
+	}
+	if gateApp == "" {
+		return
+	}
+	gateGroup := kinds.GateMembersGroup(c.cfg.Apps[gateApp])
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		if app.Gate() != config.GateMember {
+			continue
+		}
+		spec, ok := kinds.OIDCClient(app.Kind, app.Hostname)
+		if !ok {
+			continue
+		}
+		_, member := spec.Groups(app)
+		if member == gateGroup {
+			continue
+		}
+		c.refuse("oidc-member-group-disagrees-with-gate", fmt.Sprintf("apps.%s.settings.%s", name, spec.MemberGroupSetting),
+			"is %s, but apps.%s.settings.%s is %s, and this app is behind the member gate. The gate admits one group and the app's client at Pocket ID admits the other, so the two disagree about who a member is. Name the same group in both.",
+			member, gateApp, kinds.GateMembersGroupSetting, gateGroup)
+	}
+}
+
+// oidcClientUnrestricted refuses a gateable app whose client would admit
+// every Pocket ID account.
+//
+// A kind that can sit behind the gate is member facing, and its client is the
+// control that stops a person outside the community before the app sees them.
+// Every such kind has a default member group today, so this is the floor
+// under that: a kind added without one, or a change that empties one, is
+// refused here rather than shipping an open client.
+func (c *checker) oidcClientUnrestricted() {
+	for _, name := range c.cfg.AppNames() {
+		app := c.cfg.Apps[name]
+		spec, ok := kinds.OIDCClient(app.Kind, app.Hostname)
+		if !ok || !kinds.GateFor(app.Kind).Gateable {
+			continue
+		}
+		if _, member := spec.Groups(app); member != "" {
+			continue
+		}
+		c.refuse("oidc-client-unrestricted", fmt.Sprintf("apps.%s", name),
+			"names no member group, so its client at Pocket ID would admit anyone with an account there. A member facing app's client is restricted to the member group and admins; name one in apps.%s.settings.%s.", name, spec.MemberGroupSetting)
 	}
 }
 

@@ -131,15 +131,17 @@ reads `apps.<app>.static_api_key` from the secrets file, so it takes
 `--secrets`, and it never uses sudo, because curl needs no root.
 
 `oidc client create --app <name>` creates an app's client at the deployment's
-Pocket ID, with the groups the app's `config` names and a launch URL so
-Pocket ID's dashboard lists it, and records its ID and
+Pocket ID, restricted to the member and admin groups the app's `settings`
+name (`member_group` and `admin_group`, defaulting to `members` and
+`admins`), with a launch URL so Pocket ID's dashboard lists it, and records its ID and
 secret under `oidc_clients.<app>`. Every step is printed with what it sends and
 nothing changes without `--execute`. The secret is generated on the
 workstation and written to the secrets file before Pocket ID is sent it, and is
 never printed. `--rotate-secret` adds a new secret, leaving the old one valid.
 `apply` runs the same step for every app it starts (see *`apply` creates each
 app's OIDC client* below), so the command is for running it alone and for
-rotating. The known clients are Mbin's and uptime's (`kinds.OIDCClient`). The launch URL is the app's
+rotating. The known clients are Mbin's, Outline's, WriteFreely's and uptime's
+(`kinds.OIDCClient`), each with its callback cited from the pinned source. The launch URL is the app's
 hostname plus the kind's dashboard path (`kinds.DashboardPath`, Mbin's
 `/oauth/oidc/connect` so the tile signs the member in, otherwise `/`), or
 `apps.<app>.settings.sso_dashboard_link`, which `validate` refuses unless it is

@@ -186,6 +186,11 @@ apps:
     # app member only. Federation still works: ActivityPub goes to Mbin, which
     # this turns signed fetch on for. The gate app itself is declared below.
     visibility_gate: member
+    # Its client at Pocket ID is restricted to settings.member_group and
+    # settings.admin_group, defaulting to members and admins, and Mbin reads
+    # the same two names from the groups claim: the admin group's members
+    # become administrators. member_group must be the gate's members_group,
+    # which validate checks. Both are left at their defaults here.
     # Optional. Keys are service names in the kind's compose template; any key
     # left out takes the default that kind ships. Declaring the reference is
     # what makes running a fork, or holding a version back, a config edit.
@@ -203,6 +208,11 @@ apps:
       # not be named "outline".
       s3_force_path_style: true
       s3_bucket: docs-uploads
+      # Its client at Pocket ID admits only this group and admins. Outline
+      # reads no groups claim, so that restriction is the whole control.
+      # Optional; members is the default, shown here because it is the one
+      # thing deciding who may open the wiki.
+      member_group: members
     # Optional. Without it this would be docs-media.example.org, derived from
     # the hostname above. A media hostname is never a child of an app's own
     # hostname (files.docs.example.org would share its cookie scope), and it
@@ -285,6 +295,8 @@ apps:
       # cannot reach it.
       site_name: Example Community
       oidc_display_name: Example
+      # As for docs: the client admits only member_group (default members)
+      # and admins, and WriteFreely reads no groups claim.
     # Not settings. A settings key works only if a template asks for it by
     # name, and one no template reads is ignored without a word. A config key
     # is passed through as written: here, max_blogs inside config.ini's

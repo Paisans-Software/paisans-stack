@@ -325,7 +325,7 @@ func TestApplyHasNoIdentityStepWithoutAnAppThatSignsIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := newClientStep(cfg, "home-a", "", fixtureSecretsPath(), secrets, []string{"docs"})
+	c, err := newClientStep(cfg, "home-a", "", fixtureSecretsPath(), secrets, []string{"gate"})
 	if err != nil || c != nil {
 		t.Errorf("got %+v, %v", c, err)
 	}

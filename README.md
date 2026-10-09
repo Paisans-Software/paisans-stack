@@ -3408,7 +3408,7 @@ are implemented, before any host is reached.
 **The administrator is also put in every app's admin group.** An app that
 signs its users in through Pocket ID makes an account an administrator when
 Pocket ID lists it in the group the app reads as its admin group (for Mbin,
-`OAUTH_OIDC_ADMIN_GROUP`). Pocket ID's own administrator flag does not reach
+`settings.admin_group`, rendered as `OAUTH_OIDC_ADMIN_GROUP`). Pocket ID's own administrator flag does not reach
 an app at all. So the command reads every such group from the configuration,
 the same keys `oidc client create` reads, and plans one step that creates any
 group that does not exist yet and adds the user to the rest: `PUT
@@ -3535,7 +3535,8 @@ records both in the secrets file, where `render` already reads them
 (`oidc_clients.<app>.client_id` and `.client_secret`).
 
 **`apply` does this itself, for every app it starts whose kind has a client
-shape** (`kinds.OIDCClient`, today `mbin` and `uptime`). Creating an app's
+shape** (`kinds.OIDCClient`, today `mbin`, `outline`, `writefreely` and
+`uptime`). Creating an app's
 client at the deployment's own Pocket ID is part of setting the app up, and
 declaring the app in `paisans.yaml` is the approval for that client. Founder
 decision, 2026-10-08. So a first apply of a site needs nothing run before it:
@@ -3600,13 +3601,16 @@ paisans oidc client create --app talk --execute   # does it
 paisans oidc client create --app talk --rotate-secret --execute
 ```
 
-For an app whose configuration sets `OAUTH_OIDC_ADMIN_GROUP: admins`, the dry
-run against an empty Pocket ID prints:
+For an Mbin app that declares no groups, so that its member group is
+`members` and its admin group `admins`, the dry run against an empty Pocket
+ID prints:
 
 ```
 talk's client at auth on home-a (pocket-id)
+  create group members: POST /api/user-groups {"friendlyName":"members","name":"members"}
   create group admins: POST /api/user-groups {"friendlyName":"admins","name":"admins"}
-  create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":false,"launchURL":"https://talk.example.org/oauth/oidc/connect"}
+  create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":true,"launchURL":"https://talk.example.org/oauth/oidc/connect"}
+  allow groups members, admins on client talk: PUT /api/oidc/clients/<id>/allowed-user-groups with exactly members, admins
   create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
 
 Nothing was changed. Re-run with --execute to apply this.
@@ -3618,19 +3622,51 @@ plan is what lets an operator see exactly what that approval sends, in a dry
 run of either `apply` or the command, before `--execute`. The same probe runs
 again on `--execute`, so what executes is what a fresh probe plans.
 
-The client is the app kind's, not a choice made at the command line. For Mbin
-that is the paisans fork's verify route as the only callback, PKCE on because
-the fork always sends a code challenge, and a confidential client. The groups
-are the app's own: the fork reads `OAUTH_OIDC_ADMIN_GROUP` and
-`OAUTH_OIDC_MEMBER_GROUP` from the `groups` claim, which Pocket ID fills with
-group names (`oidc/claims_service.go:157-162`), so the command reads the same
-two keys from the app's `config` and creates whichever group is missing. That
-is the one place a passthrough key is read rather than only placed, because the
-group name has to agree with the app's own setting, and a second place to type
-it could disagree. A
-member group also restricts the client to the member and admin groups, so a
-refused member is stopped at Pocket ID before the app sees them. Putting a
-user in the admin group is `app admin create`'s job, not this command's.
+The client is the app kind's, not a choice made at the command line, and
+**every member facing kind's client is restricted at Pocket ID to its member
+group and its admin group**, so a person outside both is refused there before
+the app sees them. The two groups are `apps.<app>.settings.member_group` and
+`settings.admin_group`, defaulting to `members` and `admins`
+(`kinds.MembersGroup`, `kinds.AdminsGroup`), and the command creates
+whichever is missing. The defaults exist because an empty pair would leave an
+open client: anyone who could make a Pocket ID account could sign in to the
+app. Which app reads the groups claim itself differs by kind, and the table
+says so, because for a kind that does not, the restriction is the whole
+control and the operator should know that nothing else stands behind it:
+
+| Kind | Callback | PKCE | Groups claim |
+|---|---|---|---|
+| `mbin` | `/oauth/oidc/verify`, the paisans fork's verify route | on: the fork always sends a code challenge | read. `OAUTH_OIDC_MEMBER_GROUP` and `OAUTH_OIDC_ADMIN_GROUP` are rendered from the two settings (`.env.example_docker:243-273` at `v1.13.3+paisans`): a sign in outside the member group is refused by the fork as well, and the admin group's members become administrators. The fork asks for the `groups` scope only when one of the two is set (`src/Provider/Oidc.php:45-46`), which the defaults guarantee |
+| `outline` | `/auth/oidc.callback` (`plugins/oidc/server/auth/oidcRouter.ts:63` at `v1.10.0`) | off: the rendered `.env` sets the four explicit `OIDC_*_URI` values, and that branch of the plugin never passes `pkce` (`plugins/oidc/server/auth/oidc.ts:27-35`; only the `OIDC_ISSUER_URL` branch does) | not read. The restriction at Pocket ID is the whole control |
+| `writefreely` | `/oauth/callback/generic`, built by `configureGenericOauth` and not configurable (`oauth.go:249` at writefreely-wisp `ff9dceb`) | off: nothing in the fork sends a code challenge | not read. The restriction at Pocket ID is the whole control |
+| `uptime` | `/login/oidc/callback` (`src/lib/oidc.js:26`) | on: every sign in sends an S256 challenge (`src/lib/oidc.js:96-103`) | read. `settings.admin_group` is both groups: its members administer the monitor and nobody else may sign in |
+
+PKCE is set per client the way the app behaves, not on as a matter of course:
+a Pocket ID client with PKCE on refuses every request that carries no code
+challenge (`oidc/authorization_service.go:750-755` at `v2.14.0`), so turning
+it on for Outline or WriteFreely would refuse every sign in, while a client
+with it off accepts a challenge when one is sent. Pocket ID fills the
+`groups` claim with group names (`oidc/claims_service.go:157-162`), so the
+names rendered into Mbin's `.env` are the names the client admits, read from
+the same settings, and a passthrough `config` key for either is refused
+(`config-key-already-rendered`), because a second place to type the name is
+one that can disagree with the client. All four are confidential clients.
+Putting a user in the admin group is `app admin create`'s job, not this
+command's.
+
+**`validate` holds the groups to the gate.** The gate's `members` instance
+admits `apps.<gate>.settings.members_group`, default `members`, and a
+member gated app's client admits that app's `member_group`. When the two name
+different groups, someone is let through the gate and refused by the app, or
+admitted by the app on a path the gate leaves open, and nothing says which
+group "member" means; so an app with `visibility_gate: member` whose member
+group is not the gate's is refused (`oidc-member-group-disagrees-with-gate`).
+A `member_group` or `admin_group` that is blank or not a string is refused
+too (`oidc-member-group-not-a-name`): the default would hold and the client
+would still be restricted, but what the operator wrote reads as a restriction
+to a group that does not exist. And a gateable kind whose client would admit
+every account is refused outright (`oidc-client-unrestricted`); every such
+kind has a default member group today, so this is the floor under that.
 
 **The client is created with a launch URL** (`launchURL`, `dto/oidc_dto.go:52`).
 Pocket ID's dashboard lists only clients that have one
@@ -3706,7 +3742,14 @@ one valid, because Pocket ID allows several (`controller/oidc_controller.go:292`
 so the app keeps signing people in until `apply` renders the new one. A client
 that differs from what the app needs is refused, with what differs, rather than
 reshaped: updating a client rewrites every field, and a client somebody shaped
-by hand is not this command's to change. A launch URL that is empty or a
+by hand is not this command's to change. **Differing in either direction is a
+refusal.** A client allowing less than the app needs cannot sign anyone in; a
+client allowing more is a privilege leak, so an extra callback URL (a sign in
+started here could finish at another host) and an extra allowed group (its
+members are exactly who the member group was meant to keep out, `provisional`
+being the usual one) are refused by name, as is PKCE on for an app that sends
+no challenge. The allow step, when it runs, sends exactly the app's groups,
+never a union with what the client held. A launch URL that is empty or a
 toolkit default is the one exception, set as above, because neither is a
 choice anybody made. After `--execute` it probes again and
 fails unless a fresh plan is empty.

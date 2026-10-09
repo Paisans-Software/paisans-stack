@@ -79,6 +79,8 @@ func TestRulesFire(t *testing.T) {
 		{"config-key-looks-like-a-secret", "config-key-looks-like-a-secret", validate.Refuse},
 		{"config-key-steers-compose", "config-key-steers-compose", validate.Refuse},
 		{"uptime-needs-an-admin-group", "uptime-needs-an-admin-group", validate.Refuse},
+		{"oidc-member-group-disagrees-with-gate", "oidc-member-group-disagrees-with-gate", validate.Refuse},
+		{"oidc-member-group-not-a-name", "oidc-member-group-not-a-name", validate.Refuse},
 		{"smtp-on-a-kind-without-mail", "smtp-on-a-kind-without-mail", validate.Refuse},
 		{"uptime-without-smtp", "uptime-without-smtp", validate.Warn},
 		{"monitor-on-gateway", "monitor-on-gateway", validate.Refuse},

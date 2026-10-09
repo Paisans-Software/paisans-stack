@@ -550,3 +550,64 @@ func TestAChosenLinkNeverOverwritesACustomValue(t *testing.T) {
 		}
 	}
 }
+
+// A client that allows more than the app needs is refused, not narrowed: an
+// extra callback lets another site complete the app's sign in, and an extra
+// allowed group admits people the member group was meant to keep out.
+func TestAnOverPermissiveClientIsRefused(t *testing.T) {
+	f := newFake()
+	f.groups = []pocketid.Group{{ID: "g-1", Name: "members"}, {ID: "g-2", Name: "admins"}, {ID: "g-3", Name: "provisional"}}
+	f.clients = []*pocketid.OIDCClient{{ID: "c-9", Name: "talk", PkceEnabled: true, IsGroupRestricted: true,
+		CallbackURLs:      []string{"https://talk.example.org/oauth/oidc/verify", "https://elsewhere.example.org/oauth/oidc/verify"},
+		AllowedUserGroups: []pocketid.Group{f.groups[0], f.groups[1], f.groups[2]}}}
+	d := talk()
+	d.MemberGroup = "members"
+	s, err := Probe(api(f), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Build(d, Recorded{}, s)
+	if err == nil {
+		t.Fatal("an over-permissive client was accepted")
+	}
+	for _, want := range []string{"https://elsewhere.example.org/oauth/oidc/verify", "provisional", "more than"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name %q: %v", want, err)
+		}
+	}
+}
+
+// Pocket ID refuses every request without a code challenge once a client has
+// PKCE on, so a client with PKCE on is wrong for an app that never sends one.
+func TestPKCEOnIsRefusedForAnAppThatSendsNoChallenge(t *testing.T) {
+	f := newFake()
+	f.clients = []*pocketid.OIDCClient{{ID: "c-9", Name: "docs", PkceEnabled: true, CallbackURLs: []string{"https://docs.example.org/auth/oidc.callback"}}}
+	d := Desired{App: "docs", CallbackURL: "https://docs.example.org/auth/oidc.callback", PKCE: false}
+	s, err := Probe(api(f), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Build(d, Recorded{}, s)
+	if err == nil || !strings.Contains(err.Error(), "PKCE is on") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// The groups sent on allow are exactly the app's, so a client's allowed
+// groups never carry anything the configuration does not name.
+func TestAllowSendsExactlyTheDesiredGroups(t *testing.T) {
+	f := newFake()
+	d := talk()
+	d.MemberGroup = "members"
+	rec := &memRecorder{}
+	if err := Execute(plan(t, f, d, Recorded{}), api(f), rec, secretSource("exact-secret-not-real-0001")); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, g := range f.clients[0].AllowedUserGroups {
+		names = append(names, g.Name)
+	}
+	if fmt.Sprint(names) != "[members admins]" {
+		t.Errorf("allowed %v", names)
+	}
+}

@@ -511,8 +511,21 @@ func owed(cfg *config.Config, secrets *config.Secrets) []Owed {
 			// The fork's OidcClient extends KnpU's OAuth2PKCEClient and always
 			// sends a code challenge (src/Security/Oidc/OidcClient.php:18 at
 			// tag v1.13.3+paisans).
+			spec, _ := kinds.OIDCClient(config.KindMbin, cfg.Apps[name].Hostname)
+			admin, member := spec.Groups(cfg.Apps[name])
 			why = created + "The client's redirect URI is " +
-				kinds.MbinRedirectURI(cfg.Apps[name].Hostname) + ", with PKCE enabled: Mbin always sends a code challenge"
+				kinds.MbinRedirectURI(cfg.Apps[name].Hostname) + ", with PKCE enabled: Mbin always sends a code challenge. It is restricted to the groups " +
+				member + " and " + admin + ", which the fork reads from the groups claim as its member and admin groups"
+		}
+		if cfg.Apps[name].Kind == config.KindOutline || cfg.Apps[name].Kind == config.KindWriteFreely {
+			// Neither app reads a groups claim, so the client's restriction at
+			// Pocket ID is the whole control, and the owed text says so where
+			// an operator checking an existing client will read it.
+			spec, _ := kinds.OIDCClient(cfg.Apps[name].Kind, cfg.Apps[name].Hostname)
+			_, member := spec.Groups(cfg.Apps[name])
+			why = created + "The client's redirect URI is " + spec.CallbackURL +
+				", with PKCE off: the app sends no code challenge, and a Pocket ID client with PKCE on refuses a request without one. It is restricted to the groups " +
+				member + " and " + kinds.AdminsGroup + ", and that restriction is the whole control: the app reads no groups claim, so a person outside them is refused at Pocket ID before the app sees them"
 		}
 		if cfg.Apps[name].Kind == config.KindUptime {
 			why = created + "The client's redirect URI is https://" + cfg.Apps[name].Hostname +
