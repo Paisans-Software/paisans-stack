@@ -9,8 +9,7 @@ import (
 
 // certificateMarker is the line in each snippet where the operator's own
 // certificate goes. The toolkit obtains no certificate in ingress mode
-// external: it cannot know how an unfamiliar web server gets one, and it must
-// not edit a configuration it does not own.
+// external: it cannot know how an unfamiliar web server gets one.
 const certificateMarker = "YOUR CERTIFICATE"
 
 // Show prints the hand-off sheet for a target: what the web server in front
@@ -79,15 +78,28 @@ func Show(w io.Writer, t Target) {
 // ~* and the (?i) in Apache's pattern make theirs do the same, and every
 // pattern accepts /metrics/.
 func caddySnippet(t Target) string {
-	return fmt.Sprintf(`%s {
-	# %s: leave this line out if this Caddy obtains the certificate
+	return CaddyBlock(t, t.Listen, true)
+}
+
+// CaddyBlock is the Caddy site block for a target, proxying to upstream. With
+// certificate, it carries the marked line where the operator's own
+// certificate files go; without it, the block leaves the certificate to the
+// Caddy it is added to, which obtains one itself as it does for its other
+// sites. apply writes the second into a Caddy it finds on the host.
+func CaddyBlock(t Target, upstream string, certificate bool) string {
+	var tls string
+	if certificate {
+		tls = fmt.Sprintf(`	# %s: leave this line out if this Caddy obtains the certificate
 	# itself; otherwise name your own files.
 	tls /etc/ssl/%s/fullchain.pem /etc/ssl/%s/privkey.pem
-	@refused path /status* /badge/* /metrics /metrics/ /api/v1/*
+`, certificateMarker, t.Hostname, t.Hostname)
+	}
+	return fmt.Sprintf(`%s {
+%s	@refused path /status* /badge/* /metrics /metrics/ /api/v1/*
 	respond @refused 404
 	reverse_proxy %s
 }
-`, t.Hostname, certificateMarker, t.Hostname, t.Hostname, t.Listen)
+`, t.Hostname, tls, upstream)
 }
 
 func nginxSnippet(t Target) string {

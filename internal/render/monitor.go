@@ -137,3 +137,37 @@ func ingressListen(cfg *config.Config, app string) string {
 	}
 	return fmt.Sprintf("%s:%d", host, port)
 }
+
+// HostProxy is the Docker network a web server the toolkit does not run is
+// on, when apply finds it in front of an app in ingress mode external and it
+// does not share the host's network namespace. That server cannot reach a
+// loopback listen, which is the host's loopback and not its own, so the app
+// joins the server's network as well and is reached there by Alias. The
+// server's connections then arrive from its own address on that network,
+// Address, which the app trusts beside the pinned network's gateway.
+type HostProxy struct {
+	// Network is the existing Docker network's name. The app's compose file
+	// declares it external, so compose attaches to it and never creates,
+	// changes or removes it.
+	Network string
+	// Address is the web server's IPv4 address on Network.
+	Address string
+}
+
+// ProxyAlias is the name an app answers to on a HostProxy network: its
+// compose project, which carries the deployment's token and so cannot be
+// another deployment's.
+func ProxyAlias(cfg *config.Config, app string) string {
+	return cfg.Deployment().Project(app)
+}
+
+// WithHostProxy renders app joined to the network of the web server in front
+// of it, as apply found it on the app's host. See HostProxy.
+func WithHostProxy(app string, proxy HostProxy) Option {
+	return func(p *planner) {
+		if p.hostProxy == nil {
+			p.hostProxy = map[string]HostProxy{}
+		}
+		p.hostProxy[app] = proxy
+	}
+}

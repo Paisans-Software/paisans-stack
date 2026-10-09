@@ -399,7 +399,11 @@ func (p *Plan) render(cfg *config.Config) (*render.Plan, error) {
 			opts = append(opts, render.WithEtcdInitial(site, in))
 		}
 	}
-	return render.Build(cfg, p.secrets, opts...)
+	proxies, err := apply.HostProxyOptions(cfg, p.transports)
+	if err != nil {
+		return nil, err
+	}
+	return render.Build(cfg, p.secrets, append(opts, proxies...)...)
 }
 
 // buildConfig is stage 4: the site out of paisans.yaml.

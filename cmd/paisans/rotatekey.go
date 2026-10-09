@@ -134,7 +134,7 @@ func (a applySwitch) plan(site string, secrets *config.Secrets) (*apply.Plan, er
 	if a.shared[site] {
 		options = append(options, apply.KeepImages())
 	}
-	plan, err := planSiteApply(a.cfg, secrets, site, a.transports[site], options...)
+	plan, err := planSiteApply(a.cfg, secrets, site, a.transports[site], nil, options...)
 	if err != nil {
 		return nil, err
 	}

@@ -161,6 +161,10 @@ type planner struct {
 	// etcdInitial is how each etcd member was first started, by site, as
 	// read from its host. See EtcdInitialPath.
 	etcdInitial map[string]EtcdInitial
+	// hostProxy is, by app, the Docker network of the web server apply
+	// found in front of an app in ingress mode external, when that server
+	// runs on a network of its own. See WithHostProxy.
+	hostProxy map[string]HostProxy
 }
 
 // Build produces the plan for a configuration. It assumes validation has

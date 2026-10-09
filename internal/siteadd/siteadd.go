@@ -271,7 +271,11 @@ func (p *Plan) render() (*render.Plan, error) {
 	for site, in := range p.initial {
 		opts = append(opts, render.WithEtcdInitial(site, in))
 	}
-	return render.Build(p.cfg, p.secrets, opts...)
+	proxies, err := apply.HostProxyOptions(p.cfg, p.transports)
+	if err != nil {
+		return nil, err
+	}
+	return render.Build(p.cfg, p.secrets, append(opts, proxies...)...)
 }
 
 // renders reports whether the render has a file at rel for site.

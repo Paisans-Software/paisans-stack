@@ -14,7 +14,8 @@ no certificate here; in mode `paisans` the monitor's Caddy holds the same
 zone token the gateway does, which a challenge only zone can narrow (see the
 header of the rendered `caddy.env`). The
 certificate, and renewing it, are yours: the toolkit cannot know how your
-server obtains one, and it does not edit a configuration it does not own.
+server obtains one. It edits nothing of your server's configuration, except
+the one block step 3 describes, for a Caddy, after asking you.
 
 `README.md` has the reasoning, under *The monitor has a site of its own*.
 
@@ -104,6 +105,20 @@ It prints, from `paisans.yaml` alone:
 
 Copy the snippet for your server into its configuration, put your certificate
 lines where it says, and reload the server.
+
+**If that server is Caddy in a container, `apply` can do this step.** On
+`paisans apply --site watch` it finds the container holding 443, reads its
+Caddyfile through the bind mount, and plans the block for `status`: a file of
+its own in a directory the Caddyfile already imports, or a block appended
+between `# BEGIN paisans-<token>` and `# END paisans-<token>` lines. The dry run
+shows the change. With `--execute` it asks on the terminal before writing,
+backs up a Caddyfile it edits, validates and reloads with that container's own
+Caddy, puts the file back if either fails, and then asks for
+`https://status.example.org/healthz` from the host. That Caddy obtains the
+certificate, as it does for its other sites. A server it cannot add to, such as
+nginx, a Caddy loading JSON, or one whose Caddyfile is inside its image, is
+left alone, and the plan says why and prints the block. `README.md` has the
+details, under *`apply` adds the site block to a Caddy already on the host*.
 
 ## 4. Publish the name
 
