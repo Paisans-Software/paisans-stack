@@ -232,23 +232,36 @@ func (d Destination) String() string {
 
 // ParseDestination reads user@host or user@host:port, with an IPv6 host in
 // brackets. The user is required, because it is whose authorized keys a
-// cleaning reads, so an ssh alias is refused.
+// cleaning reads, so an ssh alias is refused. The user and the host are held
+// to the rules a declared ssh section is, since both go into command lines.
 func ParseDestination(s string) (Destination, error) {
+	form := fmt.Errorf("%q is not user@host[:port], Eg: admin@203.0.113.9, admin@203.0.113.9:2222 or admin@[2001:db8::1]:22", s)
 	user, rest, ok := strings.Cut(s, "@")
-	if !ok || user == "" || rest == "" {
-		return Destination{}, fmt.Errorf("%q is not user@host[:port], Eg: admin@203.0.113.9 or admin@203.0.113.9:2222", s)
+	if !ok || !unixUser.MatchString(user) || rest == "" {
+		return Destination{}, form
 	}
 	host, port := rest, DefaultSSHPort
-	if h, p, err := net.SplitHostPort(rest); err == nil {
+	bracketed := strings.HasPrefix(rest, "[")
+	switch {
+	case bracketed && strings.HasSuffix(rest, "]"):
+		host = rest[1 : len(rest)-1]
+	case bracketed || strings.Contains(rest, ":"):
+		h, p, err := net.SplitHostPort(rest)
+		if err != nil {
+			return Destination{}, form
+		}
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 1 || n > 65535 {
 			return Destination{}, fmt.Errorf("%q: the port must be a number from 1 to 65535", s)
 		}
 		host, port = h, n
-	} else if strings.HasPrefix(rest, "[") && strings.HasSuffix(rest, "]") && net.ParseIP(rest[1:len(rest)-1]) != nil {
-		host = rest[1 : len(rest)-1]
-	} else if strings.HasPrefix(rest, "[") || strings.Count(rest, ":") == 1 {
-		return Destination{}, fmt.Errorf("%q is not user@host[:port]: %v", s, err)
+	}
+	ip := net.ParseIP(host)
+	switch {
+	case bracketed && (ip == nil || ip.To4() != nil):
+		return Destination{}, fmt.Errorf("%q: only an IPv6 address goes in brackets", s)
+	case !bracketed && ip == nil && !isHostname(host):
+		return Destination{}, form
 	}
 	return Destination{User: user, Host: host, Port: port}, nil
 }
