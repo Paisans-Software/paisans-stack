@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // hostGate runs the host check on one site before a command changes
@@ -19,12 +19,16 @@ import (
 // site they change. There is no flag to skip it: what holds a claim is
 // moved, or the configuration is changed.
 func hostGate(w io.Writer, cfg *config.Config, site string, t hostcheck.Transport) (*hostcheck.Report, error) {
-	done := apply.Step(w, "checking", "%s's host (%s)", site, t.Describe())
+	// The gate is given a writer, not a reporter, so each step it reports
+	// is drawn on that writer.
+	done := ui.NewPlain(w, false).Step("check " + site + " host")
+	done.Detail("%s's host (%s)", site, t.Describe())
 	report, err := hostcheck.Run(cfg, site, t)
-	done(err)
 	if err != nil {
+		done.Fail(err)
 		return nil, err
 	}
+	done.Done("")
 	report.Print(w)
 	fmt.Fprintln(w)
 	if err := report.Refusal(); err != nil {

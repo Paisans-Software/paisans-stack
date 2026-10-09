@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // patronictl runs inside a site's Patroni container, against the
@@ -141,7 +142,11 @@ func (p *Plan) buildReplica(members []patroniMember) *Stage {
 		if err != nil {
 			return err
 		}
-		whole.Progress = p.Progress
+		// The staged plan still holds a writer; the apply plan reports through
+		// a reporter, so the writer is wrapped for it.
+		if p.Progress != nil {
+			whole.Report = ui.NewPlain(p.Progress, false)
+		}
 		if err := apply.Execute(whole, t); err != nil {
 			return err
 		}

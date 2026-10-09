@@ -14,6 +14,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // fakeHost is a machine in a map. Every gate this package has is about what is
@@ -1184,16 +1185,16 @@ func TestAReplicaLeavesTheDatabasesToTheLeader(t *testing.T) {
 	host := newHost()
 	host.leader = "home-b"
 	p := bootstrapPlan(t, host)
-	var said strings.Builder
-	p.Progress = &said
+	said := &ui.Recorder{}
+	p.Report = said
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
 	if host.ran("psql") {
 		t.Error("a replica tried to create roles")
 	}
-	if !strings.Contains(said.String(), "home-b") {
-		t.Errorf("the skip does not name the leader's site:\n%s", said.String())
+	if !said.Has("detail", "home-b") {
+		t.Errorf("the skip does not name the leader's site:\n%s", said.Lines())
 	}
 	if !host.ran("/srv/paisans/f2a9/talk/compose.yaml up -d") {
 		t.Error("a replica's apps were not started")
@@ -1796,8 +1797,8 @@ func TestSupersededImagesArePrunedAfterHealth(t *testing.T) {
 		t.Errorf("the plan prunes %v, want %s", planned, want)
 	}
 
-	var progress strings.Builder
-	p.Progress = &progress
+	progress := &ui.Recorder{}
+	p.Report = progress
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatal(err)
 	}
@@ -1813,8 +1814,8 @@ func TestSupersededImagesArePrunedAfterHealth(t *testing.T) {
 	if rm, gate := host.indexOf("docker image rm "), host.indexOf("/srv/paisans/f2a9/talk/compose.yaml ps --all"); gate < 0 || rm < gate {
 		t.Error("an image was removed before its stack passed the health gate")
 	}
-	if !strings.Contains(progress.String(), "pruned    ghcr.io/example-org/mbin:v1.9.0") {
-		t.Errorf("the prune was not reported:\n%s", progress.String())
+	if !progress.Has("detail", "pruned ghcr.io/example-org/mbin:v1.9.0") {
+		t.Errorf("the prune was not reported:\n%s", progress.Lines())
 	}
 }
 
@@ -1845,13 +1846,13 @@ func TestAFailedPruneIsAWarning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var progress strings.Builder
-	p.Progress = &progress
+	progress := &ui.Recorder{}
+	p.Report = progress
 	if err := apply.Execute(p, host); err != nil {
 		t.Fatalf("a failed prune failed the apply: %v", err)
 	}
-	if !strings.Contains(progress.String(), "warning   talk: could not remove ghcr.io/example-org/mbin:v1.9.0") {
-		t.Errorf("the failed prune was not reported:\n%s", progress.String())
+	if !progress.Has("warn", "talk: old images left in place") || !strings.Contains(progress.Lines(), "could not remove ghcr.io/example-org/mbin:v1.9.0") {
+		t.Errorf("the failed prune was not reported:\n%s", progress.Lines())
 	}
 	if _, owed := host.files["/srv/paisans/f2a9/.paisans-pending.json"]; owed {
 		t.Error("a failed prune left the apply owing work")

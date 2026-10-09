@@ -551,9 +551,14 @@ func runApply(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
-	done := apply.Step(os.Stdout, "checking", "nothing on %s overlaps the mesh subnet", *site)
+	done := r.Step("check mesh subnet")
+	done.Detail("nothing on %s overlaps the mesh subnet", *site)
 	err = checkMeshLive(cfg, *site, transport)
-	done(err)
+	if err != nil {
+		done.Fail(err)
+	} else {
+		done.Done("")
+	}
 	if err != nil {
 		return err
 	}
@@ -580,11 +585,11 @@ func runApply(args []string) error {
 		options = append(options, apply.KeepImages())
 	}
 	// planFor plans the site holding back the named app stacks, as a later
-	// pass after the done ones. See executeWithClients. Progress goes to
+	// pass after the done ones. See executeWithClients. The reporter goes to
 	// Build rather than onto the plan it returns, so planning announces what
 	// it reads from the host as Execute announces what it does there.
 	planFor := func(hold []string, done []*apply.Plan) (*apply.Plan, error) {
-		return planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...), apply.Progress(os.Stdout)})...)
+		return planSiteApply(cfg, secrets, *site, transport, slices.Concat(options, []apply.Option{apply.Except(hold...), apply.After(done...), apply.Report(r)})...)
 	}
 	plan, err := planWithClients(clients, func(hold []string) (*apply.Plan, error) { return planFor(hold, nil) }, *execute)
 	if err != nil {
@@ -859,9 +864,14 @@ func runHostPrepare(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
-	done := apply.Step(os.Stdout, "checking", "nothing on %s overlaps the mesh subnet", *site)
+	done := r.Step("check mesh subnet")
+	done.Detail("nothing on %s overlaps the mesh subnet", *site)
 	err = checkMeshLive(cfg, *site, transport)
-	done(err)
+	if err != nil {
+		done.Fail(err)
+	} else {
+		done.Done("")
+	}
 	if err != nil {
 		return err
 	}

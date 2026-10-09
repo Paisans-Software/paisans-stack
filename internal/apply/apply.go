@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"regexp"
 	"sort"
 	"strconv"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Change is what one file needs, decided before anything is written.
@@ -217,24 +217,11 @@ type Plan struct {
 	// for the prune keep set: an image a held stack renders is still the
 	// site's.
 	renderedChanges []Change
-	// Progress receives each step Build and Execute take on the host as it
+	// Report receives each step Build and Execute take on the host as it
 	// starts and ends, and what Execute decided along the way that is not
 	// an error, such as a replica leaving the database work to the leader.
-	// Nil discards it. Build sets it from the Progress option.
-	Progress io.Writer
-	// stepOpen is whether the last thing written to Progress was a step
-	// still waiting for its ending. See step.
-	stepOpen bool
-}
-
-func (p *Plan) say(format string, args ...any) {
-	if p.Progress != nil {
-		if p.stepOpen {
-			fmt.Fprintln(p.Progress)
-			p.stepOpen = false
-		}
-		fmt.Fprintf(p.Progress, format, args...)
-	}
+	// Nil discards it. Build sets it from the Report option.
+	Report ui.Reporter
 }
 
 // WireGuardStep is the one thing an apply does to the deployment's mesh
@@ -271,6 +258,22 @@ func (w WireGuardStep) Command(d deployment.Deployment) string {
 		return "set -e; f=$(mktemp); trap 'rm -f \"$f\"' EXIT; wg-quick strip " + iface + " > \"$f\"; wg syncconf " + iface + " \"$f\""
 	case WireGuardRestart:
 		return "systemctl restart " + d.WireGuardUnit()
+	default:
+		return ""
+	}
+}
+
+// Title is the step's name in the progress output (Eg: start mesh psns-566c).
+// Describe is the same step's detail.
+func (w WireGuardStep) Title(d deployment.Deployment) string {
+	iface := d.Interface()
+	switch w {
+	case WireGuardStart:
+		return "start mesh " + iface
+	case WireGuardSync:
+		return "update mesh " + iface
+	case WireGuardRestart:
+		return "restart mesh " + iface
 	default:
 		return ""
 	}
@@ -376,13 +379,13 @@ type options struct {
 	// replication_factor replace the deployed one. Only `storage add
 	// --change-replication` sets it; see GarageReplication.
 	replicationChange bool
-	progress          io.Writer
+	report            ui.Reporter
 }
 
-// Progress sets the plan's Progress writer before Build reads the host, so
-// planning announces its steps as Execute does. See Plan.Progress.
-func Progress(w io.Writer) Option {
-	return func(o *options) { o.progress = w }
+// Report sets the plan's Report before Build reads the host, so planning
+// reports its steps as Execute does. See Plan.Report.
+func Report(r ui.Reporter) Option {
+	return func(o *options) { o.report = r }
 }
 
 // ReplicationChange lets this apply replace a deployed garage.toml whose
@@ -492,7 +495,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	for _, opt := range opts {
 		opt(&o)
 	}
-	out.Progress = o.progress
+	out.Report = o.report
 	// An earlier pass of the same apply already carried out these. See After.
 	doneOverwrite, doneStacks := map[string]bool{}, map[string]bool{}
 	for _, p := range o.after {
@@ -597,7 +600,8 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 	if out.scoped {
 		reading = len(inScope)
 	}
-	done := out.step("reading", "%d rendered file(s) from %s", reading, out.Transport)
+	done := out.step("read rendered files")
+	done.Detail("%d rendered file(s) from %s", reading, out.Transport)
 	for _, file := range plan.Files {
 		if !strings.HasPrefix(file.Path, prefix) {
 			continue
@@ -624,13 +628,13 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 
 		current, found, err := t.ReadFile(remote)
 		if err != nil {
-			done(err)
+			finish(done, err)
 			return nil, err
 		}
 		change.before = current
 		if rel == GarageConfig(d) && found && !o.replicationChange {
 			if err := garageReplicationGuard(site, current, file.Content); err != nil {
-				done(err)
+				finish(done, err)
 				return nil, err
 			}
 		}
@@ -717,7 +721,7 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		}
 	}
 
-	done(nil)
+	done.Done("")
 
 	for _, path := range overwrite {
 		if !used[path] {
@@ -869,9 +873,19 @@ func Build(site string, plan *render.Plan, acmeModule string, t Transport, opts 
 		need = o.minFree
 	}
 	out.KeepImages = o.keepImages
-	done = out.step("checking", "images and free disk space")
+	done = out.step("disk space")
 	err = out.probeImages(need, t)
-	done(err)
+	if err != nil {
+		done.Fail(err)
+	} else {
+		if out.Disk != nil {
+			done.Detail("%s", out.Disk.Describe())
+		}
+		if out.Volumes != nil {
+			done.Detail("%s", out.Volumes.Describe())
+		}
+		done.Done(out.Disk.Summary())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", site, err)
 	}
@@ -1015,14 +1029,17 @@ func execute(plan *Plan, t Transport) error {
 
 	writes := plan.Writes()
 	if len(writes) > 0 {
-		done := plan.step("writing", "%d file(s)", len(writes))
+		done := plan.step(fmt.Sprintf("write %d files", len(writes)))
+		for _, change := range writes {
+			done.Detail("%s %s", change.Kind, change.Path)
+		}
 		for _, change := range writes {
 			if err := t.WriteFile(change.Path, change.content, change.Mode); err != nil {
-				done(err)
+				done.Fail(err)
 				return err
 			}
 		}
-		done(nil)
+		done.Done("")
 	}
 
 	// Record the files as soon as they are on the host, not only at the end.
@@ -1042,9 +1059,10 @@ func execute(plan *Plan, t Transport) error {
 	// rule is simple: no container is started or checked on a site whose
 	// interface is down.
 	if command := plan.WireGuard.Command(plan.Deployment); command != "" {
-		done := plan.step("starting", "the mesh, %s", plan.Deployment.Interface())
+		done := plan.step(plan.WireGuard.Title(plan.Deployment))
+		done.Detail("%s", plan.WireGuard.Describe(plan.Deployment))
 		out, err := t.Run(command)
-		done(err)
+		finish(done, err)
 		if err != nil {
 			return fmt.Errorf("%s: bringing up %s, so nothing that binds the mesh address was started:\n%s", plan.Site, plan.Deployment.Interface(), out)
 		}
@@ -1090,9 +1108,10 @@ func execute(plan *Plan, t Transport) error {
 		// the module: on the first real gateway a private image's
 		// "unauthorized" was reported as a missing DNS provider.
 		infra := plan.Deployment.ComposeCmd(infraStack)
-		done := plan.step("pulling", "the gateway's Caddy image")
+		done := plan.step("pull gateway image")
+		done.Detail("the gateway's Caddy image")
 		out, err := t.Run(infra + " pull caddy")
-		done(err)
+		finish(done, err)
 		if err != nil {
 			return fmt.Errorf(
 				"%s: the gateway's Caddy image could not be pulled, so nothing was changed. If the registry answered unauthorized or denied, the image is private: make it public, or log the host in to that registry:\n%s",
@@ -1101,9 +1120,10 @@ func execute(plan *Plan, t Transport) error {
 		command := fmt.Sprintf(
 			"%s run --rm --no-deps --entrypoint caddy caddy list-modules | grep -qxF %s",
 			infra, shellQuote(plan.ACMEModule))
-		done = plan.step("checking", "the gateway's Caddy has the %s module", plan.ACMEModule)
+		done = plan.step("check gateway modules")
+		done.Detail("the gateway's Caddy has the %s module", plan.ACMEModule)
 		out, err = t.Run(command)
-		done(err)
+		finish(done, err)
 		if err != nil {
 			return fmt.Errorf(
 				"%s: the gateway's Caddy has no %s module, so it cannot serve this configuration and was not reloaded. The image it runs was built without that provider:\n%s",
@@ -1121,9 +1141,10 @@ func execute(plan *Plan, t Transport) error {
 		// since every later apply would refuse at this step. `run` starts a
 		// throwaway container with the service's own image and bind mounts,
 		// which is exactly what validation needs and needs nothing running.
-		done := plan.step("checking", "the gateway configuration validates")
+		done := plan.step("validate gateway config")
+		done.Detail("the gateway configuration validates")
 		out, err := t.Run(plan.Deployment.ComposeCmd(infraStack) + " run --rm --no-deps --entrypoint caddy caddy validate --config /etc/caddy/Caddyfile")
-		done(err)
+		finish(done, err)
 		if err != nil {
 			return fmt.Errorf("%s: the assembled gateway configuration does not validate, so the gateway was not changed:\n%s", plan.Site, out)
 		}
@@ -1142,9 +1163,9 @@ func execute(plan *Plan, t Transport) error {
 			return fmt.Errorf("%s: asking whether the gateway is running: %w", plan.Site, err)
 		}
 		if strings.TrimSpace(running) != "" {
-			done := plan.step("reloading", "the gateway")
+			done := plan.step("reload gateway")
 			_, err := t.Run(reloadGateway(plan.Deployment))
-			done(err)
+			finish(done, err)
 			if err != nil {
 				return fmt.Errorf("%s: reloading the gateway: %w", plan.Site, err)
 			}
@@ -1152,9 +1173,10 @@ func execute(plan *Plan, t Transport) error {
 			// A stopped or absent gateway has nothing to reload, and no
 			// stack action will start it, since routing alone is not one.
 			// It starts on the configuration this apply just validated.
-			done := plan.step("starting", "the gateway (up -d caddy)")
+			done := plan.step("start gateway")
+			done.Detail("the gateway (up -d caddy)")
 			_, err := t.Run(plan.Deployment.ComposeCmd(infraStack) + " up -d caddy")
-			done(err)
+			finish(done, err)
 			if err != nil {
 				return fmt.Errorf("%s: starting the gateway: %w", plan.Site, err)
 			}
@@ -1185,10 +1207,13 @@ func execute(plan *Plan, t Transport) error {
 		if action.Recreate && !action.Down {
 			previous = recordAnonymousVolumes(plan, action.Stack, t)
 		}
-		verb, what := stackActionStep(action)
-		done := plan.step(verb, "%s", what)
+		done := plan.step(ActionTitle(action))
+		done.Detail("%s", action.Command(plan.Deployment))
+		if action.Reason != "" {
+			done.Detail("%s", action.Reason)
+		}
 		err := runAction(plan.Deployment, action, action.Stack == infraStack && plan.GatewayReload, t)
-		done(err)
+		finish(done, err)
 		if err != nil {
 			return err
 		}
@@ -1202,9 +1227,10 @@ func execute(plan *Plan, t Transport) error {
 		// Only now, with the stack healthy on its new image, is the old one
 		// safe to lose. Before the gate it is the image a rollback would use.
 		if !plan.KeepImages {
-			done := plan.step("pruning", "superseded images of %s", action.Stack)
+			done := plan.step("prune old images")
+			done.Detail("superseded images of %s", action.Stack)
 			pruneStack(plan, action.Stack, t)
-			done(nil)
+			done.Done("")
 		}
 		// Not tied to --keep-images: a volume the new containers do not
 		// mount is no way back to the old image, which is what that flag

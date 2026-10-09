@@ -100,7 +100,7 @@ func TestTheGateAnnouncesTheCheckBeforeItsReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, _, _ := strings.Cut(out.String(), "\n")
-	if !strings.HasPrefix(first, "  checking  home-a's host (ubuntu@host.example.org) ... done (") {
+	if !strings.HasPrefix(first, "  ok   check home-a host") {
 		t.Errorf("the first line is not the check's announcement:\n%s", out.String())
 	}
 }

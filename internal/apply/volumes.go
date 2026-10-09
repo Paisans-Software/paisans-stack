@@ -224,7 +224,16 @@ func volumeRefusal(plan *Plan) error {
 		plan.Site, len(lines), strings.Join(lines, "\n  "))
 }
 
-// Describe is the plan's line for the check.
+// Summary is the check's result in a few words (Eg: 2 images checked).
+func (v *VolumeCheck) Summary() string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d images checked", len(v.Checked))
+}
+
+// Describe is the plan's line for the check, shown as a step's detail with
+// --verbose.
 func (v *VolumeCheck) Describe() string {
 	line := fmt.Sprintf("volumes: %d image(s) inspected", len(v.Checked))
 	if len(v.Owed) > 0 {

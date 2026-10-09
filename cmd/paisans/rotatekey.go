@@ -13,6 +13,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/rotatekey"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -170,6 +171,6 @@ func (a applySwitch) Apply(site string, secrets *config.Secrets) error {
 	if err != nil {
 		return err
 	}
-	plan.Progress = os.Stdout
+	plan.Report = ui.NewPlain(os.Stdout, false)
 	return apply.Execute(plan, a.transports[site])
 }

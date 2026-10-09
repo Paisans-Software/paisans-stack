@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Fixture is the fixture deployment's identity.
@@ -126,3 +127,7 @@ func InnerCommand(remote string) (string, bool) {
 	}
 	return string(raw), true
 }
+
+func NewPlanForTest(r ui.Reporter) *Plan             { return &Plan{Report: r} }
+func StepForTest(p *Plan, title string) ui.Step      { return p.step(title) }
+func SayForTest(p *Plan, format string, args ...any) { p.say(format, args...) }

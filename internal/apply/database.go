@@ -272,24 +272,31 @@ func runBootstrap(plan *Plan, t Transport) error {
 			"%s: the infrastructure stack is up, and etcd is waiting on %s: a new etcd cluster settles its version only once every founding member runs, and Patroni takes no leader key before that. No app database was created and no app stack was started. Apply %s, then apply this site again: it resumes here",
 			plan.Site, strings.Join(waiting, ", "), strings.Join(waiting, ", then "))
 	}
-	done := plan.step("waiting", "for a Patroni primary")
+	done := plan.step("wait for Patroni primary")
 	err := waitForPrimary(plan, t)
 	if _, replica := err.(errReplica); replica {
-		done(nil)
+		done.Done("")
 	} else {
-		done(err)
+		finish(done, err)
 	}
 	if err != nil {
 		if replica, ok := err.(errReplica); ok {
-			plan.say("  %-9s skipped: Patroni here is a replica, and %s holds the leader. Apply %s to create app roles and databases\n",
-				"databases", replica.leader, replica.leader)
+			plan.say("databases skipped: Patroni here is a replica, and %s holds the leader. Apply %s to create app roles and databases",
+				replica.leader, replica.leader)
 			return nil
 		}
 		return err
 	}
-	done = plan.step("creating", "app roles and databases")
+	names := make([]string, len(plan.Bootstrap.Databases))
+	for i, db := range plan.Bootstrap.Databases {
+		names[i] = db.Name
+	}
+	done = plan.step("bootstrap database " + strings.Join(names, ", "))
+	for _, db := range plan.Bootstrap.Databases {
+		done.Detail("role %s owns database %s, for %s", db.Role, db.Name, db.App)
+	}
 	out, err := t.RunInput(psql(plan.Deployment), bootstrapSQL(plan.Bootstrap))
-	done(err)
+	finish(done, err)
 	if err != nil {
 		// psql quotes the failing line back for a syntax error, and that line
 		// can be the one carrying a password.
@@ -300,7 +307,7 @@ func runBootstrap(plan *Plan, t Transport) error {
 		return fmt.Errorf("%s: creating app roles and databases failed, so no app stack was started:\n%s", plan.Site, out)
 	}
 	for _, db := range plan.Bootstrap.Databases {
-		plan.say("  %-9s role and database %s for %s\n", "ensured", db.Name, db.App)
+		plan.say("ensured role and database %s for %s", db.Name, db.App)
 	}
 	return nil
 }
