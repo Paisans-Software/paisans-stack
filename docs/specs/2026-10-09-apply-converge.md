@@ -37,10 +37,10 @@ Out:
 
 | Phase | Step | When |
 |---|---|---|
-| 0. Configuration | `init`: the deployment id, the mesh subnet, every generated secret | the yaml has no id or no subnet, or the secrets file is missing or lacks a generated secret |
+| 0. Configuration | `init`: the deployment id, the mesh subnet, every generated secret | the yaml has no id or no subnet, or the secrets file is missing or lacks a generated secret; once it has run, the rest is read and planned again |
 | 1. Hosts | `host prepare --site <s>` | every site; a prepared host plans nothing |
-| 2. Founding | `apply --site <w>` for each witness in `etcd.members`, then `apply --site <d>` for each other member | no member of `etcd.members` has been founded (none holds `infra/etcd-initial`) |
-| 2. Joining | `site add <s>` | the cluster has been founded and a member of `etcd.members` has not |
+| 2. Founding | `apply --site <w>` for each witness in `etcd.members`, then `apply --site <d>` for each other member, of those still being founded | a member holds no `infra/etcd-initial`, and either no member holds one or one's `--initial-cluster` lists it: the founding set is fixed by the first apply that wrote a record |
+| 2. Joining | `site add <s>` | a member holds no record and no record lists it: the cluster was founded without it |
 | 3. Other sites | `apply --site <s>` for every site not in `etcd.members`, monitor sites last | every such site; an applied site plans nothing |
 | 4. Storage | `storage init --site <g>` for one Garage site; `storage add` for several | `storage.garage.sites` is not empty |
 | 5. Pass two | `apply --site <s>` for every site again, monitor sites last | always: it resumes the data site the founding stop left, and moves what an earlier step changed, such as the keys storage made |
@@ -58,7 +58,9 @@ hand would, and asks each host's sudo password once for the whole run.
 ## Dry run
 
 Without `--execute` it prints the plan, phase by phase, one line per step with
-why it is there, and changes nothing. It reads what decides the plan (whether
+why it is there, and changes nothing; with no deployment id yet it prints
+`init` alone, since nothing on a host can be read for a deployment that has no
+id. Both a dry run and a run end by naming what only the operator can do. It reads what decides the plan (whether
 init has work, which etcd members have been founded) and no more: a step's own
 detail needs the steps before it to have run (a host prepared before its files
 can be planned, Garage running before its keys can), so it is the step's own

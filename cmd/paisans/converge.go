@@ -3,23 +3,37 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
+	"gopkg.in/yaml.v3"
 )
 
 // convergeState is what decides the plan of `paisans apply` without --site:
-// whether init has work, and which etcd members have been founded (hold
-// infra/etcd-initial). See docs/specs/2026-10-09-apply-converge.md.
+// whether init has work, and each etcd member's infra/etcd-initial record,
+// for the members that hold one. See docs/specs/2026-10-09-apply-converge.md.
 type convergeState struct {
 	NeedsInit bool
-	Founded   map[string]bool
+	Initial   map[string]render.EtcdInitial
+}
+
+// clusterNames is the member names an --initial-cluster lists.
+func clusterNames(in render.EtcdInitial) []string {
+	var out []string
+	for _, pair := range strings.Split(in.Cluster, ",") {
+		if name, _, ok := strings.Cut(strings.TrimSpace(pair), "="); ok && name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // convergeStep is one existing command the plan runs.
@@ -60,27 +74,35 @@ func convergePlan(cfg *config.Config, st convergeState) []convergeStep {
 		steps = append(steps, step("hosts", "Docker, WireGuard and the firewall; a prepared host plans nothing", false, "host", "prepare", "--site", s))
 	}
 
+	// A member with no record is still being founded when no member has a
+	// record, or when a record's --initial-cluster lists it: the founding
+	// set is fixed by the first apply that wrote one, and its members are
+	// applied, witness first. One no record lists joins the running cluster
+	// through site add.
 	members := cfg.Etcd.Members
-	founded := false
-	for _, m := range members {
-		founded = founded || st.Founded[m]
+	listed := map[string]bool{}
+	for _, in := range st.Initial {
+		for _, n := range clusterNames(in) {
+			listed[n] = true
+		}
 	}
-	if len(members) > 0 && !founded {
-		for _, m := range members {
-			if cfg.Sites[m].Has(config.RoleWitness) {
-				steps = append(steps, applyStep("founding", "a witness is founded first: nothing waits on it", m, true))
-			}
+	founding := func(m string) bool {
+		_, recorded := st.Initial[m]
+		return !recorded && (len(st.Initial) == 0 || listed[m])
+	}
+	for _, m := range members {
+		if founding(m) && cfg.Sites[m].Has(config.RoleWitness) {
+			steps = append(steps, applyStep("founding", "a witness is founded first: nothing waits on it", m, true))
 		}
-		for _, m := range members {
-			if !cfg.Sites[m].Has(config.RoleWitness) {
-				steps = append(steps, applyStep("founding", "founds its etcd member; it may stop until the other members run, and pass two resumes it", m, true))
-			}
+	}
+	for _, m := range members {
+		if founding(m) && !cfg.Sites[m].Has(config.RoleWitness) {
+			steps = append(steps, applyStep("founding", "founds its etcd member; it may stop until the other members run, and pass two resumes it", m, true))
 		}
-	} else {
-		for _, m := range members {
-			if !st.Founded[m] {
-				steps = append(steps, step("joining", "the cluster runs and this member has not joined it", false, "site", "add", m))
-			}
+	}
+	for _, m := range members {
+		if _, recorded := st.Initial[m]; !recorded && !founding(m) {
+			steps = append(steps, step("joining", "the cluster runs and this member has not joined it", false, "site", "add", m))
 		}
 	}
 
@@ -150,16 +172,18 @@ func runStep(args []string) error {
 // through its ssh section. A member that does not answer is an error: whether
 // the cluster is founded decides between founding and joining. Tests replace
 // it.
-var convergeFounded = func(cfg *config.Config, sudo bool) (map[string]bool, error) {
-	founded := map[string]bool{}
+var convergeFounded = func(cfg *config.Config, sudo bool) (map[string]render.EtcdInitial, error) {
+	records := map[string]render.EtcdInitial{}
 	for _, m := range cfg.Etcd.Members {
-		_, recorded, err := apply.ReadEtcdInitial(siteTransport(m, cfg.Sites[m], "", sudo), cfg.Deployment())
+		in, recorded, err := apply.ReadEtcdInitial(siteTransport(m, cfg.Sites[m], "", sudo), cfg.Deployment())
 		if err != nil {
 			return nil, fmt.Errorf("apply: reading whether %s's etcd member has been founded: %w. Every etcd member is read before anything runs", m, err)
 		}
-		founded[m] = recorded
+		if recorded {
+			records[m] = in
+		}
 	}
-	return founded, nil
+	return records, nil
 }
 
 // convergeFlags is the common flags each command takes, of --config,
@@ -182,20 +206,24 @@ func convergeFlags(args []string, configPath, secretsPath string, execute, sudo 
 	return out
 }
 
-// readConvergeState reads what decides the plan. A declaration with no id,
-// no mesh subnet, no secrets file, or a generated secret missing needs init;
-// until it has one there is no deployment to read founded members of.
+// convergeRead reads what decides the plan. Tests replace it.
+var convergeRead = readConvergeState
+
+// readConvergeState reads what decides the plan: whether init has work (no
+// id, no mesh subnet, no secrets file, or a generated secret missing), and,
+// once there is an id, each etcd member's record. With no id there is no
+// deployment to read on a host yet, and the configuration is nil.
 func readConvergeState(configPath, secretsPath string, sudo bool) (*config.Config, convergeState, error) {
 	var st convergeState
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		var initErr error
-		if cfg, initErr = config.LoadForInit(configPath); initErr != nil {
+		if !missingID(configPath) {
 			return nil, st, err
 		}
 		st.NeedsInit = true
+		return nil, st, nil
 	}
-	if cfg.ID == "" || cfg.Mesh.Subnet == "" {
+	if cfg.Mesh.Subnet == "" {
 		st.NeedsInit = true
 	}
 	if secretsPath == "" {
@@ -206,13 +234,22 @@ func readConvergeState(configPath, secretsPath string, sudo bool) (*config.Confi
 	} else if filled, err := secretsgen.Fill(cfg, secrets); err != nil || filled.Changed() {
 		st.NeedsInit = true
 	}
-	if st.NeedsInit {
-		return cfg, st, nil
-	}
-	if st.Founded, err = convergeFounded(cfg, sudo); err != nil {
+	if st.Initial, err = convergeFounded(cfg, sudo); err != nil {
 		return nil, st, err
 	}
 	return cfg, st, nil
+}
+
+// missingID reports whether the file at path declares no deployment id.
+func missingID(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var doc struct {
+		ID string `yaml:"id"`
+	}
+	return yaml.Unmarshal(data, &doc) == nil && doc.ID == ""
 }
 
 // runConverge is `paisans apply` without --site: every step that takes
@@ -220,16 +257,31 @@ func readConvergeState(configPath, secretsPath string, sudo bool) (*config.Confi
 // needs them and stopped at the first failure. Run again, it reads live state
 // again and carries on. See docs/specs/2026-10-09-apply-converge.md.
 func runConverge(r ui.Reporter, configPath, secretsPath string, execute, sudo bool) error {
-	cfg, st, err := readConvergeState(configPath, secretsPath, sudo)
+	cfg, st, err := convergeRead(configPath, secretsPath, sudo)
 	if err != nil {
 		return err
 	}
-	if !st.NeedsInit {
-		result := validate.Check(cfg)
-		reportFindings(r, configPath, result)
-		if result.Refused() {
-			return fmt.Errorf("%s was refused: %d problem(s) above", configPath, len(result.Refusals()))
+	if st.NeedsInit && execute {
+		// init writes the id, the subnet and the secrets the rest is
+		// planned from, so the state is read again once it has run.
+		if err := convergeRun(convergeFlags([]string{"init"}, configPath, secretsPath, true, sudo)); err != nil {
+			return fmt.Errorf("apply: stopped at init: %w\nRun paisans apply --execute again to resume.", err)
 		}
+		if cfg, st, err = convergeRead(configPath, secretsPath, sudo); err != nil {
+			return err
+		}
+		st.NeedsInit = false
+	}
+	if cfg == nil {
+		r.Section("configuration")
+		r.Item("init: the deployment id, the mesh subnet and every generated secret")
+		r.Result("Nothing changed. %s has no deployment id yet, so the rest is planned once init has run: re-run with --execute, or run paisans init.", configPath)
+		return nil
+	}
+	result := validate.Check(cfg)
+	reportFindings(r, configPath, result)
+	if result.Refused() {
+		return fmt.Errorf("%s was refused: %d problem(s) above", configPath, len(result.Refusals()))
 	}
 	steps := convergePlan(cfg, st)
 	phase := ""
@@ -238,14 +290,17 @@ func runConverge(r ui.Reporter, configPath, secretsPath string, execute, sudo bo
 			phase = s.Phase
 			r.Section(phase)
 		}
-		r.Item(s.Title)
-		r.Detail("%s", s.Why)
+		r.Item(s.Title + ": " + s.Why)
 	}
 	if !execute {
+		convergeLeft(r, cfg, secretsPath, configPath)
 		r.Result("Nothing changed. Re-run with --execute to apply. Each step's own dry run, Eg: paisans apply --site <name>, shows its detail.")
 		return nil
 	}
 	for _, s := range steps {
+		if s.Title == "init" {
+			continue
+		}
 		err := convergeRun(convergeFlags(s.Args, configPath, secretsPath, true, sudo))
 		switch {
 		case err == nil:
@@ -255,6 +310,25 @@ func runConverge(r ui.Reporter, configPath, secretsPath string, execute, sudo bo
 			return fmt.Errorf("apply: stopped at %s: %w\nRun paisans apply --execute again to resume.", s.Title, err)
 		}
 	}
+	convergeLeft(r, cfg, secretsPath, configPath)
 	r.Result("%s is converged: every step ran.", configPath)
 	return nil
+}
+
+// convergeLeft names what only the operator can do: each credential the
+// toolkit cannot generate, and the first Pocket ID admin.
+func convergeLeft(r ui.Reporter, cfg *config.Config, secretsPath, configPath string) {
+	if secretsPath == "" {
+		secretsPath = filepath.Join(filepath.Dir(configPath), "secrets.enc.yaml")
+	}
+	if secrets, err := config.LoadSecrets(secretsPath); err == nil {
+		for _, key := range secretsgen.OwedNames(cfg, secrets) {
+			r.Note("secrets: "+key+" is owed and only you can provide it", "paisans secrets set "+key+" < value")
+		}
+	}
+	for _, app := range cfg.AppNames() {
+		if cfg.Apps[app].Kind == config.KindPocketID {
+			r.Note("Pocket ID "+app+": create its first admin, if it has none yet", "paisans app admin create --app "+app+" --username <name> --email <address>")
+		}
+	}
 }

@@ -3,11 +3,14 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // titles is the plan as "phase: title" lines.
@@ -51,10 +54,29 @@ func TestConvergeFoundsABlankDeploymentWitnessFirst(t *testing.T) {
 	}
 }
 
-func TestConvergeJoinsAnUnfoundedMemberOfARunningCluster(t *testing.T) {
-	steps := convergePlan(fixture(t), convergeState{Founded: map[string]bool{"home-a": true, "vm": true}})
+func initial(names ...string) render.EtcdInitial {
+	var pairs []string
+	for i, n := range names {
+		pairs = append(pairs, fmt.Sprintf("%s=http://10.44.0.%d:2380", n, i+1))
+	}
+	return render.EtcdInitial{State: "new", Cluster: strings.Join(pairs, ",")}
+}
+
+// A member the founded cluster's initial-cluster does not list joins it.
+func TestConvergeJoinsAMemberTheClusterDoesNotList(t *testing.T) {
+	steps := convergePlan(fixture(t), convergeState{Initial: map[string]render.EtcdInitial{"home-a": initial("home-a", "vm"), "vm": initial("home-a", "vm")}})
 	got := strings.Join(titles(steps), "\n")
 	if !strings.Contains(got, "joining: site add home-b") || strings.Contains(got, "founding:") {
+		t.Errorf("got:\n%s", got)
+	}
+}
+
+// A member a founding record lists is still being founded, though another
+// member has its record: it is applied, not added.
+func TestConvergeResumesAFoundingAfterAFailure(t *testing.T) {
+	steps := convergePlan(fixture(t), convergeState{Initial: map[string]render.EtcdInitial{"vm": initial("home-a", "home-b", "vm")}})
+	got := strings.Join(titles(steps), "\n")
+	if strings.Contains(got, "site add") || !strings.Contains(got, "founding: apply --site home-a") || !strings.Contains(got, "founding: apply --site home-b") {
 		t.Errorf("got:\n%s", got)
 	}
 }
@@ -118,7 +140,9 @@ func fakeConverge(t *testing.T, fail map[string]error) *[]string {
 		ran = append(ran, title)
 		return fail[title]
 	}
-	convergeFounded = func(*config.Config, bool) (map[string]bool, error) { return map[string]bool{}, nil }
+	convergeFounded = func(*config.Config, bool) (map[string]render.EtcdInitial, error) {
+		return map[string]render.EtcdInitial{}, nil
+	}
 	t.Cleanup(func() { convergeRun, convergeFounded = savedRun, savedFounded })
 	return &ran
 }
@@ -182,5 +206,81 @@ func TestConvergeRefusesSSH(t *testing.T) {
 	fakeConverge(t, nil)
 	if err := converge(t, "--ssh", "admin@192.0.2.1"); err == nil || !strings.Contains(err.Error(), "--site") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// noID is the fixture configuration without its deployment id.
+func noID(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "id:") {
+			kept = append(kept, line)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// With no id there is nothing on a host to read yet: the plan is init, and
+// the rest once it has run.
+func TestConvergeWithoutAnIDPlansInit(t *testing.T) {
+	fakeConverge(t, nil)
+	path := noID(t)
+	var err error
+	out := captureStdout(t, func() { err = runApply([]string{"--config", path, "--sudo=false"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "init") || !strings.Contains(out, "once init has run") {
+		t.Errorf("printed:\n%s", out)
+	}
+}
+
+// After init, the state is read again and the rest planned from it.
+func TestConvergeReplansAfterInit(t *testing.T) {
+	ran := fakeConverge(t, nil)
+	saved := convergeRead
+	reads := 0
+	convergeRead = func(path, secrets string, sudo bool) (*config.Config, convergeState, error) {
+		reads++
+		cfg, err := config.Load(fixtureConfig())
+		if reads == 1 {
+			return cfg, convergeState{NeedsInit: true}, err
+		}
+		return cfg, convergeState{Initial: map[string]render.EtcdInitial{"home-a": initial("home-a", "vm"), "vm": initial("home-a", "vm")}}, err
+	}
+	t.Cleanup(func() { convergeRead = saved })
+	if err := converge(t, "--execute"); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(*ran, "\n")
+	if !strings.HasPrefix(got, "init\n") || strings.Count(got, "init\n") != 1 || !strings.Contains(got, "site add home-b") || strings.Contains(got, "apply --site vm\napply --site home-a\napply --site home-b\napply --site watch\nstorage") {
+		t.Errorf("ran:\n%s", got)
+	}
+}
+
+// The dry run says why each step is there, and names what only the operator
+// can do.
+func TestConvergeSaysWhyAndWhatIsLeft(t *testing.T) {
+	fakeConverge(t, nil)
+	out := ""
+	captureStdout(t, func() {})
+	out = captureStdout(t, func() {
+		if err := runApply([]string{"--config", fixtureConfig(), "--secrets", fixtureSecretsPath(), "--sudo=false"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, want := range []string{"a witness is founded first", "app admin create"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("does not say %q:\n%s", want, out)
+		}
 	}
 }
