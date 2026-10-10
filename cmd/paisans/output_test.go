@@ -11,8 +11,8 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/appremove"
 	"github.com/paisans-software/paisans-stack/internal/config"
-	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
