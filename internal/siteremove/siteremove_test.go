@@ -44,8 +44,8 @@ func TestTheDryRunPlansEveryStageAndChangesNothing(t *testing.T) {
 		before[name] = len(h.files)
 	}
 	p := w.mustBuild("home-b", siteremove.Options{})
-	if len(p.Stages) != 5 {
-		t.Fatalf("want 5 stages, got %d", len(p.Stages))
+	if len(p.Stages) != 6 {
+		t.Fatalf("want 6 stages, got %d", len(p.Stages))
 	}
 	for _, want := range []struct {
 		stage            int
@@ -64,7 +64,7 @@ func TestTheDryRunPlansEveryStageAndChangesNothing(t *testing.T) {
 		{3, "home-b", "remove", "drop-in /etc/systemd/system/docker.service.d/paisans-f2a9-after-wireguard.conf"},
 		{3, "home-b", "delete", "allow in on psns-f2a9"},
 		{3, "home-b", "remove", "deployment " + ourID},
-		{4, "home-b", "remove", "sites.home-b"},
+		{5, "home-b", "remove", "sites.home-b"},
 	} {
 		if !hasStep(p, want.stage, want.site, want.verb, want.text) {
 			t.Errorf("stage %d has no %s %s step with %q:\n%v", want.stage, want.verb, want.site, want.text, steps(p, want.stage))
@@ -212,7 +212,7 @@ func TestARemovalCompletesAndKeepsWhatIsNotOurs(t *testing.T) {
 		t.Error("the edit lost a comment")
 	}
 	remains := strings.Join(p.Remains(), "\n")
-	for _, want := range []string{"sites.home-b", "dns prune", "203.0.113.20", edited} {
+	for _, want := range []string{"sites.home-b", edited} {
 		if !strings.Contains(remains, want) {
 			t.Errorf("the report does not mention %q:\n%s", want, remains)
 		}

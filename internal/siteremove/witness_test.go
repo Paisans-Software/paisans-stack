@@ -57,7 +57,7 @@ func TestTwoDataSitesAndAWitnessShrinkToOneVoter(t *testing.T) {
 		{2, "home-a", "remove", "the witness vm's etcd member 3333"},
 		{2, "vm", "stop", "label=com.docker.compose.service=etcd"},
 		{2, "vm", "update", "infra/compose.yaml"},
-		{4, "vm", "remove", "vm from etcd.members and witness from sites.vm.roles"},
+		{5, "vm", "remove", "vm from etcd.members and witness from sites.vm.roles"},
 	} {
 		if !hasStep(p, want.stage, want.site, want.verb, want.text) {
 			t.Errorf("stage %d has no %s %s step with %q:\n%s", want.stage, want.verb, want.site, want.text, printed(p))
@@ -403,11 +403,11 @@ func TestTheShrinkWithDerivedLists(t *testing.T) {
 
 	w := witnessWorld(t, derivedLists...)
 	p := w.mustBuild("home-b", siteremove.Options{})
-	if !hasStep(p, 4, "home-b", "remove", "its name from storage.garage.sites") || hasStep(p, 4, "home-b", "remove", "cluster.sites") {
-		t.Errorf("stage 4 names a list the file does not write:\n%s", printed(p))
+	if !hasStep(p, 5, "home-b", "remove", "its name from storage.garage.sites") || hasStep(p, 5, "home-b", "remove", "cluster.sites") {
+		t.Errorf("stage 5 names a list the file does not write:\n%s", printed(p))
 	}
-	if !hasStep(p, 4, "vm", "remove", "witness from sites.vm.roles, which takes vm out of etcd.members, derived from the roles") {
-		t.Errorf("stage 4 does not say the witness role is the whole edit:\n%s", printed(p))
+	if !hasStep(p, 5, "vm", "remove", "witness from sites.vm.roles, which takes vm out of etcd.members, derived from the roles") {
+		t.Errorf("stage 5 does not say the witness role is the whole edit:\n%s", printed(p))
 	}
 	rec := &ui.Recorder{}
 	p.Report = rec

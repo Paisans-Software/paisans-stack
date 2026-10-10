@@ -45,8 +45,8 @@ func TestAFailedReseedNamesTheApply(t *testing.T) {
 	w := setup(t)
 	w.failOnce = root + "/status/compose.yaml restart"
 	err := siteremove.Execute(w.mustBuild("home-b", siteremove.Options{}))
-	if err == nil || !strings.Contains(err.Error(), "stage 5") || !strings.Contains(err.Error(), "paisans apply --site watch --only status --execute") {
-		t.Fatalf("want a stage 5 failure naming the apply, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "stage 6") || !strings.Contains(err.Error(), "paisans apply --site watch --only status --execute") {
+		t.Fatalf("want a stage 6 failure naming the apply, got %v", err)
 	}
 	if strings.Contains(err.Error(), "run site remove again") {
 		t.Errorf("the failure says to run site remove again, which no longer declares the site: %v", err)

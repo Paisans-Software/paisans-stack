@@ -68,7 +68,7 @@ func TestARemovalResumesAtTheConfigEdit(t *testing.T) {
 	path := w.configPath
 	w.configPath = path + ".missing/paisans.yaml"
 	err := siteremove.Execute(w.mustBuild("home-b", siteremove.Options{}))
-	if err == nil || !strings.Contains(err.Error(), "stage 4") {
+	if err == nil || !strings.Contains(err.Error(), "stage 5") {
 		t.Fatalf("err = %v", err)
 	}
 	w.configPath = path

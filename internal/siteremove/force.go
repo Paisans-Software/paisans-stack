@@ -80,6 +80,15 @@ func BuildForced(cfg *config.Config, secrets *config.Secrets, site string, dest 
 		host.Steps = append([]Step{{Site: site, Verb: "note", Title: "note the cluster", Text: fmt.Sprintf("%s is still declared and this is its host: its etcd member, Patroni replica and Garage node, and its place in every other site's mesh, stay in the cluster until a full `paisans site remove %s`, and its next `paisans apply --site %s` deploys it again", site, site, site)}}, host.Steps...)
 	}
 	p.Stages = []*Stage{host}
+	// A site paisans.yaml still declares keeps its records, which are still
+	// wanted. One it does not declare is removed from it already.
+	if !isDeclared {
+		dnsSt, err := p.buildDNS(cfg, cfg.WithoutSite(site))
+		if err != nil {
+			return nil, err
+		}
+		p.Stages = append(p.Stages, dnsSt)
+	}
 	return p, nil
 }
 
@@ -160,7 +169,7 @@ func BuildForcedByID(dest config.Destination, t apply.Transport, ref string, o O
 		}
 	}
 	cfg := &config.Config{ID: id, Community: config.Community{Domain: e.Domain}, Sites: map[string]config.Site{e.Site: s}}
-	p := &Plan{Site: e.Site, Options: o, transports: map[string]apply.Transport{e.Site: t}, forced: true, cfg: cfg}
+	p := &Plan{Site: e.Site, Options: o, transports: map[string]apply.Transport{e.Site: t}, forced: true, byID: true, dest: dest, cfg: cfg}
 	host, err := p.buildHost()
 	if err != nil {
 		return nil, err
