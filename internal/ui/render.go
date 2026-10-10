@@ -27,7 +27,10 @@ const (
 type writer struct {
 	mu sync.Mutex
 	// width is the title column Align set, 0 for titleWidth.
-	width    int
+	width int
+	// cols is how wide prose is wrapped: the terminal's width when it is
+	// known, never more than maxWidth.
+	cols     int
 	w        io.Writer
 	verbose  bool
 	terminal bool
@@ -42,7 +45,7 @@ type writer struct {
 }
 
 func newWriter(w io.Writer, verbose, terminal bool) *writer {
-	return &writer{w: w, verbose: verbose, terminal: terminal, now: time.Now, tick: 100 * time.Millisecond}
+	return &writer{w: w, cols: maxWidth, verbose: verbose, terminal: terminal, now: time.Now, tick: 100 * time.Millisecond}
 }
 
 type step struct {
@@ -244,7 +247,7 @@ func (r *writer) Warn(hint, detail string) {
 		fmt.Fprintf(r.w, "  WARN %s\n", hint)
 	}
 	if r.verbose && detail != "" {
-		r.detailLocked(detail)
+		r.detailLocked(strings.Join(Wrap(detail, r.cols-len(detailIndent)), "\n"))
 	}
 }
 
@@ -272,13 +275,19 @@ func (r *writer) Refuse(hint, explanation string) {
 	r.explainLocked(explanation)
 }
 
+// explainIndent aligns the lines that belong to a hint under the hint's text
+// rather than under its mark; detailIndent sets a verbose line under what it
+// belongs to.
+const (
+	explainIndent = "       "
+	detailIndent  = "      "
+)
+
 // explainLocked prints the lines that belong to a hint at every verbosity,
-// aligned under the hint's text rather than under its mark.
+// wrapped to the width.
 func (r *writer) explainLocked(text string) {
-	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
-		if line != "" {
-			fmt.Fprintf(r.w, "       %s\n", line)
-		}
+	for _, line := range Wrap(text, r.cols-len(explainIndent)) {
+		fmt.Fprintf(r.w, "%s%s\n", explainIndent, line)
 	}
 }
 
@@ -347,7 +356,7 @@ func (r *writer) Result(format string, args ...any) {
 // detailLocked prints a verbose line indented under what it belongs to.
 func (r *writer) detailLocked(text string) {
 	for _, line := range strings.Split(text, "\n") {
-		fmt.Fprintf(r.w, "      %s\n", line)
+		fmt.Fprintf(r.w, "%s%s\n", detailIndent, line)
 	}
 }
 

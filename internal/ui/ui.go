@@ -79,7 +79,11 @@ const (
 // New reports to w, drawing with colour and a spinner when w is a terminal
 // that allows it.
 func New(w io.Writer, verbose bool) Reporter {
-	return newWriter(w, verbose, isTerminal(w))
+	r := newWriter(w, verbose, isTerminal(w))
+	if cols := terminalWidth(w); cols > 0 && cols < maxWidth {
+		r.cols = cols
+	}
+	return r
 }
 
 // NewPlain reports to w without any terminal drawing.
@@ -135,6 +139,20 @@ func isTerminal(w io.Writer) bool {
 		return false
 	}
 	return os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+}
+
+// terminalWidth is w's width in columns when w is a terminal that should be
+// drawn on, or 0.
+func terminalWidth(w io.Writer) int {
+	f, ok := w.(*os.File)
+	if !ok || !isTerminal(w) {
+		return 0
+	}
+	cols, _, err := term.GetSize(int(f.Fd()))
+	if err != nil {
+		return 0
+	}
+	return cols
 }
 
 type discard struct{}

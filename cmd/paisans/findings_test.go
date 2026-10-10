@@ -28,8 +28,11 @@ func TestRefusalShowsHintAndExplanation(t *testing.T) {
 	}
 	b.Reset()
 	reportFindings(ui.NewPlain(&b, true), "paisans.yaml", res)
+	// A verbose warning's detail is prose, wrapped to the width: compare it
+	// as words.
+	flat := strings.Join(strings.Fields(b.String()), " ")
 	for _, want := range []string{"storage.garage.consistency: Reads can miss a recent upload. (garage-consistency-dangerous)"} {
-		if !strings.Contains(b.String(), want) {
+		if !strings.Contains(flat, want) {
 			t.Errorf("verbose output lacks %q:\n%s", want, b.String())
 		}
 	}

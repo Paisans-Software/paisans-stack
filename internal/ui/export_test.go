@@ -22,3 +22,12 @@ func NewForTestTick(w io.Writer, verbose, terminal bool, clock func() time.Time,
 
 // Frame draws one spinner frame for the open step, as the goroutine would.
 func Frame(r Reporter) { r.(*writer).frame() }
+
+// PrintErrorForTest is PrintError with the rendering and the terminal's width
+// chosen by the test.
+func PrintErrorForTest(w io.Writer, err error, verbose, terminal bool, width int) {
+	printError(w, err, verbose, terminal, width)
+}
+
+// ShortPathFrom is ShortPath from a given directory and home.
+var ShortPathFrom = shortPath
