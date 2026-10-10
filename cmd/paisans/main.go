@@ -308,6 +308,10 @@ func main() {
 	default:
 		os.Exit(usageError(os.Stderr, fmt.Sprintf("unknown command %q", os.Args[1])))
 	}
+	// Every shared ssh connection the command opened is closed before the
+	// process exits, whatever the outcome. os.Exit runs no deferred call, so
+	// this comes first on both paths.
+	apply.CloseConnections()
 	if err != nil {
 		os.Exit(reportError(os.Stderr, err, verboseRun))
 	}

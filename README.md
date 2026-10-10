@@ -2463,6 +2463,23 @@ the `user@` win over that file's `Port` and `User`, since ssh_config(5) takes
 not set, so a first connection can still ask the operator to accept a host key,
 which keeps host key checking on from the very first connection.
 
+#### One connection per host, shared
+
+Each command also carries `-o ControlMaster=auto -o ControlPath=<dir>/%C -o
+ControlPersist=60`, on the `--ssh` route too. The first command to a host opens
+a connection and the rest of the run's commands to it go over that one, rather
+than each paying for its own handshake and authentication. `<dir>` is a fresh
+0700 directory the process makes on first use, under the system temporary
+directory or, where that path is too long for a unix socket (as on macOS),
+under `/tmp`. Before the process exits, whatever the outcome, it asks each
+shared connection to close (`ssh -O exit`) and removes the directory. These
+options take precedence over any `ControlMaster`, `ControlPath` or
+`ControlPersist` in `~/.ssh/config`.
+
+A shared connection that has gone is not an error: ssh finds the socket dead,
+removes it and connects afresh. A command whose shared connection drops while
+it runs fails with ssh's status 255 and is not retried, since it may have run.
+
 #### Commands run in sh, whatever the login shell is
 
 sshd hands the command ssh sends to the login user's shell, and every command

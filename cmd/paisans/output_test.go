@@ -106,6 +106,8 @@ func sshAnswering(t *testing.T, script string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Closed while the fake is still first on PATH, as main closes them.
+	t.Cleanup(apply.CloseConnections)
 }
 
 // runningHost is a host whose stacks come up: `ps` finds a running container,

@@ -143,13 +143,18 @@ func (t SSHTransport) port() int {
 // operator to accept a host key, and refusing that would push them to
 // disable host key checking instead.
 //
+// Both routes share one connection per destination: muxArgs come first, on
+// the --ssh route as well, since they name a socket and not the destination
+// (see sshmux.go).
+//
 // The command is sent as RemoteCommand wraps it, on both routes.
 func (t SSHTransport) SSHArgs(keyFiles []string, command string) []string {
 	command = RemoteCommand(command)
+	args := muxArgs()
 	if t.Destination != "" {
-		return []string{t.Destination, command}
+		return append(args, t.Destination, command)
 	}
-	args := []string{"-p", strconv.Itoa(t.port()), "-o", "IdentitiesOnly=yes"}
+	args = append(args, "-p", strconv.Itoa(t.port()), "-o", "IdentitiesOnly=yes")
 	if t.ConnectTimeout > 0 {
 		args = append(args, "-o", "ConnectTimeout="+strconv.Itoa(t.ConnectTimeout))
 	}
@@ -192,11 +197,17 @@ func RemoteCommand(command string) string {
 // when the caller never calls a Close.
 func (t SSHTransport) ssh(command string) (*exec.Cmd, func(), error) {
 	if t.Destination != "" {
-		return exec.Command("ssh", t.SSHArgs(nil, command)...), func() {}, nil
+		args := t.SSHArgs(nil, command)
+		rememberMaster(args[:len(args)-1])
+		return exec.Command("ssh", args...), func() {}, nil
 	}
 	if len(t.PublicKeys) == 0 {
 		return nil, nil, fmt.Errorf("%s: no public key to offer. List one under the site's ssh.keys, or pass --ssh", t.Describe())
 	}
+	// The master is named again without key files, which are gone by the
+	// time it is closed and do not change its socket.
+	named := t.SSHArgs(nil, command)
+	rememberMaster(named[:len(named)-1])
 	dir, err := os.MkdirTemp("", "paisans-ssh-")
 	if err != nil {
 		return nil, nil, err

@@ -76,6 +76,8 @@ func retryOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Closed while the fake is still first on PATH, as main closes them.
+	t.Cleanup(apply.CloseConnections)
 	if _, err := (apply.SSHTransport{Site: "home-a", Destination: "ubuntu@x"}).Run("true"); err != nil {
 		t.Fatal(err)
 	}
