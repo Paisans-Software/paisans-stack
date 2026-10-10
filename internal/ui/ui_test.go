@@ -396,3 +396,35 @@ func TestRecorderKeepsEachMark(t *testing.T) {
 		}
 	}
 }
+
+// A status line (End) shows its own result and never the elapsed time: a
+// dry run's ✓ says the step is up to date, not how long checking took. A
+// finished step (Done) still shows it.
+func TestEndShowsNoElapsedTime(t *testing.T) {
+	var b strings.Builder
+	r := ui.NewForTest(&b, false, false, clock())
+	r.Step("checked").End(ui.OK, "")
+	r.Step("ran").Done("")
+	out := b.String()
+	if first := strings.Split(out, "\n")[0]; strings.HasSuffix(first, "s") && strings.ContainsAny(first, "0123456789") {
+		t.Errorf("a status line shows a time: %q", out)
+	}
+	if !strings.Contains(out, "1.5s") {
+		t.Errorf("a finished step lost its time: %q", out)
+	}
+}
+
+// Align widens the title column to the longest title it is given, so a
+// result column stays straight for titles past the default width.
+func TestAlignWidensTheTitleColumn(t *testing.T) {
+	var b strings.Builder
+	r := ui.NewForTest(&b, false, false, clock())
+	long, short := "host prepare --site luthen-rael", "dns init"
+	ui.Align(r, long, short)
+	r.Step(long).End(ui.Pending, "3 changes")
+	r.Step(short).End(ui.Pending, "2 records")
+	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+	if a, c := strings.Index(lines[0], "3 changes"), strings.Index(lines[1], "2 records"); a != c || a < 0 {
+		t.Errorf("results not aligned:\n%s", b.String())
+	}
+}

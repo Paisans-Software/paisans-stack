@@ -1215,3 +1215,22 @@ func TestHoldsReturnToTheRunAfterInit(t *testing.T) {
 		t.Errorf("a prompt during an etcd read after init did not hold the run's spinner:\n%s", h.Lines())
 	}
 }
+
+// Every title the plan and the etcd reads can show is in convergeTitles, so
+// the result column is aligned for each of them.
+func TestConvergeTitlesCoverEveryLine(t *testing.T) {
+	cfg := fixture(t)
+	titles := convergeTitles(cfg)
+	for _, st := range []convergeState{{}, {NeedsInit: true}, {Initial: map[string]render.EtcdInitial{"vm": initial("vm", "home-a"), "home-a": initial("vm", "home-a")}}} {
+		for _, s := range convergePlan(cfg, st) {
+			if !slices.Contains(titles, s.Title) {
+				t.Errorf("%q is not in convergeTitles", s.Title)
+			}
+		}
+	}
+	for _, m := range cfg.Etcd.Members {
+		if !slices.Contains(titles, "read "+m+"'s etcd record") {
+			t.Errorf("the read of %s is not in convergeTitles", m)
+		}
+	}
+}

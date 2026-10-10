@@ -25,7 +25,9 @@ const (
 )
 
 type writer struct {
-	mu       sync.Mutex
+	mu sync.Mutex
+	// width is the title column Align set, 0 for titleWidth.
+	width    int
 	w        io.Writer
 	verbose  bool
 	terminal bool
@@ -131,7 +133,7 @@ func (r *writer) drawLocked() {
 		return
 	}
 	elapsed := r.now().Sub(s.started)
-	fmt.Fprintf(r.w, "%s  %s %s", clear, frames[r.frame_%len(frames)], pad(s.title))
+	fmt.Fprintf(r.w, "%s  %s %s", clear, frames[r.frame_%len(frames)], r.pad(s.title))
 	if elapsed >= time.Second {
 		fmt.Fprintf(r.w, "%ds", int(elapsed.Seconds()))
 	}
@@ -145,9 +147,24 @@ func (s *step) Detail(format string, args ...any) {
 	}
 }
 
-func (s *step) Done(result string) { s.End(OK, result) }
+func (s *step) Done(result string) { s.End(OK, s.timed(result)) }
 
-func (s *step) Fail(err error) { s.End(Failed, "") }
+func (s *step) Fail(err error) { s.End(Failed, s.timed("")) }
+
+// timed is result, or for none the elapsed time when the step took a second
+// or more. Only a step that did work is timed: End is also a dry run's
+// status line, where the time it took to check says nothing.
+func (s *step) timed(result string) string {
+	if result != "" {
+		return result
+	}
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	if d := s.r.now().Sub(s.started); d >= time.Second {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	return ""
+}
 
 func (s *step) End(m Mark, result string) {
 	r := s.r
@@ -162,12 +179,7 @@ func (s *step) End(m Mark, result string) {
 	if r.open == s {
 		r.open = nil
 	}
-	if result == "" {
-		if d := r.now().Sub(s.started); d >= time.Second {
-			result = fmt.Sprintf("%.1fs", d.Seconds())
-		}
-	}
-	text := strings.TrimRight(pad(s.title)+result, " ")
+	text := strings.TrimRight(r.pad(s.title)+result, " ")
 	line := "  " + r.mark(m) + " " + text
 	if r.terminal && m == Waiting {
 		// A step that waits is dimmed whole: it is not this run's to plan.
@@ -348,9 +360,24 @@ func (r *writer) interruptLocked() {
 	}
 }
 
-func pad(title string) string {
-	if len(title) >= titleWidth {
+func (r *writer) pad(title string) string {
+	width := titleWidth
+	if r.width > width {
+		width = r.width
+	}
+	if len(title) >= width {
 		return title + " "
 	}
-	return title + strings.Repeat(" ", titleWidth-len(title))
+	return title + strings.Repeat(" ", width-len(title))
+}
+
+func (r *writer) Align(titles ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.width = 0
+	for _, t := range titles {
+		if len(t)+1 > r.width {
+			r.width = len(t) + 1
+		}
+	}
 }

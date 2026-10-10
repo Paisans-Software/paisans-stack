@@ -107,6 +107,22 @@ func Hold(r Reporter) (resume func()) {
 	return func() {}
 }
 
+// Aligner is a reporter whose title column can be sized to titles known in
+// advance. Steps stream, so the column is a fixed width unless a caller that
+// knows every title says so.
+type Aligner interface {
+	// Align sizes the title column to the longest of titles, or back to the
+	// default for none.
+	Align(titles ...string)
+}
+
+// Align sizes r's title column to titles, when r draws one.
+func Align(r Reporter, titles ...string) {
+	if a, ok := r.(Aligner); ok {
+		a.Align(titles...)
+	}
+}
+
 // Discard reports nothing.
 var Discard Reporter = discard{}
 

@@ -370,6 +370,8 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", configPath, len(result.Refusals()))
 	}
+	ui.Align(r, convergeTitles(cfg)...)
+	defer ui.Align(r)
 	if st.Initial, err = convergeFounded(r, cfg, sudo); err != nil {
 		return err
 	}
@@ -470,6 +472,21 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 		done[s.Title] = st
 		line.End(st.mark, st.result)
 	}
+}
+
+// convergeTitles is every title the etcd reads and the plan can show, for
+// the title column: the plan of a blank deployment, and site add for each
+// member, since which members found and which join is read after the reads
+// have been drawn.
+func convergeTitles(cfg *config.Config) []string {
+	var titles []string
+	for _, m := range cfg.Etcd.Members {
+		titles = append(titles, "read "+m+"'s etcd record", "site add "+m)
+	}
+	for _, s := range convergePlan(cfg, convergeState{NeedsInit: true}) {
+		titles = append(titles, s.Title)
+	}
+	return titles
 }
 
 // convergeWaits is the titles of the earlier steps that steps[i] waits on,
