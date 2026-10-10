@@ -293,6 +293,60 @@ func markContacted(destination string) {
 	contacted[destination] = true
 }
 
+// hostKeyKnown reports whether ssh already knows t's host key, so connecting
+// asks nothing. It asks ssh -G where the host and its known_hosts files are,
+// then ssh-keygen -F in each file. Anything it cannot tell counts as known:
+// the cost of a wrong answer is one missing blank line. Tests replace it.
+var hostKeyKnown = func(t SSHTransport) bool {
+	args := t.SSHArgs(nil, "true")
+	out, err := exec.Command("ssh", append([]string{"-G"}, args[:len(args)-1]...)...).Output()
+	if err != nil {
+		return true
+	}
+	host, port := "", "22"
+	var files []string
+	for _, line := range strings.Split(string(out), "\n") {
+		key, value, _ := strings.Cut(line, " ")
+		switch key {
+		case "hostname":
+			host = value
+		case "port":
+			port = value
+		case "userknownhostsfile", "globalknownhostsfile":
+			files = append(files, strings.Fields(value)...)
+		}
+	}
+	if host == "" {
+		return true
+	}
+	name := host
+	if port != "22" {
+		name = "[" + host + "]:" + port
+	}
+	home, _ := os.UserHomeDir()
+	for _, f := range files {
+		if strings.HasPrefix(f, "~/") && home != "" {
+			f = filepath.Join(home, f[2:])
+		}
+		if exec.Command("ssh-keygen", "-F", name, "-f", f).Run() == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// blankLineOnTerminal writes an empty line to the controlling terminal, after
+// ssh's question about a host key, so what follows starts apart from the
+// answer. Without a terminal there was no question. Tests replace it.
+var blankLineOnTerminal = func() {
+	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err != nil {
+		return
+	}
+	defer tty.Close()
+	fmt.Fprintln(tty)
+}
+
 // ErrUnreachable marks a command that never reached the host: ssh could not
 // connect, on every attempt. A caller asking the host a question can tell
 // "the host said no" from "the host was never asked" with errors.Is, and must
@@ -373,12 +427,18 @@ func (t SSHTransport) run(command string, stdin *string) (string, error) {
 		cmd.Stdout = &out
 		cmd.Stderr = &out
 		resume := func() {}
+		asks := false
 		if firstContact(t.Describe()) {
 			resume = promptHold()
+			asks = !hostKeyKnown(t)
 		}
 		err = runSSH(cmd)
 		resume()
 		cleanup()
+		if asks && (err == nil || !connectionFailed(err, out.String())) {
+			// ssh asked about the host's key and was answered.
+			blankLineOnTerminal()
+		}
 		if err == nil {
 			markContacted(t.Describe())
 			return out.String(), nil

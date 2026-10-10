@@ -274,3 +274,23 @@ func TestTheFirstConnectionToAHostHoldsTheDisplay(t *testing.T) {
 		t.Error("the display was left held")
 	}
 }
+
+// ssh's question about a host key it does not know is followed by a blank
+// line, so the next question or the report starts apart from the answer. A
+// host whose key is known asks nothing and gets no blank line.
+func TestAHostKeyQuestionIsFollowedByABlankLine(t *testing.T) {
+	apply.ForgetContacts()
+	t.Cleanup(apply.ForgetContacts)
+	blanks := 0
+	t.Cleanup(apply.FakeHostKeys(func(t apply.SSHTransport) bool { return t.Destination == "known" }, &blanks))
+	t.Cleanup(apply.FakeSSH(func([]string, string) (string, int) { return "ok\n", 0 }, nil, func(time.Duration) {}, io.Discard))
+
+	for _, d := range []string{"new", "new", "known"} {
+		if _, err := (apply.SSHTransport{Destination: d}).Run("true"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if blanks != 1 {
+		t.Errorf("%d blank lines, want 1: after the new host's first connection only", blanks)
+	}
+}

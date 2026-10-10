@@ -491,8 +491,10 @@ func (c *checker) garageConsistency() {
 	case "", config.GarageConsistent:
 	case config.GarageDangerous:
 		if len(garage.Sites) > 1 {
+			// In dangerous mode the write quorum is one copy, whatever the
+			// replication factor (src/rpc/replication_mode.rs).
 			c.warn("garage-consistency-dangerous", "storage.garage.consistency",
-				"garage consistency is dangerous",
+				fmt.Sprintf("garage consistency is dangerous: uploads confirmed by 1 of %d copies", c.replication()),
 				"Garage confirms an upload once one copy exists and sends the rest in the background, so an upload can live on one disk until the other sites catch up, and a read can miss a recent change. Uploads continue while a site is down.")
 		}
 	case config.GarageDegraded:

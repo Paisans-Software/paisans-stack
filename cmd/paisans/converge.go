@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,7 +25,9 @@ import (
 // for the members that hold one. See docs/specs/2026-10-09-apply-converge.md.
 type convergeState struct {
 	NeedsInit bool
-	Initial   map[string]render.EtcdInitial
+	// InitWhy is what init has to do, by name, for the plan to say.
+	InitWhy string
+	Initial map[string]render.EtcdInitial
 }
 
 // clusterNames is the member names an --initial-cluster lists.
@@ -70,7 +73,11 @@ func applyStep(phase, why, site string, founding bool) convergeStep {
 func convergePlan(cfg *config.Config, st convergeState) []convergeStep {
 	var steps []convergeStep
 	if st.NeedsInit {
-		steps = append(steps, step("configuration", "the deployment id, the mesh subnet or a generated secret is missing", false, "init"))
+		why := st.InitWhy
+		if why == "" {
+			why = "the deployment id, the mesh subnet or a generated secret is missing"
+		}
+		steps = append(steps, step("configuration", why, false, "init"))
 	}
 	for _, s := range cfg.SiteNames() {
 		steps = append(steps, step("hosts", "Docker, WireGuard and the firewall; a prepared host plans nothing", false, "host", "prepare", "--site", s))
@@ -254,16 +261,25 @@ func readConvergeState(configPath, secretsPath string, sudo bool) (*config.Confi
 		st.NeedsInit = true
 		return nil, st, nil
 	}
+	var why []string
 	if cfg.Mesh.Subnet == "" {
-		st.NeedsInit = true
+		why = append(why, "no mesh subnet")
 	}
 	if secretsPath == "" {
 		secretsPath = filepath.Join(filepath.Dir(configPath), "secrets.enc.yaml")
 	}
-	if secrets, err := config.LoadSecrets(secretsPath); err != nil {
+	if secrets, err := config.LoadSecrets(secretsPath); errors.Is(err, fs.ErrNotExist) {
+		why = append(why, "no secrets file yet")
+	} else if err != nil {
+		why = append(why, "the secrets file does not read: "+err.Error())
+	} else if filled, err := secretsgen.Fill(cfg, secrets); err != nil {
+		why = append(why, "generating secrets fails: "+err.Error())
+	} else if filled.Changed() {
+		why = append(why, missingSecrets(filled.Generated))
+	}
+	if len(why) > 0 {
 		st.NeedsInit = true
-	} else if filled, err := secretsgen.Fill(cfg, secrets); err != nil || filled.Changed() {
-		st.NeedsInit = true
+		st.InitWhy = strings.Join(why, "; ")
 	}
 	// A configuration validate refuses reaches no host: runConverge refuses
 	// it, and a typo in etcd.members would otherwise read as a host that did
@@ -275,6 +291,23 @@ func readConvergeState(configPath, secretsPath string, sudo bool) (*config.Confi
 		return nil, st, err
 	}
 	return cfg, st, nil
+}
+
+// missingSecrets names the generated secrets init would create: the first
+// three, and how many more. Names only; a value never reaches the terminal.
+func missingSecrets(names []string) string {
+	if len(names) == 1 {
+		return "generated secret missing: " + names[0]
+	}
+	shown := names
+	if len(names) > 3 {
+		shown = names[:3]
+	}
+	out := "generated secrets missing: " + strings.Join(shown, ", ")
+	if len(names) > 3 {
+		out += fmt.Sprintf(" and %d more", len(names)-3)
+	}
+	return out
 }
 
 // missingID reports whether the file at path declares no deployment id.
