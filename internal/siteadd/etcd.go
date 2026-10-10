@@ -46,7 +46,7 @@ func (p *Plan) probeEtcd() ([]apply.EtcdMember, error) {
 		}
 		for _, m := range members {
 			if site := apply.EtcdMemberSite(p.cfg, m); !contains(p.cfg.Etcd.Members, site) {
-				return nil, fmt.Errorf("site add %s: etcd has a member %s that etcd.members does not list. Removing a member is not part of site add; list it, or remove it by hand with `etcdctl member remove %s`", p.Site, site, m.HexID())
+				return nil, fmt.Errorf("site add %s: etcd has a member %s that %s does not list. Removing a member is not part of site add; list it, or remove it by hand with `etcdctl member remove %s`", p.Site, site, p.cfg.EtcdMembersKey(), m.HexID())
 			}
 		}
 		p.control = name

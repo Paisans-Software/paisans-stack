@@ -654,6 +654,23 @@ func (c *Config) deriveLists(written map[string]bool) {
 	}
 }
 
+// EtcdMembersKey names etcd.members in a message, saying when the list was
+// derived, so an operator who never wrote the key is not sent looking for it.
+func (c *Config) EtcdMembersKey() string {
+	if c.Etcd.MembersDerived {
+		return "etcd.members (derived from the roles)"
+	}
+	return "etcd.members"
+}
+
+// ClusterSitesKey names cluster.sites in a message, as EtcdMembersKey does.
+func (c *Config) ClusterSitesKey() string {
+	if c.Cluster.SitesDerived {
+		return "cluster.sites (derived from the roles)"
+	}
+	return "cluster.sites"
+}
+
 // DerivedEtcdMembers is etcd.members as the roles give it: every witness, in
 // name order, then every data site, in name order.
 func (c *Config) DerivedEtcdMembers() []string {

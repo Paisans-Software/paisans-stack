@@ -257,20 +257,10 @@ func (c *checker) twoVoters() {
 	if len(data) == 1 && len(witness) == 1 {
 		fix = fmt.Sprintf("With one data site the witness has no tie to break: take the witness role off %s, and %s is the one voter.", witness[0], data[0])
 	}
-	c.refuse("two-etcd-voters", c.membersKey(),
+	c.refuse("two-etcd-voters", c.cfg.EtcdMembersKey(),
 		"etcd has exactly two voters",
 		"is left out, so the voters come from the roles, every witness and then every data site, and here that is exactly two (%s and %s). Two voters are strictly worse than one: a majority of two is two, so either failing stops the cluster. %s",
 		members[0], members[1], fix)
-}
-
-// membersKey is the key a finding about the voters names: etcd.members, and
-// that it was derived when the file left it out, so an operator who never
-// wrote it is not sent looking for it.
-func (c *checker) membersKey() string {
-	if c.cfg.Etcd.MembersDerived {
-		return "etcd.members (derived from the roles)"
-	}
-	return "etcd.members"
 }
 
 // votersVerb is how a finding says the file gives its voters.
@@ -321,17 +311,17 @@ func (c *checker) votersShareARelay() {
 	fix := fmt.Sprintf("Give a second voter a stable endpoint (sites.<name>.endpoint; for a home connection a dynamic DNS name and a forwarded UDP port is enough), so that the voters surviving any one loss dial each other directly. Here that is any of %s.", strings.Join(stranded, ", "))
 	switch {
 	case len(dialled) == 1:
-		c.refuse("voters-share-a-relay", c.membersKey(),
+		c.refuse("voters-share-a-relay", c.cfg.EtcdMembersKey(),
 			"only one etcd voter has an endpoint",
 			"%s %d voters, and only %s has an endpoint. %s have none, so they reach each other only through %s, and losing %s leaves each of them alone, 1 of %d and no majority: the database goes read-only on every site. %s",
 			c.votersVerb(), len(voters), dialled[0], strings.Join(stranded, " and "), dialled[0], dialled[0], len(voters), fix)
 	case len(relays) > 0:
-		c.refuse("voters-share-a-relay", c.membersKey(),
+		c.refuse("voters-share-a-relay", c.cfg.EtcdMembersKey(),
 			"no etcd voter has an endpoint, so they peer through a relay",
 			"%s %d voters and none of them has an endpoint, so they reach each other only through %s, and losing %s leaves every voter alone, 1 of %d and no majority: the database goes read-only on every site. %s",
 			c.votersVerb(), len(voters), relays[0], relays[0], len(voters), fix)
 	default:
-		c.refuse("voters-share-a-relay", c.membersKey(),
+		c.refuse("voters-share-a-relay", c.cfg.EtcdMembersKey(),
 			"no etcd voter has an endpoint and no relay exists",
 			"%s %d voters and no site has an endpoint, so no two of them can ever peer: WireGuard needs one side to know where to send the first packet. %s",
 			c.votersVerb(), len(voters), fix)
@@ -387,7 +377,7 @@ func (c *checker) oneVoterNoFailover() {
 		return
 	}
 	voter := c.cfg.Etcd.Members[0]
-	c.warn("one-voter-no-failover", c.membersKey(),
+	c.warn("one-voter-no-failover", c.cfg.EtcdMembersKey(),
 		"one etcd voter means no automatic failover",
 		"declares one voter, %s, while %d sites share the cluster. One member elects nobody: while %s is down every other site's Patroni loses etcd and stops taking writes, so the database stops rather than failing over, and promoting the replica is a manual step. A witness in a third failure domain makes three voters and restores automatic failover; without one, this is the manual promote mode and the runbook should say so.",
 		voter, len(c.cfg.Cluster.Sites), voter)
@@ -624,7 +614,7 @@ func (c *checker) evenVoters() {
 	if c.cfg.Etcd.MembersDerived {
 		fix = fmt.Sprintf("Prefer %d: take the witness role off a site, or write etcd.members with the %d voters wanted.", count-1, count-1)
 	}
-	c.warn("even-etcd-voters", c.membersKey(),
+	c.warn("even-etcd-voters", c.cfg.EtcdMembersKey(),
 		"etcd has an even number of voters",
 		"%s %d voters. A majority of %d is %d, which is the same number of losses %d members tolerate, so the extra member adds a machine that can fail and a vote to collect without improving anything. %s",
 		c.votersVerb(), count, count, count/2+1, count-1, fix)

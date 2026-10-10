@@ -147,3 +147,19 @@ func TestAWrittenEmptyListIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// A message about a list names it as the file has it: a derived list says so,
+// so an operator who never wrote the key is not sent looking for it.
+func TestListKeysSayWhetherTheyWereDerived(t *testing.T) {
+	cfg, err := config.Load(write(t, derivedBase))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EtcdMembersKey() != "etcd.members (derived from the roles)" || cfg.ClusterSitesKey() != "cluster.sites (derived from the roles)" {
+		t.Errorf("derived keys named %q and %q", cfg.EtcdMembersKey(), cfg.ClusterSitesKey())
+	}
+	cfg.Etcd.MembersDerived, cfg.Cluster.SitesDerived = false, false
+	if cfg.EtcdMembersKey() != "etcd.members" || cfg.ClusterSitesKey() != "cluster.sites" {
+		t.Errorf("written keys named %q and %q", cfg.EtcdMembersKey(), cfg.ClusterSitesKey())
+	}
+}
