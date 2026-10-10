@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"io"
 	"os"
 	"path/filepath"
@@ -108,7 +109,7 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 		return err
 	}
 
-	where, err := pocketIDSite(cfg, *appName, *site, "app admin create")
+	where, err := pocketIDSite(r, cfg, *appName, *site, "app admin create")
 	if err != nil {
 		return err
 	}
@@ -130,7 +131,9 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 
 	// No sudo: the calls are curl to Pocket ID's API, which needs no root.
 	transport := adminTransport(siteTransport(where, cfg.Sites[where], *destination, false))
-	plan, err := appadmin.Build(app.Kind, transport, req)
+	plan, err := ui.Get(r, "read "+*appName+"'s users", func() (*appadmin.Plan, error) {
+		return appadmin.Build(app.Kind, transport, req)
+	})
 	if err != nil {
 		return fmt.Errorf("app admin create: %w", err)
 	}
@@ -293,12 +296,18 @@ var standbyLook = func(t apply.SSHTransport) apply.Transport { return t }
 // without sudo, as the API calls themselves run: the active site is found by
 // /healthz on its mesh address, which needs no root, and a standby merely
 // reads as down when docker is not the deploy user's. An explicit --site is
-// used as given, through adminSite's own check.
-func pocketIDSite(cfg *config.Config, appName, override, command string) (string, error) {
+// used as given, through adminSite's own check. Asking each site is a step
+// of r's, since ssh answers only once every site has.
+func pocketIDSite(r ui.Reporter, cfg *config.Config, appName, override, command string) (string, error) {
 	if override != "" || !slices.Contains(apply.StandbyApps(cfg), appName) {
 		return adminSite(cfg, appName, override, command)
 	}
-	site, list, err := activeInstance(cfg, appName, "", "")
+	var list []apply.Instance
+	site, err := ui.Get(r, "find the active "+appName, func() (string, error) {
+		site, l, err := activeInstance(cfg, appName, "", "")
+		list = l
+		return site, err
+	})
 	if err != nil {
 		return "", fmt.Errorf("%s: %w, so there is no one site to call:\n%sName one with --site once exactly one is active", command, err, apply.DescribeInstances(list))
 	}

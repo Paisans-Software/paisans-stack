@@ -126,6 +126,26 @@ func TestForgetInRecordsDryRunSaysWhetherARecordListsIt(t *testing.T) {
 	}
 }
 
+// Reading the record, and writing it, are steps, so a spinner shows while
+// each gateway is reached over ssh.
+func TestForgetInRecordsReachesGatewaysInAStep(t *testing.T) {
+	cfg, _ := config.Load(fixtureConfig())
+	vm := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): deployrecord.Encode(deployrecord.Record{Sites: []string{"vm"}})}}
+	saved := registryHost
+	registryHost = func(string, config.Site, string, bool) registry.Runner { return vm }
+	t.Cleanup(func() { registryHost = saved })
+	rec := &ui.Recorder{}
+	forgetInRecords(rec, cfg, deployrecord.Record{Sites: []string{"monitor-b"}}, "monitor-b", false, true)
+	if !rec.Has("done", "read the deployment record") {
+		t.Errorf("the dry run's read is not a step:\n%s", rec.Lines())
+	}
+	rec = &ui.Recorder{}
+	forgetInRecords(rec, cfg, deployrecord.Record{Sites: []string{"monitor-b"}}, "monitor-b", true, true)
+	if !rec.Has("done", "forget monitor-b in the deployment record") {
+		t.Errorf("a run with nothing to forget has no step:\n%s", rec.Lines())
+	}
+}
+
 // A malformed record stops a gateway's apply with the way out, not "run it
 // again".
 func TestApplyNamesTheWayOutOfAMalformedRecord(t *testing.T) {

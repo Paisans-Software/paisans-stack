@@ -38,11 +38,13 @@ func runPreflight(args []string) error {
 	if _, ok := cfg.Sites[*site]; !ok {
 		return fmt.Errorf("preflight: %s declares no site %q. Declared sites are %s", *configPath, *site, strings.Join(cfg.SiteNames(), ", "))
 	}
-	report, err := preflight.Run(cfg, *site, allSiteTransports(cfg, *sudo))
+	r.Section("preflight " + *site)
+	report, err := ui.Get(r, "check every site", func() (preflight.Report, error) {
+		return preflight.Run(cfg, *site, allSiteTransports(cfg, *sudo))
+	})
 	if err != nil {
 		return err
 	}
-	r.Section("preflight " + *site)
 	report.Show(r)
 	r.Result("%s", report.Summary())
 	if report.Refused() {

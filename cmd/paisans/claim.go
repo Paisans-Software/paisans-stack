@@ -14,7 +14,8 @@ import (
 // this deployment in the host registry, and a refusal stops the command with
 // nothing on any host changed. Without execute it only reads each registry
 // and refuses the same way, so a dry run shows a conflict the real run would
-// meet; a read changes nothing, so it is not a step of its own. Sites are
+// meet. The read is a step all the same, so a spinner shows while ssh
+// answers. Sites are
 // claimed in name order, and a claim already made stays: it is a record that
 // this deployment is on that host, which it is about to be. See
 // internal/registry.
@@ -27,17 +28,18 @@ func claimHosts(r ui.Reporter, cfg *config.Config, execute bool, transports map[
 	now := time.Now()
 	for _, site := range sites {
 		t := transports[site]
+		// One site's claim is "claim site" under that site's section; a
+		// command claiming several names each, since they share one.
+		name := "site"
+		if len(sites) > 1 {
+			name = site
+		}
+		title := "claim " + name
 		if !execute {
-			if err := registry.Check(t, cfg, site); err != nil {
+			if err := ui.Run(r, "check "+name+"'s claim", func() error { return registry.Check(t, cfg, site) }); err != nil {
 				return err
 			}
 			continue
-		}
-		// One site's claim is "claim site" under that site's section; a
-		// command claiming several names each, since they share one.
-		title := "claim site"
-		if len(sites) > 1 {
-			title = "claim " + site
 		}
 		s := r.Step(title)
 		s.Detail("claimed for deployment %s in %s", cfg.ID, registry.Path)

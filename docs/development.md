@@ -321,7 +321,10 @@ output in the error.
 
 A step is reported before its command runs. A pull or a health wait takes
 minutes on a real site, and a step reported only once finished looked hung for
-all of them; a step announced first also names where an apply stopped. On a
+all of them; a step announced first also names where an apply stopped. Every
+command reads hosts the same way, whether to plan or to check: `ui.Run` and
+`ui.Get` wrap work that reports nothing of its own, Eg: `siteremove.Build`, in
+a step, so it is the one path to a spinner. On a
 terminal the open step shows a spinner with the elapsed time. When output is
 piped, or `NO_COLOR` is set, or `TERM` is `dumb`, there is no colour, no cursor
 movement and no spinner, and the words `ok`, `FAIL` and `WARN` stand in for the

@@ -125,7 +125,9 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	if _, err := gateSites(r, cfg, cfg.MonitorSites(), func(site string) hostcheck.Transport { return transports[site] }); err != nil {
 		return err
 	}
-	plan, err := siteremove.Build(cfg, secrets, site, transports, opts)
+	plan, err := ui.Get(r, "read every site", func() (*siteremove.Plan, error) {
+		return siteremove.Build(cfg, secrets, site, transports, opts)
+	})
 	if err != nil {
 		return err
 	}
@@ -210,7 +212,9 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 	reach.SSH.User, reach.SSH.Host, reach.SSH.Port = dest.User, dest.Host, dest.Port
 	t := removeSiteHost(site, reach, a.sudo)
 	opts := siteremove.Options{DeleteData: a.deleteData, ConfigPath: a.config}
-	plan, err := siteremove.BuildForced(cfg, secrets, site, dest, t, opts)
+	plan, err := ui.Get(r, "read "+dest.String(), func() (*siteremove.Plan, error) {
+		return siteremove.BuildForced(cfg, secrets, site, dest, t, opts)
+	})
 	if err != nil {
 		return err
 	}
@@ -301,7 +305,9 @@ func runSiteRemoveByID(r ui.Reporter, site string, a byIDArgs, stdin io.Reader, 
 		return noTerminal("Nothing says whether this deployment still runs")
 	}
 	t := reachDestination(dest, a.sudo)
-	plan, err := siteremove.BuildForcedByID(dest, t, a.id, siteremove.Options{DeleteData: a.deleteData})
+	plan, err := ui.Get(r, "read "+dest.String(), func() (*siteremove.Plan, error) {
+		return siteremove.BuildForcedByID(dest, t, a.id, siteremove.Options{DeleteData: a.deleteData})
+	})
 	if err != nil {
 		return err
 	}

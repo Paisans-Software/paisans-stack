@@ -67,8 +67,5 @@ func ActionTitle(a Action) string {
 // waitHealthyStep is waitHealthy reported, since the health gate is the
 // longest wait in most applies.
 func waitHealthyStep(plan *Plan, stack string, t Transport) error {
-	s := plan.step("wait for " + stack)
-	err := waitHealthy(plan, stack, t)
-	finish(s, err)
-	return err
+	return ui.Run(plan.reporter(), "wait for "+stack, func() error { return waitHealthy(plan, stack, t) })
 }

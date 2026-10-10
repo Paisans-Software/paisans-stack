@@ -244,7 +244,12 @@ func EtcdGates(cfg *config.Config, plan *Plan, transports map[string]Transport, 
 	if !touchesInfra(plan) {
 		return nil
 	}
-	members, found, err := ProbeEtcdMembers(cfg, plan.Site, transports, founding)
+	var found bool
+	members, err := ui.Get(plan.reporter(), "read the etcd membership", func() ([]EtcdMember, error) {
+		members, f, err := ProbeEtcdMembers(cfg, plan.Site, transports, founding)
+		found = f
+		return members, err
+	})
 	if err != nil {
 		return err
 	}

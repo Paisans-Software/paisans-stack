@@ -25,6 +25,22 @@ func deploymentRecord(cfg *config.Config, hosts func(string) registry.Runner) (d
 	return deployed, missing
 }
 
+// readDeploymentRecord is deploymentRecord as a step of r's, so a spinner
+// shows while each gateway is read over ssh. With no gateway there is
+// nothing to read, and no step.
+func readDeploymentRecord(r ui.Reporter, cfg *config.Config, hosts func(string) registry.Runner) (deployrecord.Record, map[string]error) {
+	if len(cfg.GatewaySites()) == 0 {
+		return deploymentRecord(cfg, hosts)
+	}
+	var missing map[string]error
+	rec, _ := ui.Get(r, "read the deployment record", func() (deployrecord.Record, error) {
+		rec, m := deploymentRecord(cfg, hosts)
+		missing = m
+		return rec, nil
+	})
+	return rec, missing
+}
+
 // gatewayHosts is every gateway paisans.yaml declares, reached through hosts.
 func gatewayHosts(cfg *config.Config, hosts func(string) registry.Runner) map[string]registry.Runner {
 	out := map[string]registry.Runner{}
@@ -38,7 +54,7 @@ func gatewayHosts(cfg *config.Config, hosts func(string) registry.Runner) map[st
 // with no record yet is silent; one that cannot be read is a warning. With
 // no record at all the yaml alone is used.
 func recordForWarnings(r ui.Reporter, cfg *config.Config, hosts func(string) registry.Runner) *deployrecord.Record {
-	rec, missing := deploymentRecord(cfg, hosts)
+	rec, missing := readDeploymentRecord(r, cfg, hosts)
 	read := len(cfg.GatewaySites()) - len(missing)
 	for _, gw := range sortedKeys(missing) {
 		if !errors.Is(missing[gw], deployrecord.ErrNoRecord) {
@@ -150,16 +166,22 @@ func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Recor
 	d := cfg.Deployment()
 	title := "forget " + what + " in the deployment record"
 	if !execute {
-		deployed, found, missing := deployrecord.Gather(hosts, d)
+		r.Section("deployment record")
+		var deployed deployrecord.Record
+		var found int
+		var missing map[string]error
+		// A gateway that cannot be read is warned about below, not a
+		// failure, so the read always ends done.
+		_ = ui.Run(r, "read the deployment record", func() error {
+			deployed, found, missing = deployrecord.Gather(hosts, d)
+			return nil
+		})
 		listed := found > 0 && listsAny(deployed, names)
 		unread := []string{}
 		for _, gw := range sortedKeys(missing) {
 			if !errors.Is(missing[gw], deployrecord.ErrNoRecord) {
 				unread = append(unread, gw)
 			}
-		}
-		if listed || len(unread) > 0 {
-			r.Section("deployment record")
 		}
 		for _, gw := range unread {
 			r.Warn("could not read the deployment record on "+gw, missing[gw].Error())
@@ -169,12 +191,11 @@ func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Recor
 		}
 		return listed
 	}
-	res, err := deployrecord.Update(hosts, d, deployrecord.Forgetting(names), time.Now())
-	if err == nil && !res.Changed && len(res.Wrote) == 0 && len(res.Missed) == 0 {
-		return false
-	}
+	// The step opens before the gateways are written to, so a spinner shows
+	// while ssh works; one that found nothing to forget ends up to date.
 	r.Section("deployment record")
 	s := r.Step(title)
+	res, err := deployrecord.Update(hosts, d, deployrecord.Forgetting(names), time.Now())
 	if err != nil {
 		s.Fail(err)
 		r.Warn("the deployment record still lists "+what, err.Error())

@@ -59,7 +59,9 @@ func runPrune(args []string) error {
 	if err := claimHosts(r, cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
-	plan, err := apply.BuildVolumePrune(cfg.Deployment(), *site, transport)
+	plan, err := ui.Get(r, "read volumes", func() (*apply.VolumePrune, error) {
+		return apply.BuildVolumePrune(cfg.Deployment(), *site, transport)
+	})
 	if err != nil {
 		return err
 	}

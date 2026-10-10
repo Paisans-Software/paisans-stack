@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"path/filepath"
 	"strings"
 
@@ -96,7 +97,9 @@ func runSiteAdd(args []string) error {
 	if err := claimSites(r, cfg, *execute, *sudo, cfg.SiteNames()...); err != nil {
 		return err
 	}
-	plan, err := siteadd.Build(cfg, secrets, site, transports)
+	plan, err := ui.Get(r, "read every site", func() (*siteadd.Plan, error) {
+		return siteadd.Build(cfg, secrets, site, transports)
+	})
 	if err != nil {
 		return err
 	}
