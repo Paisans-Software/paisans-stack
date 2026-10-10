@@ -16,8 +16,8 @@
 //
 // Prune is the one path that deletes, and only an address record that passes
 // every rule in prune.go: the toolkit's comment, a name and an address that
-// are this deployment's, and no longer wanted. Nothing in this package
-// updates a record.
+// are this deployment's, and no longer wanted. dns prune and site remove's
+// DNS stage both plan through it. Nothing in this package updates a record.
 //
 // It reaches no host. The only thing it talks to is the DNS provider's API,
 // from the workstation, with the token from the decrypted secrets.
@@ -69,7 +69,7 @@ type Want struct {
 // with it. There is no update here on purpose: a method that does not exist
 // cannot be called by mistake. Delete exists for prune alone, and the only
 // caller is ExecutePrune, which deletes nothing its plan did not pass through
-// every prune rule.
+// every prune rule, whether BuildPrune or BuildSiteRemoval made the plan.
 type Provider interface {
 	// Name is the provider's name as acme.provider spells it, for messages.
 	Name() string

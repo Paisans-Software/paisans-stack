@@ -41,6 +41,11 @@ import (
 // the domain that the configuration no longer names is kept: nothing left in
 // the configuration says it was ever this deployment's.
 //
+// site remove's DNS stage applies the same rules through BuildSiteRemoval,
+// with rule 4's addresses narrowed to the removed site's own and rule 5
+// compared against the configuration without it; pruneRules is where the two
+// differ, and nowhere else.
+//
 // Rule 5 compares type and name, not address. A wanted name holding a stale
 // address is a conflict for dns init to report, and replacing it would be an
 // update, which nothing in this package does.
@@ -87,6 +92,38 @@ func (p *PrunePlan) Removes() []PruneEntry {
 	return out
 }
 
+// pruneRules is what a prune plan is measured against beyond rules 1 and 2,
+// which never vary: the comment is this deployment's, and the type is A or
+// AAAA. It is the one seam between dns prune and site remove's DNS stage:
+// each fills it from its own configurations and hands it to planPrune, and
+// both delete through ExecutePrune.
+type pruneRules struct {
+	// domain is community.domain, normalised: rule 3's subtree.
+	domain string
+	// names are the names rule 3 admits besides the domain's subtree, and
+	// with the domain, the names whose zones are listed.
+	names []string
+	// vouched are names the operator vouched for with --name, which lift rule
+	// 3 for that exact name and nothing else.
+	vouched map[string]bool
+	// producedBy names the configuration rule 3's names come from.
+	producedBy string
+	// canVouch says --name exists to lift rule 3, so the reason offers it.
+	canVouch bool
+	// addresses are rule 4's: canonical address -> where it is declared.
+	addresses map[string]string
+	// notOurs is rule 4's reason for an address outside the set, after the
+	// address itself.
+	notOurs string
+	// shared are addresses in the set that a remaining site declares too:
+	// canonical address -> that site's key. A record at one is kept.
+	shared map[string]string
+	// wanted are rule 5's: type + " " + name -> the keys that want it.
+	wanted map[string][]string
+	// wantedBy names the configuration rule 5 compares against.
+	wantedBy string
+}
+
 // BuildPrune lists every record in each zone the deployment's names live in
 // and decides each toolkit record's fate. It reads and never writes.
 //
@@ -100,46 +137,145 @@ func BuildPrune(ctx context.Context, provider Provider, cfg *config.Config, want
 	// deployment's (Eg: a media hostname configured explicitly and since
 	// dropped). Naming one lifts the scope rule for that exact name and
 	// nothing else; the comment, address and not-wanted rules still apply.
-	vouchedSet := map[string]bool{}
-	for _, n := range vouched {
-		vouchedSet[normalise(n)] = true
+	rules := pruneRules{
+		domain:     normalise(cfg.Community.Domain),
+		vouched:    map[string]bool{},
+		producedBy: "this configuration",
+		canVouch:   true,
+		addresses:  map[string]string{},
+		notOurs:    "is not any site's public_address or public_address6, so it does not point at this deployment",
+		wanted:     wantedSet(wants),
+		wantedBy:   "this configuration",
 	}
-	seenVouched := map[string]bool{}
-	domain := normalise(cfg.Community.Domain)
-	if domain == "" {
+	if rules.domain == "" {
 		return nil, fmt.Errorf("dns: community.domain is not set, so there is no subtree to prune within")
 	}
-
-	wantedNames := map[string]bool{}
-	wanted := map[string][]string{} // type + " " + name -> sources
+	for _, n := range vouched {
+		rules.vouched[normalise(n)] = true
+	}
 	for _, w := range wants {
-		wantedNames[w.Name] = true
-		wanted[w.Type+" "+w.Name] = w.Sources
+		rules.names = append(rules.names, w.Name)
 	}
-
-	addresses := map[string]string{} // canonical address -> site key
 	for _, name := range cfg.SiteNames() {
-		site := cfg.Sites[name]
-		if ip := net.ParseIP(strings.TrimSpace(site.PublicAddress)); ip != nil {
-			addresses[ip.String()] = fmt.Sprintf("sites.%s.public_address", name)
-		}
-		if ip := net.ParseIP(strings.TrimSpace(site.PublicAddress6)); ip != nil {
-			addresses[ip.String()] = fmt.Sprintf("sites.%s.public_address6", name)
+		for key, ip := range siteAddresses(cfg, name) {
+			rules.addresses[ip] = key
 		}
 	}
+	plan, seenVouched, err := planPrune(ctx, provider, cfg, rules)
+	if err != nil {
+		return nil, err
+	}
+	for n := range rules.vouched {
+		if !seenVouched[n] {
+			return nil, fmt.Errorf("dns prune: --name %s matches no record dns init created, so it vouches for nothing; check the spelling", n)
+		}
+	}
+	return plan, nil
+}
 
-	// Every zone that holds the domain or a wanted name, once each.
+// BuildSiteRemoval plans site remove's DNS stage: the address records this
+// deployment's dns init made for site, which before declares and after, the
+// configuration once it is removed, no longer wants. It reads and never
+// writes.
+//
+// It is BuildPrune's planner with three things in place of the
+// configuration as it stands: rule 3's names are those Desired produces for
+// before; rule 4's addresses are site's own public_address and
+// public_address6 in before; and rule 5 compares against Desired(after). An
+// address a site in after declares too is kept, since the record may be that
+// site's.
+//
+// When Desired cannot name before's records (Eg: two gateways), rule 3 is the
+// domain's subtree alone. When it cannot name after's, nothing says which
+// names are still wanted, and it is an error: the caller decides nothing is
+// deleted.
+func BuildSiteRemoval(ctx context.Context, provider Provider, before *config.Config, site string, after *config.Config) (*PrunePlan, error) {
+	rules := pruneRules{
+		domain:     normalise(before.Community.Domain),
+		producedBy: "the configuration before " + site + " is removed",
+		addresses:  siteAddresses(before, site),
+		shared:     map[string]string{},
+		notOurs:    fmt.Sprintf("is not %s's public_address or public_address6", site),
+		wantedBy:   "the configuration without " + site,
+	}
+	if rules.domain == "" {
+		return nil, fmt.Errorf("dns: community.domain is not set, so there is no subtree to remove records within")
+	}
+	if len(rules.addresses) == 0 {
+		return nil, fmt.Errorf("dns: %s has no public address, so no record points at it", site)
+	}
+	// The addresses are keyed by where they are declared; rule 4 matches the
+	// address.
+	byAddress := map[string]string{}
+	for key, ip := range rules.addresses {
+		byAddress[ip] = key
+	}
+	rules.addresses = byAddress
+	for _, name := range after.SiteNames() {
+		for key, ip := range siteAddresses(after, name) {
+			if _, ours := rules.addresses[ip]; ours {
+				rules.shared[ip] = key
+			}
+		}
+	}
+	if wants, err := Desired(before); err == nil {
+		for _, w := range wants {
+			rules.names = append(rules.names, w.Name)
+		}
+	}
+	wants, err := Desired(after)
+	if err != nil {
+		return nil, err
+	}
+	rules.wanted = wantedSet(wants)
+	plan, _, err := planPrune(ctx, provider, before, rules)
+	return plan, err
+}
+
+// siteAddresses is a site's declared public addresses, canonical, keyed by
+// the configuration key that declares each.
+func siteAddresses(cfg *config.Config, name string) map[string]string {
+	out := map[string]string{}
+	site, ok := cfg.Sites[name]
+	if !ok {
+		return out
+	}
+	if ip := net.ParseIP(strings.TrimSpace(site.PublicAddress)); ip != nil {
+		out[fmt.Sprintf("sites.%s.public_address", name)] = ip.String()
+	}
+	if ip := net.ParseIP(strings.TrimSpace(site.PublicAddress6)); ip != nil {
+		out[fmt.Sprintf("sites.%s.public_address6", name)] = ip.String()
+	}
+	return out
+}
+
+func wantedSet(wants []Want) map[string][]string {
+	out := map[string][]string{} // type + " " + name -> sources
+	for _, w := range wants {
+		out[w.Type+" "+w.Name] = w.Sources
+	}
+	return out
+}
+
+// planPrune lists every record in each zone rules' names live in and decides
+// the fate of each one carrying cfg's deployment's comment. It also reports
+// which vouched names a record carrying the comment sat at.
+func planPrune(ctx context.Context, provider Provider, cfg *config.Config, rules pruneRules) (*PrunePlan, map[string]bool, error) {
+	domain := rules.domain
+	inScope := map[string]bool{}
+	for _, n := range rules.names {
+		inScope[n] = true
+	}
+	seenVouched := map[string]bool{}
+
+	// Every zone that holds the domain or a name in scope, once each.
 	cache := map[string]zone{}
 	seen := map[string]bool{}
 	var zones []zone
-	names := []string{domain}
-	for _, w := range wants {
-		names = append(names, w.Name)
-	}
-	for _, name := range names {
+	for _, name := range append([]string{domain}, rules.names...) {
 		z, err := FindZone(ctx, provider, name, cache)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !seen[z.id] {
 			seen[z.id] = true
@@ -151,7 +287,7 @@ func BuildPrune(ctx context.Context, provider Provider, cfg *config.Config, want
 	for _, z := range zones {
 		records, err := provider.AllRecords(ctx, z.id)
 		if err != nil {
-			return nil, fmt.Errorf("dns: listing zone %s: %w", z.name, err)
+			return nil, nil, fmt.Errorf("dns: listing zone %s: %w", z.name, err)
 		}
 		for _, r := range records {
 			if r.Comment != plan.comment {
@@ -163,17 +299,27 @@ func BuildPrune(ctx context.Context, provider Provider, cfg *config.Config, want
 			if typ != "A" && typ != "AAAA" {
 				reasons = append(reasons, fmt.Sprintf("it is a %s record; prune removes only A and AAAA records", typ))
 			}
-			if vouchedSet[name] {
+			if rules.vouched[name] {
 				seenVouched[name] = true
 			}
-			if name != domain && !strings.HasSuffix(name, "."+domain) && !wantedNames[name] && !vouchedSet[name] {
-				reasons = append(reasons, fmt.Sprintf("%s is outside community.domain (%s) and is not a name this configuration produces, so nothing says it was ever this deployment's. If it was, name it with --name %s", name, domain, name))
+			if name != domain && !strings.HasSuffix(name, "."+domain) && !inScope[name] && !rules.vouched[name] {
+				reason := fmt.Sprintf("%s is outside community.domain (%s) and is not a name %s produces, so nothing says it was ever this deployment's", name, domain, rules.producedBy)
+				if rules.canVouch {
+					reason += fmt.Sprintf(". If it was, name it with --name %s", name)
+				}
+				reasons = append(reasons, reason)
 			}
-			if ip := net.ParseIP(strings.TrimSpace(r.Content)); ip == nil || addresses[ip.String()] == "" {
-				reasons = append(reasons, fmt.Sprintf("%s is not any site's public_address or public_address6, so it does not point at this deployment", r.Content))
+			ip := net.ParseIP(strings.TrimSpace(r.Content))
+			switch {
+			case ip == nil || rules.addresses[ip.String()] == "":
+				reasons = append(reasons, fmt.Sprintf("%s %s", r.Content, rules.notOurs))
+			case rules.shared[ip.String()] != "":
+				key := rules.shared[ip.String()]
+				owner := strings.Split(key, ".")[1]
+				reasons = append(reasons, fmt.Sprintf("%s is also %s, which stays, so the record may be %s's", r.Content, key, owner))
 			}
-			if sources, ok := wanted[typ+" "+name]; ok {
-				reasons = append(reasons, fmt.Sprintf("this configuration still wants a record of type %s at this name (%s)", typ, strings.Join(sources, ", ")))
+			if sources, ok := rules.wanted[typ+" "+name]; ok {
+				reasons = append(reasons, fmt.Sprintf("%s still wants a record of type %s at this name (%s)", rules.wantedBy, typ, strings.Join(sources, ", ")))
 			}
 			action := Remove
 			if len(reasons) > 0 {
@@ -192,12 +338,7 @@ func BuildPrune(ctx context.Context, provider Provider, cfg *config.Config, want
 		}
 		return a.Type < b.Type
 	})
-	for n := range vouchedSet {
-		if !seenVouched[n] {
-			return nil, fmt.Errorf("dns prune: --name %s matches no record dns init created, so it vouches for nothing; check the spelling", n)
-		}
-	}
-	return plan, nil
+	return plan, seenVouched, nil
 }
 
 // ExecutePrune deletes every record the plan removes, then lists each zone
@@ -208,16 +349,16 @@ func BuildPrune(ctx context.Context, provider Provider, cfg *config.Config, want
 // resumes rather than starting over.
 func ExecutePrune(ctx context.Context, provider Provider, plan *PrunePlan, r ui.Reporter) error {
 	removes := plan.Removes()
-	for _, e := range removes {
+	for i, e := range removes {
 		step := r.Step(fmt.Sprintf("delete %s %s", e.Type, e.Name))
 		step.Detail("%s, zone %s, record %s", e.Content, e.Zone, e.ID)
 		if e.ID == "" {
-			err := fmt.Errorf("dns: %s %s has no record id to delete by. Nothing further was deleted", e.Type, e.Name)
+			err := fmt.Errorf("dns: %s %s has no record id to delete by. %s", e.Type, e.Name, partway(removes, i))
 			step.Fail(err)
 			return err
 		}
 		if err := provider.Delete(ctx, e.zoneID, e.ID); err != nil {
-			err = fmt.Errorf("dns: deleting %s %s (record %s): %w", e.Type, e.Name, e.ID, err)
+			err = fmt.Errorf("dns: deleting %s %s (record %s): %w. %s", e.Type, e.Name, e.ID, err, partway(removes, i))
 			step.Fail(err)
 			return err
 		}
@@ -257,6 +398,23 @@ func ExecutePrune(ctx context.Context, provider Provider, plan *PrunePlan, r ui.
 	}
 	confirm.Done("")
 	return nil
+}
+
+// partway says, for a run that stopped at removes[i], what it deleted and
+// what it did not, so an operator knows where the zone stands before a
+// re-run plans again.
+func partway(removes []PruneEntry, i int) string {
+	list := func(es []PruneEntry) string {
+		if len(es) == 0 {
+			return "none"
+		}
+		out := make([]string, len(es))
+		for j, e := range es {
+			out[j] = fmt.Sprintf("%s %s (record %s)", e.Type, e.Name, e.ID)
+		}
+		return strings.Join(out, ", ")
+	}
+	return fmt.Sprintf("Stopped there; deleted: %s; not deleted: %s. A re-run plans again from a fresh listing", list(removes[:i]), list(removes[i:]))
 }
 
 // Show reports a prune plan in the shape dns init's plan uses: each record
