@@ -505,3 +505,34 @@ func TestRemoveCommandShape(t *testing.T) {
 		}
 	}
 }
+
+// Find names one entry by its full id or by its token, and refuses no match
+// and several, listing what the host holds either way.
+func TestFind(t *testing.T) {
+	r := Registry{Version: Version, Deployments: map[string]Entry{
+		ours:  entry("f2a9", "example.org", "watch"),
+		other: entry("0c1d", "example.net", "x"),
+	}}
+	for _, ref := range []string{ours, "f2a9"} {
+		id, e, err := Find(r, ref)
+		if err != nil || id != ours || e.Site != "watch" {
+			t.Errorf("Find(%s) = %s, %+v, %v", ref, id, e, err)
+		}
+	}
+	lists := func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), ours) && strings.Contains(err.Error(), "example.net") && strings.Contains(err.Error(), "site x")
+	}
+	if _, _, err := Find(r, "beef"); !lists(err) || !strings.Contains(err.Error(), "no deployment") {
+		t.Errorf("no match: %v", err)
+	}
+	r.Deployments[theirs] = entry("f2a9", "example.com", "y")
+	if _, _, err := Find(r, "f2a9"); !lists(err) || !strings.Contains(err.Error(), theirs) || !strings.Contains(err.Error(), "full id") {
+		t.Errorf("ambiguous: %v", err)
+	}
+	if id, _, err := Find(r, theirs); err != nil || id != theirs {
+		t.Errorf("a full id is never ambiguous: %s, %v", id, err)
+	}
+	if _, _, err := Find(Registry{Deployments: map[string]Entry{}}, "f2a9"); err == nil || !strings.Contains(err.Error(), "holds none") {
+		t.Errorf("empty registry: %v", err)
+	}
+}

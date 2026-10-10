@@ -51,6 +51,7 @@ import (
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/mesh"
 )
 
@@ -656,4 +657,52 @@ func Unclaim(t Runner, id string) error {
 		return fmt.Errorf("%s: %w", t.Describe(), refusal)
 	}
 	return fmt.Errorf("%s: removing deployment %s from %s: %w\n%s", t.Describe(), id, Path, err, strings.TrimSpace(out))
+}
+
+// Find is the one entry ref names on this host: by its full id, or by its
+// token, the id's first deployment.TokenLength hex digits. No match and
+// several are refused, and the refusal lists every entry the host holds, so
+// the operator can name one.
+func Find(r Registry, ref string) (string, Entry, error) {
+	var ids []string
+	for id, e := range r.Deployments {
+		if id == ref || (len(ref) == deployment.TokenLength && (e.Token == ref || strings.HasPrefix(id, ref))) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	switch len(ids) {
+	case 1:
+		return ids[0], r.Deployments[ids[0]], nil
+	case 0:
+		return "", Entry{}, fmt.Errorf("no deployment in %s has id or token %s. %s", Path, ref, Holds(r))
+	}
+	return "", Entry{}, fmt.Errorf("token %s names %d deployments in %s, so name one by its full id. %s", ref, len(ids), Path, Holds(r))
+}
+
+// Holds is every entry of the registry in a sentence, sorted by id.
+func Holds(r Registry) string {
+	if len(r.Deployments) == 0 {
+		return "The host holds none"
+	}
+	ids := make([]string, 0, len(r.Deployments))
+	for id := range r.Deployments {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var out []string
+	for _, id := range ids {
+		out = append(out, Describe(id, r.Deployments[id]))
+	}
+	return "The host holds " + strings.Join(out, "; ")
+}
+
+// Describe is one entry in words: Eg: f2a9c4e1-... (token f2a9, example.org,
+// site vm, roles gateway).
+func Describe(id string, e Entry) string {
+	roles := e.Roles
+	if roles == "" {
+		roles = "none"
+	}
+	return fmt.Sprintf("%s (token %s, %s, site %s, roles %s)", id, e.Token, e.Domain, e.Site, roles)
 }
