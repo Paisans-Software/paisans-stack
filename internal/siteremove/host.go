@@ -710,7 +710,7 @@ func (p *Plan) runHost() error {
 		for i, r := range hp.keyRecords {
 			q[i] = quote(r)
 		}
-		if err := run("deleting the key records", "rm -f -- "+strings.Join(q, " ")); err != nil {
+		if err := run("deleting the key records", hostprep.Locked("rm -f -- "+strings.Join(q, " "))); err != nil {
 			return err
 		}
 	}

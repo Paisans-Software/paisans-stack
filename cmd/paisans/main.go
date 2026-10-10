@@ -1241,7 +1241,7 @@ func siteTransport(name string, site config.Site, override string, sudo bool) ap
 		t = apply.SSHTransport{Site: name, Destination: override, Sudo: sudo}
 	} else {
 		// validate has already refused a bad key, so problems are empty here.
-		keys, _ := site.SSH.Keys()
+		keys, _ := site.SSH.AuthorizedKeys()
 		lines := make([]string, len(keys))
 		for i, k := range keys {
 			lines[i] = k.Line

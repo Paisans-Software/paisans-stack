@@ -32,8 +32,8 @@ sites:
     ssh:
       host: home-a.local
       user: ubuntu
-      public_key: |
-        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+      keys:
+        alice: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 etcd:
   members: [home-a]
 apps:
@@ -62,8 +62,8 @@ sites:
     ssh:
       host: home-a.local
       user: ubuntu
-      public_key: |
-        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+      keys:
+        alice: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 etcd:
   members: [home-a]
 apps:
@@ -282,7 +282,7 @@ func loadErr(t *testing.T, body string) string {
 }
 
 func TestSSHSectionLoads(t *testing.T) {
-	body := withSSH("    ssh:\n      host: 203.0.113.10\n      user: ubuntu\n      port: 2222\n      public_key: |\n        " + fakeKeyA + "\n\n        " + fakeKeyB + "\n")
+	body := withSSH("    ssh:\n      host: 203.0.113.10\n      user: ubuntu\n      port: 2222\n      keys:\n        alice: " + fakeKeyA + "\n\n        bob: " + fakeKeyB + "\n")
 	cfg, err := config.Load(write(t, body))
 	if err != nil {
 		t.Fatal(err)
@@ -291,17 +291,17 @@ func TestSSHSectionLoads(t *testing.T) {
 	if site.SSHHost() != "203.0.113.10" || site.SSH.User != "ubuntu" || site.SSH.PortOrDefault() != 2222 {
 		t.Fatalf("section read as %+v", site.SSH)
 	}
-	keys, problems := site.SSH.Keys()
+	keys, problems := site.SSH.AuthorizedKeys()
 	if len(problems) > 0 || len(keys) != 2 {
 		t.Fatalf("keys %v, problems %v", keys, problems)
 	}
-	if keys[0].Line != fakeKeyA || keys[0].Comment != "alice@example.org" || !strings.HasPrefix(keys[0].Fingerprint, "SHA256:") {
+	if keys[0].Line != fakeKeyA || keys[0].Name != "alice" || keys[0].Comment != "alice@example.org" || !strings.HasPrefix(keys[0].Fingerprint, "SHA256:") {
 		t.Errorf("first key read as %+v", keys[0])
 	}
 }
 
 func TestSSHDefaultsPortAndHost(t *testing.T) {
-	body := withSSH("    public_address: 203.0.113.20\n    ssh:\n      user: ubuntu\n      public_key: " + fakeKeyA + "\n")
+	body := withSSH("    public_address: 203.0.113.20\n    ssh:\n      user: ubuntu\n      keys:\n        alice: " + fakeKeyA + "\n")
 	cfg, err := config.Load(write(t, body))
 	if err != nil {
 		t.Fatal(err)
@@ -318,7 +318,7 @@ func TestSSHDefaultsPortAndHost(t *testing.T) {
 // With neither ssh.host nor public_address, the host is the endpoint's host,
 // the address the other sites already reach this one on.
 func TestSSHHostFallsBackToTheEndpoint(t *testing.T) {
-	body := withSSH("    endpoint: 203.0.113.30:51820\n    ssh:\n      user: ubuntu\n      public_key: " + fakeKeyA + "\n")
+	body := withSSH("    endpoint: 203.0.113.30:51820\n    ssh:\n      user: ubuntu\n      keys:\n        alice: " + fakeKeyA + "\n")
 	cfg, err := config.Load(write(t, body))
 	if err != nil {
 		t.Fatal(err)
@@ -330,7 +330,7 @@ func TestSSHHostFallsBackToTheEndpoint(t *testing.T) {
 
 // public_address comes before the endpoint, and ssh.host before both.
 func TestSSHHostPrefersHostThenPublicAddress(t *testing.T) {
-	key := "      public_key: " + fakeKeyA + "\n"
+	key := "      keys:\n        alice: " + fakeKeyA + "\n"
 	cases := []struct{ name, section, want string }{
 		{"public address", "    endpoint: 203.0.113.30:51820\n    public_address: 203.0.113.20\n    ssh:\n      user: ubuntu\n" + key, "203.0.113.20"},
 		{"host", "    endpoint: 203.0.113.30:51820\n    public_address: 203.0.113.20\n    ssh:\n      host: home-a.local\n      user: ubuntu\n" + key, "home-a.local"},
@@ -358,7 +358,7 @@ func TestSSHStringIsRefused(t *testing.T) {
 }
 
 func TestSSHSectionRefusals(t *testing.T) {
-	key := "      public_key: " + fakeKeyA + "\n"
+	key := "      keys:\n        alice: " + fakeKeyA + "\n"
 	cases := []struct {
 		name, section, want string
 	}{
@@ -369,11 +369,16 @@ func TestSSHSectionRefusals(t *testing.T) {
 		{"negative port", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      port: -1\n" + key, "ssh.port: -1 is not a port"},
 		{"no host, public address or endpoint", "    ssh:\n      user: ubuntu\n" + key, "ssh.host: required, because the site has neither public_address nor endpoint"},
 		{"user in host", "    ssh:\n      host: ubuntu@home-a.local\n      user: ubuntu\n" + key, "neither a hostname nor an IP address"},
-		{"no key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n", "ssh.public_key: required"},
-		{"not a key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_key: ssh-ed25519 not-base64\n", "line 1 is not an OpenSSH public key"},
-		{"private key path", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_key: ~/.ssh/id_ed25519\n", "not an OpenSSH public key"},
-		{"options", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_key: from=\"203.0.113.0/24\" " + fakeKeyA + "\n", "carries options"},
-		{"duplicate", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_key: |\n        " + fakeKeyA + "\n        " + strings.Replace(fakeKeyA, "alice", "alice-laptop", 1) + "\n", "line 2 is the same key as line 1"},
+		{"no key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n", "ssh.keys: required"},
+		{"empty keys", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      keys: {}\n", "ssh.keys: required"},
+		{"keys a list", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      keys:\n        - " + fakeKeyA + "\n", "ssh.keys must map each key's name"},
+		{"not a key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      keys:\n        alice: ssh-ed25519 not-base64\n", "ssh.keys.alice: not an OpenSSH public key"},
+		{"private key path", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      keys:\n        alice: ~/.ssh/id_ed25519\n", "not an OpenSSH public key"},
+		{"options", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      keys:\n        alice: from=\"203.0.113.0/24\" " + fakeKeyA + "\n", "carries options"},
+		{"duplicate key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      keys:\n        alice: " + fakeKeyA + "\n        alice-laptop: " + strings.Replace(fakeKeyA, "alice", "alice-laptop", 1) + "\n", "ssh.keys.alice-laptop: the same key as keys.alice"},
+		{"duplicate name", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      keys:\n        alice: " + fakeKeyA + "\n        alice: " + fakeKeyB + "\n", "ssh.keys.alice is already given on line"},
+		{"bad name", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      keys:\n        \"Alice Smith\": " + fakeKeyA + "\n", "not a key name this toolkit accepts"},
+		{"public_key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_key: |\n        " + fakeKeyA + "\n        " + fakeKeyB + "\n", "ssh.public_key is replaced by ssh.keys, which names each key. Write:\n  keys:\n    alice: ssh-ed25519 AAAAC3NzaC1l... alice@example.org\n    bob: ssh-ed25519 AAAAC3NzaC1l... bob@example.org"},
 		{"unknown key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_keys: " + fakeKeyA + "\n", "field public_keys not found"},
 	}
 	for _, c := range cases {
@@ -388,7 +393,7 @@ func TestSSHSectionRefusals(t *testing.T) {
 
 func TestSSHHostAcceptsHostnamesAndAddresses(t *testing.T) {
 	for _, host := range []string{"home-a.local", "vm.example.org", "203.0.113.10", "2001:db8::10", "home-a"} {
-		body := withSSH("    ssh:\n      host: \"" + host + "\"\n      user: ubuntu\n      public_key: " + fakeKeyA + "\n")
+		body := withSSH("    ssh:\n      host: \"" + host + "\"\n      user: ubuntu\n      keys:\n        alice: " + fakeKeyA + "\n")
 		if msg := loadErr(t, body); msg != "" {
 			t.Errorf("host %s refused: %s", host, msg)
 		}
@@ -455,7 +460,7 @@ func TestSMTPShapeIsChecked(t *testing.T) {
 // exists to host that app. With nothing pinned it is almost certainly a
 // mistake.
 func TestARolelessSiteIsAcceptedOnlyWhenSomethingIsPinnedToIt(t *testing.T) {
-	site := "  mon:\n    roles: []\n    address: 10.44.0.9\n    ssh:\n      host: mon.local\n      user: ubuntu\n      public_key: |\n        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org\n"
+	site := "  mon:\n    roles: []\n    address: 10.44.0.9\n    ssh:\n      host: mon.local\n      user: ubuntu\n      keys:\n        alice: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org\n"
 	withSite := strings.Replace(validConfig, "etcd:\n", site+"etcd:\n", 1)
 	if _, err := config.Load(write(t, withSite)); err == nil || !strings.Contains(err.Error(), "sites.mon.roles") {
 		t.Fatalf("a role-less site with nothing pinned to it loaded: %v", err)
@@ -468,7 +473,7 @@ func TestARolelessSiteIsAcceptedOnlyWhenSomethingIsPinnedToIt(t *testing.T) {
 // monitorSite is validConfig with a watch site holding the monitor role and
 // extra appended to its entry, before the uptime app is pinned there.
 func monitorSite(extra string) string {
-	site := "  watch:\n    roles: [monitor]\n    address: 10.44.0.9\n    public_address: 203.0.113.20\n    ssh:\n      host: watch.local\n      user: ubuntu\n      public_key: |\n        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org\n" + extra
+	site := "  watch:\n    roles: [monitor]\n    address: 10.44.0.9\n    public_address: 203.0.113.20\n    ssh:\n      host: watch.local\n      user: ubuntu\n      keys:\n        alice: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org\n" + extra
 	return strings.Replace(validConfig, "etcd:\n", site+"etcd:\n", 1) + statusApp("watch", "")
 }
 

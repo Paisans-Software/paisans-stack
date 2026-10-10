@@ -159,7 +159,7 @@ func TestTheShrinkRefusesAnUnhealthyWitness(t *testing.T) {
 // refused unless an app is pinned to it.
 func TestAWitnessWithNoOtherRole(t *testing.T) {
 	box := []func(string) string{
-		replace("  vm:\n    roles: [gateway, witness]", "  box:\n    roles: [witness]\n    address: 10.44.0.6\n    ssh:\n      host: box.local\n      user: ubuntu\n      public_key: |\n        "+alice+"\n  vm:\n    roles: [gateway]"),
+		replace("  vm:\n    roles: [gateway, witness]", "  box:\n    roles: [witness]\n    address: 10.44.0.6\n    ssh:\n      host: box.local\n      user: ubuntu\n      keys:\n        alice: "+alice+"\n  vm:\n    roles: [gateway]"),
 		replace("members: [home-a, home-b, vm]", "members: [home-a, home-b, box]"),
 	}
 	t.Run("refused", func(t *testing.T) {
@@ -222,7 +222,7 @@ func TestThreeDerivedDataSitesToTwoIsRefused(t *testing.T) {
 // fourData adds home-d, so home-b's removal leaves the leader and two
 // replicas.
 var fourData = []func(string) string{
-	replace("  vm:\n    roles: [gateway, witness]", "  home-d:\n    roles: [data]\n    address: 10.44.0.7\n    ssh:\n      host: home-d.local\n      user: ubuntu\n      public_key: |\n        "+alice+"\n  vm:\n    roles: [gateway, witness]"),
+	replace("  vm:\n    roles: [gateway, witness]", "  home-d:\n    roles: [data]\n    address: 10.44.0.7\n    ssh:\n      host: home-d.local\n      user: ubuntu\n      keys:\n        alice: "+alice+"\n  vm:\n    roles: [gateway, witness]"),
 	replace("sites: [home-a, home-b, home-c]\n  port", "sites: [home-a, home-b, home-c, home-d]\n  port"),
 	replace("members: [home-a, home-b, home-c, vm]", "members: [home-a, home-b, home-c, home-d, vm]"),
 }

@@ -291,6 +291,10 @@ func (h *host) Run(command string) (string, error) {
 		w.failOnce = ""
 		return "failed by the test", errors.New("exit status 1")
 	}
+	// host prepare's key lock: the command inside it is what runs.
+	if inner, ok := strings.CutPrefix(command, "mkdir -p /etc/paisans && flock '/etc/paisans/authorized_keys.lock' sh -c '"); ok {
+		command = strings.ReplaceAll(strings.TrimSuffix(inner, "'"), `'\''`, "'")
+	}
 	quoted := func(s string) []string {
 		var out []string
 		for _, m := range regexp.MustCompile(`'([^']*)'`).FindAllStringSubmatch(s, -1) {
@@ -1017,8 +1021,8 @@ func worldConfig(t *testing.T, edits ...func(string) string) (*config.Config, *c
     ssh:
       host: home-c.local
       user: ubuntu
-      public_key: |
-        `+alice+`
+      keys:
+        alice: `+alice+`
   vm:
     roles: [gateway, witness]`, 1)
 	text = strings.Replace(text, "    address: 10.44.0.2\n", "    address: 10.44.0.2\n    public_address: 203.0.113.20\n", 1)

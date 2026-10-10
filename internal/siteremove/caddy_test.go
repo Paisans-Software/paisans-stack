@@ -29,7 +29,7 @@ func gatewayWorld(t *testing.T, ownerSites bool) *world {
 	w := newWorld(t,
 		replace("  home-c:\n    roles: [data]", "  home-c:\n    roles: [data, gateway]"),
 		replace("placement: { pinned: vm }", "placement: { pinned: box }"),
-		replace("  vm:\n    roles: [gateway, witness]", "  box:\n    roles: [apps]\n    address: 10.44.0.6\n    ssh:\n      host: box.local\n      user: ubuntu\n      public_key: |\n        "+alice+"\n  vm:\n    roles: [gateway, witness]"),
+		replace("  vm:\n    roles: [gateway, witness]", "  box:\n    roles: [apps]\n    address: 10.44.0.6\n    ssh:\n      host: box.local\n      user: ubuntu\n      keys:\n        alice: "+alice+"\n  vm:\n    roles: [gateway, witness]"),
 	)
 	t.Cleanup(siteremove.SetFast())
 	t.Cleanup(siteremove.SetInspect(w.inspect))
