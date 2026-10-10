@@ -70,16 +70,20 @@ func applyStep(phase, why, site string, founding bool) convergeStep {
 	return step(phase, why, founding, "apply", "--site", site)
 }
 
+// initWhy is what init has to do, as its line says it.
+func initWhy(st convergeState) string {
+	if st.InitWhy == "" {
+		return "the deployment id, the mesh subnet or a generated secret is missing"
+	}
+	return st.InitWhy
+}
+
 // convergePlan is every step that takes cfg to a complete, running stack from
 // what st read, in the order the deployment needs them.
 func convergePlan(cfg *config.Config, st convergeState) []convergeStep {
 	var steps []convergeStep
 	if st.NeedsInit {
-		why := st.InitWhy
-		if why == "" {
-			why = "the deployment id, the mesh subnet or a generated secret is missing"
-		}
-		steps = append(steps, step("configuration", why, false, "init"))
+		steps = append(steps, step("configuration", initWhy(st), false, "init"))
 	}
 	for _, s := range cfg.SiteNames() {
 		steps = append(steps, step("hosts", "Docker, WireGuard and the firewall; a prepared host plans nothing", false, "host", "prepare", "--site", s))
@@ -373,13 +377,21 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 	}
 	// A configuration validate refuses reaches no host: a typo in
 	// etcd.members would otherwise read as a host that did not answer.
+	// The findings open the configuration section, which init's line
+	// belongs to, so the section is headed once, ahead of the etcd reads.
 	result := validate.Check(cfg)
-	reportFindings(r, configPath, result)
+	reportFindingsUnder(r, "configuration", configPath, result)
 	if result.Refused() {
 		return refused(configPath, len(result.Refusals()), "")
 	}
 	ui.Align(r, convergeTitles(cfg)...)
 	defer ui.Align(r)
+	if st.NeedsInit && !execute {
+		if len(result.Findings) == 0 {
+			r.Section("configuration")
+		}
+		r.Step("init").End(ui.Pending, initWhy(st))
+	}
 	if st.Initial, err = convergeFounded(r, cfg, sudo); err != nil {
 		return err
 	}
@@ -457,7 +469,8 @@ func convergeStop(hint string, err error, next string) error {
 }
 
 // convergeStatus is the dry run's plan: each step under its phase, marked
-// with its status. A step is checked by its own dry run once every step it
+// with its status, but for init, whose line runConverge draws with the
+// findings. A step is checked by its own dry run once every step it
 // waits on is up to date, and is otherwise marked as waiting on the first
 // that is not; until that one runs, its dry run would describe a host about
 // to change. A check that fails is marked with its error, and the rest are
@@ -473,6 +486,12 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 	done := map[string]status{}
 	phase := ""
 	for i, s := range steps {
+		if s.Title == "init" {
+			// Its line is drawn with the findings, under configuration,
+			// before the etcd reads; every other step waits on it.
+			done[s.Title] = status{ui.Pending, s.Why}
+			continue
+		}
 		if s.Phase != phase {
 			phase = s.Phase
 			r.Section(phase)
@@ -490,8 +509,6 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 		}
 		prior, checked := done[s.Title]
 		switch {
-		case s.Title == "init":
-			st = status{ui.Pending, s.Why}
 		case after != "":
 			st = status{ui.Waiting, "after " + after}
 			// An apply in pass two waits on the same command in an

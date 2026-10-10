@@ -341,7 +341,7 @@ func runValidate(args []string) error {
 		return err
 	}
 	result := validate.Check(cfg)
-	reportFindings(r, *configPath, result)
+	reportValidation(r, *configPath, result)
 	if len(result.Findings) == 0 {
 		r.Result("%s: no problems found", *configPath)
 	}

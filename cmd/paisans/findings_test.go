@@ -54,7 +54,7 @@ func TestCountsPluralAndWarningOnly(t *testing.T) {
 		{Level: validate.Refuse, Rule: "a", Key: "k1", Hint: "h1", Message: "m1"},
 		{Level: validate.Refuse, Rule: "b", Key: "k2", Hint: "h2", Message: "m2"},
 	}}
-	reportFindings(ui.NewPlain(&b, false), "paisans.yaml", two)
+	reportValidation(ui.NewPlain(&b, false), "paisans.yaml", two)
 	if !strings.Contains(b.String(), "paisans.yaml: 2 refusals") {
 		t.Errorf("no plural count in\n%s", b.String())
 	}
@@ -63,9 +63,49 @@ func TestCountsPluralAndWarningOnly(t *testing.T) {
 		{Level: validate.Warn, Rule: "a", Key: "k1", Hint: "h1", Message: "m1"},
 		{Level: validate.Warn, Rule: "b", Key: "k2", Hint: "h2", Message: "m2"},
 	}}
-	reportFindings(ui.NewPlain(&b, false), "paisans.yaml", warns)
+	reportValidation(ui.NewPlain(&b, false), "paisans.yaml", warns)
 	if !strings.Contains(b.String(), "paisans.yaml: 2 warnings\n") || strings.Contains(b.String(), "refusal") {
 		t.Errorf("bad warning-only count in\n%s", b.String())
+	}
+}
+
+// A command other than validate goes on past a warning, so its findings end
+// with no count line naming the file again; a refusal stops it, and keeps
+// its count.
+func TestCommandsCountOnlyARefusal(t *testing.T) {
+	var b strings.Builder
+	warn := validate.Finding{Level: validate.Warn, Rule: "a", Key: "k1", Hint: "h1", Message: "m1"}
+	reportFindings(ui.NewPlain(&b, false), "paisans.yaml", validate.Result{Findings: []validate.Finding{warn}})
+	if got := strings.Count(b.String(), "paisans.yaml"); got != 1 || strings.Contains(b.String(), "1 warning") {
+		t.Errorf("a warning alone is counted, or the path shown %d times:\n%s", got, b.String())
+	}
+	b.Reset()
+	refuse := validate.Finding{Level: validate.Refuse, Rule: "b", Key: "k2", Hint: "h2", Message: "m2"}
+	reportFindings(ui.NewPlain(&b, false), "paisans.yaml", validate.Result{Findings: []validate.Finding{refuse, warn}})
+	if !strings.Contains(b.String(), "paisans.yaml: 1 refusal, 1 warning\n") {
+		t.Errorf("a refusal is not counted:\n%s", b.String())
+	}
+}
+
+// Under a section of a command's own, the findings follow its header and
+// the path is not a section: it appears only in a refusal's count.
+func TestFindingsUnderASection(t *testing.T) {
+	warn := validate.Finding{Level: validate.Warn, Rule: "a", Key: "k1", Hint: "h1", Message: "m1"}
+	rec := &ui.Recorder{}
+	reportFindingsUnder(rec, "configuration", "paisans.yaml", validate.Result{Findings: []validate.Finding{warn}})
+	if len(rec.Events) != 2 || rec.Events[0] != (ui.Event{Kind: "section", Text: "configuration"}) || rec.Events[1].Kind != "warn" {
+		t.Errorf("got:\n%s", rec.Lines())
+	}
+	rec = &ui.Recorder{}
+	refuse := validate.Finding{Level: validate.Refuse, Rule: "b", Key: "k2", Hint: "h2", Message: "m2"}
+	reportFindingsUnder(rec, "configuration", "paisans.yaml", validate.Result{Findings: []validate.Finding{refuse}})
+	if last := rec.Events[len(rec.Events)-1]; last.Kind != "result" || last.Text != "paisans.yaml: 1 refusal" || rec.Has("section", "paisans.yaml") {
+		t.Errorf("got:\n%s", rec.Lines())
+	}
+	rec = &ui.Recorder{}
+	reportFindingsUnder(rec, "configuration", "paisans.yaml", validate.Result{})
+	if len(rec.Events) != 0 {
+		t.Errorf("printed for a clean file:\n%s", rec.Lines())
 	}
 }
 
@@ -96,10 +136,10 @@ func TestFindingsNameTheFileShortByDefault(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	path := filepath.Join(dir, "staging", "paisans.yaml")
-	res := validate.Result{Findings: []validate.Finding{{Level: validate.Warn, Rule: "r", Key: "k", Hint: "h", Message: "m"}}}
+	res := validate.Result{Findings: []validate.Finding{{Level: validate.Refuse, Rule: "r", Key: "k", Hint: "h", Message: "m"}}}
 	var b strings.Builder
 	reportFindings(ui.NewPlain(&b, false), path, res)
-	if strings.Contains(b.String(), dir) || !strings.HasPrefix(b.String(), "staging/paisans.yaml\n") || !strings.Contains(b.String(), "\nstaging/paisans.yaml: 1 warning") {
+	if strings.Contains(b.String(), dir) || !strings.HasPrefix(b.String(), "staging/paisans.yaml\n") || !strings.Contains(b.String(), "\nstaging/paisans.yaml: 1 refusal") {
 		t.Errorf("default:\n%s", b.String())
 	}
 	b.Reset()
