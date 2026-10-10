@@ -17,12 +17,12 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
-// deploymentRecord is the newest of the gateways' deployment records, and,
-// for each gateway that could not give one, why: deployrecord.ErrNoRecord
-// for one that answered without one.
+// deploymentRecord is the names the gateways' deployment records, merged,
+// hold as deployed, and, for each gateway that could not give one, why:
+// deployrecord.ErrNoRecord for one that answered without one.
 func deploymentRecord(cfg *config.Config, hosts func(string) registry.Runner) (deployrecord.Record, map[string]error) {
-	newest, _, missing := deployrecord.Gather(gatewayHosts(cfg, hosts), cfg.Deployment())
-	return newest, missing
+	deployed, _, missing := deployrecord.Gather(gatewayHosts(cfg, hosts), cfg.Deployment())
+	return deployed, missing
 }
 
 // gatewayHosts is every gateway paisans.yaml declares, reached through hosts.
@@ -120,7 +120,7 @@ func recordResult(res deployrecord.Result) string {
 	case res.Changed:
 		return "updated"
 	case len(res.Wrote) > 0:
-		return "brought " + strings.Join(res.Wrote, ", ") + " up to date"
+		return "written to " + strings.Join(res.Wrote, ", ")
 	}
 	return "up to date"
 }
@@ -129,13 +129,17 @@ func recordResult(res deployrecord.Result) string {
 // not reach. It is never a failure: the next change catches it up.
 func reportMissed(r ui.Reporter, res deployrecord.Result) {
 	for _, gw := range sortedKeys(res.Missed) {
+		if errors.Is(res.Missed[gw], deployrecord.ErrChanged) {
+			r.Warn(gw+"'s deployment record was changed by another command meanwhile; run this command again", res.Missed[gw].Error()+". The other change may have been a removal racing this add, or the other way round, so only running again makes sure this one holds")
+			continue
+		}
 		r.Warn(gw+" missed this change to the deployment record", res.Missed[gw].Error()+". It is brought up to date the next time a command that writes the record reaches it")
 	}
 }
 
 // forgetInRecords takes names out of the deployment record on every gateway
 // paisans.yaml declares. Without execute it lists them, and reports whether
-// the newest record still lists one. A gateway it cannot reach is warned
+// the merged records still list one. A gateway it cannot reach is warned
 // about, never a failure: the removal it follows is done, and the next change
 // to the record catches that gateway up.
 func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Record, what string, execute, sudo bool) bool {
@@ -146,8 +150,8 @@ func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Recor
 	d := cfg.Deployment()
 	title := "forget " + what + " in the deployment record"
 	if !execute {
-		newest, found, missing := deployrecord.Gather(hosts, d)
-		listed := found > 0 && listsAny(newest, names)
+		deployed, found, missing := deployrecord.Gather(hosts, d)
+		listed := found > 0 && listsAny(deployed, names)
 		unread := []string{}
 		for _, gw := range sortedKeys(missing) {
 			if !errors.Is(missing[gw], deployrecord.ErrNoRecord) {

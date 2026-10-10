@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 
@@ -407,21 +408,34 @@ func withTwoGateways(t *testing.T, configPath string) {
 	}
 }
 
-// A gateway that missed a removal still lists the site; the newer record on
-// the other gateway does not, and it decides.
-func TestPruneTakesTheNewestRecord(t *testing.T) {
+// A gateway that missed a removal still holds the site's add; the other
+// gateway's removal cancels that add, and prune removes the site's secrets.
+func TestPruneMergesTheGatewaysRecords(t *testing.T) {
 	configPath, secretsPath := writeFixtureSecrets(t, func(s *config.Secrets) { s.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "x"} })
 	withTwoGateways(t, configPath)
-	withRecords(t, map[string]string{
-		"vm":  `{"version":1,"revision":9,"updated_at":"","sites":{"home-a":{"added":1},"home-b":{"added":1},"vm":{"added":1},"vm2":{"added":1},"watch":{"added":1},"monitor-a":{"added":1,"removed":9}},"apps":{},"pocket_id_groups":{}}`,
-		"vm2": deployrecord.Encode(deployrecord.Record{Revision: 8, Sites: []string{"home-a", "home-b", "vm", "vm2", "watch", "monitor-a"}}),
-	})
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := cfg.Deployment()
+	vm, vm2 := &recordFake{files: map[string]string{}}, &recordFake{files: map[string]string{}}
+	both := map[string]registry.Runner{"vm": vm, "vm2": vm2}
+	all := deployrecord.FromConfig(cfg)
+	all.Sites = append(all.Sites, "monitor-a")
+	if _, err := deployrecord.Update(both, d, deployrecord.Adding(all), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	vm2.down = true
+	if _, err := deployrecord.Update(both, d, deployrecord.Forgetting(deployrecord.Record{Sites: []string{"monitor-a"}}), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	withRecords(t, map[string]string{"vm": vm.files[deployrecord.Path(d)], "vm2": vm2.files[deployrecord.Path(d)]})
 	captureStdout(t, func() {
 		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
 	})
 	if s, _ := config.LoadSecrets(secretsPath); s.Sites["monitor-a"].WireGuardPrivateKey != "" {
-		t.Error("the stale gateway's listing kept monitor-a")
+		t.Error("the gateway that missed the removal kept monitor-a")
 	}
 }

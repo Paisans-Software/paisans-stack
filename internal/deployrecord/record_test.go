@@ -6,10 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"maps"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -63,43 +61,123 @@ func (h *fakeHost) Run(command string) (string, error) {
 	return "", nil
 }
 
-func TestAddIsAUnionAndForgetTakesOnlyWhatIsNamed(t *testing.T) {
-	h := &fakeHost{files: map[string]string{}}
-	if changed, err := deployrecord.Add(h, dep, deployrecord.Record{Sites: []string{"vm", "home-a"}, Apps: []string{"talk"}}); err != nil || !changed {
-		t.Fatalf("first add: %v %v", changed, err)
+func gateways(hs ...*fakeHost) map[string]registry.Runner {
+	out := map[string]registry.Runner{}
+	for i, h := range hs {
+		out[fmt.Sprintf("gw%d", i+1)] = h
 	}
-	if _, err := deployrecord.Add(h, dep, deployrecord.Record{Sites: []string{"home-b"}}); err != nil {
+	return out
+}
+
+var now = time.Date(2026, 10, 9, 18, 40, 0, 0, time.UTC)
+
+func view(t *testing.T, hs ...*fakeHost) deployrecord.Record {
+	t.Helper()
+	r, _, missing := deployrecord.Gather(gateways(hs...), dep)
+	for gw, err := range missing {
+		if !errors.Is(err, deployrecord.ErrNoRecord) {
+			t.Fatalf("%s: %v", gw, err)
+		}
+	}
+	return r
+}
+
+func change(t *testing.T, ch deployrecord.Change, hs ...*fakeHost) deployrecord.Result {
+	t.Helper()
+	res, err := deployrecord.Update(gateways(hs...), dep, ch, now)
+	if err != nil {
 		t.Fatal(err)
 	}
-	r, found, err := deployrecord.Read(h, dep)
-	if err != nil || !found || strings.Join(r.Sites, ",") != "home-a,home-b,vm" || !r.Lists("apps", "talk") {
-		t.Fatalf("%+v %v %v", r, found, err)
-	}
-	if changed, _ := deployrecord.Add(h, dep, deployrecord.Record{Sites: []string{"vm"}}); changed {
-		t.Error("adding what is listed wrote the file")
-	}
-	if _, err := deployrecord.Forget(h, dep, deployrecord.Record{Sites: []string{"home-b"}}); err != nil {
-		t.Fatal(err)
-	}
-	r, _, _ = deployrecord.Read(h, dep)
-	if strings.Join(r.Sites, ",") != "home-a,vm" || !r.Lists("apps", "talk") {
-		t.Errorf("after forget: %+v", r)
+	return res
+}
+
+func sites(names ...string) deployrecord.Record { return deployrecord.Record{Sites: names} }
+
+func TestAReAddOnAGatewayThatMissedTheRemovalStays(t *testing.T) {
+	a, b := &fakeHost{files: map[string]string{}}, &fakeHost{files: map[string]string{}}
+	change(t, deployrecord.Adding(sites("vm", "x")), a, b)
+	b.down = true
+	change(t, deployrecord.Forgetting(sites("x")), a, b)
+	a.down, b.down = true, false
+	change(t, deployrecord.Adding(sites("vm", "x")), a, b)
+	a.down = false
+	if r := view(t, a, b); !r.Lists("sites", "x") {
+		t.Errorf("x lost: %v", r.Sites)
 	}
 }
 
-func TestForgetWithNoRecordWritesNothing(t *testing.T) {
+func TestASplitThroughUpdateKeepsEveryAddAndEveryRemoval(t *testing.T) {
+	a, b := &fakeHost{files: map[string]string{}}, &fakeHost{files: map[string]string{}}
+	change(t, deployrecord.Adding(sites("vm", "m1")), a, b)
+	a.down = true
+	change(t, deployrecord.Adding(sites("y")), a, b)
+	a.down, b.down = false, true
+	change(t, deployrecord.Forgetting(sites("m1")), a, b)
+	b.down = false
+	if r := view(t, a, b); strings.Join(r.Sites, ",") != "vm,y" {
+		t.Fatalf("merged %v", r.Sites)
+	}
+	change(t, deployrecord.Forgetting(sites()), a, b)
+	if a.files[deployrecord.Path(dep)] != b.files[deployrecord.Path(dep)] {
+		t.Error("the gateways differ after a write both answered")
+	}
+	if strings.Contains(a.files[deployrecord.Path(dep)], `"m1"`) {
+		t.Error("not compacted: m1 is still in the file")
+	}
+}
+
+func TestALoneGatewaysAddsReachTheOthers(t *testing.T) {
+	a, c := &fakeHost{files: map[string]string{}}, &fakeHost{files: map[string]string{}}
+	change(t, deployrecord.Adding(sites("vm")), a)
+	a.down = true
+	change(t, deployrecord.Adding(sites("vm2")), a, c)
+	a.down = false
+	change(t, deployrecord.Forgetting(sites()), a, c)
+	if r := view(t, a); strings.Join(r.Sites, ",") != "vm,vm2" {
+		t.Errorf("a holds %v", r.Sites)
+	}
+}
+
+func TestNoCompactionWhileAGatewayIsDown(t *testing.T) {
+	a, b := &fakeHost{files: map[string]string{}}, &fakeHost{files: map[string]string{}}
+	change(t, deployrecord.Adding(sites("vm", "x")), a, b)
+	b.down = true
+	change(t, deployrecord.Forgetting(sites("x")), a, b)
+	if !strings.Contains(a.files[deployrecord.Path(dep)], `"x"`) {
+		t.Fatal("x's removal was compacted away while b was down")
+	}
+	b.down = false
+	if r := view(t, a, b); r.Lists("sites", "x") {
+		t.Error("b's stale add brought x back")
+	}
+}
+
+func TestAddingNeverRemovesAndForgettingTakesOnlyWhatIsNamed(t *testing.T) {
 	h := &fakeHost{files: map[string]string{}}
-	if changed, err := deployrecord.Forget(h, dep, deployrecord.Record{Sites: []string{"x"}}); err != nil || changed || len(h.files) != 0 {
-		t.Errorf("%v %v %v", changed, err, h.files)
+	change(t, deployrecord.Adding(deployrecord.Record{Sites: []string{"vm", "home-a"}, Apps: []string{"talk"}}), h)
+	change(t, deployrecord.Adding(sites("home-b")), h)
+	if r := view(t, h); strings.Join(r.Sites, ",") != "home-a,home-b,vm" || !r.Lists("apps", "talk") {
+		t.Fatalf("%+v", r)
+	}
+	change(t, deployrecord.Forgetting(sites("home-b")), h)
+	if r := view(t, h); strings.Join(r.Sites, ",") != "home-a,vm" || !r.Lists("apps", "talk") {
+		t.Errorf("after forgetting: %+v", r)
+	}
+}
+
+func TestForgettingWithNoRecordWritesNothing(t *testing.T) {
+	h := &fakeHost{files: map[string]string{}}
+	if res := change(t, deployrecord.Forgetting(sites("x")), h); res.Changed || len(h.files) != 0 {
+		t.Errorf("%+v %v", res, h.files)
 	}
 }
 
 func TestAWriteRefusesAChangedRecord(t *testing.T) {
 	h := &fakeHost{files: map[string]string{}}
 	racing := &racer{fakeHost: h}
-	_, err := deployrecord.Add(racing, dep, deployrecord.Record{Sites: []string{"vm"}})
-	if err == nil || !strings.Contains(err.Error(), "changed while it was read") {
-		t.Fatalf("err = %v", err)
+	res, err := deployrecord.Update(map[string]registry.Runner{"vm": racing}, dep, deployrecord.Adding(sites("vm")), now)
+	if err != nil || !errors.Is(res.Missed["vm"], deployrecord.ErrChanged) {
+		t.Fatalf("%+v %v", res, err)
 	}
 	if !strings.Contains(h.files[deployrecord.Path(dep)], "home-b") {
 		t.Error("the other writer's record was overwritten")
@@ -113,20 +191,6 @@ func (r *racer) ReadFile(p string) (string, bool, error) {
 	c, ok, err := r.fakeHost.ReadFile(p)
 	r.files[p] = deployrecord.Encode(deployrecord.Record{Sites: []string{"home-b"}})
 	return c, ok, err
-}
-
-func TestAMalformedRecordIsAnError(t *testing.T) {
-	h := &fakeHost{files: map[string]string{deployrecord.Path(dep): "{"}}
-	if _, _, err := deployrecord.Read(h, dep); err == nil {
-		t.Error("read a malformed record")
-	}
-}
-
-func TestUnion(t *testing.T) {
-	u := deployrecord.Union(deployrecord.Record{Sites: []string{"a"}}, deployrecord.Record{Sites: []string{"b", "a"}, Apps: []string{"x"}})
-	if strings.Join(u.Sites, ",") != "a,b" || !u.Lists("apps", "x") {
-		t.Errorf("%+v", u)
-	}
 }
 
 func TestThePathCarriesTheToken(t *testing.T) {
@@ -146,14 +210,6 @@ func TestFromConfig(t *testing.T) {
 	}
 }
 
-// A malformed record is ErrMalformed, which callers name with the way out.
-func TestAMalformedRecordIsErrMalformed(t *testing.T) {
-	h := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":2}`}}
-	if _, _, err := deployrecord.Read(h, dep); !errors.Is(err, deployrecord.ErrMalformed) {
-		t.Errorf("err = %v", err)
-	}
-}
-
 // failingWrite is a host whose write fails the way SSHTransport's does: the
 // error already carries the remote output.
 type failingWrite struct{ *fakeHost }
@@ -164,155 +220,67 @@ func (f failingWrite) Run(string) (string, error) {
 
 func TestAFailedWriteSaysItsOutputOnce(t *testing.T) {
 	h := failingWrite{&fakeHost{files: map[string]string{}}}
-	_, err := deployrecord.Add(h, dep, deployrecord.Record{Sites: []string{"vm"}})
-	if err == nil || strings.Count(err.Error(), "mv: cannot move") != 1 {
+	res, _ := deployrecord.Update(map[string]registry.Runner{"vm": h}, dep, deployrecord.Adding(sites("vm")), now)
+	if err := res.Missed["vm"]; err == nil || strings.Count(err.Error(), "mv: cannot move") != 1 {
 		t.Errorf("err = %v", err)
-	}
-}
-
-func gateways(hs ...*fakeHost) map[string]registry.Runner {
-	out := map[string]registry.Runner{}
-	for i, h := range hs {
-		out[fmt.Sprintf("gw%d", i+1)] = h
-	}
-	return out
-}
-
-var now = time.Date(2026, 10, 9, 18, 40, 0, 0, time.UTC)
-
-func TestUpdateCatchesUpAStaleGateway(t *testing.T) {
-	fresh := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(5, map[string][2]int{"vm": {1, 0}, "monitor-a": {1, 5}})}}
-	stale := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(3, map[string][2]int{"vm": {1, 0}, "monitor-a": {1, 0}})}}
-	res, err := deployrecord.Update(gateways(fresh, stale), dep, deployrecord.Adding(deployrecord.Record{}), now)
-	if err != nil || res.Changed || strings.Join(res.Wrote, ",") != "gw2" {
-		t.Fatalf("%+v %v", res, err)
-	}
-	r, _, _ := deployrecord.Read(stale, dep)
-	if r.Revision != 5 || r.Lists("sites", "monitor-a") {
-		t.Errorf("stale gateway not caught up: %+v", r)
-	}
-}
-
-func TestAChangeStartsFromTheNewestAndRaisesTheRevision(t *testing.T) {
-	fresh := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(5, map[string][2]int{"vm": {1, 0}, "monitor-a": {1, 5}})}}
-	stale := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(3, map[string][2]int{"vm": {1, 0}, "monitor-a": {1, 0}})}}
-	res, err := deployrecord.Update(gateways(fresh, stale), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"home-a"}}), now)
-	if err != nil || !res.Changed || len(res.Wrote) != 2 {
-		t.Fatalf("%+v %v", res, err)
-	}
-	for _, h := range []*fakeHost{fresh, stale} {
-		r, _, _ := deployrecord.Read(h, dep)
-		if r.Revision != 6 || r.UpdatedAt != "2026-10-09T18:40:00Z" || strings.Join(r.Sites, ",") != "home-a,vm" {
-			t.Errorf("%+v", r)
-		}
 	}
 }
 
 func TestUpdateReportsAGatewayItMissed(t *testing.T) {
 	up := &fakeHost{files: map[string]string{}}
 	down := &fakeHost{files: map[string]string{}, down: true}
-	res, err := deployrecord.Update(gateways(up, down), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"vm"}}), now)
-	if err != nil || res.Missed["gw2"] == nil || strings.Join(res.Wrote, ",") != "gw1" {
-		t.Errorf("%+v %v", res, err)
+	res := change(t, deployrecord.Adding(sites("vm")), up, down)
+	if res.Missed["gw2"] == nil || strings.Join(res.Wrote, ",") != "gw1" {
+		t.Errorf("%+v", res)
 	}
 }
 
 func TestUpdateWithEveryGatewayDownWritesNothing(t *testing.T) {
 	down := &fakeHost{files: map[string]string{}, down: true}
-	res, err := deployrecord.Update(gateways(down), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"vm"}}), now)
-	if err != nil || len(res.Wrote) != 0 || res.Missed["gw1"] == nil {
-		t.Errorf("%+v %v", res, err)
+	res := change(t, deployrecord.Adding(sites("vm")), down)
+	if len(res.Wrote) != 0 || res.Missed["gw1"] == nil {
+		t.Errorf("%+v", res)
 	}
 }
 
 func TestUpdateStopsAtAMalformedRecord(t *testing.T) {
 	ok := &fakeHost{files: map[string]string{}}
 	bad := &fakeHost{files: map[string]string{deployrecord.Path(dep): "{"}}
-	_, err := deployrecord.Update(gateways(ok, bad), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"vm"}}), now)
+	_, err := deployrecord.Update(gateways(ok, bad), dep, deployrecord.Adding(sites("vm")), now)
 	if !errors.Is(err, deployrecord.ErrMalformed) || len(ok.files) != 0 {
 		t.Errorf("err %v, wrote %v", err, ok.files)
 	}
 }
 
-func TestUpdateWithNothingToChangeWritesNothing(t *testing.T) {
-	rec := deployrecord.Encode(deployrecord.Record{Revision: 2, Sites: []string{"vm"}})
-	a := &fakeHost{files: map[string]string{deployrecord.Path(dep): rec}}
-	b := &fakeHost{files: map[string]string{deployrecord.Path(dep): rec}}
-	res, err := deployrecord.Update(gateways(a, b), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"vm"}}), now)
-	if err != nil || res.Changed || len(res.Wrote) != 0 {
-		t.Errorf("%+v %v", res, err)
+func TestForgettingNothingWithEveryGatewayCurrentWritesNothing(t *testing.T) {
+	a, b := &fakeHost{files: map[string]string{}}, &fakeHost{files: map[string]string{}}
+	change(t, deployrecord.Adding(sites("vm")), a, b)
+	if res := change(t, deployrecord.Forgetting(sites()), a, b); res.Changed || len(res.Wrote) != 0 {
+		t.Errorf("%+v", res)
 	}
 }
 
-func stored(revision int, sites map[string][2]int) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, `{"version":1,"revision":%d,"updated_at":"","sites":{`, revision)
-	first := true
-	for _, n := range slices.Sorted(maps.Keys(sites)) {
-		if !first {
-			b.WriteString(",")
+func TestAddingMakesANewTagEvenWhenDeployed(t *testing.T) {
+	h := &fakeHost{files: map[string]string{}}
+	b := &fakeHost{files: map[string]string{}, down: true}
+	change(t, deployrecord.Adding(sites("vm")), h, b)
+	first := h.files[deployrecord.Path(dep)]
+	change(t, deployrecord.Adding(sites("vm")), h, b)
+	if h.files[deployrecord.Path(dep)] == first {
+		t.Error("a second add of a deployed name made no new tag")
+	}
+}
+
+func TestOldLayoutsAreMalformed(t *testing.T) {
+	for _, content := range []string{
+		"{",
+		`{"version":2}`,
+		`{"version":1,"sites":["vm"],"apps":[],"pocket_id_groups":[]}`,
+		`{"version":1,"revision":2,"sites":{"vm":{"added":1}},"apps":{},"pocket_id_groups":{}}`,
+	} {
+		h := &fakeHost{files: map[string]string{deployrecord.Path(dep): content}}
+		if _, _, missing := deployrecord.Gather(gateways(h), dep); !errors.Is(missing["gw1"], deployrecord.ErrMalformed) {
+			t.Errorf("%s: %v", content, missing["gw1"])
 		}
-		first = false
-		fmt.Fprintf(&b, `%q:{"added":%d,"removed":%d}`, n, sites[n][0], sites[n][1])
-	}
-	b.WriteString(`},"apps":{},"pocket_id_groups":{}}` + "\n")
-	return b.String()
-}
-
-func TestASplitKeepsEveryAddAndEveryRemoval(t *testing.T) {
-	a := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(4, map[string][2]int{"vm": {1, 0}, "m1": {1, 3}, "m2": {1, 4}})}}
-	b := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(2, map[string][2]int{"vm": {1, 0}, "m1": {1, 0}, "m2": {1, 0}, "y": {2, 0}})}}
-	r, _, _ := deployrecord.Gather(gateways(a, b), dep)
-	if strings.Join(r.Sites, ",") != "vm,y" {
-		t.Fatalf("merged %v", r.Sites)
-	}
-	if _, err := deployrecord.Update(gateways(a, b), dep, deployrecord.Adding(deployrecord.Record{}), now); err != nil {
-		t.Fatal(err)
-	}
-	for _, h := range []*fakeHost{a, b} {
-		got, _, _ := deployrecord.Read(h, dep)
-		if strings.Join(got.Sites, ",") != "vm,y" || got.Revision != 4 {
-			t.Errorf("caught up to %+v", got)
-		}
-	}
-}
-
-func TestAGatewayAppliedAloneIsNotIgnored(t *testing.T) {
-	old := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(9, map[string][2]int{"vm": {1, 0}})}}
-	fresh := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(1, map[string][2]int{"vm2": {1, 0}})}}
-	r, _, _ := deployrecord.Gather(gateways(old, fresh), dep)
-	if strings.Join(r.Sites, ",") != "vm,vm2" {
-		t.Errorf("merged %v", r.Sites)
-	}
-}
-
-func TestATieKeepsTheName(t *testing.T) {
-	a := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(5, map[string][2]int{"x": {1, 5}})}}
-	b := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(5, map[string][2]int{"x": {5, 0}})}}
-	if r, _, _ := deployrecord.Gather(gateways(a, b), dep); !r.Lists("sites", "x") {
-		t.Error("a tie dropped the name")
-	}
-}
-
-func TestANameAddedAgainAfterItsRemoval(t *testing.T) {
-	h := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(3, map[string][2]int{"x": {1, 3}})}}
-	if _, err := deployrecord.Update(gateways(h), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"x"}}), now); err != nil {
-		t.Fatal(err)
-	}
-	if r, _, _ := deployrecord.Read(h, dep); !r.Lists("sites", "x") || r.Revision != 4 {
-		t.Fatalf("%+v", r)
-	}
-	if _, err := deployrecord.Update(gateways(h), dep, deployrecord.Forgetting(deployrecord.Record{Sites: []string{"x"}}), now); err != nil {
-		t.Fatal(err)
-	}
-	if r, _, _ := deployrecord.Read(h, dep); r.Lists("sites", "x") || r.Revision != 5 {
-		t.Errorf("%+v", r)
-	}
-}
-
-func TestTheListLayoutIsMalformed(t *testing.T) {
-	h := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":1,"sites":["vm"],"apps":[],"pocket_id_groups":[]}`}}
-	if _, _, err := deployrecord.Read(h, dep); !errors.Is(err, deployrecord.ErrMalformed) {
-		t.Errorf("err = %v", err)
 	}
 }

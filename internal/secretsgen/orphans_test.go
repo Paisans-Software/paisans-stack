@@ -79,7 +79,7 @@ func TestOrphansKeepWhatAnyRecordLists(t *testing.T) {
 	}
 	one := deployrecord.Record{Sites: []string{"home-a", "monitor-a"}, Apps: []string{"uptime"}}
 	two := deployrecord.Record{Sites: []string{"home-a"}, PocketIDGroups: []string{"old"}}
-	u := deployrecord.Union(one, two)
+	u := deployrecord.Record{Sites: append(one.Sites, two.Sites...), Apps: append(one.Apps, two.Apps...), PocketIDGroups: append(one.PocketIDGroups, two.PocketIDGroups...)}
 	var keys []string
 	for _, o := range secretsgen.Orphans(cfg, s, &u) {
 		keys = append(keys, o.Key)

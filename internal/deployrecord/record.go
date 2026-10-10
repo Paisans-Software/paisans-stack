@@ -7,6 +7,7 @@
 package deployrecord
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -41,9 +42,6 @@ var ErrMalformed = errors.New("not a deployment record this toolkit reads")
 // Record is the names a deployment has deployed, each list sorted.
 type Record struct {
 	Version int `json:"version"`
-	// Revision orders records: every change raises it by one, and the
-	// highest is the newest.
-	Revision int `json:"revision"`
 	// UpdatedAt is when the change was made, RFC 3339 by the writer's
 	// clock, for a person reading the file. Nothing compares it.
 	UpdatedAt      string   `json:"updated_at"`
@@ -94,17 +92,6 @@ func (r Record) Lists(kind, name string) bool {
 	return false
 }
 
-// Union is every name any of rs lists.
-func Union(rs ...Record) Record {
-	var out Record
-	for _, r := range rs {
-		out.Sites = append(out.Sites, r.Sites...)
-		out.Apps = append(out.Apps, r.Apps...)
-		out.PocketIDGroups = append(out.PocketIDGroups, r.PocketIDGroups...)
-	}
-	return normal(out)
-}
-
 // normal sorts each list, drops repeats, and makes absent lists empty, so
 // that equal records compare the same.
 func normal(r Record) Record {
@@ -118,26 +105,35 @@ func normal(r Record) Record {
 		sort.Strings(out)
 		return out
 	}
-	return Record{Version: Version, Revision: r.Revision, UpdatedAt: r.UpdatedAt, Sites: clean(r.Sites), Apps: clean(r.Apps), PocketIDGroups: clean(r.PocketIDGroups)}
+	return Record{Version: Version, UpdatedAt: r.UpdatedAt, Sites: clean(r.Sites), Apps: clean(r.Apps), PocketIDGroups: clean(r.PocketIDGroups)}
 }
 
-// entry is one name's history: the revision of the change that last added it
-// and of the one that last removed it.
+// entry is one name's history: a tag for every add of it, and the tags of
+// the adds a removal saw.
 type entry struct {
-	Added   int `json:"added,omitempty"`
-	Removed int `json:"removed,omitempty"`
+	Adds    []string `json:"adds,omitempty"`
+	Removed []string `json:"removed,omitempty"`
 }
 
-// deployed is a name added at least as late as it was removed: an add and a
-// removal at the same revision, by two writers at once, keep it.
-func (e entry) deployed() bool { return e.Added > 0 && e.Added >= e.Removed }
+// live is the tags of the adds no removal saw, sorted.
+func (e entry) live() []string {
+	var out []string
+	for _, t := range e.Adds {
+		if !slices.Contains(e.Removed, t) {
+			out = append(out, t)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
-// doc is the record as stored: every name the deployment ever recorded, with
-// its last add and removal. A removed name stays, so that a gateway that
-// missed the removal cannot bring it back.
+// deployed is a name with an add no removal saw: an add made where a removal
+// was never seen survives that removal.
+func (e entry) deployed() bool { return len(e.live()) > 0 }
+
+// doc is the record as stored: every name with its add and removed tags.
 type doc struct {
 	Version        int              `json:"version"`
-	Revision       int              `json:"revision"`
 	UpdatedAt      string           `json:"updated_at"`
 	Sites          map[string]entry `json:"sites"`
 	Apps           map[string]entry `json:"apps"`
@@ -162,7 +158,7 @@ func (m *doc) kind(kind string) map[string]entry {
 
 // view is the deployed names of m.
 func view(m doc) Record {
-	r := Record{Revision: m.Revision, UpdatedAt: m.UpdatedAt}
+	r := Record{UpdatedAt: m.UpdatedAt}
 	lists := map[string]*[]string{"sites": &r.Sites, "apps": &r.Apps, "pocket_id_groups": &r.PocketIDGroups}
 	for _, kind := range kindNames {
 		for name, e := range m.kind(kind) {
@@ -174,18 +170,46 @@ func view(m doc) Record {
 	return normal(r)
 }
 
-// merge is, for every name, the latest add and the latest removal any of ds
+func tagSet(lists ...[]string) []string {
+	var out []string
+	for _, l := range lists {
+		for _, t := range l {
+			if !slices.Contains(out, t) {
+				out = append(out, t)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// merge is, for every name, every add tag and every removed tag any of ds
 // holds: no add one record alone saw, and no removal one alone saw, is lost.
 func merge(ds ...doc) doc {
 	out := newDoc()
 	for _, m := range ds {
-		out.Revision = max(out.Revision, m.Revision)
 		out.UpdatedAt = max(out.UpdatedAt, m.UpdatedAt)
 		for _, kind := range kindNames {
 			into := out.kind(kind)
 			for name, e := range m.kind(kind) {
 				cur := into[name]
-				into[name] = entry{Added: max(cur.Added, e.Added), Removed: max(cur.Removed, e.Removed)}
+				into[name] = entry{Adds: tagSet(cur.Adds, e.Adds), Removed: tagSet(cur.Removed, e.Removed)}
+			}
+		}
+	}
+	return out
+}
+
+// compact keeps one live tag of each deployed name and drops every name that
+// is not deployed. It is only safe when every gateway's record was read: then
+// no gateway holds an older copy for a dropped tag to cancel.
+func compact(m doc) doc {
+	out := newDoc()
+	out.UpdatedAt = m.UpdatedAt
+	for _, kind := range kindNames {
+		for name, e := range m.kind(kind) {
+			if live := e.live(); len(live) > 0 {
+				out.kind(kind)[name] = entry{Adds: live[:1]}
 			}
 		}
 	}
@@ -193,26 +217,17 @@ func merge(ds ...doc) doc {
 }
 
 func encodeDoc(m doc) string {
+	m = merge(m)
 	m.Version = Version
-	for _, kind := range kindNames {
-		if m.kind(kind) == nil {
-			switch kind {
-			case "sites":
-				m.Sites = map[string]entry{}
-			case "apps":
-				m.Apps = map[string]entry{}
-			default:
-				m.PocketIDGroups = map[string]entry{}
-			}
-		}
-	}
 	data, _ := json.Marshal(m)
 	return string(data) + "\n"
 }
 
 func parseDoc(content string) (doc, error) {
+	dec := json.NewDecoder(strings.NewReader(content))
+	dec.DisallowUnknownFields()
 	m := newDoc()
-	if err := json.Unmarshal([]byte(content), &m); err != nil {
+	if err := dec.Decode(&m); err != nil {
 		return doc{}, err
 	}
 	if m.Version != Version {
@@ -221,26 +236,26 @@ func parseDoc(content string) (doc, error) {
 	return merge(m), nil
 }
 
-// Encode is a stored record in which every name of r was added at r's
-// revision, 1 when it has none. It is for tests: everything that writes a
-// gateway goes through Update.
+// newTag is a fresh tag for an add. Tests replace it.
+var newTag = func() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b)
+}
+
+// Encode is a stored record holding every name of r, each with one tag,
+// "t-" and its name. It is for tests: everything that writes a gateway goes
+// through Update.
 func Encode(r Record) string {
-	rev := max(r.Revision, 1)
 	m := newDoc()
-	m.Revision = rev
 	for _, kind := range kindNames {
 		for _, name := range r.List(kind) {
-			m.kind(kind)[name] = entry{Added: rev}
+			m.kind(kind)[name] = entry{Adds: []string{"t-" + name}}
 		}
 	}
 	return encodeDoc(m)
-}
-
-// Read reads the record on the gateway t reaches: its deployed names. found
-// is false for a gateway with none, which is not an error.
-func Read(t registry.Runner, d deployment.Deployment) (Record, bool, error) {
-	m, _, found, err := read(t, d)
-	return view(m), found, err
 }
 
 func read(t registry.Runner, d deployment.Deployment) (doc, string, bool, error) {
@@ -260,6 +275,10 @@ func read(t registry.Runner, d deployment.Deployment) (doc, string, bool, error)
 
 // ErrNoRecord is a gateway that answered with no deployment record.
 var ErrNoRecord = errors.New("it has no deployment record, which its next apply writes")
+
+// ErrChanged is a write refused because another command changed the record
+// between the read and the write.
+var ErrChanged = errors.New(ChangedMarker)
 
 // Gather reads the record on every host, keyed by gateway: the deployed
 // names of their merge, how many records were found, and why each other
@@ -281,8 +300,8 @@ func Gather(hosts map[string]registry.Runner, d deployment.Deployment) (Record, 
 	return view(merge(found...)), len(found), missing
 }
 
-// Result is what Update did: whether the names changed, which gateways it
-// wrote, and why it missed each one it could not.
+// Result is what Update did: whether the deployed names changed, which
+// gateways it wrote, and why it missed each one it could not.
 type Result struct {
 	Changed bool
 	Wrote   []string
@@ -292,46 +311,44 @@ type Result struct {
 // Change is what Update does to the record: names added, names taken out.
 type Change struct{ add, forget Record }
 
-// Adding adds names to the record.
+// Adding adds names to the record, each with a new tag whether or not it is
+// already deployed, so that the add survives a removal it could not see.
 func Adding(names Record) Change { return Change{add: names} }
 
-// Forgetting takes names out of the record.
+// Forgetting takes names out of the record: a removal of every add of each
+// that the record holds.
 func Forgetting(names Record) Change { return Change{forget: names} }
 
-// apply makes ch's events in m at rev: an add for each name added that is not
-// deployed, a removal for each name taken out that is. It reports whether it
-// made any.
-func (m *doc) apply(ch Change, rev int) bool {
-	changed := false
+func (m *doc) apply(ch Change) {
 	for _, kind := range kindNames {
 		names := m.kind(kind)
 		for _, n := range ch.add.List(kind) {
-			if e := names[n]; n != "" && !e.deployed() {
-				e.Added = rev
-				names[n] = e
-				changed = true
+			if n == "" {
+				continue
 			}
+			e := names[n]
+			e.Adds = tagSet(e.Adds, []string{newTag()})
+			names[n] = e
 		}
 		for _, n := range ch.forget.List(kind) {
-			if e := names[n]; e.deployed() {
-				e.Removed = rev
+			if e, ok := names[n]; ok && e.deployed() {
+				e.Removed = tagSet(e.Removed, e.Adds)
 				names[n] = e
-				changed = true
 			}
 		}
 	}
-	return changed
 }
 
 // Update changes the record on every gateway at once: it reads each one that
-// answers, merges them name by name, makes ch's events at the next revision,
-// and writes the result to every gateway that answered whose record differs.
-// With no event to make, nothing is raised, and only a gateway whose record
-// differs from the merge is written: that is how one that missed changes is
-// brought up to date, and how what it alone knew reaches the others. A
-// gateway that does not answer, or whose write is refused, is in Missed; a
-// malformed record stops it before anything is written, since what that
-// record held is unknown.
+// answers, merges them name by name, makes ch's change, and writes the result
+// to every gateway that answered whose record differs. When every gateway
+// answered, the result is compacted first. A change that leaves the record as
+// it was still writes a gateway whose record differs from the merge: that is
+// how one that missed changes is brought up to date, and how what it alone
+// knew reaches the others. A gateway that does not answer, or whose write is
+// refused, is in Missed, ErrChanged for one another command changed
+// meanwhile; a malformed record stops it before anything is written, since
+// what that record held is unknown.
 func Update(hosts map[string]registry.Runner, d deployment.Deployment, ch Change, now time.Time) (Result, error) {
 	res := Result{Missed: map[string]error{}}
 	type seen struct {
@@ -355,13 +372,18 @@ func Update(hosts map[string]registry.Runner, d deployment.Deployment, ch Change
 			found = append(found, m)
 		}
 	}
-	target := merge(found...)
-	if target.apply(ch, target.Revision+1) {
-		target.Revision++
-		target.UpdatedAt = now.UTC().Format(time.RFC3339)
-		res.Changed = true
-	} else if len(found) == 0 {
+	base := merge(found...)
+	target := merge(base)
+	target.apply(ch)
+	if len(found) == 0 && encodeDoc(target) == encodeDoc(base) {
 		return res, nil
+	}
+	res.Changed = !sameNames(view(target), view(base))
+	if encodeDoc(target) != encodeDoc(base) {
+		target.UpdatedAt = now.UTC().Format(time.RFC3339)
+	}
+	if len(res.Missed) == 0 {
+		target = compact(target)
 	}
 	want := encodeDoc(target)
 	for _, gw := range slices.Sorted(maps.Keys(got)) {
@@ -378,27 +400,8 @@ func Update(hosts map[string]registry.Runner, d deployment.Deployment, ch Change
 	return res, nil
 }
 
-// Add adds names to the record on one gateway, creating it. It reports
-// whether it wrote.
-func Add(t registry.Runner, d deployment.Deployment, names Record) (bool, error) {
-	return one(t, d, Adding(names))
-}
-
-// Forget takes names out of the record on one gateway. A gateway with none
-// is left without one.
-func Forget(t registry.Runner, d deployment.Deployment, names Record) (bool, error) {
-	return one(t, d, Forgetting(names))
-}
-
-func one(t registry.Runner, d deployment.Deployment, ch Change) (bool, error) {
-	res, err := Update(map[string]registry.Runner{"": t}, d, ch, time.Now())
-	if err != nil {
-		return false, err
-	}
-	if err := res.Missed[""]; err != nil {
-		return false, err
-	}
-	return len(res.Wrote) > 0, nil
+func sameNames(a, b Record) bool {
+	return slices.Equal(a.Sites, b.Sites) && slices.Equal(a.Apps, b.Apps) && slices.Equal(a.PocketIDGroups, b.PocketIDGroups)
 }
 
 // write replaces the record with content, under the registry's lock, only if
@@ -413,7 +416,7 @@ func write(t registry.Runner, d deployment.Deployment, raw string, found bool, c
 	out, err := t.Run(writeCommand(d, want, content))
 	if err != nil {
 		if strings.Contains(out, ChangedMarker) {
-			return fmt.Errorf("%s: %s. Run the command again", t.Describe(), ChangedMarker)
+			return fmt.Errorf("%s: %w", t.Describe(), ErrChanged)
 		}
 		return fmt.Errorf("writing %s: %w", Path(d), err)
 	}

@@ -1,6 +1,9 @@
 package siteremove_test
 
 import (
+	"errors"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
@@ -24,7 +27,7 @@ func TestSiteRemoveForgetsTheSiteOnEveryGateway(t *testing.T) {
 	if err := siteremove.Execute(p); err != nil {
 		t.Fatal(err)
 	}
-	if r, _, _ := deployrecord.Read(vm, dep); r.Lists("sites", "home-b") {
+	if r, _, _ := readRecord(vm, dep); r.Lists("sites", "home-b") {
 		t.Error("vm's record still lists home-b")
 	}
 }
@@ -50,18 +53,12 @@ func TestCleaningAGatewayDeletesItsRecord(t *testing.T) {
 	}
 }
 
-// A gateway that missed the removal is written with the newest record when
-// the removal runs, so it no longer lists the site.
-func TestSiteRemoveWritesTheNewestRecordToEveryGateway(t *testing.T) {
-	w := setup(t)
-	vm := w.hosts["vm"]
-	vm.files[deployrecord.Path(dep)] = deployrecord.Encode(deployrecord.Record{Revision: 2, Sites: []string{"home-a", "home-b", "vm", "watch"}})
-	p := w.mustBuild("home-b", siteremove.Options{})
-	if err := siteremove.Execute(p); err != nil {
-		t.Fatal(err)
+// readRecord is the deployed names the record on h holds, and whether it
+// holds one.
+func readRecord(h registry.Runner, d deployment.Deployment) (deployrecord.Record, bool, error) {
+	r, found, missing := deployrecord.Gather(map[string]registry.Runner{"gw": h}, d)
+	if err := missing["gw"]; err != nil && !errors.Is(err, deployrecord.ErrNoRecord) {
+		return r, false, err
 	}
-	r, _, _ := deployrecord.Read(vm, dep)
-	if r.Revision != 3 || r.Lists("sites", "home-b") {
-		t.Errorf("%+v", r)
-	}
+	return r, found > 0, nil
 }

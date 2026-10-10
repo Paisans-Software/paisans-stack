@@ -183,13 +183,13 @@ func (p *Plan) buildCluster() (*Stage, error) {
 	for _, gw := range p.end.GatewaySites() {
 		records[gw] = p.transports[gw]
 	}
-	newest, found, missing := deployrecord.Gather(records, p.dep())
+	deployed, found, missing := deployrecord.Gather(records, p.dep())
 	for _, gw := range sortedCopy(keys(missing)) {
 		if !errors.Is(missing[gw], deployrecord.ErrNoRecord) {
 			return nil, fmt.Errorf("site remove %s: %w", p.Site, missing[gw])
 		}
 	}
-	forget := found > 0 && newest.Lists("sites", p.Site)
+	forget := found > 0 && deployed.Lists("sites", p.Site)
 	if forget {
 		on := strings.Join(sortedCopy(keys(records)), ", ")
 		st.Steps = append(st.Steps, Step{Site: on, Verb: "forget", Title: "forget " + p.Site + " in the deployment record", Text: fmt.Sprintf("%s out of %s on %s, so secrets prune may remove its secrets", p.Site, deployrecord.Path(p.dep()), on)})

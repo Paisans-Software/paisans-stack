@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"regexp"
 	"strings"
 	"testing"
@@ -67,7 +69,7 @@ func TestApplyRecordsTheDeploymentOnAGateway(t *testing.T) {
 	if err := recordApplied(&ui.Recorder{}, cfg, "vm", func(string) registry.Runner { return gw }); err != nil {
 		t.Fatal(err)
 	}
-	rec, found, _ := deployrecord.Read(gw, cfg.Deployment())
+	rec, found, _ := readRecord(gw, cfg.Deployment())
 	if !found || !rec.Lists("sites", "home-b") || !rec.Lists("apps", "talk") {
 		t.Errorf("%+v %v", rec, found)
 	}
@@ -85,7 +87,7 @@ func TestForgetInRecordsReachesEveryGatewayAndWarnsForOneDown(t *testing.T) {
 	t.Cleanup(func() { registryHost = saved })
 	rec := &ui.Recorder{}
 	forgetInRecords(rec, cfg, deployrecord.Record{Sites: []string{"monitor-a"}}, "monitor-a", true, true)
-	if r, _, _ := deployrecord.Read(vm, cfg.Deployment()); r.Lists("sites", "monitor-a") {
+	if r, _, _ := readRecord(vm, cfg.Deployment()); r.Lists("sites", "monitor-a") {
 		t.Error("vm still lists monitor-a")
 	}
 	vm.down = true
@@ -171,7 +173,7 @@ func TestApplyRecordsOnEveryGatewayAndReportsOneDown(t *testing.T) {
 	if err := recordApplied(rec, withGateway(cfg, "vm2"), "vm", hosts); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, _ := deployrecord.Read(vm, cfg.Deployment()); !found {
+	if _, found, _ := readRecord(vm, cfg.Deployment()); !found {
 		t.Error("vm was not written")
 	}
 	if !strings.Contains(rec.Lines(), "vm2 missed this change") {
@@ -192,5 +194,23 @@ func TestARecordChangeThatReachedNoGatewaySaysSo(t *testing.T) {
 	}
 	if !rec.Has("fail", "record the deployment") {
 		t.Errorf("the step did not say it reached no gateway:\n%s", rec.Lines())
+	}
+}
+
+// readRecord is the deployed names the record on h holds, and whether it
+// holds one.
+func readRecord(h registry.Runner, d deployment.Deployment) (deployrecord.Record, bool, error) {
+	r, found, missing := deployrecord.Gather(map[string]registry.Runner{"gw": h}, d)
+	if err := missing["gw"]; err != nil && !errors.Is(err, deployrecord.ErrNoRecord) {
+		return r, false, err
+	}
+	return r, found > 0, nil
+}
+
+func TestAChangedRecordSaysRunAgain(t *testing.T) {
+	rec := &ui.Recorder{}
+	reportMissed(rec, deployrecord.Result{Missed: map[string]error{"vm": fmt.Errorf("ubuntu@vm.example.org: %w", deployrecord.ErrChanged)}})
+	if !strings.Contains(rec.Lines(), "run this command again") || strings.Contains(rec.Lines(), "brought up to date") {
+		t.Errorf("%s", rec.Lines())
 	}
 }

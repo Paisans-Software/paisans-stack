@@ -1396,19 +1396,19 @@ removal commands take names out, on every gateway: `site remove` in its stage
 the app and each group no remaining Pocket ID app names. Cleaning a gateway's
 host deletes its record.
 
-The gateways' records are kept in step, name by name. Each name keeps the
-revision of the change that last added it and of the one that last removed
-it, and a name is deployed when it was added at least as late as it was
-removed, so an add and a removal at the same revision keep it. A removed name
-stays in the file. Every change merges the records of the gateways that
-answer, for each name its latest add and latest removal, makes its own events
-at the next revision, and writes the merge to every gateway that answered; one
-that does not is warned about, never a failure, and the next change brings it
-up to date. Readers merge the same way. So an add only one gateway saw, while
-the others were down, is never lost to a later change on another, and a
-gateway that missed a removal does not bring the removed site back. The record
-also carries an `updated_at`, the writer's clock, for people reading the file;
-nothing compares it.
+The gateways' records are kept in step, name by name. Every add of a name
+makes a new random tag, and a removal records the tags of the adds it saw; a
+name is deployed while it has an add no removal saw. A gateway's `apply` adds
+every declared name with a new tag, deployed or not, so an add made on a
+gateway that missed a removal survives that removal, and a gateway that missed
+a removal does not bring the name back. Every change merges the records of the
+gateways that answer, all their tags, makes its own, and writes the result to
+every gateway that answered; when every gateway answered, it is compacted
+first, to one tag per deployed name. A gateway that does not answer is warned
+about, never a failure, and the next change brings it up to date; one whose
+record another command changed meanwhile is warned about too, with "run this
+command again". The record also carries an `updated_at`, the writer's clock,
+for people reading the file; nothing compares it.
 
 | In `paisans.yaml` | In a record | `init` and `apply` | `secrets prune` |
 |---|---|---|---|
