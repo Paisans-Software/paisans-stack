@@ -2971,7 +2971,9 @@ sidecars before its steps run, and another deployment's `host prepare` or
 `authorized_keys` runs under `flock /etc/paisans/authorized_keys.lock`, one
 lock for the whole host, and a `remove` checks the other sidecars again under
 it: when one names the key by then, only this deployment's claim is dropped.
-A sidecar it cannot read counts as a claim, so an error keeps the key.
+A `share` looks again too: when the other deployment removed the line in
+between, it appends the line and records it `added` instead. A sidecar it
+cannot read counts as a claim, so an error keeps the key.
 
 **Nothing is removed until everything is in place.** Removals run after every
 addition and after the firewall, and a removal goes through a temporary file

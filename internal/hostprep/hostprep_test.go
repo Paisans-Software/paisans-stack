@@ -1201,9 +1201,50 @@ func TestAKeyAnotherDeploymentClaimsIsShared(t *testing.T) {
 	if !strings.Contains(share[0].Describe, "paisans-0c1d claims it") {
 		t.Errorf("the share does not name the other claim: %s", share[0].Describe)
 	}
-	cmd := unlocked(t, share[0].Command)
-	if !strings.Contains(cmd, "shared "+fingerprint(keyBob)+" bob\n") || strings.Contains(cmd, "authorized_keys'") {
-		t.Errorf("the share does not only record bob as shared: %s", cmd)
+	// Run against real files: with bob's line still there the share only
+	// records it; with the line removed since the plan, it appends it again
+	// and records it added.
+	for name, gone := range map[string]bool{"line there": false, "line removed meanwhile": true} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			keys := keyAlice + "\n" + keyBob + "\n"
+			if gone {
+				keys = keyAlice + "\n"
+			}
+			run(t, dir, share[0].Command, map[string]string{"/ssh/authorized_keys": keys})
+			got, _ := os.ReadFile(dir + "/ssh/authorized_keys")
+			own, _ := os.ReadFile(dir + "/etc/authorized_keys.ubuntu.paisans-f2a9.owned")
+			if strings.Count(string(got), keyBob) != 1 {
+				t.Errorf("authorized_keys after:\n%s", got)
+			}
+			want := "shared " + fingerprint(keyBob) + " bob\n"
+			if gone {
+				want = "added " + fingerprint(keyBob) + " bob\n"
+			}
+			if !strings.Contains(string(own), want) {
+				t.Errorf("sidecar after, want %q:\n%s", want, own)
+			}
+		})
+	}
+}
+
+// run runs a command host prepare planned against files under dir: /etc/paisans
+// becomes dir/etc and the user's .ssh dir/ssh. GNU's --reference flags, the one
+// part a non-Linux sh lacks, are dropped.
+func run(t *testing.T, dir, command string, files map[string]string) {
+	t.Helper()
+	script := strings.NewReplacer("/etc/paisans", dir+"/etc", "/home/ubuntu/.ssh", dir+"/ssh").Replace(unlocked(t, command))
+	script = regexp.MustCompile(`ch(own|mod) --reference=\S+ \S+;`).ReplaceAllString(script, "")
+	for path, content := range files {
+		if err := os.MkdirAll(filepath.Dir(dir+path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dir+path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s\n%s", err, out, script)
 	}
 }
 
@@ -1269,9 +1310,6 @@ func TestARenamedKeyIsRecordedUnderItsNewName(t *testing.T) {
 // deletes carol's line only while no other sidecar names her key, and drops
 // her from this deployment's sidecar either way.
 func TestTheRemovalChecksTheOtherSidecarsWhenItRuns(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh")
-	}
 	host := preparedHost(false)
 	host.files[authorizedKeys] = keyAlice + "\n" + keyCarol + "\n"
 	host.files[ownedKeys] = "added " + fingerprint(keyAlice) + " alice\nadded " + fingerprint(keyCarol) + " carol\n"
@@ -1286,28 +1324,14 @@ func TestTheRemovalChecksTheOtherSidecarsWhenItRuns(t *testing.T) {
 	for name, claimedMeanwhile := range map[string]bool{"unclaimed": false, "claimed meanwhile": true} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			script := strings.NewReplacer("/etc/paisans", dir+"/etc", "/home/ubuntu/.ssh", dir+"/ssh").Replace(unlocked(t, remove[0].Command))
-			// GNU's --reference flags are the one part a non-Linux sh lacks.
-			script = regexp.MustCompile(`ch(own|mod) --reference=\S+ \S+;`).ReplaceAllString(script, "")
-			for path, content := range map[string]string{
-				dir + "/ssh/authorized_keys":                           keyAlice + "\n" + keyCarol + "\n",
-				dir + "/etc/authorized_keys.ubuntu.paisans-f2a9.owned": host.files[ownedKeys],
-			} {
-				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-					t.Fatal(err)
-				}
+			files := map[string]string{
+				"/ssh/authorized_keys":                           keyAlice + "\n" + keyCarol + "\n",
+				"/etc/authorized_keys.ubuntu.paisans-f2a9.owned": host.files[ownedKeys],
 			}
 			if claimedMeanwhile {
-				if err := os.WriteFile(dir+"/etc/authorized_keys.ubuntu.paisans-0c1d.owned", []byte("shared "+fingerprint(keyCarol)+" c\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				files["/etc/authorized_keys.ubuntu.paisans-0c1d.owned"] = "shared " + fingerprint(keyCarol) + " c\n"
 			}
-			if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
-				t.Fatalf("%v: %s\n%s", err, out, script)
-			}
+			run(t, dir, remove[0].Command, files)
 			keys, _ := os.ReadFile(dir + "/ssh/authorized_keys")
 			if strings.Contains(string(keys), keyCarol) == !claimedMeanwhile {
 				t.Errorf("authorized_keys after:\n%s", keys)

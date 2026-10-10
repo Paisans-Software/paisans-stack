@@ -113,7 +113,9 @@ that writes a sidecar or `authorized_keys` runs under
 `flock /etc/paisans/authorized_keys.lock`, one lock for every user and every
 deployment on the host, and a `remove` decides again inside the lock: it
 deletes the line only if no other sidecar for the user then contains the
-fingerprint, and otherwise only drops this sidecar's claim. A sidecar that
+fingerprint, and otherwise only drops this sidecar's claim. A `share` also
+looks again inside the lock: when the other deployment removed the line in
+between, it appends the line and records it `added` instead. A sidecar that
 cannot be read inside the lock counts as a claim, so an error keeps the key.
 
 ## `site remove`

@@ -238,14 +238,23 @@ func planAuthorizedKeys(t Transport, d deployment.Deployment, s config.SSH) (out
 		case len(plain) > 0 && claimedBy(k.Fingerprint) != "":
 			// Already there, and another deployment claims it: paisans wrote
 			// it. Claimed here too, so that deployment cannot remove it from
-			// under this one, but shared, so this one never removes it.
+			// under this one, but shared, so this one never removes it. The
+			// other deployment may remove the line between this plan and its
+			// run, so the step looks again under the lock and, with the line
+			// gone, appends it and records it added instead.
 			remaining++
+			var raws []string
+			for _, l := range plain {
+				raws = append(raws, "-e "+shellQuote(l.raw))
+			}
+			added := append(append([]ownedEntry(nil), owned...), ownedEntry{mark: markAdded, fingerprint: k.Fingerprint, name: k.Name})
 			owned = append(owned, ownedEntry{mark: markShared, fingerprint: k.Fingerprint, name: k.Name})
 			out.Steps = append(out.Steps, Step{
 				Label:    "share",
 				Title:    "share ssh key",
 				Describe: fmt.Sprintf("ssh: key %s is already authorized for %s and %s claims it; claim it too, so it stays while either lists it", label, user, claimedBy(k.Fingerprint)),
-				Command:  Locked(writeOwned(d, user, owned)),
+				Command: Locked(fmt.Sprintf("if grep -qxF %s %s; then %s; else %s; %s; fi",
+					strings.Join(raws, " "), shellQuote(file), writeOwned(d, user, owned), appendKey(file, k.Line), writeOwned(d, user, added))),
 			})
 		case len(plain) > 0:
 			// Already there, put there by someone else (cloud-init, most
