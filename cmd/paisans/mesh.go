@@ -51,16 +51,17 @@ func checkMeshLive(cfg *config.Config, site string, h mesh.Host) error {
 		what[i] = c.What
 	}
 	return &ui.Problem{
-		Hint:    "mesh subnet " + cfg.Mesh.Subnet + " is in use" + holder(h, clash),
+		Hint:    "mesh subnet " + cfg.Mesh.Subnet + " is in use" + holder(h, site, clash),
 		Explain: "Remove it if not in use or run paisans init to pick a free subnet.",
 		Cause:   fmt.Errorf("%s: the mesh subnet %s overlaps %s, so nothing was changed", h.Describe(), cfg.Mesh.Subnet, strings.Join(what, ", ")),
 	}
 }
 
 // holder names what holds a clashing subnet, for the refusal's hint: the
-// paisans deployment whose interface it is, with its domain and site when
-// the host's registry lists it, or else the first clash itself.
-func holder(h mesh.Host, clash []mesh.Taken) string {
+// paisans deployment whose interface it is, with its domain when the host's
+// registry lists it, and its site name there where that is not site, which
+// the line already names; or else the first clash itself.
+func holder(h mesh.Host, site string, clash []mesh.Taken) string {
 	for _, c := range clash {
 		token, ok := strings.CutPrefix(c.Dev, deployment.InterfacePrefix)
 		if !ok || token == "" {
@@ -70,7 +71,11 @@ func holder(h mesh.Host, clash []mesh.Taken) string {
 		if reg, err := registry.Read(h); err == nil {
 			for _, e := range reg.Deployments {
 				if e.Token == token {
-					out += " (" + e.Domain + ", site " + e.Site + ")"
+					if e.Site != site {
+						out += " (" + e.Domain + ", as site " + e.Site + ")"
+					} else {
+						out += " (" + e.Domain + ")"
+					}
 					break
 				}
 			}
