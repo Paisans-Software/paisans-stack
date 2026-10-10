@@ -57,7 +57,7 @@ Dry run:
 
 ```
 paisans.yaml
-  ! garage consistency is dangerous: uploads confirmed with 1 of 2 copies written
+  ! garage consistency is dangerous: an upload is confirmed even if only 1 of 2 copies is written
 luthen-rael (ubuntu@192.0.2.10)
   ✓ host check              clean
   ✓ disk space              13.6 GiB free
@@ -187,10 +187,9 @@ type Problem struct {
 }
 ```
 
-* `Hint` follows the findings' hint rules: one line, at most about 80
-  characters, naming the problem in an operator's words rather than the
-  mechanism that found it (`no usable age key was found`, not `0 successful
-  groups required`).
+* `Hint` is one line, at most about 80 characters, naming the problem in an
+  operator's words rather than the mechanism that found it (`no usable age key
+  was found`, not `0 successful groups required`).
 * `Explain` is what to do. Everything an operator needs to act is here or in
   the hint, never only in the cause, since the cause is hidden by default.
   A list (each conflict a host check found, each problem in a file) is one
@@ -246,8 +245,9 @@ accept the flag, so an operator never has to remember which commands take it.
 
 `validate.Finding` gains `Hint` beside `Message`:
 
-* `Hint` is one line, at most about 80 characters, saying what is wrong in an
-  operator's words.
+* `Hint` is one line, at most 100 characters, saying what is wrong in an
+  operator's words. Most are far shorter; the cap leaves room for a hint that
+  must name a number and its consequence in the same sentence to be accurate.
 * `Message` keeps the explanation: why it matters and what to do, as today.
 
 `c.warn` and `c.refuse` take `(rule, key, hint, format, args...)`, and all of

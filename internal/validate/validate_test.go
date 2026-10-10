@@ -653,7 +653,7 @@ func TestEveryCallPassesAHint(t *testing.T) {
 			t.Errorf("%s: %d warn/refuse calls, %d with a hint literal", f, len(calls), len(hinted))
 		}
 		for _, m := range hinted {
-			if h := string(m[2]); h == "" || len(h) > 80 {
+			if h := string(m[2]); h == "" || len(h) > 100 {
 				t.Errorf("%s: bad hint %q", f, h)
 			}
 		}
@@ -668,7 +668,7 @@ func TestGarageDangerousNamesItsQuorums(t *testing.T) {
 		if f.Rule != "garage-consistency-dangerous" {
 			continue
 		}
-		if want := "garage consistency is dangerous: uploads confirmed with 1 of 2 copies written"; f.Hint != want {
+		if want := "garage consistency is dangerous: an upload is confirmed even if only 1 of 2 copies is written"; f.Hint != want {
 			t.Errorf("hint %q, want %q", f.Hint, want)
 		}
 		return
