@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // sudoProbe asks whether sudo runs without a password. -n makes sudo fail at
@@ -92,17 +94,31 @@ func (a *SudoAuth) resolve(t SSHTransport) (string, error) {
 		return "", fmt.Errorf("%s: asking whether sudo needs a password: %w\n%s", t.Describe(), err, out)
 	}
 	if !strings.Contains(out, "a password is required") {
-		return "", a.refuse(fmt.Errorf("%s: sudo refused before asking for any password, so none was asked for:\n%s", t.Describe(), strings.TrimSpace(out)))
+		return "", a.refuse(&ui.Problem{
+			Hint:    "sudo on " + t.Describe() + " refused the ssh user",
+			Explain: "It refused before asking for any password, so none was asked for. sudo said: " + strings.TrimSpace(out) + "\nGive the ssh user sudo on the host, or name a user that has it in the site's ssh section.",
+			Cause:   fmt.Errorf("%s: sudo refused before asking for any password:\n%s", t.Describe(), strings.TrimSpace(out)),
+		})
 	}
 	if a.Prompt == nil {
-		return "", a.refuse(fmt.Errorf("%s: sudo asks for a password, and there is no terminal to ask on. paisans asks for a sudo password only on a terminal, so an unattended run needs sudo without one: a sudoers rule giving the ssh user NOPASSWD. That makes the ssh key alone enough for root on this host, which is a decision about the host rather than about one run", t.Describe()))
+		return "", a.refuse(&ui.Problem{
+			Hint:    "sudo on " + t.Describe() + " needs a password, and there is no terminal to ask on",
+			Explain: "paisans asks for a sudo password only on a terminal, so an unattended run needs sudo without one: a sudoers rule giving the ssh user NOPASSWD. That makes the ssh key alone enough for root on this host, which is a decision about the host rather than about one run.",
+		})
 	}
 	password, err := a.Prompt(t.promptLabel())
 	if err != nil {
-		return "", a.refuse(fmt.Errorf("%s: reading the sudo password: %w", t.Describe(), err))
+		return "", a.refuse(&ui.Problem{
+			Hint:    "the sudo password for " + t.Describe() + " could not be read",
+			Explain: "Reading it from the terminal failed: " + err.Error() + ".",
+			Cause:   fmt.Errorf("%s: reading the sudo password: %w", t.Describe(), err),
+		})
 	}
 	if password == "" {
-		return "", a.refuse(fmt.Errorf("%s: no sudo password was given", t.Describe()))
+		return "", a.refuse(&ui.Problem{
+			Hint:    "no sudo password was given for " + t.Describe(),
+			Explain: "Run again and type it at the prompt, or give the ssh user NOPASSWD in sudoers for runs nobody watches.",
+		})
 	}
 
 	in := password + "\n"
@@ -111,7 +127,11 @@ func (a *SudoAuth) resolve(t SSHTransport) (string, error) {
 		return "", fmt.Errorf("%s: checking the sudo password: %w\n%s", t.Describe(), err, out)
 	}
 	if err != nil {
-		return "", a.refuse(fmt.Errorf("%s: sudo did not accept the password, and it is not tried again in this run, since repeated failures can lock the account:\n%s", t.Describe(), strings.TrimSpace(out)))
+		return "", a.refuse(&ui.Problem{
+			Hint:    "sudo on " + t.Describe() + " did not accept the password",
+			Explain: "It is not tried again in this run, since repeated failures can lock the account. Run again and type it carefully.",
+			Cause:   fmt.Errorf("%s: sudo did not accept the password:\n%s", t.Describe(), strings.TrimSpace(out)),
+		})
 	}
 	a.settled, a.password = true, password
 	return password, nil
