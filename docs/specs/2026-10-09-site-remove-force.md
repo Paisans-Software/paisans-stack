@@ -52,11 +52,11 @@ Out, each for a stated reason:
   elsewhere that has the cleaned host as a WireGuard peer, an etcd member or a
   Garage node keeps it until that site's next `apply`, or until a full
   `site remove` of the cleaned site.
-* **DNS and Pocket ID.** Reported, not changed. `paisans dns prune` deletes a
-  record only while its address is still declared, so a record of a site
-  already taken out of `paisans.yaml` is deleted at the provider by hand.
-  Pruning a sign-in client's secret
+* **Pocket ID.** Reported, not changed. Pruning a sign-in client's secret
   does not delete the client at Pocket ID, and the prune says so.
+* **DNS of a site `paisans.yaml` still declares.** Its records are still
+  wanted, so a forced removal of it has no DNS stage. The DNS stage below
+  covers every other case with a configuration.
 
 ## `site remove --force`
 
@@ -111,7 +111,8 @@ are used, and an undeclared site has none.
 * Stages 1 and 2 do not run, and none of their refusals are checked: not the
   only gateway, not a pinned app, not the end state validating, not etcd's,
   Patroni's or Garage's health. No other site is reached.
-* Stage 3 runs.
+* Stage 3 runs, and for a site `paisans.yaml` does not declare, the DNS stage
+  after it, which skips (below).
 * `paisans.yaml` is not edited, and nothing in `secrets.enc.yaml` is.
 
 `--host-gone` has nothing to do with `--force`, which exists to reach a host,
@@ -140,6 +141,107 @@ Any other host is not asked about: nothing in the configuration counts on it.
 | the host does not answer over ssh | its cleaning cannot be planned | fix ssh |
 | the site's own host, with `--execute` and no terminal | it takes a running site out from under its cluster | run it from an interactive shell |
 | `--delete-data` without a terminal | member data is deleted for good | run it from an interactive shell |
+
+## DNS: the removed site's address records
+
+Added 2026-10-10, approved by the founder in session.
+
+`site remove` deletes the address records this deployment's `dns init` made
+for the site it removes, in a stage of its own, the DNS stage. It applies
+whenever there is a configuration: a full removal, and `--force` with
+`paisans.yaml`.
+
+### Where it runs
+
+* **A full removal:** stage 4, after the host is cleaned and stage 3's gate
+  has passed, and before `paisans.yaml` is edited. A failure in any stage
+  before it leaves DNS untouched. A failure in it is resumed by running the
+  same command again, which needs the site still declared: the configuration
+  edit, stage 5, is what makes a re-run impossible. The configuration edit is
+  stage 5 and the monitor's reseed stage 6.
+* **`--host-gone`:** the stage runs. The records point at a host that is
+  gone, which is exactly when they should go.
+* **`--force` on a site `paisans.yaml` still declares:** no DNS stage. The
+  site's records are still wanted.
+* **`--force` on a site `paisans.yaml` does not declare:** the stage follows
+  the host stage, and is skipped, since the configuration names no public
+  address for the site.
+
+### What it deletes
+
+The configuration *before* removal is the one the command loaded; the
+configuration *without* the site is the end state stage 5 writes
+(`siteremove.EndState`). A record is deleted only when every one of these
+holds:
+
+| Rule | Why |
+|------|-----|
+| it carries exactly this deployment's comment, `paisans-<token>: created by paisans dns init` | anything else was never this deployment's `dns init`'s |
+| it is an A or AAAA record | those are the only types `dns init` creates |
+| its name is `community.domain`, a name under it, or a name `dns.Desired` produces for the configuration before removal | it sits where this deployment's names sit |
+| its address is the removed site's own `public_address` or `public_address6`, from the configuration before removal | it points at the host being removed, and at nothing else |
+| the configuration without the site wants no record of its type at its name | a name still wanted is kept; repointing it is `dns init`'s conflict for a human |
+| no remaining site declares the same address | a shared address may be the other site's, so its record is kept, and that is the reason given |
+
+Every record carrying the comment that fails a rule is listed as kept, with
+each reason, as `dns prune` lists them. A record without the comment is not
+listed at all. A record kept although it points at the removed site's address
+is listed so that its reason shows at every verbosity; one that points
+elsewhere shows its reasons with `--verbose`.
+
+When `dns.Desired` cannot name the configuration's records before removal
+(Eg: two gateways), the scope is the domain and the names under it. When it
+cannot name them without the site, nothing says which names are still
+wanted, and the stage is skipped with that reason.
+
+### One implementation with `dns prune`
+
+The seam is `internal/dns`'s `pruneRules`: the domain and the names of rule
+3, the address set of rule 4, the records still wanted of rule 5, and the
+addresses another site shares. `dns.BuildPrune` fills it from the
+configuration as it stands (every site's addresses, `Desired` of the
+configuration, the `--name`s vouched for); `dns.BuildSiteRemoval` fills it
+from the configuration before and without the site. Both hand it to the one
+planner, which applies rules 1 and 2 and lists every zone the names live in,
+and both delete through `dns.ExecutePrune`, which deletes by record id and
+lists each zone again to confirm each delete.
+
+### Dry run and `--execute`
+
+The dry run reads the provider and changes nothing:
+
+```
+stage 4, dns
+  · delete A blog.example.org → 203.0.113.7
+  · delete AAAA blog.example.org → 2001:db8::7
+  ! keep A home-b.example.org → 203.0.113.7
+    203.0.113.7 is also sites.home-a.public_address, which stays, so the record may be home-a's
+  · gate: no record of home-b's is left
+```
+
+`--execute` plans again from a fresh listing, under the same rules, deletes
+each record by its id, lists each zone again and fails if any is still there.
+The gate plans once more and passes only when nothing is left to delete.
+
+A provider error stops the stage at that record. The error names what was
+deleted before it and what was not, and nothing after the stage runs. Running
+the same command again resumes: the stages before it find nothing to do, and
+the DNS stage plans from a fresh listing, where what was deleted is gone.
+
+### Skipped, with one line
+
+The stage is skipped, saying why in one line, and the removal goes on:
+
+| Skipped | Line |
+|---|---|
+| `acme.provider` is not set | `skip dns: no DNS provider declared` |
+| the site declares neither `public_address` nor `public_address6` | `skip dns: <site> has no public address` |
+| the provider's record management is not implemented | `skip dns: <provider> record management is not implemented` |
+| `external.acme_dns_token` is not in the secrets | `skip dns: the DNS provider's token is not in the secrets` |
+| the configuration without the site cannot name its records | `skip dns: the configuration without <site> cannot name its records` |
+
+The token is never printed. The stage reads it from the decrypted secrets and
+hands it to the same provider `dns init` and `dns prune` use.
 
 ## Images
 
