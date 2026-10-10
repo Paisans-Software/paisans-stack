@@ -382,3 +382,48 @@ func TestPruneSaysKeptOnlyWhenThereAreSecrets(t *testing.T) {
 		t.Errorf("monitor-b has no secrets:\n%s", out)
 	}
 }
+
+// withTwoGateways adds a second gateway site, vm2, to the configuration at
+// configPath.
+func withTwoGateways(t *testing.T, configPath string) {
+	t.Helper()
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// vm's block, renamed and readdressed, so it carries vm's ssh keys.
+	text := string(data)
+	start := strings.Index(text, "\n  vm:\n") + 1
+	end := start + len("  vm:\n")
+	for end < len(text) && (strings.HasPrefix(text[end:], "    ") || strings.HasPrefix(text[end:], "\n")) {
+		end += strings.Index(text[end:], "\n") + 1
+	}
+	block := strings.NewReplacer("  vm:\n", "  vm2:\n", "[gateway, witness]", "[gateway]", "address: 10.44.0.3", "address: 10.44.0.9", "vm.example.org", "vm2.example.org").Replace(text[start:end])
+	out := text[:end] + block + text[end:]
+	if err := os.WriteFile(configPath, []byte(out), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil || len(cfg.GatewaySites()) != 2 {
+		t.Fatalf("two gateways: %v, %v", cfg, err)
+	}
+}
+
+// A gateway that missed a removal still lists the site; the newer record on
+// the other gateway does not, and it decides.
+func TestPruneTakesTheNewestRecord(t *testing.T) {
+	configPath, secretsPath := writeFixtureSecrets(t, func(s *config.Secrets) { s.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "x"} })
+	withTwoGateways(t, configPath)
+	withRecords(t, map[string]string{
+		"vm":  `{"version":1,"revision":9,"sites":["home-a","home-b","vm","vm2","watch"],"apps":[],"pocket_id_groups":[]}`,
+		"vm2": `{"version":1,"revision":8,"sites":["home-a","home-b","vm","vm2","watch","monitor-a"],"apps":[],"pocket_id_groups":[]}`,
+	})
+	captureStdout(t, func() {
+		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if s, _ := config.LoadSecrets(secretsPath); s.Sites["monitor-a"].WireGuardPrivateKey != "" {
+		t.Error("the stale gateway's listing kept monitor-a")
+	}
+}

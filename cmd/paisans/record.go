@@ -16,26 +16,21 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
-// errNoRecord is a gateway that answered with no deployment record.
-var errNoRecord = errors.New("it has no deployment record, which its next apply writes")
-
-// deploymentRecord is the union of every gateway's deployment record, and,
-// for each gateway that could not give one, why.
+// deploymentRecord is the newest of the gateways' deployment records, and,
+// for each gateway that could not give one, why: deployrecord.ErrNoRecord
+// for one that answered without one.
 func deploymentRecord(cfg *config.Config, hosts func(string) registry.Runner) (deployrecord.Record, map[string]error) {
-	missing := map[string]error{}
-	var records []deployrecord.Record
+	newest, _, missing := deployrecord.Gather(gatewayHosts(cfg, hosts), cfg.Deployment())
+	return newest, missing
+}
+
+// gatewayHosts is every gateway paisans.yaml declares, reached through hosts.
+func gatewayHosts(cfg *config.Config, hosts func(string) registry.Runner) map[string]registry.Runner {
+	out := map[string]registry.Runner{}
 	for _, gw := range cfg.GatewaySites() {
-		rec, found, err := deployrecord.Read(hosts(gw), cfg.Deployment())
-		switch {
-		case err != nil:
-			missing[gw] = err
-		case !found:
-			missing[gw] = errNoRecord
-		default:
-			records = append(records, rec)
-		}
+		out[gw] = hosts(gw)
 	}
-	return deployrecord.Union(records...), missing
+	return out
 }
 
 // recordForWarnings is the record init and apply warn against. A gateway
@@ -45,7 +40,7 @@ func recordForWarnings(r ui.Reporter, cfg *config.Config, hosts func(string) reg
 	rec, missing := deploymentRecord(cfg, hosts)
 	read := len(cfg.GatewaySites()) - len(missing)
 	for _, gw := range sortedKeys(missing) {
-		if !errors.Is(missing[gw], errNoRecord) {
+		if !errors.Is(missing[gw], deployrecord.ErrNoRecord) {
 			r.Warn("could not read the deployment record on "+gw, missing[gw].Error())
 		}
 	}
