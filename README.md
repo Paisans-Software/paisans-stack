@@ -2267,7 +2267,8 @@ sites:
     ssh:
       host: home-a.local
       user: ubuntu
-      public_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+      keys:
+        alice: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
     watchdog: auto   # auto | required | softdog | off; auto when absent
 ```
 
@@ -2368,9 +2369,9 @@ sites:
       host: 203.0.113.10   # optional: defaults to public_address, then endpoint's host
       user: ubuntu         # required, and must already exist on the host
       port: 22             # optional: empty or 0 means 22
-      public_key: |        # required: one or more keys, one per line
-        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
-        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB bob@example.org
+      keys:                # required: each key's name, then its .pub line
+        alice: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+        bob: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB bob@example.org
 ```
 
 | Key | Required | Refused when |
@@ -2378,14 +2379,15 @@ sites:
 | `host` | only without `public_address` or `endpoint` | neither a hostname nor an IP address (so `user@host` is refused: the user has its own key) |
 | `user` | yes | not a lowercase letter or underscore followed by lowercase letters, digits, underscores or hyphens, 32 characters at most |
 | `port` | no | outside 1 to 65535 |
-| `public_key` | yes | a line that is not an OpenSSH public key; a line with options (`from=`, `command=`, `restrict`); the same key twice, by fingerprint |
+| `keys` | yes | not a mapping; a name that is not a lowercase letter or digit followed by lowercase letters, digits, dots, underscores or hyphens, 32 characters at most; a name given twice; a value that is not an OpenSSH public key; a key with options (`from=`, `command=`, `restrict`); the same key under two names, by fingerprint |
 
 `host` defaults to `public_address`, and without that to the host in
 `endpoint`, because on most sites they are the same address written twice.
 `endpoint` comes last because it may name a router that forwards only
 WireGuard's port; there the connection fails and nothing is changed. The user name is held to a conservative form because it
-goes into commands and a file name on the host. Blank lines in `public_key` are
-ignored. Options are refused rather than carried: a line `host prepare` writes
+goes into commands and a file name on the host, and so is a key's name, which
+`host prepare` records on the host so an operator can trace a key there back
+to this file. Options are refused rather than carried: a line `host prepare` writes
 and later compares has to mean the same thing everywhere, and a restricted key
 is added to `authorized_keys` by hand, where `host prepare` leaves it alone.
 
@@ -2393,6 +2395,9 @@ The section replaced a single string, `ssh: home-a.local`. That form is now
 refused, and the refusal prints the section to write with the old host filled
 in. A site's access has one way to write it (founder decision), so there is
 nothing to read twice, and the string has nowhere to put the keys.
+`ssh.public_key`, a block of unnamed key lines, is refused the same way: the
+refusal prints the `keys` section to write, each key named by its comment up
+to the `@`.
 
 #### Public keys, not a path to a private key
 
@@ -2881,47 +2886,92 @@ interface. That binding is separate work and is not part of `host prepare`.
 
 #### host prepare manages the login user's authorized keys
 
-`host prepare` makes every key in `ssh.public_key` an authorized key of
+`host prepare` makes every key in `ssh.keys` an authorized key of
 `ssh.user`, in `~<user>/.ssh/authorized_keys`. When the directory or the file
 is missing it is created, 0700 and 0600, owned by the user. A user that does
 not exist is refused: creating users is out of scope.
 
 `authorized_keys` is shared with whoever else manages the host. cloud-init puts
-the provider's key there, and an operator may add a restricted key by hand. So
-`host prepare` adds only listed keys, and removes only keys **it wrote
-itself**. A listed key that was already there is never recorded and so never
-removed: it is often the key the operator logs in with, put there by the
-provider, and nothing on the host says whether another way in exists. What
-`host prepare` wrote is recorded in a sidecar,
-`/etc/paisans/authorized_keys.<user>.paisans-<token>.owned`, root's and 0600,
-one `added <fingerprint> <comment>` line per key; a line without the `added`
-mark is ignored. Keys are compared by fingerprint, so a key whose comment was
-changed is still the same key.
+the provider's key there, an operator may add a restricted key by hand, and
+several deployments may log in as the same user. So `host prepare` adds only
+listed keys, and deletes a line only when **it wrote that line itself and no
+other deployment claims it**. A listed key that was already there, and that
+no deployment claims, is never recorded and so never removed: it is often the
+key the operator logs in with, put there by the provider, and nothing on the
+host says whether another way in exists.
 
-| `authorized_keys` holds | Sidecar | Listed | The plan says | What happens |
-|-------------------------|---------|--------|---------------|--------------|
-| nothing for the key | | yes | `add` | appended verbatim, recorded |
-| the key | yes | yes | `present` | nothing |
-| the key | no | yes | `present` | nothing; not recorded, so never removed |
-| the key, only with options | | yes | `present (not paisans)` | nothing; adding the plain key would undo the restriction |
-| the key | yes | no | `remove` | that exact line deleted, last of all |
-| nothing for the key | yes | no | `change` (forget) | dropped from the sidecar |
-| any other key | no | no | not mentioned | nothing, ever |
+Each deployment records its claims in a sidecar,
+`/etc/paisans/authorized_keys.<user>.paisans-<token>.owned`, root's and 0600,
+one line per key:
+
+```
+<mark> <fingerprint> <name>
+```
+
+| Mark | Meaning |
+|------|---------|
+| `added` | this deployment appended the line to `authorized_keys` |
+| `shared` | the line was already there, and another deployment's sidecar listed the key when this one recorded it |
+
+A line of any other shape is not one of this deployment's claims. Another
+deployment's sidecar claims a key when the key's fingerprint appears anywhere
+in it, so a format this version does not read keeps a key rather than losing
+it. Keys are compared by fingerprint, so a key whose comment was changed is
+still the same key, and each deployment keeps its own name for it.
+
+For a listed key:
+
+| `authorized_keys` holds | This sidecar | Another sidecar | The plan says | What happens |
+|-------------------------|--------------|-----------------|---------------|--------------|
+| nothing for the key | | | `add` | appended verbatim, recorded `added` |
+| the key | lists it | | `present` | nothing; `rename` if `ssh.keys` now calls it something else |
+| the key | does not list it | lists it | `share` | recorded `shared` |
+| the key | does not list it | does not list it | `present` | nothing; not recorded, so never removed |
+| the key, only with options | | | `present (not paisans)` | nothing; adding the plain key would undo the restriction |
+
+For a key this sidecar lists that `ssh.keys` no longer does:
+
+| `authorized_keys` holds | Mark | Another sidecar | The plan says | What happens |
+|-------------------------|------|-----------------|---------------|--------------|
+| nothing for the key | any | | `change` (forget) | dropped from the sidecar |
+| the key | `shared` | | `release` | dropped from the sidecar; the line stays |
+| the key | `added` | lists it | `release` | dropped from the sidecar; the line stays |
+| the key | `added` | does not list it | `remove` | that exact line deleted, last of all |
+
+A key whose last claim is released stays in `authorized_keys`, recorded
+nowhere, until someone deletes it by hand. Any key no sidecar lists is never
+mentioned and never touched.
 
 ```
 home-a (ubuntu 24.04)
-  present   ssh: key SHA256:kmYcvdi2GkPeWxB6XLjrZB8JHsy2Hm8luHMFp9GMvqk (alice@example.org) authorized for ubuntu, not by host prepare, which never removes it
-  add       ssh: authorize key SHA256:RXm/ruZ0eTzRXKwi1AQEDynB0VgHQ2ac9KPSFdf/YnA (bob@example.org) for ubuntu
-  remove    ssh: remove key SHA256:baqJQcVDEweKmw1OiZxGooCG2MGxYtwsQQzzOstxmiA (carol@example.org) from /home/ubuntu/.ssh/authorized_keys, which host prepare added and ssh.public_key no longer lists
+  present   ssh: key SHA256:kmYcvdi2GkPeWxB6XLjrZB8JHsy2Hm8luHMFp9GMvqk (alice) authorized for ubuntu, not by host prepare, which never removes it
+  add       ssh: authorize key SHA256:RXm/ruZ0eTzRXKwi1AQEDynB0VgHQ2ac9KPSFdf/YnA (bob) for ubuntu
+  remove    ssh: remove key SHA256:baqJQcVDEweKmw1OiZxGooCG2MGxYtwsQQzzOstxmiA (carol) from /home/ubuntu/.ssh/authorized_keys, which host prepare added, ssh.keys no longer lists and no other deployment claims
+```
+
+To trace a key on the host back to the deployments that claim it, take its
+fingerprint with `ssh-keygen -lf` and search the sidecars:
+
+```
+sudo grep -H SHA256:RXm/ruZ0eTzRXKwi1AQEDynB0VgHQ2ac9KPSFdf/YnA /etc/paisans/*.owned
 ```
 
 **Ownership lives in the sidecar, not in the key's comment.** The comment is
 how an operator recognises a key (`alice@laptop`), and leaving it alone keeps
-what they see in the one place they look. The sidecar keeps `authorized_keys` exactly as the keys were pasted. Each
-step rewrites the sidecar along with its change, so a stopped run resumes: a
-key appended but not yet recorded stays unrecorded, and so is never removed, and a sidecar entry whose
-key someone already deleted is forgotten, so a copy they add by hand later is
-never taken for host prepare's.
+what they see in the one place they look; the sidecar, root's, also cannot be
+edited by the login user. Each step rewrites the sidecar along with its
+change, so a stopped run resumes: a key appended but not yet recorded stays
+unrecorded, and so is never removed, and a sidecar entry whose key someone
+already deleted is forgotten, so a copy they add by hand later is never taken
+for host prepare's.
+
+**One lock, and a removal decides again inside it.** The plan reads the
+sidecars before its steps run, and another deployment's `host prepare` or
+`site remove` can change them in between. Every write to a sidecar or to
+`authorized_keys` runs under `flock /etc/paisans/authorized_keys.lock`, one
+lock for the whole host, and a `remove` checks the other sidecars again under
+it: when one names the key by then, only this deployment's claim is dropped.
+A sidecar it cannot read counts as a claim, so an error keeps the key.
 
 **Nothing is removed until everything is in place.** Removals run after every
 addition and after the firewall, and a removal goes through a temporary file

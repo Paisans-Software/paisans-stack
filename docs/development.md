@@ -686,7 +686,7 @@ undo:
 * **Authorized keys are never removed.** A key may be the only way into the
   host, and nothing on it says whether another exists. The deployment's
   records of the keys `host prepare` added are its own bookkeeping, so they
-  are deleted with no step of their own in the plan.
+  are deleted under host prepare's key lock, with no step of their own in the plan.
 * **The registry removal has a Go counterpart**, `registry.Remove`, and the
   tests run the awk program against `Encode` of its result.
 * **`inspect` is a variable** standing in for `hostcheck.Inspect`, so the tests
