@@ -396,13 +396,20 @@ func TestCheckMeshLiveSaysWhoHoldsTheSubnet(t *testing.T) {
 		t.Fatal(err)
 	}
 	advice := "Remove it if not in use or run paisans init to pick a free subnet."
+	// The other deployment's site name is shown only where it differs from
+	// the site being checked, which the line already names.
+	other := &initFake{name: "home-a.local", routes: `[{"dst":"10.44.0.0/23","dev":"psns-0c1d"}]`, registry: registryHolding(t, otherID, "0c1d", "10.44.0.0/23")}
+	var p *ui.Problem
+	if err := checkMeshLive(cfg, "home-b", other); !errors.As(err, &p) || p.Hint != "mesh subnet 10.44.0.0/24 is in use by paisans deployment 0c1d (example.net, as site home-a)" {
+		t.Errorf("a different site name: %#v", err)
+	}
 	for _, c := range []struct {
 		name string
 		host *initFake
 		hint string
 	}{
 		{"paisans, registered", &initFake{name: "home-a.local", routes: `[{"dst":"10.44.0.0/23","dev":"psns-0c1d"}]`, registry: registryHolding(t, otherID, "0c1d", "10.44.0.0/23")},
-			"mesh subnet 10.44.0.0/24 is in use by paisans deployment 0c1d (example.net, site home-a)"},
+			"mesh subnet 10.44.0.0/24 is in use by paisans deployment 0c1d (example.net)"},
 		{"paisans, unregistered", &initFake{name: "home-a.local", routes: `[{"dst":"10.44.0.0/23","dev":"psns-0c1d"}]`},
 			"mesh subnet 10.44.0.0/24 is in use by paisans deployment 0c1d"},
 		{"something else", &initFake{name: "home-a.local", routes: `[{"dst":"10.44.0.0/23","dev":"tun0"}]`},
