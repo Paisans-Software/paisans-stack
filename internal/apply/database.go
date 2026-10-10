@@ -2,6 +2,7 @@ package apply
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -263,14 +264,19 @@ func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`)
 
 func quoteLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
+// ErrFoundingWait is the founding stop: this site's etcd is up and another
+// founding member's is not, so its apply ends before the databases, and
+// resumes when applied again once that member runs.
+var ErrFoundingWait = errors.New("waiting on")
+
 // runBootstrap waits for a primary and creates what is missing. A replica
 // skips, saying which site does the work; anything else that goes wrong stops
 // the apply before any app stack is started.
 func runBootstrap(plan *Plan, t Transport) error {
 	if waiting := plan.Bootstrap.EtcdUnstarted; len(waiting) > 0 {
 		return fmt.Errorf(
-			"%s: the infrastructure stack is up, and etcd is waiting on %s: a new etcd cluster settles its version only once every founding member runs, and Patroni takes no leader key before that. No app database was created and no app stack was started. Apply %s, then apply this site again: it resumes here",
-			plan.Site, strings.Join(waiting, ", "), strings.Join(waiting, ", then "))
+			"%s: the infrastructure stack is up, and etcd is %w %s: a new etcd cluster settles its version only once every founding member runs, and Patroni takes no leader key before that. No app database was created and no app stack was started. Apply %s, then apply this site again: it resumes here",
+			plan.Site, ErrFoundingWait, strings.Join(waiting, ", "), strings.Join(waiting, ", then "))
 	}
 	done := plan.step("wait for Patroni primary")
 	err := waitForPrimary(plan, t)

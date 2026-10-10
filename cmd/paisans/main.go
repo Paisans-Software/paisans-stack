@@ -42,6 +42,8 @@ Usage:
   paisans render   [--config paisans.yaml] [--secrets secrets.enc.yaml] --out ./out
   paisans host prepare --site <name> [--config paisans.yaml] [--ssh <destination>]
                [--execute]
+  paisans apply    [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
+                   every site, from paisans.yaml to a running stack, in order
   paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                    [--ssh <destination>] [--overwrite <path>]... [--recreate <stack>]...
                    [--min-free <size>] [--keep-images] [--execute]
@@ -522,7 +524,10 @@ func runApply(args []string) error {
 		return fmt.Errorf("apply: --min-free: %w", err)
 	}
 	if *site == "" {
-		return fmt.Errorf("apply: --site is required. A site at a time is deliberate: a staged change that half succeeds across three machines is worse than one that failed on one")
+		if *destination != "" || len(overwrite) > 0 || len(only) > 0 || len(recreate) > 0 {
+			return fmt.Errorf("apply: --ssh, --overwrite, --only and --recreate are about one site, and apply without --site converges every site. Name it with --site")
+		}
+		return runConverge(r, *configPath, *secretsPath, *execute, *sudo)
 	}
 
 	cfg, err := config.Load(*configPath)

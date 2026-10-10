@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -1152,6 +1153,9 @@ func TestAFoundingApplyStopsWhileAMemberHasNotStarted(t *testing.T) {
 	err := apply.Execute(p, host)
 	if err == nil {
 		t.Fatal("apps were started while a founding etcd member had not started")
+	}
+	if !errors.Is(err, apply.ErrFoundingWait) {
+		t.Errorf("the founding stop is not apply.ErrFoundingWait: %v", err)
 	}
 	for _, want := range []string{"waiting on home-b", "Apply home-b, then apply this site again"} {
 		if !strings.Contains(err.Error(), want) {

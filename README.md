@@ -20,6 +20,7 @@ values and requests behind it.
 ```
 paisans init                               # an id, a mesh subnet and the secrets for paisans.yaml
 paisans host prepare --site vm --execute   # Docker, WireGuard and a firewall on a blank host
+paisans apply --execute                    # the whole deployment, from paisans.yaml to a running stack
 paisans apply --site vm --execute          # render the site and bring it up
 paisans site add home-b --execute          # join another data site to the running cluster
 paisans app remove blog --execute          # take an app that has left paisans.yaml off its hosts
@@ -2967,6 +2968,38 @@ inside the mesh subnet, which the interface's own `Address` already routes
 "Up" is read from the kernel (`ip link show psns-<token>`), not from the unit. An
 interface brought up by hand serves every service just as well, and starting the
 unit on top of it would fail on an interface that already exists.
+
+### `paisans apply` with no `--site` converges the whole deployment
+
+`paisans apply` without `--site` takes `paisans.yaml` to a complete, running
+stack, and keeps it there. It reads whether `init` has work and which etcd
+members have been founded, plans the commands below in the order the
+deployment needs them, prints that plan, and with `--execute` runs them one
+after another in the same process, stopping at the first failure:
+
+| Phase | Command | When |
+|---|---|---|
+| configuration | `init` | no id, no mesh subnet, or a generated secret missing |
+| hosts | `host prepare --site <s>` | every site; a prepared host plans nothing |
+| founding | `apply --site <s>`: each witness in `etcd.members`, then the other members | no member founded yet (below) |
+| joining | `site add <s>` | the cluster runs and a member has not joined it |
+| other sites | `apply --site <s>`, monitor sites last | every site not in `etcd.members` |
+| storage | `storage init --site <g>` for one Garage site, `storage add` for several | any Garage site |
+| pass two | `apply --site <s>` for every site, monitor sites last | always: it resumes a founding stop and moves what earlier steps changed |
+| dns | `dns init` | always; a record pointing elsewhere stops it, to be changed by hand |
+
+Run again, it reads live state again and carries on, so the same command is
+the first install, the resume after a failure, and every later change. Each
+step is the command an operator would type, so it plans, gates, claims and
+refuses as that command does, and the sudo password each host asks for is
+asked once for the run. A data site's founding stop is expected, not a
+failure: pass two applies it again. It never takes anything out: a site or an
+app the yaml no longer declares is reported by the deployment record's warning,
+with the command that removes it. What only the operator can decide is left to
+its own command: the first Pocket ID admin (`app admin create`), a credential
+the toolkit cannot generate (`secrets set`), and a DNS record pointing
+elsewhere. `apply --site <name>` is unchanged, for one site at a time.
+`docs/specs/2026-10-09-apply-converge.md` is the approved specification.
 
 ### A new deployment is applied witness first
 
