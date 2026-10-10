@@ -41,13 +41,21 @@ beside `registry.json`, root's and 0600, written under the registry's lock and
 replaced atomically, as the registry is:
 
 ```json
-{"version": 1, "revision": 7, "updated_at": "2026-10-09T18:40:00Z", "sites": ["home-a", "home-b", "vm"], "apps": ["auth", "talk"], "pocket_id_groups": ["members"]}
+{"version": 1, "revision": 7, "updated_at": "2026-10-09T18:40:00Z",
+ "sites": {"home-a": {"added": 1}, "vm": {"added": 1}, "monitor-a": {"added": 2, "removed": 7}},
+ "apps": {"talk": {"added": 1}},
+ "pocket_id_groups": {"members": {"added": 1}}}
 ```
 
-Names only, sorted. It holds no secret and no address. `revision` orders the
-records: every change raises it by one. `updated_at` is when the change was
-made, by the writer's clock, for a person reading the file; nothing compares
-it, since two operators' clocks need not agree. The token in its name
+Names only. It holds no secret and no address. Each name keeps the revision
+of the change that last added it and of the one that last removed it; a name
+is deployed when it was added at least as late as it was removed, so an add
+and a removal at the same revision keep it. `revision` is the highest change
+any record holds; every change takes the next one. `updated_at` is when the
+latest change was made, by the writer's clock, for a person reading the file;
+nothing compares it, since two operators' clocks need not agree. A removed
+name stays in the file, so that a gateway that missed the removal cannot bring
+it back. The token in its name
 is the proof it is this deployment's, so cleaning a gateway host deletes it
 with the rest (stage 3 of `site remove`, either way).
 
@@ -63,28 +71,30 @@ with the rest (stage 3 of `site remove`, either way).
 Every change is made the same way, on every gateway the yaml declares at once:
 
 1. Read the record on each gateway that answers.
-2. Start from the newest of them, the highest revision, and make the change.
-3. Write the result, with the revision raised by one, to every gateway that
-   answered, each under the registry's lock and only if its file still hashes
-   to what was read.
+2. Merge them: for each name, the latest add and the latest removal any of
+   them holds.
+3. Make the change at the next revision: an add for each name added that is
+   not deployed, a removal for each name taken out that is.
+4. Write the merged result to every gateway that answered, each under the
+   registry's lock and only if its file still hashes to what was read.
 
 A gateway that does not answer, or whose write is refused, is a warning, never
 a failure: `vm2 missed this change to the deployment record; it is brought up
 to date the next time a command that writes the record reaches it`. When the
 change leaves the names as they were, nothing is raised, and only a gateway
-holding an older record is written: that is how a gateway that was down is
-brought up to date.
+whose record differs from the merge is written: that is how a gateway that was
+down is brought up to date, and how what it alone knew reaches the others.
 
 `apply` only adds, so an `apply` of a yaml mid-edit cannot shrink the record:
-that is the property the record exists for. Starting from the newest record
-means a gateway that missed a removal does not bring the removed site back.
+that is the property the record exists for. Merging name by name means an add
+that only one gateway saw is never lost to a later change on another, and a
+gateway that missed a removal does not bring the removed site back.
 
 ## Who reads it
 
-Readers take the newest record, the highest revision among the gateways that
-answered. Two records with the same revision and different names, left by two
-writers at once, are read as their union, which keeps secrets rather than
-deleting them; the next change writes that union with a higher revision.
+Readers merge the records of the gateways that answered, name by name, and a
+name is deployed when its latest add is at least as late as its latest
+removal.
 
 | In `paisans.yaml` | In a record | Meaning | `init` and `apply` | `secrets prune` |
 |---|---|---|---|---|
@@ -142,9 +152,10 @@ In a new package for the record (read, merge, write commands, against a fake
 host): adding is a union and never removes; taking out removes only the names
 given; the write is under the lock and atomic; an absent file reads as no
 record, a malformed one as an error; a change starts from the newest record,
-raises the revision and reaches every gateway that answers; one that does not
-is reported, and caught up by the next change; equal revisions that disagree
-read as their union.
+takes the next revision and reaches every gateway that answers; one that does
+not is reported, and caught up by the next change; records that split while
+gateways were down merge without losing an add that only one saw or a removal
+that only one saw; an add and a removal at the same revision keep the name.
 
 In `internal/secretsgen`: the four rows above, for each of sites, apps and
 groups, with records from two gateways that disagree.
