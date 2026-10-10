@@ -130,8 +130,6 @@ monitor-only one, is unaffected.
 
 Besides what the host stage keeps, with why, one line each:
 
-* **Secrets:** not read; `sites.<site>` stays in any surviving secrets file
-  until `paisans secrets prune`.
 * **Pocket ID**, on a site with the `apps` role: not checked; if this host held
   the active instance, sign in stops until a standby takes over.
 * **DNS:** on every `--id` run, dry run and `--execute` alike, and when the
