@@ -117,6 +117,7 @@ during each step's check.
 | Refused | Because |
 |---|---|
 | a configuration `validate` refuses | as every command |
+| a secrets file that is there and does not decrypt, or whose missing secrets cannot be generated | init needs the same age key, so nothing is planned and no host is read; the error says where the key is looked for |
 | a host that does not answer, while deciding the plan | founding or joining cannot be decided |
 | `--ssh` | a destination names one host, and this reaches all of them; use `apply --site <s> --ssh` |
 
