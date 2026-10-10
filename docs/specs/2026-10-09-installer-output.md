@@ -220,7 +220,8 @@ Prose wraps at the terminal's width when it is known, at most 80 columns, and
 at 80 when it is not: the final error's explanation, a refusal's explanation,
 a note's detail, and a warning's detail under `-v`. Lines break only at spaces,
 so a path, a command or a URL is never split; a token longer than the width
-gets a line of its own. A line keeps its indentation when wrapped, and a list
+gets a line of its own. A line that fits is left as written, so aligned
+columns keep their spacing. A line keeps its indentation when wrapped, and a list
 item's continuation lines align under its text after `- `. Step lines, details
 and traces are not wrapped: a trace is a command's own output, and a step line
 is short by design.
