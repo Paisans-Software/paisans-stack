@@ -818,9 +818,9 @@ func TestConvergeDryRunMarksPendingWaitingAndFailed(t *testing.T) {
 		"· apply --site home-b: after host prepare --site home-b",
 		"· apply --site watch: after host prepare --site watch",
 		"· storage add: after apply --site home-a",
-		"· apply --site home-a: after apply --site home-a",
+		"· apply --site home-a: after apply --site home-a in founding",
 		"· apply --site home-b: after host prepare --site home-b",
-		"· apply --site vm: after apply --site vm",
+		"· apply --site vm: after apply --site vm in founding",
 		"· apply --site watch: after host prepare --site watch",
 		"○ dns init: 2 records to create",
 	})

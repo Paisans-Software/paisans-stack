@@ -443,6 +443,14 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 			st = status{ui.Pending, s.Why}
 		case after != "":
 			st = status{ui.Waiting, "after " + after}
+			// An apply in pass two waits on the same command in an
+			// earlier phase, which its line names.
+			for _, e := range steps[:i] {
+				if after == s.Title && e.Title == after {
+					st.result += " in " + e.Phase
+					break
+				}
+			}
 		case checked:
 			st = prior
 		default:
