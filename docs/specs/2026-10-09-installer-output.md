@@ -270,7 +270,8 @@ line, `paisans.yaml: 1 refusal, 1 warning` (plural only when needed):
   lines above it do not.
 * `paisans apply` without `--site` prints them under its `configuration`
   section, the one its `init` step belongs to: the header once, the findings,
-  then `init` when it has work. The path is not a section there, and appears
+  then `init` when it has work. When `--execute` has just run `init`, init
+  has reported them, under the file's path, and they are not repeated. The path is not a section there, and appears
   only in the count line of a refusal.
 * Nothing is printed for a file without findings.
 
@@ -307,13 +308,15 @@ A question asked on the terminal holds the reporter's drawing while it waits
 (`ui.Hold`), so the spinner cannot erase it.
 
 * **The sudo password prompt is erased once it is answered**, right or wrong,
-  on a terminal: a carriage return, then for each row the prompt took a cursor
-  up and a line clear. The rows are the prompt's length over the terminal's
-  width, rounded up, so a prompt that wrapped is erased whole. Nothing else is
+  on a terminal: the newline that ends it, a carriage return, then for each
+  row the prompt took a cursor up and a line clear. The rows are the prompt's
+  length over the terminal's width, rounded up, so a prompt that wrapped is
+  erased whole. Nothing else is
   written, so the step lines go on directly under their section header, and
   the open step's spinner redraws on the row the prompt took. A password that
   was refused, or could not be read, is explained by the error that follows.
-  Off a terminal nothing is written.
+  Off a terminal nothing is written, and a terminal that is not drawn on
+  (`TERM=dumb`, `NO_COLOR`) keeps the prompt, followed by a blank line.
 * **ssh's question about a host key is followed by a blank line**, since it is
   ssh's own text, over several lines, and cannot be erased reliably. The blank
   line is written before the drawing resumes, so the spinner redraws below it

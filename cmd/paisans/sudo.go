@@ -77,23 +77,40 @@ var readPassword = func(host string) (string, error) {
 	if err != nil {
 		cols = 0
 	}
-	return askPassword(tty, sudoPrompt(host), cols, func() ([]byte, error) { return term.ReadPassword(fd) })
+	return askPassword(tty, sudoPrompt(host), cols, promptErasable(), func() ([]byte, error) { return term.ReadPassword(fd) })
+}
+
+// promptErasable reports whether the terminal may be drawn on to erase the
+// prompt: not when TERM=dumb or NO_COLOR asks for plain output, as the
+// reporter draws nothing then either.
+func promptErasable() bool {
+	return os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 }
 
 func sudoPrompt(host string) string { return "sudo password for " + host + ": " }
 
 // askPassword writes prompt to tty, a terminal cols wide, reads the answer
-// with read, and erases the prompt, whether the answer was read or not:
-// what follows says whether it was right. Echo is off while read waits, so
-// the newline that ends the prompt is written here, and then, from the row
-// below the prompt, a carriage return and, for each row the prompt took, a
-// cursor up and a line clear. The cursor ends at the start of the prompt's
-// first row, which is empty, where the held spinner redraws.
-func askPassword(tty io.Writer, prompt string, cols int, read func() ([]byte, error)) (string, error) {
+// with read, and, when erase is set, erases the prompt, whether the answer
+// was read or not: what follows says whether it was right. Echo is off while
+// read waits, so the newline that ends the prompt is written here, and then,
+// from the row below the prompt, a carriage return and, for each row the
+// prompt took, a cursor up and a line clear. The cursor ends at the start of
+// the prompt's first row, which is empty, where the held spinner redraws.
+// Without erase the prompt stays, and a blank line sets what follows apart.
+//
+// The erase counts rows from where the cursor is, so it assumes nothing else
+// reached the terminal while the prompt waited. The hold keeps the reporter
+// quiet; output piped elsewhere and echoed back to the terminal, by tee for
+// one, is not held.
+func askPassword(tty io.Writer, prompt string, cols int, erase bool, read func() ([]byte, error)) (string, error) {
 	fmt.Fprint(tty, prompt)
 	password, err := read()
 	fmt.Fprintln(tty)
-	fmt.Fprint(tty, "\r"+strings.Repeat("\x1b[1A\x1b[2K", promptRows(prompt, cols)))
+	if erase {
+		fmt.Fprint(tty, "\r"+strings.Repeat("\x1b[1A\x1b[2K", promptRows(prompt, cols)))
+	} else {
+		fmt.Fprintln(tty)
+	}
 	if err != nil {
 		return "", err
 	}

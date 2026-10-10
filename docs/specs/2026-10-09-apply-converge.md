@@ -160,7 +160,7 @@ so the reads sit directly under their header:
 ```
 configuration
   ! garage consistency is dangerous: an upload is confirmed even if only 1 of 2 copies is written
-  ○ init                          the deployment id, the mesh subnet and every generated secret
+  ○ init                          no secrets file yet
 etcd members
   ○ read home-a's etcd record     not founded yet
   ○ read home-b's etcd record     not founded yet

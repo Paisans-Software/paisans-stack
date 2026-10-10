@@ -722,6 +722,9 @@ func TestConvergeFindingsOpenTheConfigurationSection(t *testing.T) {
 		{true, nil, []string{"section configuration", "warn", "step init", "pending init", "section etcd members"}},
 		{false, nil, []string{"section configuration", "warn", "section etcd members"}},
 		{false, []string{"--execute"}, []string{"section configuration", "warn", "section etcd members"}},
+		// init ran first and reported the findings itself, under the file's
+		// path; they are not reported a second time.
+		{true, []string{"--execute"}, []string{"section etcd members"}},
 	} {
 		rec.Events = nil
 		needsInit = c.init
@@ -747,7 +750,7 @@ func TestConvergeFindingsOpenTheConfigurationSection(t *testing.T) {
 			}
 		}
 		sameLines(t, got, c.want)
-		if n := strings.Count(rec.Lines(), "section: configuration"); n != 1 {
+		if n := strings.Count(rec.Lines(), "section: configuration"); n != 1 && c.want[0] == "section configuration" {
 			t.Errorf("init %v %v: configuration header %d times:\n%s", c.init, c.args, n, rec.Lines())
 		}
 		if rec.Has("section", "paisans.yaml") || rec.Has("result", "warning") {

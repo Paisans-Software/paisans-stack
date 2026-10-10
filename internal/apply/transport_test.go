@@ -308,8 +308,8 @@ func TestTheHostKeyBlankLineComesBeforeTheDisplayResumes(t *testing.T) {
 		return func() { held = false }
 	})
 	t.Cleanup(func() { apply.SetPromptHold(nil) })
-	blanks := 0
-	t.Cleanup(apply.FakeHostKeys(func(apply.SSHTransport) bool { return false }, &blanks))
+	var unused int
+	t.Cleanup(apply.FakeHostKeys(func(apply.SSHTransport) bool { return false }, &unused))
 	var heldAtBlank []bool
 	t.Cleanup(apply.OnBlankLine(func() { heldAtBlank = append(heldAtBlank, held) }))
 	t.Cleanup(apply.FakeSSH(func([]string, string) (string, int) { return "ok\n", 0 }, nil, func(time.Duration) {}, io.Discard))

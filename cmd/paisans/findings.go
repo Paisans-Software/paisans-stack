@@ -21,16 +21,18 @@ func reportFindings(r ui.Reporter, path string, result validate.Result) {
 }
 
 // reportFindingsUnder is reportFindings under section, a heading of the
-// command's own, rather than the path.
-func reportFindingsUnder(r ui.Reporter, section, path string, result validate.Result) {
+// command's own, rather than the path. It reports whether it printed the
+// heading, which it does only when there are findings.
+func reportFindingsUnder(r ui.Reporter, section, path string, result validate.Result) bool {
 	if len(result.Findings) == 0 {
-		return
+		return false
 	}
 	r.Section(section)
 	showFindings(r, result)
 	if result.Refused() {
 		r.Result("%s: %s", findingsPath(r, path), counts(len(result.Refusals()), len(result.Warnings())))
 	}
+	return true
 }
 
 // reportValidation is reportFindings for paisans validate, whose subject is

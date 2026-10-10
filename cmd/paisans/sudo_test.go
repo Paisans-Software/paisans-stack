@@ -72,7 +72,7 @@ func TestSudoPromptIsErasedOnceAnswered(t *testing.T) {
 		err      error
 	}{{"secret", nil}, {"", errors.New("EOF")}} {
 		var b bytes.Buffer
-		got, err := askPassword(&b, prompt, 80, func() ([]byte, error) { return []byte(c.password), c.err })
+		got, err := askPassword(&b, prompt, 80, true, func() ([]byte, error) { return []byte(c.password), c.err })
 		if got != c.password || !errors.Is(err, c.err) {
 			t.Errorf("got %q, %v; want %q, %v", got, err, c.password, c.err)
 		}
@@ -92,10 +92,32 @@ func TestALongSudoPromptIsErasedWhole(t *testing.T) {
 		}
 	}
 	var b bytes.Buffer
-	if _, err := askPassword(&b, prompt, 40, func() ([]byte, error) { return []byte("secret"), nil }); err != nil {
+	if _, err := askPassword(&b, prompt, 40, true, func() ([]byte, error) { return []byte("secret"), nil }); err != nil {
 		t.Fatal(err)
 	}
 	if want := prompt + "\n\r" + strings.Repeat("\x1b[1A\x1b[2K", 3); b.String() != want {
 		t.Errorf("wrote %q, want %q", b.String(), want)
+	}
+}
+
+// A terminal that is not drawn on (TERM=dumb, NO_COLOR) gets no cursor
+// movement: the prompt stays, and a blank line sets what follows apart.
+func TestASudoPromptIsNotErasedWithoutDrawing(t *testing.T) {
+	var b bytes.Buffer
+	if _, err := askPassword(&b, "sudo password for home-a: ", 80, false, func() ([]byte, error) { return []byte("secret"), nil }); err != nil {
+		t.Fatal(err)
+	}
+	if want := "sudo password for home-a: \n\n"; b.String() != want {
+		t.Errorf("wrote %q, want %q", b.String(), want)
+	}
+	for _, c := range []struct {
+		term, noColor string
+		erase         bool
+	}{{"xterm-256color", "", true}, {"dumb", "", false}, {"xterm-256color", "1", false}} {
+		t.Setenv("TERM", c.term)
+		t.Setenv("NO_COLOR", c.noColor)
+		if got := promptErasable(); got != c.erase {
+			t.Errorf("TERM=%s NO_COLOR=%q: erasable %v, want %v", c.term, c.noColor, got, c.erase)
+		}
 	}
 }

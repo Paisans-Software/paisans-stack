@@ -354,6 +354,7 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 	if err != nil {
 		return err
 	}
+	initRan := false
 	if st.NeedsInit && execute {
 		// init writes the id, the subnet and the secrets the rest is
 		// planned from, so the state is read again once it has run.
@@ -368,6 +369,7 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 			return err
 		}
 		st.NeedsInit = false
+		initRan = true
 	}
 	if cfg == nil {
 		r.Section("configuration")
@@ -379,15 +381,19 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 	// etcd.members would otherwise read as a host that did not answer.
 	// The findings open the configuration section, which init's line
 	// belongs to, so the section is headed once, ahead of the etcd reads.
+	// An init that has just run reported them itself.
 	result := validate.Check(cfg)
-	reportFindingsUnder(r, "configuration", configPath, result)
+	headed := false
+	if !initRan {
+		headed = reportFindingsUnder(r, "configuration", configPath, result)
+	}
 	if result.Refused() {
 		return refused(configPath, len(result.Refusals()), "")
 	}
 	ui.Align(r, convergeTitles(cfg)...)
 	defer ui.Align(r)
 	if st.NeedsInit && !execute {
-		if len(result.Findings) == 0 {
+		if !headed {
 			r.Section("configuration")
 		}
 		r.Step("init").End(ui.Pending, initWhy(st))
