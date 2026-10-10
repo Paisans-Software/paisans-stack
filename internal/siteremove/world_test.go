@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/paisans-software/paisans-stack/internal/deployrecord"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -75,6 +76,9 @@ type world struct {
 	log []string
 	// recreated is every site whose Patroni was recreated, in order.
 	recreated []string
+	// recordRace makes every write of the deployment record find it changed
+	// by another command meanwhile.
+	recordRace bool
 	// activePocket is the site whose Pocket ID instance is active.
 	activePocket string
 
@@ -511,6 +515,9 @@ func (h *host) Run(command string) (string, error) {
 		h.volumes = kept
 		return "", nil
 	case strings.Contains(command, "/.deployed."):
+		if w.recordRace {
+			return deployrecord.ChangedMarker + "\n", errors.New("exit status 1")
+		}
 		path := regexp.MustCompile(`f='([^']+)'`).FindStringSubmatch(command)[1]
 		data, _ := base64.StdEncoding.DecodeString(regexp.MustCompile(`printf %s '([^']*)' \| base64 -d`).FindStringSubmatch(command)[1])
 		h.files[path] = string(data)

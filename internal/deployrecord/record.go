@@ -200,16 +200,23 @@ func merge(ds ...doc) doc {
 	return out
 }
 
-// compact keeps one live tag of each deployed name and drops every name that
-// is not deployed. It is only safe when every gateway's record was read: then
-// no gateway holds an older copy for a dropped tag to cancel.
+// compact drops the removed tags and the names that are not deployed, and
+// leaves each deployed name one live tag: its own when it has one, and a new
+// one when it has several. A new tag is one no removal anywhere can have
+// seen, so a removal held by a record this write did not read, or made
+// between its read and its write, cannot cancel the add that survives here.
+// It runs only when every gateway in the write answered, so that the removed
+// tags it drops are, as far as this write can tell, held nowhere else.
 func compact(m doc) doc {
 	out := newDoc()
 	out.UpdatedAt = m.UpdatedAt
 	for _, kind := range kindNames {
 		for name, e := range m.kind(kind) {
-			if live := e.live(); len(live) > 0 {
-				out.kind(kind)[name] = entry{Adds: live[:1]}
+			switch live := e.live(); {
+			case len(live) == 1:
+				out.kind(kind)[name] = entry{Adds: live}
+			case len(live) > 1:
+				out.kind(kind)[name] = entry{Adds: []string{newTag()}}
 			}
 		}
 	}

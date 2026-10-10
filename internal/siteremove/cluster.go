@@ -246,6 +246,10 @@ func (p *Plan) buildCluster() (*Stage, error) {
 				return err
 			}
 			for _, gw := range sortedCopy(keys(res.Missed)) {
+				if errors.Is(res.Missed[gw], deployrecord.ErrChanged) {
+					p.Notes = append(p.Notes, recordRaced(gw, p.Site, res.Missed[gw].Error()))
+					continue
+				}
 				p.Notes = append(p.Notes, recordMissed(gw, res.Missed[gw].Error()))
 			}
 		}

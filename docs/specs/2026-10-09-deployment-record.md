@@ -76,9 +76,13 @@ Every change is made the same way, on every gateway the yaml declares at once:
    whether or not it is already deployed, so that its add survives a removal
    it could not see; a removal records every add tag of the name the merge
    holds.
-4. When every gateway answered, compact the merge: each deployed name keeps
-   one of its live tags, and a name that is not deployed is dropped. No
-   gateway holds an older copy for the dropped tags to cancel.
+4. When every gateway answered, compact the merge: the removed tags and the
+   names that are not deployed are dropped, and each deployed name is left
+   one live tag, its own when it has one and a new one when it has several.
+   A record the write did not read, or a removal made between the read and
+   the write, may hold a removal of one of those several tags; none can hold
+   a removal of the new one, so the add that survived here survives
+   everywhere.
 5. Write the result to every gateway that answered whose record differs, each
    under the registry's lock and only if its file still hashes to what was
    read.

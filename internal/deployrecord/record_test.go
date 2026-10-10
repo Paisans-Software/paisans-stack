@@ -284,3 +284,48 @@ func TestOldLayoutsAreMalformed(t *testing.T) {
 		}
 	}
 }
+
+func storedX(adds, removed string) string {
+	e := `"adds":[` + adds + `]`
+	if removed != "" {
+		e += `,"removed":[` + removed + `]`
+	}
+	return `{"version":1,"updated_at":"","sites":{"x":{` + e + `}},"apps":{},"pocket_id_groups":{}}` + "\n"
+}
+
+// A gateway left out of a write holds a removal of the tag compaction would
+// keep: the add only the written gateway saw must survive it.
+func TestCompactionSurvivesARemovalOutsideTheWrite(t *testing.T) {
+	t.Cleanup(deployrecord.SetTags("z9", "z8"))
+	a := &fakeHost{files: map[string]string{deployrecord.Path(dep): storedX(`"a1"`, `"a1"`)}}
+	b := &fakeHost{files: map[string]string{deployrecord.Path(dep): storedX(`"a1"`, "")}}
+	change(t, deployrecord.Adding(sites("x")), b)
+	if r := view(t, a, b); !r.Lists("sites", "x") {
+		t.Errorf("x lost after compacting b alone: %s", b.files[deployrecord.Path(dep)])
+	}
+}
+
+// staleHost answers a read, then another command removes x on it before
+// the write, so the write to it is skipped as unchanged.
+type staleHost struct {
+	*fakeHost
+	after string
+}
+
+func (h *staleHost) ReadFile(p string) (string, bool, error) {
+	c, ok, err := h.fakeHost.ReadFile(p)
+	h.files[p] = h.after
+	return c, ok, err
+}
+
+func TestCompactionSurvivesARemovalRacingTheWrite(t *testing.T) {
+	t.Cleanup(deployrecord.SetTags("z9", "z8"))
+	a := &staleHost{fakeHost: &fakeHost{files: map[string]string{deployrecord.Path(dep): storedX(`"a1"`, "")}}, after: storedX(`"a1"`, `"a1"`)}
+	b := &fakeHost{files: map[string]string{deployrecord.Path(dep): storedX(`"a1","t9"`, "")}}
+	if _, err := deployrecord.Update(map[string]registry.Runner{"a": a, "b": b}, dep, deployrecord.Forgetting(sites()), now); err != nil {
+		t.Fatal(err)
+	}
+	if r := view(t, a.fakeHost, b); !r.Lists("sites", "x") {
+		t.Errorf("t9, an add the removal never saw, was lost: b holds %s", b.files[deployrecord.Path(dep)])
+	}
+}

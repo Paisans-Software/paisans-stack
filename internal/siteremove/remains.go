@@ -68,6 +68,10 @@ func recordMissed(gw, why string) string {
 	return fmt.Sprintf("%s: deployment record not updated; the next change catches it up. %s", gw, why)
 }
 
+func recordRaced(gw, site, why string) string {
+	return fmt.Sprintf("%s: deployment record changed meanwhile; take the site out again. Another command wrote it between the read and the write, so it may still list %s: run paisans site remove %s --force --ssh <its host> once this removal is done. %s", gw, site, site, why)
+}
+
 func secretsLeft(site string) string {
 	return fmt.Sprintf("secrets: run `paisans secrets prune` once nothing needs sites.%s. It holds its WireGuard key and heartbeat token, and this command never edits the secrets file", site)
 }

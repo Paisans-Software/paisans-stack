@@ -4,6 +4,7 @@ import (
 	"errors"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/registry"
+	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
@@ -61,4 +62,20 @@ func readRecord(h registry.Runner, d deployment.Deployment) (deployrecord.Record
 		return r, false, err
 	}
 	return r, found > 0, nil
+}
+
+// A write another command raced says to take the site out again, with
+// --force since by then paisans.yaml no longer declares it: nothing else
+// takes the site out of the record.
+func TestARacedRecordWriteSaysRunAgain(t *testing.T) {
+	w := setup(t)
+	w.hosts["vm"].files[deployrecord.Path(dep)] = recordListing("home-a", "home-b", "vm", "watch")
+	w.recordRace = true
+	p := w.mustBuild("home-b", siteremove.Options{})
+	if err := siteremove.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+	if out := strings.Join(p.Remains(), "\n"); !strings.Contains(out, "site remove home-b --force") {
+		t.Errorf("no run-again note:\n%s", out)
+	}
 }
