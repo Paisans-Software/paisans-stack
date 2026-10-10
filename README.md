@@ -2566,7 +2566,9 @@ already carry a value (`secrets set` and `app admin create` read one from it).
 While the prompt waits, the progress display is held. The first sudo command
 runs inside an open step, and that step's spinner redraws its line every tenth
 of a second, which would erase the prompt and leave the operator watching a
-spinner that waits on them without saying so. ssh asks on the terminal itself
+spinner that waits on them without saying so. Once answered, right or wrong,
+the prompt is erased, so the report reads on without it; a wrong password is
+said by the error that follows. ssh asks on the terminal itself
 as well, to accept a host key it does not know, so every connection attempt to
 a host is made with the display held until that host has answered once. A key
 whose passphrase ssh asks for on every connection is the one prompt this does

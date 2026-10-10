@@ -326,7 +326,8 @@ glyphs, so a log from cron or CI reads cleanly.
 
 Anything that asks on the terminal holds the spinner first (`ui.Hold`), since a
 frame clears the line it draws on and would erase the question. The sudo
-password prompt is read inside a hold, and `apply.SetPromptHold` holds it
+password prompt is read inside a hold and erased once answered (`askPassword`,
+over every row it wrapped to), and `apply.SetPromptHold` holds it
 around every ssh attempt to a host until that host has answered once, which is
 where ssh asks to accept an unknown host key. `routeHolds` in `cmd/paisans`
 points both at the reporter that draws, beside `routeRetries`. A key
