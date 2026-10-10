@@ -14,10 +14,10 @@ runtime. [docs/decisions.md](docs/decisions.md) records why.
 It installs a complete community stack on one machine, then adds sites later as
 a manually invoked, additive step, without touching application configuration.
 Every command that changes a host prints its plan and changes nothing on a
-server unless given `--execute`. The one local exception is `paisans apply`
-without `--site`, whose dry run may add missing generated secrets to the local
-secrets file, and says so when it does. Each step is one line; `--verbose` (`-v`) shows the reasons,
-values and requests behind it.
+server unless given `--execute`. One dry run writes a local file: `paisans
+apply` without `--site` may add missing generated secrets to the secrets file,
+and says so when it does. Each step is one line; `--verbose` (`-v`) shows the
+reasons, values and requests behind it.
 
 ```
 paisans init                               # an id, a mesh subnet and the secrets for paisans.yaml
@@ -3062,7 +3062,7 @@ elsewhere. `apply --site <name>` is unchanged, for one site at a time.
 `docs/specs/2026-10-09-apply-converge.md` is the approved specification.
 
 Its dry run changes nothing on the servers. When the yaml has its id and mesh
-subnet and the secrets file decrypts but lacks a generated secret, it generates
+subnet and the secrets file reads but lacks a generated secret, it generates
 the missing ones into that file, as `init` would: only what is missing, nothing
 overwritten, encrypted to the recipients in `.sops.yaml`. Its `init` line names
 what it wrote, never a value, and the closing line says the secrets were

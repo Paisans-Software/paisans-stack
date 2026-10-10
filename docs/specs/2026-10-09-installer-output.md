@@ -288,7 +288,8 @@ line, `paisans.yaml: 1 refusal, 1 warning` (plural only when needed):
   Re-run with --execute to apply.` The dry run of `apply` without `--site`
   changes nothing on the servers but may add missing generated secrets to the
   local secrets file; when it does, its closing line says nothing changed on
-  the servers and names the secrets added (see the converge spec).
+  the servers and how many secrets it added to which file, and its `init`
+  line names them (see the converge spec).
 * **`--execute` does not print the plan.** It prints progress only. With
   `--verbose` the full plan prints before executing, as today.
 * **A second pass prints only its new steps.** `executeWithClients` builds the

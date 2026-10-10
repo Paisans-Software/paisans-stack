@@ -361,3 +361,27 @@ func TestInitWarnsAboutADroppedSite(t *testing.T) {
 		}
 	}
 }
+
+// A secrets file init cannot write fails its write step, naming what it
+// generated, and init returns the write's own error. The file is as it was.
+func TestInitFailsItsWriteStep(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a read only file")
+	}
+	path, rec := initWorld(t, nil, fakeSites(), nil)
+	secretsPath := filepath.Join(filepath.Dir(path), "secrets.enc.yaml")
+	if err := os.WriteFile(secretsPath, []byte("version: 1\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	err := runInitQuietly(t, path)
+	var failed *secretsWriteError
+	if err == nil || errors.As(err, &failed) || !strings.Contains(err.Error(), "writing "+secretsPath) {
+		t.Fatalf("init = %v, want the write's own error", err)
+	}
+	if !rec.Has("fail", "write secrets") || !rec.Has("detail", "+ cluster.") {
+		t.Errorf("the write step did not fail naming what it generated:\n%s", rec.Lines())
+	}
+	if data, _ := os.ReadFile(secretsPath); string(data) != "version: 1\n" {
+		t.Error("the secrets file changed")
+	}
+}

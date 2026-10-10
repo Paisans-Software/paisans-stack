@@ -196,7 +196,16 @@ func fakeConvergeArgs(t *testing.T, fail map[string]error) (*[]string, *[][]stri
 	convergeReadInitial = func(*config.Config, string, bool) (render.EtcdInitial, bool, error) {
 		return render.EtcdInitial{}, false, nil
 	}
-	t.Cleanup(func() { convergeRun, convergeReadInitial, convergeCheck = savedRun, savedRead, savedCheck })
+	// A dry run may write the secrets file it reads. The committed fixture
+	// is complete, so it never should be: one that changed means the
+	// fixture configuration gained a generated secret its secrets lack.
+	fixtureBefore, _ := os.ReadFile(fixtureSecretsPath())
+	t.Cleanup(func() {
+		convergeRun, convergeReadInitial, convergeCheck = savedRun, savedRead, savedCheck
+		if now, _ := os.ReadFile(fixtureSecretsPath()); string(now) != string(fixtureBefore) {
+			t.Errorf("%s was rewritten: add the generated secret it lacks to it, and restore it", fixtureSecretsPath())
+		}
+	})
 	return &ran, &full
 }
 

@@ -112,7 +112,7 @@ next section says.
 ### Generated secrets in a dry run
 
 When the yaml has its id and its mesh subnet, and the secrets file is there and
-decrypts but lacks a generated secret, the dry run generates the missing ones
+reads (decrypting it, when it is encrypted) but lacks a generated secret, the dry run generates the missing ones
 and writes the file, through the same code `init` fills and writes it with:
 only a missing value is filled, nothing that has one is changed, and the file
 is encrypted to the age recipients in the `.sops.yaml` beside it. The `init`
@@ -133,7 +133,10 @@ runs init first as always, and init finds nothing left to fill.
 
 A write that fails, Eg: a read only file or an encryption error, marks `init`
 `✗` with the problem's hint, and its explanation as a note; every later step
-waits `after init`, as it does while init has work. Nothing is written.
+waits `after init`, as it does while init has work. The file is written
+through a temporary file beside it, renamed over it once complete, so a write
+that fails leaves it as it was. The dry run still exits 0, as it does for any
+check that fails.
 
 The rest of init's work stays with `init`, and the dry run writes nothing for
 it. A yaml with no mesh subnet does not load, as for every command, and the
@@ -145,7 +148,13 @@ as above, when
 * there is no secrets file yet: creating it is where the deployment's
   encryption is decided, and init says so when there is no `.sops.yaml`;
 * the file is encrypted and no `.sops.yaml` recipient is found beside it: the
-  file would be written in plaintext.
+  file would be written in plaintext;
+* the file holds a key the toolkit does not read: writing it back would drop
+  it.
+
+In the last two the `init` line says why, after what init has to do. A file
+that is plaintext with no `.sops.yaml` beside it is written in plaintext, as
+init writes it, with init's warning.
 
 A secret the toolkit cannot generate stays a note naming `secrets set`, as
 before.

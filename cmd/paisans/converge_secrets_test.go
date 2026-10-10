@@ -114,7 +114,8 @@ func secretValues(s *config.Secrets) []string {
 			}
 		case reflect.Struct:
 			for i := range v.NumField() {
-				if v.Type().Field(i).IsExported() {
+				// Path and the like are not in the file.
+				if f := v.Type().Field(i); f.IsExported() && f.Tag.Get("yaml") != "-" {
 					walk(v.Field(i))
 				}
 			}
@@ -227,6 +228,9 @@ func TestConvergeDryRunWithEverySecretSaysNothingChanged(t *testing.T) {
 // A write that fails marks init ✗ with the problem, says what to do, and the
 // later steps wait on init. The file is as it was.
 func TestConvergeDryRunSecretsWriteFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a read only file")
+	}
 	configPath, secretsPath := encryptedDeployment(t, dropGenerated)
 	if err := os.Chmod(secretsPath, 0o400); err != nil {
 		t.Fatal(err)
@@ -262,6 +266,11 @@ func TestConvergeDryRunSecretsWriteFailure(t *testing.T) {
 	}
 	if strings.Contains(out+rec.Lines(), "generated 4") {
 		t.Error("a failed write was reported as written")
+	}
+	for _, v := range secretValues(mustSecrets(t, secretsPath)) {
+		if strings.Contains(out+rec.Lines(), v) {
+			t.Fatalf("a secret's value was printed: %q", v)
+		}
 	}
 }
 
@@ -306,8 +315,12 @@ func TestConvergeDryRunLeavesTheRestToInit(t *testing.T) {
 			configPath, secretsPath := world(t)
 			files := snapshot(t, filepath.Dir(configPath))
 			rec, _, checked := dryRun(t, configPath, secretsPath)
-			if got := initLine(rec); !strings.HasPrefix(got, "○ ") {
+			got := initLine(rec)
+			if !strings.HasPrefix(got, "○ ") {
 				t.Errorf("init's line: %s", got)
+			}
+			if strings.HasPrefix(name, "encrypted") && !strings.Contains(got, "plaintext") {
+				t.Errorf("init's line does not say why: %s", got)
 			}
 			if len(checked) != 0 {
 				t.Errorf("checked %v", checked)
@@ -422,5 +435,29 @@ func TestConvergeDryRunLeavesAFileWithUnknownKeysToInit(t *testing.T) {
 	}
 	if now := snapshot(t, filepath.Dir(configPath)); !reflect.DeepEqual(files, now) {
 		t.Error("a file was written")
+	}
+}
+
+// The file --secrets names is the one filled, encrypted to the .sops.yaml
+// beside it; nothing is written beside the configuration.
+func TestConvergeDryRunFillsTheFileSecretsNames(t *testing.T) {
+	configPath, inPlace := encryptedDeployment(t, dropGenerated)
+	elsewhere := filepath.Join(t.TempDir(), "other.enc.yaml")
+	if err := os.Rename(inPlace, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(filepath.Dir(inPlace), config.SOPSConfigName), filepath.Join(filepath.Dir(elsewhere), config.SOPSConfigName)); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, _ := dryRun(t, configPath, elsewhere)
+	if got := initLine(rec); !strings.HasPrefix(got, "✓ generated 4 secrets into other.enc.yaml") {
+		t.Errorf("init's line: %s", got)
+	}
+	after := mustSecrets(t, elsewhere)
+	if !after.Encrypted || after.Cluster.AdminPassword == "" {
+		t.Errorf("the named file was not filled, encrypted %t", after.Encrypted)
+	}
+	if _, err := os.Stat(inPlace); err == nil {
+		t.Error("a secrets file was written beside the configuration")
 	}
 }
