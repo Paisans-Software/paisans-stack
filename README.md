@@ -1938,6 +1938,12 @@ missing, so running it again is safe. It assigns the cluster layout only when
 the site is the one Garage site; joining several is `storage add`, below. Like `apply`, it prints a plan and
 writes nothing without `--execute`.
 
+The plan marks its lines the way `apply`'s dry run does: `○` and the step's
+title (`assign layout role`, `import key for <app>`, `create bucket for
+<app>`, `grant key for <app>`, `allow website for <app>`) for what is still
+missing, its full sentence under it with `-v`; `✓` for what Garage already
+has, shown with `-v`. Piped output says `todo` and `ok` instead.
+
 It has to run after the infrastructure stack is up, because Garage has to be
 reachable to be asked what it already has. **`paisans apply --site` alone
 leaves object storage unusable**: the containers come up, but no bucket exists and no

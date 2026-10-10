@@ -99,10 +99,10 @@ func TestGaragePlanReportsNoSecret(t *testing.T) {
 	if strings.Contains(rec.Lines(), secret) {
 		t.Errorf("the reporter was given an S3 secret:\n%s", rec.Lines())
 	}
-	if !rec.Has("item", "import key for talk") || !rec.Has("detail", "import the S3 key for talk") {
+	if !rec.Has("pending", "import key for talk") || !rec.Has("detail", "import the S3 key for talk") {
 		t.Errorf("the plan must still say what the step does:\n%s", rec.Lines())
 	}
-	if !rec.Has("detail", "bucket: talk-uploads already exists") {
+	if !rec.Has("done", "bucket: talk-uploads already exists") {
 		t.Errorf("the plan must still report what was already there:\n%s", rec.Lines())
 	}
 	if !rec.Has("done", "import key for talk") {
