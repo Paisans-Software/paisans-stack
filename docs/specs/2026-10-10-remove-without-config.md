@@ -78,7 +78,9 @@ and tokens of the host's registry. Exactly one entry must match. The entry
 must agree with its id: the key is a lowercase version 4 UUID, and the entry's
 token and root are the ones the id gives. Everything that is removed is named
 from the id, as for every other removal, so an entry that disagrees with it is
-refused rather than trusted.
+refused rather than trusted. So is an entry whose token or root another entry
+holds too, even when `--id` is the full id: every name but the Docker label is
+made from the token, and the two would share them.
 
 ### What it removes
 
@@ -141,7 +143,9 @@ Besides what the host stage keeps, with why, one line each:
 Nothing says whether the deployment still runs elsewhere, or whether someone
 still holds its `paisans.yaml`. So `--execute` always asks for the site's name,
 as the entry records it, at a terminal, with `--delete-data` or without. No
-flag answers it.
+flag answers it. The question names the deployment and the host, the owner's
+sites in `/srv/caddy.d` that stop being served on a gateway, and the data when
+`--delete-data` deletes it, since `--execute` shows no plan.
 
 ## Refusals
 
@@ -157,7 +161,7 @@ All but the last two are refused before any host is reached.
 | `--force` with `--host-gone` | as today | drop one of them |
 | `--execute` without a terminal | it asks for the site's name | run it from an interactive shell |
 | no entry matches, or several do | nothing, or not one thing, is named | the refusal lists every entry on the host |
-| the entry disagrees with its id | its token or root is not the id's, or its key is not an id | look at the registry by hand |
+| the entry disagrees with its id | its token or root is not the id's, its key is not an id, or another entry holds its token or root | look at the registry by hand |
 
 ## Testing
 
@@ -171,7 +175,9 @@ In `internal/siteremove`, against the existing fake world:
 * on a host carrying another deployment, nothing of that deployment's
   (container, unit, ufw rule, registry entry) is planned or touched;
 * a gateway: no hand over planned, and the remains name `/srv/caddy.d`'s files;
-* an entry whose token disagrees with its id refused.
+* an entry whose token or root disagrees with its id refused, and a full id
+  refused when another entry holds its token or root;
+* the question `--execute` asks naming a gateway's unserved sites.
 
 In `cmd/paisans`: the refusals that need no host, reaching none; `--id` with
 `--config` refused; no match and an ambiguous match through a fake host;

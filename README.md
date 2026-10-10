@@ -4845,7 +4845,8 @@ served and that needs a Caddy of their own. A deployment with no gateway on the
 host, such as a monitor, is unaffected.
 
 Nothing says whether the deployment still runs elsewhere, so `--execute`
-always asks for the site's name at a terminal.
+always asks for the site's name at a terminal. The question names the owner's
+sites a gateway's Caddy stops serving, and the data `--delete-data` deletes.
 
 | Refused | Because |
 |---|---|
@@ -4853,7 +4854,7 @@ always asks for the site's name at a terminal.
 | `--id` with `--config`, `--secrets` or a site | it reads no configuration, and the registry entry names the site |
 | `--id` neither an id nor four hex digits | it matches no entry; Eg: `--id f2a9` |
 | no entry matches, or several do | the refusal lists every entry on the host |
-| an entry that is not the id's | everything removed is named from the id |
+| an entry that is not the id's, or whose token or root another entry holds | everything removed is named from the id and its token |
 | `--execute` without a terminal | it asks for the site's name |
 
 ### Preflight

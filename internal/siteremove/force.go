@@ -3,12 +3,14 @@ package siteremove
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/registry"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // BuildForced plans `site remove --force`: the host at dest cleaned of this
@@ -142,6 +144,16 @@ func BuildForcedByID(dest config.Destination, t apply.Transport, ref string, o O
 	if e.Site == "" {
 		wrong = append(wrong, "it names no site")
 	}
+	// Every name but the label is made from the token, so another entry
+	// holding it or the root would share them, whichever id --id spelled.
+	var sharing []string
+	for other, oe := range reg.Deployments {
+		if other != id && (oe.Token == d.Token() || oe.Root == d.Root() || strings.HasPrefix(other, d.Token())) {
+			sharing = append(sharing, fmt.Sprintf("entry %s holds its token or root too", other))
+		}
+	}
+	sort.Strings(sharing)
+	wrong = append(wrong, sharing...)
 	if len(wrong) > 0 {
 		return nil, fmt.Errorf("site remove %s: the entry %s in %s on %s is not one a claim writes: %s. Nothing was changed. Look at the registry by hand", what, id, registry.Path, dest, strings.Join(wrong, ", "))
 	}
@@ -167,8 +179,18 @@ func BuildForcedByID(dest config.Destination, t apply.Transport, ref string, o O
 	return p, nil
 }
 
+// Confirmation is what --execute says before it asks for the site's name:
+// what is cleaned off dest, and what goes with it that the plan alone shows.
+func (p *Plan) Confirmation(dest config.Destination) string {
+	out := fmt.Sprintf("This cleans deployment %s (%s), site %s, off %s, and nothing says whether it still runs.", p.cfg.ID, p.cfg.Community.Domain, p.Site, dest)
+	if len(p.unserved) > 0 {
+		out += fmt.Sprintf(" Its Caddy is removed without a hand over, so the owner's sites in %s stop being served: %s.", render.HostSitesDir, strings.Join(p.unserved, ", "))
+	}
+	if p.DeleteData {
+		out += fmt.Sprintf(" It deletes this deployment's data on %s for good.", dest)
+	}
+	return out
+}
+
 // DeploymentID is the id of the deployment the plan removes.
 func (p *Plan) DeploymentID() string { return p.cfg.ID }
-
-// Domain is the community.domain of the deployment the plan removes.
-func (p *Plan) Domain() string { return p.cfg.Community.Domain }

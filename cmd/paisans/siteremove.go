@@ -316,11 +316,7 @@ func runSiteRemoveByID(r ui.Reporter, site string, a byIDArgs, stdin io.Reader, 
 		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
 	}
-	what := fmt.Sprintf("This cleans deployment %s (%s), site %s, off %s, and nothing says whether it still runs.", plan.DeploymentID(), plan.Domain(), plan.Site, dest)
-	if a.deleteData {
-		what += fmt.Sprintf(" It deletes this deployment's data on %s above, for good.", dest)
-	}
-	if err := confirmSiteFor(stdin, stdout, plan.Site, what); err != nil {
+	if err := confirmSiteFor(stdin, stdout, plan.Site, plan.Confirmation(dest)); err != nil {
 		return err
 	}
 	plan.Report = r

@@ -104,6 +104,9 @@ type Plan struct {
 	// noConfig is a plan BuildForcedByID made from a registry entry alone:
 	// what needs the rest of paisans.yaml is not planned.
 	noConfig bool
+	// unserved are the owner's site blocks a gateway's Caddy served, which
+	// a plan with no configuration removes without handing it over.
+	unserved []string
 	// Report receives each stage as a section, the work in it as steps and
 	// each gate as a step of its own. Nil discards it.
 	Report ui.Reporter

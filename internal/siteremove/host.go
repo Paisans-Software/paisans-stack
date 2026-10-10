@@ -384,6 +384,7 @@ func (p *Plan) buildHost() (*Stage, error) {
 		// The hand over writes the snippets of the Caddyfile the gateway
 		// was rendered with, which needs the configuration.
 		p.Notes = append(p.Notes, handoverNotRendered(p.Site, inv.HostSites))
+		p.unserved = append([]string(nil), inv.HostSites...)
 	default:
 		report, err := ownership.Classify(p.cfg, p.Site, inv, inv.ManifestFiles)
 		if err != nil {

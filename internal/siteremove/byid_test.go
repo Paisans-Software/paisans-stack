@@ -144,6 +144,11 @@ func TestByIDGatewayIsNotHandedOver(t *testing.T) {
 			t.Errorf("%s was written", path)
 		}
 	}
+	for _, c := range vm.commands {
+		if strings.Contains(c, "/srv/caddy") {
+			t.Errorf("a command reaches /srv/caddy: %s", c)
+		}
+	}
 	if _, ok := vm.files[render.HostSitesDir+"/blog.caddy"]; !ok {
 		t.Error("the owner's site block is gone")
 	}
@@ -215,5 +220,47 @@ func TestByIDRefusesHostGone(t *testing.T) {
 	dest, _ := config.ParseDestination("ubuntu@192.0.2.30")
 	if _, err := siteremove.BuildForcedByID(dest, w.hosts["watch"], "f2a9", siteremove.Options{HostGone: true}); err == nil || !strings.Contains(err.Error(), "Drop one of them") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// Another entry holding the same token or root is refused even when --id is
+// the full id: every name but the label is made from the token, so the two
+// would share them.
+func TestByIDRefusesAFullIDWhoseTokenAnotherEntryHolds(t *testing.T) {
+	for name, e := range map[string]registry.Entry{
+		"token": {Token: "f2a9", Root: "/srv/paisans/beef", Domain: "example.com", Site: "y"},
+		"root":  {Token: "beef", Root: root, Domain: "example.com", Site: "y"},
+	} {
+		w := setup(t)
+		h := w.hosts["watch"]
+		reg, _ := registry.Parse([]byte(h.files[registry.Path]))
+		reg.Deployments["beef1111-2222-4333-8444-555566667777"] = e
+		h.files[registry.Path] = encode(t, reg)
+		dest, _ := config.ParseDestination("ubuntu@192.0.2.30")
+		_, err := siteremove.BuildForcedByID(dest, h, ourID, siteremove.Options{})
+		if err == nil || !strings.Contains(err.Error(), "beef1111") || !strings.Contains(err.Error(), "Nothing was changed") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+		if n := h.ran("docker"); n != 0 {
+			t.Errorf("%s: %d docker command(s) ran", name, n)
+		}
+	}
+}
+
+// The question --execute asks says what is lost before anything is: the
+// owner's sites a gateway's removed Caddy served, and the data.
+func TestByIDConfirmationNamesTheOwnersSites(t *testing.T) {
+	w := setup(t)
+	w.hosts["vm"].files[render.HostSitesDir+"/blog.caddy"] = "blog.example.org { respond 200 }\n"
+	dest, _ := config.ParseDestination("ubuntu@192.0.2.30")
+	q := byID(t, w, "vm", "f2a9", siteremove.Options{DeleteData: true}).Confirmation(dest)
+	for _, want := range []string{ourID, "vm", render.HostSitesDir + "/blog.caddy", "stop being served", "data"} {
+		if !strings.Contains(q, want) {
+			t.Errorf("no %q in %q", want, q)
+		}
+	}
+	q = byID(t, w, "watch", "f2a9", siteremove.Options{}).Confirmation(dest)
+	if strings.Contains(q, "Caddy") || strings.Contains(q, "data") {
+		t.Errorf("a monitor without --delete-data: %q", q)
 	}
 }
