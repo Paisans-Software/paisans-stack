@@ -374,15 +374,15 @@ func generateProblem(path string, err error) error {
 // three, and how many more. Names only; a value never reaches the terminal.
 func missingSecrets(names []string) string {
 	if len(names) == 1 {
-		return "generated secret missing: " + names[0]
+		return "generated secret missing (" + names[0] + ")"
 	}
-	return "generated secrets missing: " + fewNames(names)
+	return "generated secrets missing (" + fewNames(names) + ")"
 }
 
 // generatedSecrets is init's line once the dry run has written names into
 // the file at path. Names only, as missingSecrets.
 func generatedSecrets(names []string, path string) string {
-	return "generated " + plural(len(names), "secret") + " into " + filepath.Base(path) + ": " + fewNames(names)
+	return "generated " + plural(len(names), "secret") + " into " + filepath.Base(path) + " (" + fewNames(names) + ")"
 }
 
 // fewNames is the first three names, and how many more.
@@ -456,8 +456,6 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 	if result.Refused() {
 		return refused(configPath, len(result.Refusals()), "")
 	}
-	ui.Align(r, convergeTitles(cfg)...)
-	defer ui.Align(r)
 	// A dry run generates the secrets init would, when that is all init
 	// has to do, so the steps after it are checked against them. The rest
 	// of init's work is init's.
@@ -674,26 +672,6 @@ func convergeUp(cfg *config.Config, steps []convergeStep, marks map[string]ui.Ma
 		}
 	}
 	return true
-}
-
-// convergeTitles is every title the etcd reads and the plan can show, for
-// the title column: the plan of a blank deployment, and site add for each
-// member, since which members found and which join is read after the reads
-// have been drawn.
-func convergeTitles(cfg *config.Config) []string {
-	var titles []string
-	for _, m := range cfg.Etcd.Members {
-		titles = append(titles, "read "+m+"'s etcd record", "site add "+m)
-	}
-	for _, s := range convergePlan(cfg, convergeState{NeedsInit: true}) {
-		titles = append(titles, s.Title)
-	}
-	for _, app := range cfg.AppNames() {
-		if cfg.Apps[app].Kind == config.KindPocketID {
-			titles = append(titles, adminCheckTitle(app))
-		}
-	}
-	return titles
 }
 
 // convergeWaits is the titles of the earlier steps that steps[i] waits on,

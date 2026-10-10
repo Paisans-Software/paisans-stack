@@ -2630,7 +2630,7 @@ check** on the site it is about to change and reports its class as one step:
 
 ```
 home-a (ubuntu@home-a.local)
-  ok   host check              clean
+  ok   host check: clean
 ```
 
 `shared` stands where `clean` does for a host that runs other services, and a
@@ -3072,7 +3072,7 @@ first:
 
 ```
 configuration
-  ✓ init    generated 4 secrets into secrets.enc.yaml: cluster.admin_password, cluster.standby_password, cluster.superuser_password and 1 more
+  ✓ init: generated 4 secrets into secrets.enc.yaml (cluster.admin_password, cluster.standby_password, cluster.superuser_password and 1 more)
 ...
 Nothing changed on the servers. Added 4 generated secrets to secrets.enc.yaml. Re-run with --execute to apply. ...
 ```

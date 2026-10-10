@@ -59,8 +59,8 @@ Dry run:
 paisans.yaml
   ! garage consistency is dangerous: an upload is confirmed even if only 1 of 2 copies is written
 luthen-rael (ubuntu@192.0.2.10)
-  ✓ host check              clean
-  ✓ disk space              13.6 GiB free
+  ✓ host check: clean
+  ✓ disk space: 13.6 GiB free
   · write 8 files
   · create OIDC client uptime2
   · start mesh psns-566c
@@ -74,14 +74,14 @@ Nothing changed. Re-run with --execute to apply.
 
 ```
 luthen-rael (ubuntu@192.0.2.10)
-  ✓ host check              clean
+  ✓ host check: clean
   ✓ claim site
-  ✓ disk space              13.6 GiB free
-  ✓ OIDC client uptime2     created
+  ✓ disk space: 13.6 GiB free
+  ✓ OIDC client uptime2: created
   ✓ write 8 files
   ✓ start mesh psns-566c
-  ✓ recreate infra          4.1s
-  ✓ recreate uptime2        6.3s
+  ✓ recreate infra: 4.1s
+  ✓ recreate uptime2: 6.3s
   ✓ reload gateway
 Applied 8 files to luthen-rael.
 ```
@@ -110,7 +110,9 @@ no cursor movement, no spinner, and words instead of glyphs (`ok`, `FAIL`,
 `WARN`, `todo` for pending, `wait` for waiting). A step prints one line when it ends. Logs from cron or CI then read
 cleanly.
 
-The second column is aligned within a block, so results line up.
+A step's result follows its title after a colon, `✓ disk space: 13.6 GiB free`,
+with no column to pad to, so a short title is not followed by a run of spaces
+sized to a long one.
 
 ## The `internal/ui` package
 
