@@ -158,8 +158,10 @@ visual language as a refusal, on stderr:
 ```
 ✗ secrets.enc.yaml cannot be decrypted: no usable age key was found
   Set SOPS_AGE_KEY_CMD to a command that prints your key, Eg: a Keychain lookup,
-  or SOPS_AGE_KEY_FILE to the key's path. Your public key must be a recipient in
-  .sops.yaml; if it was added recently, run sops updatekeys on the file.
+  so the key is never stored in a file or the environment. SOPS_AGE_KEY_FILE
+  (its path), SOPS_AGE_KEY (the key itself) and sops/age/keys.txt in your config
+  directory are read too. Your public key must be a recipient in .sops.yaml; if
+  it was added recently, run sops updatekeys on the file.
 ```
 
 * The first line is the mark and a hint: `✗` red on a terminal, `FAIL` off

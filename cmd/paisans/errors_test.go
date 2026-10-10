@@ -77,7 +77,7 @@ func TestSecretsErrorThroughMainsPrinter(t *testing.T) {
 		t.Errorf("hint line: %q", lines[0])
 	}
 	flat := strings.Join(strings.Fields(out), " ")
-	for _, want := range []string{"Set SOPS_AGE_KEY_CMD to a command that prints your key", "SOPS_AGE_KEY_FILE", "recipient in .sops.yaml", "sops updatekeys"} {
+	for _, want := range []string{"Set SOPS_AGE_KEY_CMD to a command that prints your key", "never stored in a file or the environment", "SOPS_AGE_KEY_FILE", "SOPS_AGE_KEY (the key itself)", "sops/age/keys.txt", "recipient in .sops.yaml", "sops updatekeys"} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("the explanation lacks %q:\n%s", want, out)
 		}

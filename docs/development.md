@@ -210,9 +210,11 @@ empty. `init` lists it as owed, but rendering without it produced a Caddy that
 starts and then fails every DNS-01 challenge, which a visitor finds rather than
 the operator.
 
-A decryption failure names both `SOPS_AGE_KEY_FILE` and `SOPS_AGE_KEY_CMD`; the
-embedded sops (v3.13.3, `age/keysource.go`) reads either, and the second lets
-the age key live in a keychain rather than a file.
+A decryption failure names every place the embedded sops (v3.13.3,
+`age/keysource.go`) reads an age key from: `SOPS_AGE_KEY_CMD` first, since it
+lets the key live in a keychain rather than in a file or the environment, then
+`SOPS_AGE_KEY_FILE`, `SOPS_AGE_KEY` and `sops/age/keys.txt` under the user's
+config directory.
 
 `ingress show --app <name>` and `ingress check --app <name>` are for an app
 pinned to a monitor site (`render.ServedBy`); every other app is the

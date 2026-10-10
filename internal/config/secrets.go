@@ -124,7 +124,10 @@ var (
 // decryptProblem says why path could not be decrypted and what to do. sops'
 // own wording is the cause, for --verbose: failing to find a key is the
 // ordinary case for a new admin, and "0 successful groups required, got 0"
-// tells them nothing they can act on.
+// tells them nothing they can act on. The embedded sops (v3.13.3,
+// age/keysource.go) reads a key from SOPS_AGE_KEY_CMD, SOPS_AGE_KEY_FILE,
+// SOPS_AGE_KEY and sops/age/keys.txt under the user's config directory; the
+// command comes first, since it lets the key live in a keychain.
 func decryptProblem(path string, err error) error {
 	cause := fmt.Errorf("decrypting %s: %w", path, err)
 	name := ui.ShortPath(path)
@@ -132,7 +135,7 @@ func decryptProblem(path string, err error) error {
 	case errors.Is(err, errNoKey):
 		return &ui.Problem{
 			Hint:    name + " cannot be decrypted: no usable age key was found",
-			Explain: "Set SOPS_AGE_KEY_CMD to a command that prints your key, Eg: a Keychain lookup, or SOPS_AGE_KEY_FILE to the key's path. Your public key must be a recipient in .sops.yaml; if it was added recently, run sops updatekeys on the file.",
+			Explain: "Set SOPS_AGE_KEY_CMD to a command that prints your key, Eg: a Keychain lookup, so the key is never stored in a file or the environment. SOPS_AGE_KEY_FILE (its path), SOPS_AGE_KEY (the key itself) and sops/age/keys.txt in your config directory are read too. Your public key must be a recipient in .sops.yaml; if it was added recently, run sops updatekeys on the file.",
 			Cause:   cause,
 		}
 	case errors.Is(err, errTampered):

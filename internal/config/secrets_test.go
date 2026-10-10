@@ -143,6 +143,11 @@ func TestMissingKeyIsExplained(t *testing.T) {
 	}
 	// The embedded sops (v3.13.3, age/keysource.go) also reads a key from a
 	// command, which is how a key kept in a keychain is used.
+	// SOPS_AGE_KEY_CMD first, then every other place sops reads a key from.
+	cmd, file, env, def := strings.Index(p.Explain, "SOPS_AGE_KEY_CMD"), strings.Index(p.Explain, "SOPS_AGE_KEY_FILE"), strings.Index(p.Explain, "SOPS_AGE_KEY "), strings.Index(p.Explain, "sops/age/keys.txt")
+	if cmd < 0 || file < cmd || env < cmd || def < cmd {
+		t.Errorf("the explanation does not name every way a key is found, SOPS_AGE_KEY_CMD first:\n%v", p.Explain)
+	}
 	if !strings.Contains(p.Explain, "Set SOPS_AGE_KEY_CMD") {
 		t.Errorf("the explanation does not mention SOPS_AGE_KEY_CMD:\n%v", p.Explain)
 	}
