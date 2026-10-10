@@ -49,22 +49,6 @@ func dataLeft(site, root string, files int) string {
 	return fmt.Sprintf("%s: data left on the host; --delete-data deletes it. It is in %s: %d file(s) apply did not write, the data in its bind mounts (Eg: a database, an object store)", site, root, files)
 }
 
-func keysNoPasswd(site, record, user string) string {
-	return fmt.Sprintf("%s: SSH keys kept; the user has no passwd entry to find authorized_keys by. The user is %s, and the keys are those %s lists", site, user, record)
-}
-
-func keySharedKept(site, fingerprint, file string) string {
-	return fmt.Sprintf("%s: an SSH key line kept; another deployment's record lists it too. It is key %s in %s: both added it as this one line", site, fingerprint, file)
-}
-
-func keyLinesKept(site, file, record, user string) string {
-	return fmt.Sprintf("%s: SSH key lines kept; delete them yourself once another way in exists. They are in %s: deleting the key(s) %s lists would leave %s with no authorized key, and nobody could log in over SSH again", site, file, record, user)
-}
-
-func keysOtherUserKept(site, record, reach string) string {
-	return fmt.Sprintf("%s: another user's SSH keys kept; clean them by running again as that user. The record is %s; run again with --ssh %s", site, record, reach)
-}
-
 func recordMissed(gw, why string) string {
 	return fmt.Sprintf("%s: deployment record not updated; the next change catches it up. %s", gw, why)
 }

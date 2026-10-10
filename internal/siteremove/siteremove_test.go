@@ -64,7 +64,6 @@ func TestTheDryRunPlansEveryStageAndChangesNothing(t *testing.T) {
 		{3, "home-b", "remove", "drop-in /etc/systemd/system/docker.service.d/paisans-f2a9-after-wireguard.conf"},
 		{3, "home-b", "delete", "allow in on psns-f2a9"},
 		{3, "home-b", "remove", "deployment " + ourID},
-		{3, "home-b", "remove", "1 key line(s)"},
 		{4, "home-b", "remove", "sites.home-b"},
 	} {
 		if !hasStep(p, want.stage, want.site, want.verb, want.text) {
@@ -194,7 +193,7 @@ func TestARemovalCompletesAndKeepsWhatIsNotOurs(t *testing.T) {
 	if strings.Join(b.rules, "|") != "allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'|allow 51821/udp comment 'paisans-0c1d: wireguard'|allow 8080/tcp" {
 		t.Errorf("ufw rules left: %v", b.rules)
 	}
-	if strings.Contains(b.files[keysAt], alice) || !strings.Contains(b.files[keysAt], "bob@example.org") || !strings.Contains(b.files[keysAt], "# managed by hand") {
+	if !strings.Contains(b.files[keysAt], alice) || !strings.Contains(b.files[keysAt], "bob@example.org") || !strings.Contains(b.files[keysAt], "# managed by hand") {
 		t.Errorf("authorized_keys after:\n%s", b.files[keysAt])
 	}
 	if reg := b.files["/var/lib/paisans/registry.json"]; strings.Contains(reg, ourID) || !strings.Contains(reg, otherID) {

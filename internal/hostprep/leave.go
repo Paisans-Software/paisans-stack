@@ -56,34 +56,7 @@ func ParseAddedRules(d deployment.Deployment, out string) (rules []AddedRule, ab
 	return rules, false
 }
 
-// OwnedKeysGlob matches every deployment's record of the keys host prepare
-// added to user's authorized_keys, for a check that another deployment
-// records the same key.
-func OwnedKeysGlob(user string) string {
-	return ownedDir + "/authorized_keys." + user + ".paisans-*.owned"
-}
-
 // OwnedKeysPrefixGlob matches the records of keys d added for any user.
 func OwnedKeysPrefixGlob(d deployment.Deployment) string {
 	return ownedDir + "/authorized_keys.*." + d.Prefix() + ".owned"
-}
-
-// OwnedKeysUser is the user a record OwnedKeysPath(d, user) names.
-func OwnedKeysUser(d deployment.Deployment, path string) string {
-	return strings.TrimSuffix(strings.TrimPrefix(path, ownedDir+"/authorized_keys."), "."+d.Prefix()+".owned")
-}
-
-// ParseOwnedKeys reads a record OwnedKeysPath names: one fingerprint per
-// line, with the key's comment after it.
-func ParseOwnedKeys(content string) []string {
-	var out []string
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || line[0] == '#' {
-			continue
-		}
-		fp, _, _ := strings.Cut(line, " ")
-		out = append(out, fp)
-	}
-	return out
 }

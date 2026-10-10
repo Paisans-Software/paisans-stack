@@ -1308,7 +1308,4 @@ func TestParseAddedRulesTellsOursFromTheirs(t *testing.T) {
 	if _, absent := hostprep.ParseAddedRules(d, "ufw absent\n"); !absent {
 		t.Error("a host without ufw was not reported")
 	}
-	if got := hostprep.ParseOwnedKeys("# header\nSHA256:abc alice@example.org\n\nSHA256:def\n"); strings.Join(got, ",") != "SHA256:abc,SHA256:def" {
-		t.Errorf("ParseOwnedKeys = %v", got)
-	}
 }

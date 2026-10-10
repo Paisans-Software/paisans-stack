@@ -682,8 +682,11 @@ undo:
   (hash checked on the host), units by the `paisans-<token>-` glob, ufw rules
   by `hostprep.ParseAddedRules` read again before deleting, the registry by
   `registry.RemoveCommand` under the claim's lock. A re-run therefore does
-  only what is left. The keys go last, after `verifyHost`, the stage's gate,
-  because they may be how the host is reached.
+  only what is left. `verifyHost`, the stage's gate, runs last.
+* **Authorized keys are never removed.** A key may be the only way into the
+  host, and nothing on it says whether another exists. The deployment's
+  records of the keys `host prepare` added are its own bookkeeping, so they
+  are deleted with no step of their own in the plan.
 * **The registry removal has a Go counterpart**, `registry.Remove`, and the
   tests run the awk program against `Encode` of its result.
 * **`inspect` is a variable** standing in for `hostcheck.Inspect`, so the tests

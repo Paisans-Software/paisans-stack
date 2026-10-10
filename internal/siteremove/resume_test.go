@@ -190,36 +190,34 @@ func TestDeleteDataDeletesTheRootAndVolumes(t *testing.T) {
 	}
 }
 
-// A key another deployment's record lists stays, as does a key that is the
-// login user's last.
-func TestKeysOnlyGoWhenTheRecordProvesThem(t *testing.T) {
-	t.Run("another record lists it", func(t *testing.T) {
-		w := setup(t)
-		b := w.hosts["home-b"]
-		b.files[theirs] = fingerprint(t, alice) + " alice@example.org\n"
-		if err := siteremove.Execute(w.mustBuild("home-b", siteremove.Options{})); err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(b.files[keysAt], alice) {
-			t.Error("a key another deployment records was deleted")
-		}
-		if _, ok := b.files[record]; ok {
-			t.Error("this deployment's record is still there")
-		}
-	})
-	t.Run("the last key", func(t *testing.T) {
-		w := setup(t)
-		b := w.hosts["home-b"]
-		b.files[keysAt] = alice + "\n"
-		p := w.mustBuild("home-b", siteremove.Options{})
-		if err := siteremove.Execute(p); err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(b.files[keysAt], alice) {
-			t.Error("the user's last key was deleted")
-		}
-		if !strings.Contains(strings.Join(p.Remains(), "\n"), "no authorized key") {
-			t.Error("the report does not say why the key stayed")
-		}
-	})
+// No SSH key is ever deleted, not even one this deployment's record lists:
+// it may be the only way into the host. The record goes, and neither the
+// plan nor the report mentions the keys.
+func TestSSHKeysAreNeverRemoved(t *testing.T) {
+	for name, last := range map[string]bool{"beside other keys": false, "the last key": true} {
+		t.Run(name, func(t *testing.T) {
+			w := setup(t)
+			b := w.hosts["home-b"]
+			if last {
+				b.files[keysAt] = alice + "\n"
+			}
+			keys := b.files[keysAt]
+			p := w.mustBuild("home-b", siteremove.Options{})
+			said := strings.ToLower(printed(p) + strings.Join(p.Remains(), "\n"))
+			for _, word := range []string{"ssh key", "authorized", ".owned"} {
+				if strings.Contains(said, word) {
+					t.Errorf("the plan or report mentions %q:\n%s", word, said)
+				}
+			}
+			if err := siteremove.Execute(p); err != nil {
+				t.Fatal(err)
+			}
+			if b.files[keysAt] != keys {
+				t.Errorf("authorized_keys changed:\n%s", b.files[keysAt])
+			}
+			if _, ok := b.files[record]; ok {
+				t.Error("this deployment's record is still there")
+			}
+		})
+	}
 }

@@ -4668,7 +4668,7 @@ re-run impossible: a failure there names the `apply` that finishes it.
 |-------|-----------|------|
 | 1. Data out of the site | the leader switched over to the `Sync Standby` when the site holds it; `synchronous_mode` turned off when one data site remains, since a leader waiting on a standby that is leaving stops taking writes; Patroni stopped on the site and its member key deleted from etcd; its Garage node removed from the layout and the layout applied | another site leads and `patronictl list` no longer lists the site, with a `Sync Standby` when the end state wants one; no layout row for the site, and every remaining node settled (one live layout version, an empty resync queue) within an hour, and a run that times out resumes at this gate while Garage carries on copying |
 | 2. Out of the cluster | `etcdctl member remove`, then the site's etcd stopped; with two data sites and a witness, the witness's member next (below); on every remaining site, the files whose render changes with the site gone, by scoped `apply`: `psns-<token>.conf` (`wg syncconf`), `haproxy.cfg` (HAProxy restarted with its database apps stopped around it, as `site add` does) and the gateway's routes (validated, then Caddy reloaded); then each remaining replica's `patroni.env`, one at a time, as `site add`'s stage 7 does; last, the site taken out of every remaining gateway's deployment record | the voters are exactly the end state's and all healthy; no remaining site has the site's key as a WireGuard peer; HAProxy lists exactly the end state's cluster sites with the leader `UP`; each replica streaming again before the next |
-| 3. Clean the host | below; skipped with `--host-gone`. When the site holds the active Pocket ID instance, the plan says that once this stage stops it, sign in is unavailable for a few seconds while a standby takes over, up to about 90 seconds if the instance does not stop cleanly | checked before the keys go: nothing of this deployment's left but what the plan said it keeps |
+| 3. Clean the host | below; skipped with `--host-gone`. When the site holds the active Pocket ID instance, the plan says that once this stage stops it, sign in is unavailable for a few seconds while a standby takes over, up to about 90 seconds if the instance does not stop cleanly | checked last: nothing of this deployment's left but what the plan said it keeps |
 | 4. Config | the site taken out of `paisans.yaml`: its block, its name in `cluster.sites`, `etcd.members` and `storage.garage.sites` where the file writes them, its capacity; with two data sites and a witness, the witness out of a written `etcd.members` and its `witness` role, in the same write; every other byte as it was | the file loads and no longer declares it |
 | 5. Monitor | every remaining monitor site's `uptime` stack applied on its own, so its `monitors.json`, rendered from the end state, no longer names the site and the restarted monitor deletes its ping and direct checks; skipped when no site holds the monitor role (see *Topology commands reseed the monitor*). The monitor site itself is never the one removed, since its app is pinned to it | the seed on the host matches the render and the stack is healthy; a failure here comes after the removal and names the `apply` that finishes it |
 
@@ -4710,13 +4710,13 @@ place, and everything else found is listed as kept:
 | the mesh interface | `wg-quick@psns-<token>`, named for the token, and its file hashing to its manifest entry | the unit disabled and stopped; the file deleted with the rendered files |
 | units and drop-ins | named `paisans-<token>-*` under `/etc/systemd/system` and its drop-in directories | disabled, stopped, deleted; systemd reloaded |
 | ufw rules | a comment starting with exactly `paisans-<token>:` | deleted, except the SSH allow, which `host prepare` never removes either: with incoming denied, deleting it cuts the next connection |
-| authorized keys | a fingerprint in `/etc/paisans/authorized_keys.<user>.paisans-<token>.owned` | the key's plain lines deleted, last, then the record. A key another deployment's record lists stays, because both added it as one line; so do the keys when deleting them would leave the user with none |
+| authorized keys | nothing can prove one: a key `host prepare` added is a key the operator logs in with | never removed. A key may be the only way into the host, and nothing on it says whether another exists; the operator deletes one by hand once it is no longer needed |
 | the deployment's directory | its path, `/srv/paisans/<token>` | empty directories removed; what apply did not write, the data in its bind mounts, is kept, and `--delete-data` deletes it all unless a file in it was edited |
 | the registry entry | this id's line in `/var/lib/paisans/registry.json` | deleted under the same lock as a claim, by the same kind of awk program |
 | the deployment record, on a gateway | `/var/lib/paisans/deployed.<token>.json`, named for the token | deleted |
 
-The keys go last, after the registry entry and the check that nothing else is
-left, because they may be what the command reaches the host with.
+The check that nothing of this deployment's is left comes last, after the
+registry entry.
 
 **A gateway's Caddy is kept while it serves the host owner's sites.** The
 site blocks in `/srv/caddy.d` (see *The gateway host's own sites live in
@@ -4811,7 +4811,7 @@ No flag answers either question. Any other host is not asked about.
 | Refused | Because |
 |---|---|
 | an undeclared site without `--ssh` | there is no way to reach its host |
-| `--ssh` not of the form `user@host[:port]` | the user is whose authorized keys are cleaned; Eg: `admin@203.0.113.9` |
+| `--ssh` not of the form `user@host[:port]` | the user is who the command logs in as; Eg: `admin@203.0.113.9` |
 | `--ssh` without `--force` | a full removal reaches the site through its `ssh` section |
 | `--force` with `--host-gone` | `--force` cleans one host, and `--host-gone` reaches none |
 | a host that does not answer over ssh | what is on it cannot be read |
