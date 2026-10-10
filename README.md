@@ -4726,6 +4726,12 @@ approved specification.
   the report says Caddy is kept and for which files. Once `/srv/caddy.d` holds
   no site file, the next run removes Caddy, its files and the entry, as for
   any container. No flag removes it sooner.
+* **Another deployment meets it.** Its host check's conflict on 80 and 443
+  names the container as that deployment's kept Caddy and says what to do:
+  move the sites and remove it, or run `site remove --force --id` once they
+  are gone. When the registry entry was deleted by hand, it says so and that
+  the container is removed by hand, and `host deployments` lists it as an
+  orphaned Caddy.
 
 **`--host-gone` is for a host that is never coming back.** The host is not
 reached at all: stages 1, 2 and 4 run and stage 3 is skipped. The report lists

@@ -126,6 +126,38 @@ sites`, with the files.
   manifest, `caddy/data` and `caddy/config` with `--delete-data` and as data
   left without it, and the registry entry.
 
+## A kept Caddy another deployment meets
+
+A kept Caddy holds ports 80 and 443. A sysadmin may also delete the registry,
+or the entry, by hand and keep the Caddy running for their sites; the
+container still carries the old deployment's label. Two places name it for
+what it is.
+
+**The host check.** When another deployment's host check finds a claim, a
+gateway's 80 and 443 or any other, held by a container that is another paisans
+deployment's Caddy (its compose service `caddy` in a project
+`paisans-<token>-infra`) while `/srv/caddy.d` holds a site file, the conflict
+line says so and what to do, in one line:
+
+* with that deployment's entry in the registry: `container <name>: paisans
+  deployment <token>'s Caddy, kept because it serves /srv/caddy.d sites. Move
+  those sites to a Caddy of your own and remove this container, or run paisans
+  site remove --force --ssh <host> --id <token> once they are gone`;
+* with none: `container <name>: paisans deployment <token>'s Caddy, kept
+  because it serves /srv/caddy.d sites; its registry entry was removed, so
+  remove this container by hand once those sites have moved`.
+
+The host check reads the registry for this, and a host without one has no
+entry. Any other container of another deployment keeps the plain wording.
+
+**`host deployments`.** A container like that, whose deployment has no
+registry entry, while `/srv/caddy.d` holds site files, is listed under *not in
+the registry* as `<id> orphaned Caddy: serves /srv/caddy.d sites (a.caddy,
+b.caddy); its registry entry was removed, so remove it by hand once those
+sites have moved`, in place of its compose project's line. Every other
+leftover is listed as before, and a kept Caddy whose entry is there is shown
+with its entry.
+
 ## The plan and the report
 
 The dry run lists the reduction as the stage's first step, naming the owner's
@@ -150,4 +182,9 @@ In `internal/siteremove`, against the fake world:
 
 In `internal/registry`: the entry with `kept` written and read.
 
-In `cmd/paisans`: `host deployments` showing a kept Caddy.
+In `internal/hostcheck`: the conflict line for another deployment's kept
+Caddy, with its registry entry and without; another deployment's container
+that is not its Caddy keeping the plain wording.
+
+In `cmd/paisans`: `host deployments` showing a kept Caddy, an orphaned one,
+and a kept Caddy whose entry exists shown with it rather than as orphaned.
