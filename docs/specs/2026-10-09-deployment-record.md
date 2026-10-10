@@ -41,21 +41,20 @@ beside `registry.json`, root's and 0600, written under the registry's lock and
 replaced atomically, as the registry is:
 
 ```json
-{"version": 1, "revision": 7, "updated_at": "2026-10-09T18:40:00Z",
- "sites": {"home-a": {"added": 1}, "vm": {"added": 1}, "monitor-a": {"added": 2, "removed": 7}},
- "apps": {"talk": {"added": 1}},
- "pocket_id_groups": {"members": {"added": 1}}}
+{"version": 1, "updated_at": "2026-10-09T18:40:00Z",
+ "sites": {"vm": {"adds": ["5f0c2a9e1b7d4c36"]},
+           "monitor-a": {"adds": ["0b3e9d27c8a14f55"], "removed": ["0b3e9d27c8a14f55"]}},
+ "apps": {"talk": {"adds": ["9a61d0f4e2c35b78"]}},
+ "pocket_id_groups": {"members": {"adds": ["c47e18b2a9d05f63"]}}}
 ```
 
-Names only. It holds no secret and no address. Each name keeps the revision
-of the change that last added it and of the one that last removed it; a name
-is deployed when it was added at least as late as it was removed, so an add
-and a removal at the same revision keep it. `revision` is the highest change
-any record holds; every change takes the next one. `updated_at` is when the
-latest change was made, by the writer's clock, for a person reading the file;
-nothing compares it, since two operators' clocks need not agree. A removed
-name stays in the file, so that a gateway that missed the removal cannot bring
-it back. The token in its name
+Names only, and tags. It holds no secret and no address. Every add of a name
+makes a new random tag, and a removal records the tags of the adds it saw. A
+name is deployed while it has an add no removal saw: so an add made where a
+removal was never seen survives that removal, and a gateway that missed a
+removal does not bring the name back. `updated_at` is when the latest change
+was made, by the writer's clock, for a person reading the file; nothing
+compares it, since two operators' clocks need not agree. The token in its name
 is the proof it is this deployment's, so cleaning a gateway host deletes it
 with the rest (stage 3 of `site remove`, either way).
 
@@ -71,30 +70,36 @@ with the rest (stage 3 of `site remove`, either way).
 Every change is made the same way, on every gateway the yaml declares at once:
 
 1. Read the record on each gateway that answers.
-2. Merge them: for each name, the latest add and the latest removal any of
-   them holds.
-3. Make the change at the next revision: an add for each name added that is
-   not deployed, a removal for each name taken out that is.
-4. Write the merged result to every gateway that answered, each under the
-   registry's lock and only if its file still hashes to what was read.
+2. Merge them: for each name, every add tag and every removed tag any of them
+   holds.
+3. Make the change: `apply` adds every name the yaml declares with a new tag,
+   whether or not it is already deployed, so that its add survives a removal
+   it could not see; a removal records every add tag of the name the merge
+   holds.
+4. When every gateway answered, compact the merge: each deployed name keeps
+   one of its live tags, and a name that is not deployed is dropped. No
+   gateway holds an older copy for the dropped tags to cancel.
+5. Write the result to every gateway that answered whose record differs, each
+   under the registry's lock and only if its file still hashes to what was
+   read.
 
-A gateway that does not answer, or whose write is refused, is a warning, never
-a failure: `vm2 missed this change to the deployment record; it is brought up
-to date the next time a command that writes the record reaches it`. When the
-change leaves the names as they were, nothing is raised, and only a gateway
-whose record differs from the merge is written: that is how a gateway that was
-down is brought up to date, and how what it alone knew reaches the others.
+A gateway that does not answer is a warning, never a failure: `vm2 missed
+this change to the deployment record; it is brought up to date the next time
+a command that writes the record reaches it`. A gateway whose record another
+command changed between the read and the write is a warning too, and says to
+run the command again: the other change may have been a removal racing this
+add, or the other way round. A change that leaves the names as they were still
+writes a gateway whose record differs from the merge: that is how a gateway
+that was down is brought up to date, and how what it alone knew reaches the
+others.
 
 `apply` only adds, so an `apply` of a yaml mid-edit cannot shrink the record:
-that is the property the record exists for. Merging name by name means an add
-that only one gateway saw is never lost to a later change on another, and a
-gateway that missed a removal does not bring the removed site back.
+that is the property the record exists for.
 
 ## Who reads it
 
 Readers merge the records of the gateways that answered, name by name, and a
-name is deployed when its latest add is at least as late as its latest
-removal.
+name is deployed while it has an add no removal saw.
 
 | In `paisans.yaml` | In a record | Meaning | `init` and `apply` | `secrets prune` |
 |---|---|---|---|---|
@@ -149,13 +154,14 @@ The flow in the site-remove-force spec keeps working, in this order:
 ## Testing
 
 In a new package for the record (read, merge, write commands, against a fake
-host): adding is a union and never removes; taking out removes only the names
-given; the write is under the lock and atomic; an absent file reads as no
-record, a malformed one as an error; a change starts from the newest record,
-takes the next revision and reaches every gateway that answers; one that does
-not is reported, and caught up by the next change; records that split while
-gateways were down merge without losing an add that only one saw or a removal
-that only one saw; an add and a removal at the same revision keep the name.
+host): adding never removes; taking out removes only the names given; the
+write is under the lock and atomic; an absent file reads as no record, a
+malformed one as an error; a change reaches every gateway that answers, and
+one that does not is reported and caught up by the next change; records that
+split while gateways were down, produced through the same calls the commands
+make, merge without losing an add only one saw or a removal only one saw; a
+name re-added on a gateway that missed its removal stays deployed; a record
+written while every gateway answered is compacted.
 
 In `internal/secretsgen`: the four rows above, for each of sites, apps and
 groups, with records from two gateways that disagree.
