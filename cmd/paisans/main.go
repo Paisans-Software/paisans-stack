@@ -223,7 +223,8 @@ Everything else writes files locally and stops.
 
 Every command takes -v or --verbose. By default each step is one line; with it,
 the reasons, values, request bodies and command output behind each step show
-too. A failure always prints in full, with or without it.
+too. A failure always says what went wrong and what to do; with -v, the
+underlying error shows under it too.
 `
 
 func main() {

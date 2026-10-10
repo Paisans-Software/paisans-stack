@@ -38,10 +38,10 @@ func TestDefaultOutputIsShortAndPlain(t *testing.T) {
 			t.Errorf("%s: escapes in piped output", name)
 		}
 		for _, line := range strings.Split(out, "\n") {
-			// A failure and a refusal's explanation say why in full: the
-			// operator needs the reason to act, and a second run for it
-			// would be worse than a long line.
-			if len(line) > 100 && !strings.HasPrefix(strings.TrimSpace(line), "FAIL") && !strings.HasPrefix(line, "       ") {
+			// A failed step's line carries its result in full. A refusal's
+			// explanation is wrapped to 80 columns, so it is held to the
+			// same width as everything else.
+			if len(line) > 100 && !strings.HasPrefix(strings.TrimSpace(line), "FAIL") {
 				t.Errorf("%s: long line in default output (%d): %q", name, len(line), line)
 			}
 		}
