@@ -340,7 +340,7 @@ func runInit(args []string) error {
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	sudo := fs.Bool("sudo", true, "read each site through sudo, since the host registry is root's")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	r := reporter()
@@ -521,7 +521,7 @@ func runApply(args []string) error {
 	minFree := fs.String("min-free", "3G", "free space Docker's data root must have before a stack pulls an image, Eg: 2G")
 	keepImages := fs.Bool("keep-images", false, "leave the images this apply supersedes on the host, Eg: to keep one to roll back to")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	r := reporter()
@@ -829,7 +829,7 @@ func runStorageInit(args []string) error {
 	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	execute := fs.Bool("execute", false, "actually create what is missing")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	r := reporter()
@@ -909,7 +909,7 @@ func runHostPrepare(args []string) error {
 	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	execute := fs.Bool("execute", false, "actually install and configure what is missing")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since packages, the firewall and kernel modules are root's")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	r := reporter()
@@ -1074,7 +1074,7 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, executeHelp)
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return nil, nil, nil, nil, false, err
 	}
 	r := reporter()

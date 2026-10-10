@@ -32,7 +32,7 @@ func runSiteAdd(args []string) error {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		site, args = args[0], args[1:]
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	r := reporter()

@@ -403,3 +403,41 @@ func TestNothingSaysApplyTakesOneSite(t *testing.T) {
 		}
 	}
 }
+
+// Every step a real plan holds, with the flags the run adds, is accepted by
+// its command's own flag parsing: a flag one command lacks would exit the
+// run partway. flagsOnly stops each command once its flags parse, before it
+// reads a file or reaches a host.
+func TestEveryPlannedStepParses(t *testing.T) {
+	cfg := fixture(t)
+	steps := convergePlan(cfg, convergeState{NeedsInit: true})
+	steps = append(steps, convergePlan(cfg, convergeState{Initial: map[string]render.EtcdInitial{"home-a": initial("home-a", "vm"), "vm": initial("home-a", "vm")}})...)
+	one := fixture(t)
+	one.Storage.Garage.Sites = []string{"home-a"}
+	steps = append(steps, convergePlan(one, convergeState{})...)
+
+	commands := map[string]bool{}
+	for _, s := range steps {
+		commands[strings.Join(s.Args[:min(2, len(s.Args))], " ")] = true
+	}
+	for _, want := range []string{"init", "host prepare", "apply --site", "site add", "storage init", "storage add", "dns init"} {
+		if !commands[want] {
+			t.Fatalf("the plans hold no %s step: %v", want, commands)
+		}
+	}
+
+	saved := flagsOnly
+	flagsOnly = true
+	t.Cleanup(func() { flagsOnly = saved })
+	for _, o := range []convergeOptions{
+		{Config: fixtureConfig()},
+		{Config: fixtureConfig(), Secrets: fixtureSecretsPath(), Execute: true, Sudo: true, Verbose: true, KeepImages: true, MinFree: "2G"},
+	} {
+		for _, s := range steps {
+			args := convergeFlags(s.Args, o)
+			if err := runStep(args); !errors.Is(err, errFlagsOnly) {
+				t.Errorf("%s: %v", strings.Join(args, " "), err)
+			}
+		}
+	}
+}
