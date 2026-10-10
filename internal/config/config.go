@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Role is a capability a site provides. Sites declare roles; apps declare
@@ -591,18 +592,18 @@ func LoadForInit(path string) (*Config, error) { return load(path, true) }
 func load(path string, noSubnet bool) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, readProblem(path, "Run paisans from the directory that holds paisans.yaml, or name the file with --config.", err)
 	}
 	dec := yaml.NewDecoder(newReader(data))
 	dec.KnownFields(true)
 	var cfg Config
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+		return nil, parseProblem(path, "a configuration", err)
 	}
 	cfg.Path = path
 	written, err := writtenLists(data)
 	if err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+		return nil, parseProblem(path, "a configuration", err)
 	}
 	cfg.deriveLists(written)
 	if cfg.Storage.Garage.Capacity == "" {
@@ -923,6 +924,15 @@ func sortedKeys[V any](m map[string]V) []string {
 type LoadError struct {
 	Path     string
 	Problems []string
+}
+
+// Unwrap is the error as an operator reads it: one item per problem.
+func (e *LoadError) Unwrap() error {
+	items := make([]string, len(e.Problems))
+	for i, p := range e.Problems {
+		items[i] = "- " + p
+	}
+	return &ui.Problem{Hint: ui.ShortPath(e.Path) + " is not a usable configuration", Explain: strings.Join(items, "\n")}
 }
 
 func (e *LoadError) Error() string {

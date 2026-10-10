@@ -14,6 +14,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -305,15 +307,21 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "paisans: %v\n", err)
-		// Not a failure: a gate is waiting on Garage, and the next run
-		// resumes there. EX_TEMPFAIL (sysexits.h), "try again later", so a
-		// script can tell it from one.
-		if errors.Is(err, storageadd.ErrWaiting) {
-			os.Exit(75)
-		}
-		os.Exit(1)
+		os.Exit(reportError(os.Stderr, err, verboseRun))
 	}
+}
+
+// reportError prints the error that ends a command, in the refusal's form
+// (see ui.PrintError), and returns the status to exit with.
+func reportError(w io.Writer, err error, verbose bool) int {
+	ui.PrintError(w, err, verbose)
+	// Not a failure: a gate is waiting on Garage, and the next run resumes
+	// there. EX_TEMPFAIL (sysexits.h), "try again later", so a script can
+	// tell it from one.
+	if errors.Is(err, storageadd.ErrWaiting) {
+		return 75
+	}
+	return 1
 }
 
 func runValidate(args []string) error {
@@ -401,7 +409,7 @@ func runInit(args []string) error {
 	}
 	secrets, err := config.LoadSecrets(*secretsPath)
 	switch {
-	case os.IsNotExist(errors.Unwrap(err)), os.IsNotExist(err):
+	case errors.Is(err, iofs.ErrNotExist):
 		secrets = &config.Secrets{Version: 1}
 	case err != nil:
 		return err
