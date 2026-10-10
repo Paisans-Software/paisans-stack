@@ -242,3 +242,51 @@ func TestHostDeploymentsShowsAKeptCaddy(t *testing.T) {
 		t.Errorf("the kept Caddy is shown for another entry too:\n%s", got)
 	}
 }
+
+// A Caddy labelled for a deployment with no registry entry, while the
+// owner's sites are there, is an orphaned Caddy; the same Caddy with its
+// entry is shown with the entry, and nothing else changes.
+func TestHostDeploymentsFlagsAnOrphanedCaddy(t *testing.T) {
+	probe := "root dead\nsite a.caddy\nsite b.caddy\ncontainer\t" + strayID + "\tpaisans-dead-infra\tcaddy\ncontainer\t" + strayID + "\tpaisans-dead-talk\tapp\nend\n"
+	withHost(t, &listedHost{t: t, registry: twoDeployments(t), probe: probe})
+	out := plainOutput(t)
+	if err := runHostDeployments([]string{"--ssh", "admin@192.0.2.30"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		strayID + " orphaned Caddy: serves /srv/caddy.d sites (a.caddy, b.caddy); its registry entry was removed, so remove it by hand once those sites have moved",
+		"compose project paisans-dead-talk: no registry entry",
+		"/srv/paisans/dead: no registry entry",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "compose project paisans-dead-infra") {
+		t.Errorf("the orphaned Caddy is also listed as a plain leftover:\n%s", got)
+	}
+
+	// No site of the owner's: a plain leftover, not a Caddy kept for anything.
+	withHost(t, &listedHost{t: t, registry: twoDeployments(t), probe: "container\t" + strayID + "\tpaisans-dead-infra\tcaddy\nend\n"})
+	out = plainOutput(t)
+	if err := runHostDeployments([]string{"--ssh", "admin@192.0.2.30"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); strings.Contains(got, "orphaned") || !strings.Contains(got, "compose project paisans-dead-infra: no registry entry") {
+		t.Errorf("with no site of the owner's:\n%s", got)
+	}
+
+	// Its entry is there: shown with the entry, not as orphaned.
+	r, _ := registry.Parse([]byte(twoDeployments(t)))
+	r.Deployments[neighbour] = registry.KeepCaddy(r.Deployments[neighbour])
+	data, _ := registry.Encode(r)
+	withHost(t, &listedHost{t: t, registry: string(data), probe: "root 0c1d\nsite a.caddy\ncontainer\t" + neighbour + "\tpaisans-0c1d-infra\tcaddy\nend\n"})
+	out = plainOutput(t)
+	if err := runHostDeployments([]string{"--ssh", "admin@192.0.2.30"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); strings.Contains(got, "orphaned") || strings.Contains(got, "not in the registry") || !strings.Contains(got, "caddy kept: serves /srv/caddy.d sites (a.caddy)") {
+		t.Errorf("a kept Caddy with its entry:\n%s", got)
+	}
+}

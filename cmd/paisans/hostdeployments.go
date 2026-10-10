@@ -136,8 +136,17 @@ func runHostDeployments(args []string) error {
 		}
 	}
 	for _, c := range found.containers {
-		id, project := c[0], c[1]
+		id, project, service := c[0], c[1], c[2]
 		if _, ok := reg.Deployments[id]; ok {
+			continue
+		}
+		// A Caddy kept for the owner's sites whose entry was removed by
+		// hand still serves them, so it is named as that.
+		if service == "caddy" && len(found.sites) > 0 && deployment.ValidID(id) && project == (deployment.Deployment{ID: id}).Project("infra") {
+			if !seen["orphaned "+id] {
+				seen["orphaned "+id] = true
+				left = append(left, fmt.Sprintf("%s orphaned Caddy: serves %s sites (%s); its registry entry was removed, so remove it by hand once those sites have moved", id, render.HostSitesDir, strings.Join(found.sites, ", ")))
+			}
 			continue
 		}
 		what := "containers"
