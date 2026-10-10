@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
@@ -14,11 +16,16 @@ import (
 )
 
 // reachDestination is how a command with no configuration reaches the host
-// --ssh names: no site, no declared keys. Tests replace it.
+// --ssh names: the way the operator's own ssh reaches it, with their agent,
+// keys and ssh config, since there are no declared keys to offer. A port
+// other than 22 goes in an ssh:// URL, the one destination form that
+// carries it. Tests replace it.
 var reachDestination = func(dest config.Destination, sudo bool) apply.Transport {
-	var s config.Site
-	s.SSH.User, s.SSH.Host, s.SSH.Port = dest.User, dest.Host, dest.Port
-	return siteTransport("", s, "", sudo)
+	to := dest.User + "@" + dest.Host
+	if dest.Port != 0 && dest.Port != config.DefaultSSHPort {
+		to = "ssh://" + dest.User + "@" + net.JoinHostPort(dest.Host, strconv.Itoa(dest.Port))
+	}
+	return siteTransport("", config.Site{}, to, sudo)
 }
 
 // deploymentsProbe lists, read only, each directory under the deployments'

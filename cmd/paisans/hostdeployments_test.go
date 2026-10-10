@@ -310,3 +310,23 @@ func TestHostDeploymentsKeptCaddyWithNoSitesLeft(t *testing.T) {
 		t.Errorf("printed:\n%s", got)
 	}
 }
+
+// A host named only by --ssh is reached the way the operator's own ssh
+// reaches it, with their agent, keys and config: there are no declared keys
+// to offer, since there is no configuration.
+func TestReachDestinationUsesTheOperatorsSSH(t *testing.T) {
+	for in, want := range map[string]string{
+		"ubuntu@192.0.2.10":         "ubuntu@192.0.2.10",
+		"ubuntu@192.0.2.10:2222":    "ssh://ubuntu@192.0.2.10:2222",
+		"ubuntu@[2001:db8::1]:2222": "ssh://ubuntu@[2001:db8::1]:2222",
+	} {
+		dest, err := config.ParseDestination(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr, ok := reachDestination(dest, true).(apply.SSHTransport)
+		if !ok || tr.Destination != want || !tr.Sudo || tr.Auth == nil {
+			t.Errorf("%s: %+v, want destination %s with sudo", in, tr, want)
+		}
+	}
+}
