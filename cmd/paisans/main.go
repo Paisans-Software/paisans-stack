@@ -522,7 +522,10 @@ func runApply(args []string) error {
 		return fmt.Errorf("apply: --min-free: %w", err)
 	}
 	if *site == "" {
-		return fmt.Errorf("apply: --site is required. A site at a time is deliberate: a staged change that half succeeds across three machines is worse than one that failed on one")
+		if *destination != "" || len(overwrite) > 0 || len(only) > 0 || len(recreate) > 0 {
+			return fmt.Errorf("apply: --ssh, --overwrite, --only and --recreate are about one site, and apply without --site converges every site. Name it with --site")
+		}
+		return runConverge(r, *configPath, *secretsPath, *execute, *sudo)
 	}
 
 	cfg, err := config.Load(*configPath)
