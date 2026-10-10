@@ -2836,17 +2836,22 @@ Every rule `host prepare` adds carries a ufw comment, `paisans-<token>: <why>`,
 and that comment is the whole of ownership. A rule another deployment on the
 host added carries that deployment's token, and is as foreign as an
 operator's. A later prepare compares what the site
-derives with what `ufw show added` prints, and decides per rule:
+derives with what `ufw show added` prints, and decides per rule.
+
+The plan marks its lines the way `apply`'s dry run does: `○` and the step's
+title for a change still to make, its full sentence under it with `-v`; `✓`
+for what is already there, shown with `-v`; `!` for a warning. Piped output
+says `todo`, `ok` and `WARN` instead.
 
 | ufw holds | The plan says | What happens |
 |-----------|---------------|--------------|
-| nothing matching | `change` | added, with the comment |
-| the rule, with the comment | `present` | nothing |
-| the rule, with no comment | `present`, then `adopt` | re-added with the comment |
-| the rule, with someone else's comment | `present (not paisans)` | nothing; it satisfies the rule |
-| the same traffic, another action (`limit`, `deny`) | `WARNING` | nothing; a `deny` or `reject` on SSH is refused |
-| a commented rule nothing derives any more | `remove` | deleted, last |
-| any uncommented or foreign rule | `present (not paisans)` if it bears on a derived rule | nothing, ever |
+| nothing matching | `○ allow <rule>` | added, with the comment |
+| the rule, with the comment | `✓` | nothing |
+| the rule, with no comment | `✓`, then `○ adopt rule <rule>` | re-added with the comment |
+| the rule, with someone else's comment | `✓ …: not paisans` | nothing; it satisfies the rule |
+| the same traffic, another action (`limit`, `deny`) | `!` | nothing; a `deny` or `reject` on SSH is refused |
+| a commented rule nothing derives any more | `○ remove ufw rule <rule>` | deleted, last |
+| any uncommented or foreign rule | `✓ …: not paisans` if it bears on a derived rule | nothing, ever |
 
 A commented rule nothing derives is removed, so a site that lost the gateway
 role stops serving 80 and 443 without someone having to notice. Every other
@@ -2881,11 +2886,12 @@ or `reject` on the SSH port is refused, whatever the port is.
 does not change the port sshd listens on, and it cannot tell whether sshd
 already listens on the new one; if it does not, the old allow is the only way
 back in. The old allow is recognised by its comment (`paisans-<token>: ssh, the
-bootstrap route`) and the plan says so:
+bootstrap route`), and deleting it is left to the operator, so the plan
+warns:
 
 ```
-  change    firewall: allow 2222/tcp (ssh, the bootstrap route)
-  present   firewall: old SSH allow on 22 kept; delete it yourself once SSH on 2222 works
+  ○ allow 2222/tcp
+  ! firewall: old SSH allow on 22 kept; delete it yourself once SSH on 2222 works
 ```
 
 Removals run after every addition, the default policy and enabling, so a rule
@@ -2946,30 +2952,31 @@ For a listed key:
 
 | `authorized_keys` holds | This sidecar | Another sidecar | The plan says | What happens |
 |-------------------------|--------------|-----------------|---------------|--------------|
-| nothing for the key | | | `add` | appended verbatim, recorded `added` |
-| the key | lists it | | `present` | nothing; `rename` if `ssh.keys` now calls it something else |
-| the key | does not list it | lists it | `share` | recorded `shared` |
-| the key | does not list it | does not list it | `present` | nothing; not recorded, so never removed |
-| the key, only with options | | | `present (not paisans)` | nothing; adding the plain key would undo the restriction |
+| nothing for the key | | | `○ authorize ssh key` | appended verbatim, recorded `added` |
+| the key | lists it | | `✓` | nothing; `○ rename ssh key` if `ssh.keys` now calls it something else |
+| the key | does not list it | lists it | `○ share ssh key` | recorded `shared` |
+| the key | does not list it | does not list it | `✓` | nothing; not recorded, so never removed |
+| the key, only with options | | | `✓ …: not paisans` | nothing; adding the plain key would undo the restriction |
 
 For a key this sidecar lists that `ssh.keys` no longer does:
 
 | `authorized_keys` holds | Mark | Another sidecar | The plan says | What happens |
 |-------------------------|------|-----------------|---------------|--------------|
-| nothing for the key | any | | `change` (forget) | dropped from the sidecar |
-| the key | `shared` | | `release` | dropped from the sidecar; the line stays |
-| the key | `added` | lists it | `release` | dropped from the sidecar; the line stays |
-| the key | `added` | does not list it | `remove` | that exact line deleted, last of all |
+| nothing for the key | any | | `○ forget ssh key` | dropped from the sidecar |
+| the key | `shared` | | `○ release ssh key` | dropped from the sidecar; the line stays |
+| the key | `added` | lists it | `○ release ssh key` | dropped from the sidecar; the line stays |
+| the key | `added` | does not list it | `○ remove ssh key` | that exact line deleted, last of all |
 
 A key whose last claim is released stays in `authorized_keys`, recorded
 nowhere, until someone deletes it by hand. Any key no sidecar lists is never
-mentioned and never touched.
+mentioned and never touched. With `-v`, the keys' part of a plan reads:
 
 ```
-home-a (ubuntu 24.04)
-  present   ssh: key SHA256:kmYcvdi2GkPeWxB6XLjrZB8JHsy2Hm8luHMFp9GMvqk (alice) authorized for ubuntu, not by host prepare, which never removes it
-  add       ssh: authorize key SHA256:RXm/ruZ0eTzRXKwi1AQEDynB0VgHQ2ac9KPSFdf/YnA (bob) for ubuntu
-  remove    ssh: remove key SHA256:baqJQcVDEweKmw1OiZxGooCG2MGxYtwsQQzzOstxmiA (carol) from /home/ubuntu/.ssh/authorized_keys, which host prepare added, ssh.keys no longer lists and no other deployment claims
+  ○ authorize ssh key
+      ssh: authorize key SHA256:RXm/ruZ0eTzRXKwi1AQEDynB0VgHQ2ac9KPSFdf/YnA (bob) for ubuntu
+  ○ remove ssh key
+      ssh: remove key SHA256:baqJQcVDEweKmw1OiZxGooCG2MGxYtwsQQzzOstxmiA (carol) from /home/ubuntu/.ssh/authorized_keys, which host prepare added, ssh.keys no longer lists and no other deployment claims
+  ✓ ssh: key SHA256:kmYcvdi2GkPeWxB6XLjrZB8JHsy2Hm8luHMFp9GMvqk (alice) authorized for ubuntu, not by host prepare, which never removes it
 ```
 
 To trace a key on the host back to the deployments that claim it, take its
@@ -2992,9 +2999,9 @@ for host prepare's.
 sidecars before its steps run, and another deployment's `host prepare` or
 `site remove` can change them in between. Every write to a sidecar or to
 `authorized_keys` runs under `flock /etc/paisans/authorized_keys.lock`, one
-lock for the whole host, and a `remove` checks the other sidecars again under
+lock for the whole host, and a removal checks the other sidecars again under
 it: when one names the key by then, only this deployment's claim is dropped.
-A `share` looks again too: when the other deployment removed the line in
+A share looks again too: when the other deployment removed the line in
 between, it appends the line and records it `added` instead. A sidecar it
 cannot read counts as a claim, so an error keeps the key.
 

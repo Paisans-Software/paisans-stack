@@ -415,15 +415,67 @@ func TestEveryStepHasAShortTitle(t *testing.T) {
 	}
 }
 
-// A dry run lists the steps as items and keeps what was found for --verbose.
-func TestShowListsStepsAsItemsAndFindingsAsDetails(t *testing.T) {
+// A dry run marks each step still to run as pending, with its sentence for
+// --verbose, and under --verbose also marks what was already there as done,
+// the way apply's dry run marks its steps.
+func TestShowMarksStepsPendingAndFindingsDone(t *testing.T) {
+	host := preparedHost(false)
+	host.responses[probeFirewall] = "ufw present\nstatus active\n" +
+		"rule allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'\n" +
+		owned("allow in on psns-f2a9", "allow in on br-+ to 10.44.0.1 port 5000 proto tcp", "allow in on br-+ to 10.44.0.1 port 3900 proto tcp")
+	plan, err := hostprep.Build("home-a", withSSHPort(t, "home-a", 2222), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &ui.Recorder{}
+	plan.Show(rec)
+	if !rec.Has("pending", "allow 2222/tcp") || !rec.Has("warn", "old SSH allow on 22 kept") {
+		t.Errorf("got:\n%s", rec.Lines())
+	}
+	if rec.Has("item", "") || rec.Has("done", "") {
+		t.Errorf("a step is an item, or a finding shows without --verbose:\n%s", rec.Lines())
+	}
+
+	verbose := &ui.Recorder{Verbose_: true}
+	plan.Show(verbose)
+	if !verbose.Has("done", "firewall: ufw active") || !verbose.Has("detail", "firewall: allow 2222/tcp (ssh, the bootstrap route)") {
+		t.Errorf("got:\n%s", verbose.Lines())
+	}
+
+	// Plain output carries the writer's own words and no label column.
+	var b strings.Builder
+	plan.Show(ui.NewPlain(&b, true))
+	out := b.String()
+	t.Logf("\n%s", out)
+	for _, want := range []string{
+		"  todo allow 2222/tcp\n",
+		"      firewall: allow 2222/tcp (ssh, the bootstrap route)\n",
+		"  ok   firewall: ufw active\n",
+		"  WARN firewall: old SSH allow on 22 kept; delete it yourself once SSH on 2222 works\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	for _, label := range []string{"change ", "present ", "adopt ", "add ", "remove "} {
+		for _, line := range strings.Split(out, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), label) {
+				t.Errorf("a padded label: %q", line)
+			}
+		}
+	}
+}
+
+// A step a fresh host needs is pending, and a warning is still a warning.
+func TestAFreshHostMarksItsStepsPending(t *testing.T) {
 	plan, err := hostprep.Build("home-a", fixture(t), freshHost())
 	if err != nil {
 		t.Fatal(err)
 	}
 	rec := &ui.Recorder{}
 	plan.Show(rec)
-	if !rec.Has("item", "install packages") || !rec.Has("warn", "falling back to softdog") {
+	if !rec.Has("pending", "install packages") || !rec.Has("warn", "falling back to softdog") {
 		t.Errorf("got:\n%s", rec.Lines())
 	}
 }
@@ -732,7 +784,8 @@ func TestAStaleOwnedRuleIsRemovedLast(t *testing.T) {
 			t.Errorf("a removal is labelled %q: %s", s.Label, s.Describe)
 		}
 	}
-	if !strings.Contains(printed(plan), "remove    firewall: delete `ufw allow 80/tcp comment 'paisans-f2a9: test'`") {
+	if !strings.Contains(printed(plan), "pending: remove ufw rule 80/tcp") ||
+		!strings.Contains(printed(plan), "detail: firewall: delete `ufw allow 80/tcp comment 'paisans-f2a9: test'`") {
 		t.Errorf("the plan does not show the removal as remove:\n%s", printed(plan))
 	}
 }
@@ -784,8 +837,8 @@ func TestAForeignRuleIsNeverTouched(t *testing.T) {
 		t.Fatalf("a foreign rule was planned for:\n%s", out)
 	}
 	for _, want := range []string{
-		"present (not paisans) firewall: `ufw allow from 192.0.2.7 to any port 22 proto tcp comment 'office'` (bears on 22/tcp)",
-		"present (not paisans) firewall: `ufw allow in on psns-f2a9 to any port 9100 proto tcp` (bears on all inbound on psns-f2a9)",
+		"done: firewall: `ufw allow from 192.0.2.7 to any port 22 proto tcp comment 'office'` (bears on 22/tcp) not paisans",
+		"done: firewall: `ufw allow in on psns-f2a9 to any port 9100 proto tcp` (bears on all inbound on psns-f2a9) not paisans",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
@@ -812,7 +865,7 @@ func TestAForeignCommentedMatchIsLeftAlone(t *testing.T) {
 	if len(plan.Steps) != 0 {
 		t.Fatalf("planned over a foreign rule:\n%s", printed(plan))
 	}
-	if !strings.Contains(printed(plan), "present (not paisans) firewall: 80/tcp allowed by `ufw allow 80/tcp comment 'acme http-01'`") {
+	if !strings.Contains(printed(plan), "done: firewall: 80/tcp allowed by `ufw allow 80/tcp comment 'acme http-01'` not paisans") {
 		t.Errorf("got:\n%s", printed(plan))
 	}
 }
@@ -860,8 +913,9 @@ func TestALegacyRuleIsAdoptedWithoutAGap(t *testing.T) {
 			t.Errorf("not an adoption: %s %q", s.Label, s.Command)
 		}
 	}
-	if !strings.Contains(out, "adopt     firewall: mark `ufw allow 22/tcp` as host prepare's") ||
-		!strings.Contains(out, "present   firewall: 22/tcp allowed, by a rule without the paisans comment") {
+	if !strings.Contains(out, "pending: adopt rule 22/tcp") ||
+		!strings.Contains(out, "detail: firewall: mark `ufw allow 22/tcp` as host prepare's") ||
+		!strings.Contains(out, "done: firewall: 22/tcp allowed, by a rule without the paisans comment") {
 		t.Errorf("got:\n%s", out)
 	}
 
@@ -949,8 +1003,10 @@ func TestMovingTheSSHPortKeepsTheOldAllow(t *testing.T) {
 	if got := commands(plan); len(got) != 1 || got[0] != "ufw allow 2222/tcp comment 'paisans-f2a9: ssh, the bootstrap route'" {
 		t.Fatalf("want only the new allow, got %q", got)
 	}
-	if !strings.Contains(out, "present   firewall: old SSH allow on 22 kept; delete it yourself once SSH on 2222 works") {
-		t.Errorf("the old allow is not noted:\n%s", out)
+	// Something the operator has to see to is a warning, not a finding.
+	if !strings.Contains(out, "warn: firewall: old SSH allow on 22 kept; delete it yourself once SSH on 2222 works") ||
+		strings.Contains(out, "done: firewall: old SSH allow") {
+		t.Errorf("the old allow is not warned about:\n%s", out)
 	}
 }
 
@@ -965,7 +1021,7 @@ func TestAnOldSSHAllowWithoutOnePortIsNamedByItsRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := printed(plan)
-	if !strings.Contains(out, "present   firewall: old SSH allow `ufw allow 22,2200/tcp comment 'paisans-f2a9: ssh, the bootstrap route'` kept; delete it yourself once SSH on 2222 works") {
+	if !strings.Contains(out, "warn: firewall: old SSH allow `ufw allow 22,2200/tcp comment 'paisans-f2a9: ssh, the bootstrap route'` kept; delete it yourself once SSH on 2222 works") {
 		t.Errorf("the old allow is not named by its rule:\n%s", out)
 	}
 }
@@ -1035,8 +1091,8 @@ func TestAUserWithoutAuthorizedKeysGetsThem(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"add       ssh: authorize key " + fingerprint(keyAlice) + " (alice) for ubuntu",
-		"add       ssh: authorize key " + fingerprint(keyBob) + " (bob) for ubuntu",
+		"detail: ssh: authorize key " + fingerprint(keyAlice) + " (alice) for ubuntu authorize ssh key",
+		"detail: ssh: authorize key " + fingerprint(keyBob) + " (bob) for ubuntu authorize ssh key",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
@@ -1074,7 +1130,7 @@ func TestAnExistingListedKeyIsLeftUnrecorded(t *testing.T) {
 	if len(add) != 1 || len(plan.Steps) != 1 {
 		t.Fatalf("want one add:\n%s", out)
 	}
-	if !strings.Contains(out, "present   ssh: key "+fingerprint(keyAlice)+" (alice) authorized for ubuntu, not by host prepare, which never removes it") {
+	if !strings.Contains(out, "done: ssh: key "+fingerprint(keyAlice)+" (alice) authorized for ubuntu, not by host prepare, which never removes it") {
 		t.Errorf("alice's key reads:\n%s", out)
 	}
 	addCmd := unlocked(t, add[0].Command)
@@ -1182,7 +1238,7 @@ func TestARestrictedListedKeyIsLeftAlone(t *testing.T) {
 	if len(plan.Steps) != 0 {
 		t.Fatalf("planned over a restricted key:\n%s", printed(plan))
 	}
-	if !strings.Contains(printed(plan), "present (not paisans) ssh: key "+fingerprint(keyAlice)+" (alice) authorized for ubuntu with options, by `"+restricted+"`; left as it is") {
+	if !strings.Contains(printed(plan), "done: ssh: key "+fingerprint(keyAlice)+" (alice) authorized for ubuntu with options, by `"+restricted+"`; left as it is not paisans") {
 		t.Errorf("got:\n%s", printed(plan))
 	}
 }
@@ -1388,7 +1444,7 @@ func TestPreparedKeysPlanNothing(t *testing.T) {
 	if len(plan.Steps) != 0 {
 		t.Fatalf("got:\n%s", printed(plan))
 	}
-	if !strings.Contains(printed(plan), "present   ssh: key "+fingerprint(keyBob)+" (bob) authorized for ubuntu") {
+	if !strings.Contains(printed(plan), "done: ssh: key "+fingerprint(keyBob)+" (bob) authorized for ubuntu") {
 		t.Errorf("got:\n%s", printed(plan))
 	}
 }
