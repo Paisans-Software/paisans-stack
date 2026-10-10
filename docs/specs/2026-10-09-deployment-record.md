@@ -41,32 +41,50 @@ beside `registry.json`, root's and 0600, written under the registry's lock and
 replaced atomically, as the registry is:
 
 ```json
-{"version": 1, "sites": ["home-a", "home-b", "vm"], "apps": ["auth", "talk"], "pocket_id_groups": ["members"]}
+{"version": 1, "revision": 7, "updated_at": "2026-10-09T18:40:00Z", "sites": ["home-a", "home-b", "vm"], "apps": ["auth", "talk"], "pocket_id_groups": ["members"]}
 ```
 
-Names only, sorted. It holds no secret and no address. The token in its name
+Names only, sorted. It holds no secret and no address. `revision` orders the
+records: every change raises it by one. `updated_at` is when the change was
+made, by the writer's clock, for a person reading the file; nothing compares
+it, since two operators' clocks need not agree. The token in its name
 is the proof it is this deployment's, so cleaning a gateway host deletes it
 with the rest (stage 3 of `site remove`, either way).
 
 ## Who writes it
 
-| Command | Change | On |
-|---|---|---|
-| `apply` | adds every site, app and group the yaml declares; never takes one out | every gateway it applies, after the apply succeeds; a gateway's first apply creates the file |
-| `site remove` | takes the site out | every remaining gateway, in stage 2, which already reaches every remaining site and stops when one does not answer |
-| `site remove --force`, on a site the yaml no longer declares | takes the site out | every gateway the yaml declares, reached for this and nothing else. One that does not answer is reported: its record still lists the site |
-| `app remove` | takes the app out, and each group no remaining Pocket ID app's `signup_default_groups` names | every gateway, at the end of the removal |
+| Command | Change |
+|---|---|
+| `apply` of a gateway, after the apply succeeds | adds every site, app and group the yaml declares; never takes one out |
+| `site remove`, in stage 2 | takes the site out |
+| `site remove --force`, on a site the yaml no longer declares | takes the site out |
+| `app remove`, at the end of the removal | takes the app out, and each group no remaining Pocket ID app's `signup_default_groups` names |
+
+Every change is made the same way, on every gateway the yaml declares at once:
+
+1. Read the record on each gateway that answers.
+2. Start from the newest of them, the highest revision, and make the change.
+3. Write the result, with the revision raised by one, to every gateway that
+   answered, each under the registry's lock and only if its file still hashes
+   to what was read.
+
+A gateway that does not answer, or whose write is refused, is a warning, never
+a failure: `vm2 missed this change to the deployment record; it is brought up
+to date the next time a command that writes the record reaches it`. When the
+change leaves the names as they were, nothing is raised, and only a gateway
+holding an older record is written: that is how a gateway that was down is
+brought up to date.
 
 `apply` only adds, so an `apply` of a yaml mid-edit cannot shrink the record:
-that is the property the record exists for. Each change is idempotent, so a
-removal stopped between two gateways finishes when it runs again; until then
-the gateway it did not reach still lists the site, which keeps secrets rather
-than deleting them.
+that is the property the record exists for. Starting from the newest record
+means a gateway that missed a removal does not bring the removed site back.
 
 ## Who reads it
 
-Readers take the union of every gateway's record: a name any gateway lists is
-deployed.
+Readers take the newest record, the highest revision among the gateways that
+answered. Two records with the same revision and different names, left by two
+writers at once, are read as their union, which keeps secrets rather than
+deleting them; the next change writes that union with a higher revision.
 
 | In `paisans.yaml` | In a record | Meaning | `init` and `apply` | `secrets prune` |
 |---|---|---|---|---|
@@ -123,7 +141,10 @@ The flow in the site-remove-force spec keeps working, in this order:
 In a new package for the record (read, merge, write commands, against a fake
 host): adding is a union and never removes; taking out removes only the names
 given; the write is under the lock and atomic; an absent file reads as no
-record, a malformed one as an error.
+record, a malformed one as an error; a change starts from the newest record,
+raises the revision and reaches every gateway that answers; one that does not
+is reported, and caught up by the next change; equal revisions that disagree
+read as their union.
 
 In `internal/secretsgen`: the four rows above, for each of sites, apps and
 groups, with records from two gateways that disagree.
