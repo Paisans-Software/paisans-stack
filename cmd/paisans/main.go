@@ -713,6 +713,9 @@ func runApply(args []string) error {
 	}); err != nil {
 		return err
 	}
+	if err := recordApplied(r, cfg, *site, transport); err != nil {
+		return err
+	}
 	err = clients.result()
 	r.Result("Applied %s to %s.", plural(written, "file"), *site)
 	return err

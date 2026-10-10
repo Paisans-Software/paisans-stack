@@ -84,3 +84,20 @@ func confirmWord(stdin io.Reader, stdout io.Writer, word, what string) error {
 	}
 	return nil
 }
+
+// recordApplied adds what paisans.yaml declares to the deployment record on
+// a gateway, after its apply: apply only ever adds, so a yaml edited by
+// mistake cannot take a running site's protection away.
+func recordApplied(r ui.Reporter, cfg *config.Config, site string, t registry.Runner) error {
+	if !cfg.Sites[site].Has(config.RoleGateway) {
+		return nil
+	}
+	s := r.Step("record the deployment on " + site)
+	changed, err := deployrecord.Add(t, cfg.Deployment(), deployrecord.FromConfig(cfg))
+	if err != nil {
+		s.Fail(err)
+		return fmt.Errorf("%w. The apply itself finished; run it again to record it", err)
+	}
+	s.Done(map[bool]string{true: "updated", false: "up to date"}[changed])
+	return nil
+}
