@@ -1394,7 +1394,17 @@ takes one out, so an `apply` of a yaml mid-edit cannot shrink it. Only the
 removal commands take names out, on every gateway: `site remove` in its stage
 2, `site remove --force` for a site no longer declared, and `app remove` for
 the app and each group no remaining Pocket ID app names. Cleaning a gateway's
-host deletes its record. A name any gateway lists counts as deployed.
+host deletes its record.
+
+The gateways' records are kept in step. Each carries a `revision`, raised by
+one with every change, and an `updated_at` for people reading the file (it is
+the writer's clock, so nothing compares it). Every change starts from the
+newest record any gateway holds and is written to every gateway that answers;
+one that does not is warned about, never a failure, and the next change brings
+it up to date. Readers take the newest record, so a gateway that was down
+during a removal does not bring the removed site back. Two records at the same
+revision that disagree, left by two operators writing at once, are read as
+their union, which keeps secrets rather than deleting them.
 
 | In `paisans.yaml` | In a record | `init` and `apply` | `secrets prune` |
 |---|---|---|---|
