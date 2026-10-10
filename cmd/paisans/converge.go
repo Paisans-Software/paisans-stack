@@ -13,6 +13,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/dns"
+	"github.com/paisans-software/paisans-stack/internal/pocketid"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
@@ -383,7 +384,8 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 	}
 	steps := convergePlan(cfg, st)
 	if !execute {
-		convergeStatus(r, cfg, steps, o)
+		marks := convergeStatus(r, cfg, steps, o)
+		convergeAdmins(r, cfg, o, func(app string) bool { return convergeUp(cfg, steps, marks, app) })
 		convergeLeft(r, cfg, secretsPath, configPath)
 		r.Result("Nothing changed. Re-run with --execute to apply. Each step's own dry run, Eg: paisans apply --site <name>, shows its detail.")
 		return nil
@@ -414,6 +416,11 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 			return convergeStop("apply stopped at "+s.Title, err, "Run paisans apply --execute again to resume.")
 		}
 	}
+	// Each step pointed the retries and holds at its own reporter; the
+	// check draws on r.
+	routeRetries(r)
+	routeHolds(r)
+	convergeAdmins(r, cfg, o, func(string) bool { return true })
 	convergeLeft(r, cfg, secretsPath, configPath)
 	r.Result("%s is converged: every step ran.", configPath)
 	return nil
@@ -453,8 +460,9 @@ func convergeStop(hint string, err error, next string) error {
 // waits on is up to date, and is otherwise marked as waiting on the first
 // that is not; until that one runs, its dry run would describe a host about
 // to change. A check that fails is marked with its error, and the rest are
-// still checked. Each command is checked once.
-func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o convergeOptions) {
+// still checked. Each command is checked once. It returns each command's
+// mark, by title.
+func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o convergeOptions) map[string]ui.Mark {
 	type status struct {
 		mark   ui.Mark
 		result string
@@ -524,6 +532,26 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 		}
 		notes = nil
 	}
+	marks := map[string]ui.Mark{}
+	for title, st := range done {
+		marks[title] = st.mark
+	}
+	return marks
+}
+
+// convergeUp reports whether every step that brings a Pocket ID app up was
+// marked up to date: init, and each step about a site the app runs on.
+func convergeUp(cfg *config.Config, steps []convergeStep, marks map[string]ui.Mark, app string) bool {
+	sites := render.AppSites(cfg)[app]
+	// A title's mark is its latest step's: an apply's in pass two, which is
+	// checked only once its earlier apply or site add is up to date.
+	for _, s := range steps {
+		about := s.Args[0] != "storage" && slices.Contains(sites, stepSite(s))
+		if (s.Title == "init" || about) && marks[s.Title] != ui.OK {
+			return false
+		}
+	}
+	return true
 }
 
 // convergeTitles is every title the etcd reads and the plan can show, for
@@ -537,6 +565,11 @@ func convergeTitles(cfg *config.Config) []string {
 	}
 	for _, s := range convergePlan(cfg, convergeState{NeedsInit: true}) {
 		titles = append(titles, s.Title)
+	}
+	for _, app := range cfg.AppNames() {
+		if cfg.Apps[app].Kind == config.KindPocketID {
+			titles = append(titles, adminCheckTitle(app))
+		}
 	}
 	return titles
 }
@@ -710,8 +743,8 @@ func checkStep(r ui.Reporter, args []string, run func([]string) error) (string, 
 	return summary, reports, nil
 }
 
-// convergeLeft names what only the operator can do: each credential the
-// toolkit cannot generate, and the first Pocket ID admin.
+// convergeLeft names each credential the toolkit cannot generate, which only
+// the operator can provide.
 func convergeLeft(r ui.Reporter, cfg *config.Config, secretsPath, configPath string) {
 	if secretsPath == "" {
 		secretsPath = filepath.Join(filepath.Dir(configPath), "secrets.enc.yaml")
@@ -721,9 +754,79 @@ func convergeLeft(r ui.Reporter, cfg *config.Config, secretsPath, configPath str
 			r.Note("secrets: "+key+" is owed and only you can provide it", "paisans secrets set "+key+" < value")
 		}
 	}
+}
+
+// convergeAdmins names each Pocket ID app that has no admin, which only the
+// operator can create. An app is asked, in a step of its own, only once up
+// says it is running; one that is not is named by nothing, since the plan
+// already says what brings it up. A check that fails names the app with why,
+// and fails nothing else.
+func convergeAdmins(r ui.Reporter, cfg *config.Config, o convergeOptions, up func(app string) bool) {
+	section := false
 	for _, app := range cfg.AppNames() {
-		if cfg.Apps[app].Kind == config.KindPocketID {
-			r.Note("Pocket ID "+app+": create its first admin, if it has none yet", "paisans app admin create --app "+app+" --username <name> --email <address>")
+		if cfg.Apps[app].Kind != config.KindPocketID || !up(app) {
+			continue
+		}
+		if !section {
+			r.Section("pocket id")
+			section = true
+		}
+		command := "paisans app admin create --app " + app + " --username <name> --email <address>"
+		s := r.Step(adminCheckTitle(app))
+		has, err := convergeAdminCheck(cfg, app, o)
+		switch {
+		case err != nil:
+			s.End(ui.Failed, "could not check")
+			r.Note("Pocket ID "+app+": could not check for an admin ("+errLine(err)+")", command)
+		case has:
+			s.Done("has one")
+		default:
+			s.End(ui.Pending, "none yet")
+			r.Note("Pocket ID "+app+" has no admin yet", command)
 		}
 	}
 }
+
+func adminCheckTitle(app string) string { return "check " + app + " for an admin" }
+
+// errLine is err's first line, without the colon or full stop it ends on.
+func errLine(err error) string {
+	line, _, _ := strings.Cut(err.Error(), "\n")
+	return strings.TrimRight(strings.TrimSpace(line), ":.")
+}
+
+// convergeAdminCheck asks a Pocket ID app whether any user is an admin, read
+// only, with the API key, the site and the API address `app admin create`
+// uses, reaching the host as every step of the run does, with its sudo. Why
+// it fails is one line. Tests replace it.
+var convergeAdminCheck = func(cfg *config.Config, app string, o convergeOptions) (bool, error) {
+	where, err := pocketIDSite(cfg, app, "", "apply")
+	if err != nil {
+		line, _, _ := strings.Cut(err.Error(), "\n")
+		return false, &adminCheckFailure{strings.TrimPrefix(line, "apply: "), err}
+	}
+	key, err := pocketIDKey(cfg, o.Config, o.Secrets, app)
+	if err != nil {
+		return false, err
+	}
+	c := &pocketid.Client{Transport: adminTransport(siteTransport(where, cfg.Sites[where], "", o.Sudo)),
+		BaseURL: pocketIDBase(cfg, where), APIKey: key}
+	has, err := c.HasAdmin()
+	if err != nil {
+		// A host that ran curl and failed says so on the first line, the
+		// command and its exit status, and why after it, as curl put it.
+		lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
+		return false, &adminCheckFailure{strings.TrimSpace(lines[len(lines)-1]), err}
+	}
+	return has, nil
+}
+
+// adminCheckFailure is why convergeAdminCheck failed, on one line, with the
+// error in full as its cause.
+type adminCheckFailure struct {
+	reason string
+	cause  error
+}
+
+func (f *adminCheckFailure) Error() string { return f.reason }
+func (f *adminCheckFailure) Unwrap() error { return f.cause }

@@ -31,7 +31,8 @@ Out:
   (`app admin create`), a credential the toolkit cannot generate (the DNS
   provider's token, an SMTP password: `secrets set`), a DNS record that points
   somewhere else (changed at the provider by hand). Each is named, with its
-  command.
+  command; the first admin only while it is actionable (see The first Pocket
+  ID admin).
 
 ## The plan
 
@@ -102,15 +103,46 @@ through its own dry run.
 
 With no deployment id yet it prints `init` alone as pending, since nothing on
 a host can be read for a deployment that has no id. Both a dry run and a run
-end by naming what only the operator can do.
+end by naming what only the operator can do, the first Pocket ID admin as the
+next section says.
+
+## The first Pocket ID admin
+
+A credential the toolkit cannot generate is named whenever it is owed. The
+first Pocket ID admin is named only when it is actionable, for each
+`pocket-id` app:
+
+* **Dry run.** When any step that brings the app up is not `✓` (`init`, or a
+  step about a site the app runs on: its `host prepare`, its `apply` in
+  founding, other sites or pass two, its `site add`), nothing is named: the
+  app is not running yet, and the plan already says so. Since pass two waits
+  on the storage step, a storage step that is not `✓` names nothing either.
+  When every one is `✓`, the app should be running, and it is asked.
+* **Run.** Once every step has run, the app is asked. A run that stopped
+  names nothing.
+
+Asking is a step of its own, `check <app> for an admin`, under a `pocket id`
+section, so a spinner shows while it works. It is read only: it lists Pocket
+ID's users through its API, with the API key, the site and the API address
+`app admin create` uses, reaching the host as every step of the run does,
+with its sudo, and stops at the first that is an admin. Then:
+
+| Answer | Named |
+|---|---|
+| no user is an admin | `Pocket ID <app> has no admin yet`, with the `app admin create` command |
+| a user is an admin | nothing |
+| the check failed, Eg: the API did not answer, or the key is missing | `Pocket ID <app>: could not check for an admin (<why, on one line>)`, with the `app admin create` command |
+
+A failed check does not fail the run or the dry run: it is about what is
+left for the operator, not about a step. No key, token or secret is printed.
 
 ## Progress
 
 Validation findings print first. Then each etcd member's founding record is
 read, one step per member, `read <s>'s etcd record`, so a spinner shows while
 ssh works; then the plan. A sudo password prompt or an ssh host key question
-pauses the spinner while it waits on the operator, during these reads and
-during each step's check.
+pauses the spinner while it waits on the operator, during these reads,
+during each step's check, and during the check for a Pocket ID admin.
 
 ## Refusals
 
@@ -137,6 +169,12 @@ and a DNS conflict or a wait on Garage with its own hint. The dry run, with
 each step's check replaced by a fake: an up to date step `✓`, a pending one
 `○` with its summary, a step waiting on an earlier one `·` naming it, a check
 that fails `✗` with the rest still checked, and each etcd record read inside an
-open step. Every step of a real
+open step. The first Pocket ID admin, with the check replaced by a fake: a
+dry run whose Pocket ID steps are not all `✓` names nothing and asks nothing;
+one whose steps are all `✓` names it when there is no admin, nothing when
+there is one, and that it could not check when the check fails; a run that
+completed names it when there is no admin, and one that stopped names nothing.
+The check itself, against a fake Pocket ID: read only, with the key and the
+run's sudo, and a failure said on one line. Every step of a real
 plan, with the flags the run adds, is put through its command's own flag
 parsing, stopped before the command does anything.
