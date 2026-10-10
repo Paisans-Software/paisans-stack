@@ -54,9 +54,27 @@ type Step interface {
 	// Fail ends the step as failed. The error itself is the caller's to
 	// return and print; Fail marks the line.
 	Fail(err error)
+	// End ends the step with m and result in the second column: a dry
+	// run's status, where a failure is shown rather than returned.
+	End(m Mark, result string)
 	// Detail attaches a verbose line to this step.
 	Detail(format string, args ...any)
 }
+
+// Mark is how a step ended.
+type Mark int
+
+const (
+	// OK is a finished step, or one a dry run found up to date: ✓.
+	OK Mark = iota
+	// Failed is a step that failed: ✗.
+	Failed
+	// Pending is a step a dry run found work for: ○.
+	Pending
+	// Waiting is a step a dry run cannot plan until an earlier one has run:
+	// a dim ·.
+	Waiting
+)
 
 // New reports to w, drawing with colour and a spinner when w is a terminal
 // that allows it.
@@ -120,4 +138,5 @@ type discardStep struct{}
 
 func (discardStep) Done(string)           {}
 func (discardStep) Fail(error)            {}
+func (discardStep) End(Mark, string)      {}
 func (discardStep) Detail(string, ...any) {}

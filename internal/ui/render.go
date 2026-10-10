@@ -19,6 +19,7 @@ const (
 	green  = "\x1b[32m"
 	red    = "\x1b[31m"
 	yellow = "\x1b[33m"
+	dim    = "\x1b[2m"
 	reset  = "\x1b[0m"
 	clear  = "\r\x1b[K"
 )
@@ -144,11 +145,11 @@ func (s *step) Detail(format string, args ...any) {
 	}
 }
 
-func (s *step) Done(result string) { s.end(true, result) }
+func (s *step) Done(result string) { s.End(OK, result) }
 
-func (s *step) Fail(err error) { s.end(false, "") }
+func (s *step) Fail(err error) { s.End(Failed, "") }
 
-func (s *step) end(ok bool, result string) {
+func (s *step) End(m Mark, result string) {
 	r := s.r
 	r.mu.Lock()
 	if s.ended {
@@ -166,8 +167,12 @@ func (s *step) end(ok bool, result string) {
 			result = fmt.Sprintf("%.1fs", d.Seconds())
 		}
 	}
-	mark := r.mark(ok)
-	line := "  " + mark + " " + strings.TrimRight(pad(s.title)+result, " ")
+	text := strings.TrimRight(pad(s.title)+result, " ")
+	line := "  " + r.mark(m) + " " + text
+	if r.terminal && m == Waiting {
+		// A step that waits is dimmed whole: it is not this run's to plan.
+		line = "  " + dim + "· " + text + reset
+	}
 	if r.terminal {
 		line = clear + line
 	}
@@ -181,14 +186,26 @@ func (s *step) end(ok bool, result string) {
 	}
 }
 
-func (r *writer) mark(ok bool) string {
-	switch {
-	case r.terminal && ok:
-		return green + "✓" + reset
-	case r.terminal:
-		return red + "✗" + reset
-	case ok:
+func (r *writer) mark(m Mark) string {
+	if r.terminal {
+		switch m {
+		case OK:
+			return green + "✓" + reset
+		case Pending:
+			return yellow + "○" + reset
+		case Waiting:
+			return dim + "·" + reset
+		default:
+			return red + "✗" + reset
+		}
+	}
+	switch m {
+	case OK:
 		return "ok  "
+	case Pending:
+		return "todo"
+	case Waiting:
+		return "wait"
 	default:
 		return "FAIL"
 	}
