@@ -27,7 +27,7 @@ func TestPlainStepIsOneLineWhenItEnds(t *testing.T) {
 		t.Fatalf("a plain step printed before it ended: %q", b.String())
 	}
 	s.Done("")
-	want := "home-a (ubuntu@192.0.2.10)\n  ok   recreate infra          1.5s\n"
+	want := "home-a (ubuntu@192.0.2.10)\n  ok   recreate infra: 1.5s\n"
 	if b.String() != want {
 		t.Fatalf("got %q\nwant %q", b.String(), want)
 	}
@@ -197,8 +197,8 @@ func TestStepResultAndShortStepsHaveNoTime(t *testing.T) {
 	r := ui.NewForTest(&b, false, false, func() time.Time { at = at.Add(100 * time.Millisecond); return at })
 	r.Step("disk space").Done("13.6 GiB free")
 	r.Step("claim site").Done("")
-	if !strings.Contains(b.String(), "  ok   disk space              13.6 GiB free\n") {
-		t.Errorf("result not in the second column: %q", b.String())
+	if !strings.Contains(b.String(), "  ok   disk space: 13.6 GiB free\n") {
+		t.Errorf("result does not follow its title: %q", b.String())
 	}
 	if !strings.Contains(b.String(), "  ok   claim site\n") {
 		t.Errorf("a short step printed a time: %q", b.String())
@@ -404,7 +404,7 @@ func TestSectionAndItemClearTheSpinnerLine(t *testing.T) {
 }
 
 // A dry run's status line ends a step with one of four marks. Piped, each is
-// a word in the mark's column; the result is in the second column either way.
+// a word in the mark's column; the result follows the title either way.
 func TestPlainEndMarksAreWords(t *testing.T) {
 	var b strings.Builder
 	at := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
@@ -414,9 +414,9 @@ func TestPlainEndMarksAreWords(t *testing.T) {
 	r.Step("apply --site b").End(ui.Waiting, "after host prepare --site b")
 	r.Step("dns init").End(ui.Failed, "the provider did not answer")
 	want := "  ok   host prepare --site a\n" +
-		"  todo apply --site a          3 changes\n" +
-		"  wait apply --site b          after host prepare --site b\n" +
-		"  FAIL dns init                the provider did not answer\n"
+		"  todo apply --site a: 3 changes\n" +
+		"  wait apply --site b: after host prepare --site b\n" +
+		"  FAIL dns init: the provider did not answer\n"
 	if b.String() != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", b.String(), want)
 	}
@@ -430,9 +430,9 @@ func TestTerminalEndMarks(t *testing.T) {
 		want string
 	}{
 		{ui.OK, "\r\x1b[K  \x1b[32m✓\x1b[0m a"},
-		{ui.Failed, "\r\x1b[K  \x1b[31m✗\x1b[0m a                       boom"},
-		{ui.Pending, "\r\x1b[K  \x1b[33m○\x1b[0m a                       3 changes"},
-		{ui.Waiting, "\r\x1b[K  \x1b[2m· a                       after b\x1b[0m"},
+		{ui.Failed, "\r\x1b[K  \x1b[31m✗\x1b[0m a: boom"},
+		{ui.Pending, "\r\x1b[K  \x1b[33m○\x1b[0m a: 3 changes"},
+		{ui.Waiting, "\r\x1b[K  \x1b[2m· a: after b\x1b[0m"},
 	} {
 		var b strings.Builder
 		r := ui.NewForTest(&b, false, true, func() time.Time { return time.Time{} })
@@ -477,18 +477,16 @@ func TestEndShowsNoElapsedTime(t *testing.T) {
 	}
 }
 
-// Align widens the title column to the longest title it is given, so a
-// result column stays straight for titles past the default width.
-func TestAlignWidensTheTitleColumn(t *testing.T) {
+// A result follows its title after a colon, with no column to pad to: a
+// short title is not followed by a run of spaces sized to a long one.
+func TestAResultFollowsItsTitle(t *testing.T) {
 	var b strings.Builder
 	r := ui.NewForTest(&b, false, false, clock())
-	long, short := "host prepare --site luthen-rael", "dns init"
-	ui.Align(r, long, short)
-	r.Step(long).End(ui.Pending, "3 changes")
-	r.Step(short).End(ui.Pending, "2 records")
-	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
-	if a, c := strings.Index(lines[0], "3 changes"), strings.Index(lines[1], "2 records"); a != c || a < 0 {
-		t.Errorf("results not aligned:\n%s", b.String())
+	r.Step("init").End(ui.Pending, "generated 4 secrets")
+	r.Step("host prepare --site luthen-rael").End(ui.OK, "")
+	want := "  todo init: generated 4 secrets\n  ok   host prepare --site luthen-rael\n"
+	if b.String() != want {
+		t.Errorf("got:\n%q\nwant:\n%q", b.String(), want)
 	}
 }
 

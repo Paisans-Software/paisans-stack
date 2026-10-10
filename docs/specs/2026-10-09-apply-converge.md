@@ -121,7 +121,7 @@ more, never a value:
 
 ```
 configuration
-  ✓ init    generated 4 secrets into secrets.enc.yaml: cluster.admin_password, cluster.standby_password, cluster.superuser_password and 1 more
+  ✓ init: generated 4 secrets into secrets.enc.yaml (cluster.admin_password, cluster.standby_password, cluster.superuser_password and 1 more)
 ```
 
 Since init then has no work, every later step is checked as usual rather than
@@ -213,10 +213,10 @@ so the reads sit directly under their header:
 ```
 configuration
   ! garage consistency is dangerous: an upload is confirmed even if only 1 of 2 copies is written
-  ○ init                          no secrets file yet
+  ○ init: no secrets file yet
 etcd members
-  ○ read home-a's etcd record     not founded yet
-  ○ read home-b's etcd record     not founded yet
+  ○ read home-a's etcd record: not founded yet
+  ○ read home-b's etcd record: not founded yet
 ```
 
 ## Refusals

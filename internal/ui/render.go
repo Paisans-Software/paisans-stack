@@ -8,11 +8,6 @@ import (
 	"time"
 )
 
-// titleWidth is the first column. Steps stream, so the column cannot be
-// sized to the widest title in advance; a fixed width keeps results aligned
-// for every title an installer line should have.
-const titleWidth = 24
-
 var frames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 const (
@@ -139,9 +134,9 @@ func (r *writer) drawLocked() {
 		return
 	}
 	elapsed := r.now().Sub(s.started)
-	fmt.Fprintf(r.w, "%s  %s %s", clear, frames[r.frame_%len(frames)], r.pad(s.title))
+	fmt.Fprintf(r.w, "%s  %s %s", clear, frames[r.frame_%len(frames)], s.title)
 	if elapsed >= time.Second {
-		fmt.Fprintf(r.w, "%ds", int(elapsed.Seconds()))
+		fmt.Fprintf(r.w, ": %ds", int(elapsed.Seconds()))
 	}
 }
 
@@ -185,7 +180,10 @@ func (s *step) End(m Mark, result string) {
 	if r.open == s {
 		r.open = nil
 	}
-	text := strings.TrimRight(r.pad(s.title)+result, " ")
+	text := s.title
+	if result != "" {
+		text += ": " + result
+	}
 	line := "  " + r.mark(m) + " " + text
 	if r.terminal && m == Waiting {
 		// A step that waits is dimmed whole: it is not this run's to plan.
@@ -382,27 +380,5 @@ func (r *writer) detailLocked(text string) {
 func (r *writer) interruptLocked() {
 	if r.terminal && r.open != nil {
 		fmt.Fprint(r.w, clear)
-	}
-}
-
-func (r *writer) pad(title string) string {
-	width := titleWidth
-	if r.width > width {
-		width = r.width
-	}
-	if len(title) >= width {
-		return title + " "
-	}
-	return title + strings.Repeat(" ", width-len(title))
-}
-
-func (r *writer) Align(titles ...string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.width = 0
-	for _, t := range titles {
-		if len(t)+1 > r.width {
-			r.width = len(t) + 1
-		}
 	}
 }

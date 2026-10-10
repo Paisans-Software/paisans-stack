@@ -174,7 +174,7 @@ func TestConvergeDryRunGeneratesMissingSecrets(t *testing.T) {
 		t.Errorf("a secret that had a value was changed:\n%s\nwas:\n%s", a, b)
 	}
 
-	want := "✓ generated 4 secrets into secrets.enc.yaml: cluster.admin_password, cluster.standby_password, sites.home-a.heartbeat_token and 1 more"
+	want := "✓ generated 4 secrets into secrets.enc.yaml (cluster.admin_password, cluster.standby_password, sites.home-a.heartbeat_token and 1 more)"
 	if got := initLine(rec); got != want {
 		t.Errorf("init's line:\n%s\nwant:\n%s", got, want)
 	}
