@@ -136,10 +136,12 @@ A write that fails, Eg: a read only file or an encryption error, marks `init`
 waits `after init`, as it does while init has work. Nothing is written.
 
 The rest of init's work stays with `init`, and the dry run writes nothing for
-it: `init` is pending and every later step waits on it, as above, when
+it. A yaml with no mesh subnet does not load, as for every command, and the
+error names `paisans init`: choosing the subnet reads every host and rewrites
+`paisans.yaml`. Otherwise `init` is pending and every later step waits on it,
+as above, when
 
-* the yaml has no id or no mesh subnet: choosing the subnet reads every host
-  and rewrites `paisans.yaml`;
+* the yaml has no id;
 * there is no secrets file yet: creating it is where the deployment's
   encryption is decided, and init says so when there is no `.sops.yaml`;
 * the file is encrypted and no `.sops.yaml` recipient is found beside it: the
@@ -237,8 +239,9 @@ open step. Generated secrets, against a secrets file in a temporary
 directory encrypted to a test age key: a dry run with missing generated secrets
 writes them, keeps every existing value, names them on a done `init` line
 without a value, and checks the later steps; a write that fails marks `init`
-`✗` and the later steps wait; a missing id, subnet or secrets file plans
-`init` as pending and changes no file; the closing line says the secrets were
+`✗` and the later steps wait; a missing id or secrets file plans `init` as
+pending, and a missing subnet stops at the configuration, each changing no
+file; the closing line says the secrets were
 added; and a `--execute` after it fills nothing more. The first Pocket ID admin, with the check replaced by a fake: a
 dry run whose Pocket ID steps are not all `✓` names nothing and asks nothing;
 one whose steps are all `✓` names it when there is no admin, nothing when
