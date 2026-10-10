@@ -315,6 +315,40 @@ func TestSSHDefaultsPortAndHost(t *testing.T) {
 	}
 }
 
+// With neither ssh.host nor public_address, the host is the endpoint's host,
+// the address the other sites already reach this one on.
+func TestSSHHostFallsBackToTheEndpoint(t *testing.T) {
+	body := withSSH("    endpoint: 203.0.113.30:51820\n    ssh:\n      user: ubuntu\n      public_key: " + fakeKeyA + "\n")
+	cfg, err := config.Load(write(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Sites["home-a"].SSHHost(); got != "203.0.113.30" {
+		t.Errorf("host defaulted to %q, want the endpoint's host", got)
+	}
+}
+
+// public_address comes before the endpoint, and ssh.host before both.
+func TestSSHHostPrefersHostThenPublicAddress(t *testing.T) {
+	key := "      public_key: " + fakeKeyA + "\n"
+	cases := []struct{ name, section, want string }{
+		{"public address", "    endpoint: 203.0.113.30:51820\n    public_address: 203.0.113.20\n    ssh:\n      user: ubuntu\n" + key, "203.0.113.20"},
+		{"host", "    endpoint: 203.0.113.30:51820\n    public_address: 203.0.113.20\n    ssh:\n      host: home-a.local\n      user: ubuntu\n" + key, "home-a.local"},
+		{"IPv6 endpoint", "    endpoint: \"[2001:db8::1]:51820\"\n    ssh:\n      user: ubuntu\n" + key, "2001:db8::1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := config.Load(write(t, withSSH(c.section)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Sites["home-a"].SSHHost(); got != c.want {
+				t.Errorf("host is %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 // A string where the section belongs is refused.
 func TestSSHStringIsRefused(t *testing.T) {
 	msg := loadErr(t, withSSH("    ssh: ubuntu@home-a.local\n"))
@@ -333,7 +367,7 @@ func TestSSHSectionRefusals(t *testing.T) {
 		{"bad user", "    ssh:\n      host: home-a.local\n      user: \"bob; rm\"\n" + key, "is not a user name"},
 		{"port too high", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      port: 70000\n" + key, "ssh.port: 70000 is not a port"},
 		{"negative port", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      port: -1\n" + key, "ssh.port: -1 is not a port"},
-		{"no host or public address", "    ssh:\n      user: ubuntu\n" + key, "ssh.host: required"},
+		{"no host, public address or endpoint", "    ssh:\n      user: ubuntu\n" + key, "ssh.host: required, because the site has neither public_address nor endpoint"},
 		{"user in host", "    ssh:\n      host: ubuntu@home-a.local\n      user: ubuntu\n" + key, "neither a hostname nor an IP address"},
 		{"no key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n", "ssh.public_key: required"},
 		{"not a key", "    ssh:\n      host: home-a.local\n      user: ubuntu\n      public_key: ssh-ed25519 not-base64\n", "line 1 is not an OpenSSH public key"},
