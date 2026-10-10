@@ -97,20 +97,25 @@ func runHostDeployments(args []string) error {
 	t := reachDestination(dest, *sudo)
 	// The probe first, since it fails on a registry directory it may not
 	// read, which reading the registry would take for an empty one.
+	r.Section(fmt.Sprintf("deployments on %s", dest))
+	s := r.Step("read " + dest.String())
 	out, err := t.Run(deploymentsProbe)
 	if err != nil {
+		s.Fail(err)
 		return fmt.Errorf("host deployments: %s: listing %s and the labelled containers failed, so nothing is listed: %w: %s", dest, deployment.Base, err, strings.TrimSpace(out))
 	}
 	found, err := parseDeploymentsProbe(out)
 	if err != nil {
+		s.Fail(err)
 		return fmt.Errorf("host deployments: %s: listing %s and the labelled containers: %w. Nothing is listed", dest, deployment.Base, err)
 	}
 	reg, err := registry.Read(t)
 	if err != nil {
+		s.Fail(err)
 		return fmt.Errorf("host deployments: %w. Nothing is listed", err)
 	}
 
-	r.Section(fmt.Sprintf("deployments on %s", dest))
+	s.Done("")
 	ids := make([]string, 0, len(reg.Deployments))
 	for id := range reg.Deployments {
 		ids = append(ids, id)

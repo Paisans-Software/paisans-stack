@@ -902,7 +902,8 @@ func errLine(err error) string {
 // uses, reaching the host as every step of the run does, with its sudo. Why
 // it fails is one line. Tests replace it.
 var convergeAdminCheck = func(cfg *config.Config, app string, o convergeOptions) (bool, error) {
-	where, err := pocketIDSite(cfg, app, "", "apply")
+	// The admin check's own step is open, so the search reports nothing.
+	where, err := pocketIDSite(ui.Discard, cfg, app, "", "apply")
 	if err != nil {
 		line, _, _ := strings.Cut(err.Error(), "\n")
 		return false, &adminCheckFailure{strings.TrimPrefix(line, "apply: "), err}

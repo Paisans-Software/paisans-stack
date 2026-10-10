@@ -103,7 +103,7 @@ func TestApplyLeavesPocketIDAloneWhenItDidNotActOnIt(t *testing.T) {
 func TestPocketIDAdminGoesToTheActiveSite(t *testing.T) {
 	var asked []string
 	lookWith(t, map[string]string{"home-a.local": "standby", "home-b.local": "active"}, &asked)
-	got, err := pocketIDSite(standbyCfg(t), "auth", "", "oidc client create")
+	got, err := pocketIDSite(ui.Discard, standbyCfg(t), "auth", "", "oidc client create")
 	if err != nil || got != "home-b" {
 		t.Fatalf("got %q, %v; want home-b", got, err)
 	}
@@ -115,7 +115,7 @@ func TestPocketIDAdminGoesToTheActiveSite(t *testing.T) {
 func TestPocketIDAdminRefusesWithNoActiveSite(t *testing.T) {
 	var asked []string
 	lookWith(t, map[string]string{"home-a.local": "standby", "home-b.local": "down"}, &asked)
-	_, err := pocketIDSite(standbyCfg(t), "auth", "", "oidc client create")
+	_, err := pocketIDSite(ui.Discard, standbyCfg(t), "auth", "", "oidc client create")
 	if err == nil || !strings.Contains(err.Error(), "no site has an active instance, so there is no one site to call") || !strings.Contains(err.Error(), "home-b   down") {
 		t.Fatalf("err = %v", err)
 	}
@@ -125,7 +125,7 @@ func TestPocketIDAdminRefusesWithNoActiveSite(t *testing.T) {
 func TestPocketIDAdminTakesSiteAsGiven(t *testing.T) {
 	var asked []string
 	lookWith(t, map[string]string{}, &asked)
-	got, err := pocketIDSite(standbyCfg(t), "auth", "home-b", "app admin create")
+	got, err := pocketIDSite(ui.Discard, standbyCfg(t), "auth", "home-b", "app admin create")
 	if err != nil || got != "home-b" || len(asked) != 0 {
 		t.Fatalf("got %q, %v, asked %v", got, err, asked)
 	}

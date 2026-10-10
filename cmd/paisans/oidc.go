@@ -78,7 +78,7 @@ func runOIDCClientCreate(args []string) error {
 	if idp == "" {
 		return fmt.Errorf("oidc client create: %s declares no pocket-id app to create the client in", *configPath)
 	}
-	where, err := pocketIDSite(cfg, idp, *site, "oidc client create")
+	where, err := pocketIDSite(r, cfg, idp, *site, "oidc client create")
 	if err != nil {
 		return err
 	}
@@ -113,7 +113,9 @@ func runOIDCClientCreate(args []string) error {
 	}
 
 	api := clientAPI(cfg, where, *destination, key)
-	plan, err := planClient(api, desired, recordedClient(secrets, *appName))
+	plan, err := ui.Get(r, "read "+*appName+"'s client", func() (*oidcclient.Plan, error) {
+		return planClient(api, desired, recordedClient(secrets, *appName))
+	})
 	if err != nil {
 		return fmt.Errorf("oidc client create: %w", err)
 	}

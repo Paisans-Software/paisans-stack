@@ -98,6 +98,10 @@ func TestHostDeploymentsListsEntriesAndLeftovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
+	// The host is read in a step, so a spinner shows while ssh answers.
+	if !strings.Contains(got, "ok   read admin@192.0.2.30:22") {
+		t.Errorf("the read is not a step:\n%s", got)
+	}
 	for _, want := range []string{
 		monitorID, "token f2a9", "example.org", "site watch", "roles monitor", "root /srv/paisans/f2a9",
 		neighbour, "token 0c1d", "example.net", "site edge", "roles apps,gateway", "root /srv/paisans/0c1d",
@@ -223,7 +227,8 @@ func TestHostDeploymentsFailsRatherThanListingPartly(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
 		}
-		if out.Len() > 0 {
+		// The read is a step, so its failed line shows; nothing is listed.
+		if strings.Contains(out.String(), "token ") || strings.Contains(out.String(), "no registry entry") {
 			t.Errorf("%s: printed a listing:\n%s", name, out.String())
 		}
 	}

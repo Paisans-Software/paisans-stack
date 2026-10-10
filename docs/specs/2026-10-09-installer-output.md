@@ -154,6 +154,14 @@ type Step interface {
   a second and reports no result of its own.
 * Writes are serialised by a mutex; the spinner runs on its own goroutine and
   is stopped by `Done`, `Fail` or `End`.
+* Every command reads hosts, the DNS provider and Pocket ID inside a step,
+  so nothing that waits on ssh or an API looks hung. `ui.Run(r, title, work)`
+  and `ui.Get(r, title, work)` are the one path for work that reports nothing
+  of its own, Eg: a plan built from what ssh reads: they open the step, run
+  `work`, and end the step done or failed by its error. Work that opens its
+  own steps is not wrapped, since a step opened inside another ends the
+  outer one's spinner. Decrypting the secrets is not a step: the age key's
+  command may ask on the terminal itself, where a spinner would draw over it.
 
 ## Errors
 

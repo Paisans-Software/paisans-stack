@@ -99,7 +99,9 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	in := appremove.Input{DeleteData: *deleteData}
 	for _, site := range cfg.SiteNames() {
 		hosts[site] = removeHost(site, cfg.Sites[site], *sudo)
-		st, err := appremove.ProbeSite(cfg, app, site, hosts[site])
+		st, err := ui.Get(r, "read "+site, func() (appremove.SiteState, error) {
+			return appremove.ProbeSite(cfg, app, site, hosts[site])
+		})
 		if err != nil {
 			return fmt.Errorf("app remove: %w. Every site is read before anything changes, so nothing was changed", err)
 		}
@@ -108,7 +110,7 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 
 	var clients appremove.Clients
 	if idp := pocketIDApp(cfg); idp != "" {
-		where, err := pocketIDSite(cfg, idp, "", "app remove")
+		where, err := pocketIDSite(r, cfg, idp, "", "app remove")
 		if err != nil {
 			return err
 		}
@@ -117,18 +119,24 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 			return fmt.Errorf("app remove: secrets apps.%s.static_api_key is empty, so Pocket ID cannot be asked for %s's client. Nothing was changed", idp, app)
 		}
 		clients = removeClients(cfg, where, key)
-		if in.Client, err = appremove.ProbeClient(clients, app, idp, where, secrets.OIDCClients[app].ClientID); err != nil {
+		if in.Client, err = ui.Get(r, "read "+app+"'s client", func() (appremove.ClientState, error) {
+			return appremove.ProbeClient(clients, app, idp, where, secrets.OIDCClients[app].ClientID)
+		}); err != nil {
 			return fmt.Errorf("app remove: %w. Nothing was changed", err)
 		}
 	}
 	if *deleteData {
-		if in.Database, err = appremove.ProbeDatabase(cfg, app, hosts); err != nil {
-			return fmt.Errorf("app remove: %w. Nothing was changed", err)
-		}
-		if len(cfg.Storage.Garage.Sites) > 0 {
-			if in.Storage, err = appremove.ProbeStorage(cfg, secrets, app, hosts[cfg.Storage.Garage.Sites[0]]); err != nil {
-				return fmt.Errorf("app remove: %w. Nothing was changed", err)
+		if err := ui.Run(r, "read "+app+"'s data", func() error {
+			var err error
+			if in.Database, err = appremove.ProbeDatabase(cfg, app, hosts); err != nil {
+				return err
 			}
+			if len(cfg.Storage.Garage.Sites) > 0 {
+				in.Storage, err = appremove.ProbeStorage(cfg, secrets, app, hosts[cfg.Storage.Garage.Sites[0]])
+			}
+			return err
+		}); err != nil {
+			return fmt.Errorf("app remove: %w. Nothing was changed", err)
 		}
 	}
 
@@ -151,13 +159,15 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if err := plan.PlanMonitors(cfg, rendered, acme.Module(cfg.ACME.Provider), transports); err != nil {
+		if err := ui.Run(r, "read the monitor", func() error {
+			return plan.PlanMonitors(cfg, rendered, acme.Module(cfg.ACME.Provider), transports)
+		}); err != nil {
 			return err
 		}
 	}
 	// The app, and each group only it named, leave every gateway's
 	// deployment record, so secrets prune may remove their secrets.
-	deployed, _ := deploymentRecord(cfg, func(gw string) registry.Runner { return registryHost(gw, cfg.Sites[gw], "", *sudo) })
+	deployed, _ := readDeploymentRecord(r, cfg, func(gw string) registry.Runner { return registryHost(gw, cfg.Sites[gw], "", *sudo) })
 	forget := func(execute bool) bool {
 		return forgetInRecords(r, cfg, appRecordNames(cfg, app, deployed), app, execute, *sudo)
 	}

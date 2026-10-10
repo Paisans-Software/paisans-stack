@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"path/filepath"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
@@ -79,11 +80,13 @@ func runStorageAdd(args []string) error {
 	if err := claimSites(r, cfg, *execute, *sudo, sites...); err != nil {
 		return err
 	}
-	plan, err := storageadd.Build(cfg, secrets, transports, storageadd.Options{
-		ChangeReplication: *changeReplication,
-		Wait:              *wait,
-		StopTest:          *stopTest,
-		SharedSites:       shared,
+	plan, err := ui.Get(r, "read every Garage site", func() (*storageadd.Plan, error) {
+		return storageadd.Build(cfg, secrets, transports, storageadd.Options{
+			ChangeReplication: *changeReplication,
+			Wait:              *wait,
+			StopTest:          *stopTest,
+			SharedSites:       shared,
+		})
 	})
 	if err != nil {
 		return err

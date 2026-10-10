@@ -91,15 +91,17 @@ func runStorageRotateKey(args []string) error {
 			return err
 		}
 	}
-	plan, err := rotatekey.Build(rotatekey.Options{
-		App:        *appName,
-		Config:     cfg,
-		Secrets:    secrets,
-		Transports: transports,
-		Switch:     applySwitch{cfg: cfg, app: *appName, transports: transports, shared: shared},
-		Save: func(s *config.Secrets) error {
-			return config.WriteSecrets(*secretsPath, s, recipients)
-		},
+	plan, err := ui.Get(r, "read "+*appName+"'s key", func() (*rotatekey.Plan, error) {
+		return rotatekey.Build(rotatekey.Options{
+			App:        *appName,
+			Config:     cfg,
+			Secrets:    secrets,
+			Transports: transports,
+			Switch:     applySwitch{cfg: cfg, app: *appName, transports: transports, shared: shared},
+			Save: func(s *config.Secrets) error {
+				return config.WriteSecrets(*secretsPath, s, recipients)
+			},
+		})
 	})
 	if err != nil {
 		return err

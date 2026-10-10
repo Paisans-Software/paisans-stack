@@ -715,14 +715,19 @@ func runApply(args []string) error {
 	founding := false
 	var running map[string]bool
 	if contains(cfg.Etcd.Members, *site) {
-		_, recorded, err := apply.ReadEtcdInitial(transport, cfg.Deployment())
+		recorded, err := ui.Get(r, "read the etcd record", func() (bool, error) {
+			_, recorded, err := apply.ReadEtcdInitial(transport, cfg.Deployment())
+			return recorded, err
+		})
 		if err != nil {
 			return err
 		}
 		founding = !recorded
 	}
 	if founding {
-		if running, err = apply.EtcdRunning(cfg, transports); err != nil {
+		if running, err = ui.Get(r, "find the running etcd members", func() (map[string]bool, error) {
+			return apply.EtcdRunning(cfg, transports)
+		}); err != nil {
 			return err
 		}
 		if plan.Bootstrap != nil {
@@ -946,7 +951,9 @@ func runStorageInit(args []string) error {
 	if err := claimHosts(r, cfg, *execute, map[string]registry.Runner{*site: transport}); err != nil {
 		return err
 	}
-	plan, err := garage.Build(*site, cfg, secrets, transport)
+	plan, err := ui.Get(r, "read Garage", func() (*garage.Plan, error) {
+		return garage.Build(*site, cfg, secrets, transport)
+	})
 	if err != nil {
 		return err
 	}
@@ -1027,7 +1034,9 @@ func runHostPrepare(args []string) error {
 	if host.Shared() {
 		options = append(options, hostprep.Shared())
 	}
-	plan, err := hostprep.Build(*site, cfg, transport, options...)
+	plan, err := ui.Get(r, "read the host", func() (*hostprep.Plan, error) {
+		return hostprep.Build(*site, cfg, transport, options...)
+	})
 	if err != nil {
 		return err
 	}
@@ -1070,7 +1079,9 @@ func runDNSInit(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	plan, err := dns.Build(ctx, provider, cfg.Deployment(), wants)
+	plan, err := ui.Get(r, "read the zone's records", func() (*dns.Plan, error) {
+		return dns.Build(ctx, provider, cfg.Deployment(), wants)
+	})
 	if err != nil {
 		return err
 	}
@@ -1119,7 +1130,9 @@ func runDNSPrune(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	plan, err := dns.BuildPrune(ctx, provider, cfg, wants, vouched...)
+	plan, err := ui.Get(r, "read the zone's records", func() (*dns.PrunePlan, error) {
+		return dns.BuildPrune(ctx, provider, cfg, wants, vouched...)
+	})
 	if err != nil {
 		return err
 	}

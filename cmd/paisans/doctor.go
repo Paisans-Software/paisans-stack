@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"strings"
 	"time"
 
@@ -73,7 +74,10 @@ func runDoctor(args []string) error {
 		transports[name] = doctorTransport(t)
 	}
 
-	report := doctor.Diagnose(cfg, gatherDoctor(cfg, sites, transports))
+	in, _ := ui.Get(r, "read every site", func() (doctor.Input, error) {
+		return gatherDoctor(cfg, sites, transports), nil
+	})
+	report := doctor.Diagnose(cfg, in)
 	report.Show(r)
 	if report.Failed() {
 		return fmt.Errorf("doctor: %d finding(s) marked FAIL", report.Count(doctor.Fail))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"os"
 	"strings"
 
@@ -61,7 +62,9 @@ func runIngress(args []string) error {
 		return nil
 	}
 	r.Section(fmt.Sprintf("ingress %s at %s", target.App, target.Hostname))
-	results := ingress.Check(context.Background(), target, ingressProbes())
+	results, _ := ui.Get(r, "reach "+target.Hostname, func() ([]ingress.Result, error) {
+		return ingress.Check(context.Background(), target, ingressProbes()), nil
+	})
 	if ingress.Report(r, results) {
 		return fmt.Errorf("ingress check for %s: fix what is marked FAIL and run it again", target.App)
 	}
