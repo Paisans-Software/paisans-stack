@@ -285,19 +285,21 @@ func (p *Plan) buildHost() (*Stage, error) {
 		if strings.ContainsAny(e.Path, "'\n") {
 			return nil, fmt.Errorf("site remove %s: the manifest names %q, which this command will not put in a command line", p.Site, e.Path)
 		}
+	}
+	read, err := readManifestFiles(t, inv.ManifestFiles)
+	if err != nil {
+		return nil, fmt.Errorf("site remove %s: %w", p.Site, err)
+	}
+	for i, e := range inv.ManifestFiles {
 		f := appremove.File{Entry: e}
-		content, found, err := t.ReadFile("/" + e.Path)
-		if err != nil {
-			return nil, fmt.Errorf("site remove %s: reading /%s: %w", p.Site, e.Path, err)
-		}
-		switch {
-		case !found:
+		switch r := read[i]; {
+		case !r.found:
 			f.State = appremove.Gone
-		case sum(content) == e.SHA256:
+		case r.sha256 == e.SHA256:
 			f.State = appremove.Remove
 			proven[e.Path] = true
-			if strings.HasSuffix(e.Path, "/compose.yaml") {
-				named, err := apply.ComposeImages(content)
+			if isCompose(e.Path) {
+				named, err := apply.ComposeImages(r.content)
 				if err != nil {
 					return nil, fmt.Errorf("site remove %s: reading the images /%s names: %w", p.Site, e.Path, err)
 				}
