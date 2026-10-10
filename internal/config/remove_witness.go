@@ -30,8 +30,8 @@ func RemoveSiteAndWitness(path, site, witness string) error {
 	return replaceFile(path, out)
 }
 
-// removeWitness takes witness out of etcd.members and "witness" out of
-// sites.<witness>.roles. A roles list left empty is written `[]` when it was a
+// removeWitness takes witness out of etcd.members, when the file has the key,
+// and "witness" out of sites.<witness>.roles. A roles list left empty is written `[]` when it was a
 // flow list on one line, and refused otherwise.
 func removeWitness(data []byte, witness string) ([]byte, error) {
 	var doc yaml.Node
@@ -45,16 +45,16 @@ func removeWitness(data []byte, witness string) ([]byte, error) {
 	lines := lineStarts(data)
 	var edits []edit
 
-	members := walk(top, "etcd", "members")
-	if members == nil {
-		return nil, fmt.Errorf("etcd.members is not declared")
-	}
-	e, found, err := removeItem(data, lines, members, witness)
-	if err != nil {
-		return nil, fmt.Errorf("etcd.members: %w", err)
-	}
-	if found {
-		edits = append(edits, e)
+	// With etcd.members left out, the voters are derived from the roles,
+	// and the witness role coming off below is what takes it out of etcd.
+	if members := walk(top, membersKey...); members != nil {
+		e, found, err := removeItem(data, lines, members, witness)
+		if err != nil {
+			return nil, fmt.Errorf("etcd.members: %w", err)
+		}
+		if found {
+			edits = append(edits, e)
+		}
 	}
 
 	key := fmt.Sprintf("sites.%s.roles", witness)

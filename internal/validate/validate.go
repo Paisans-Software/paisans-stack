@@ -224,13 +224,51 @@ func (c *checker) witnessSharesFailureDomain() {
 // loss, and 2 survive nothing while requiring both. Two voters are strictly
 // worse than one, so a join goes from one to three in a single operation and
 // never rests at two.
+//
+// A derived pair came from the roles, so the advice is in their terms: with
+// one data site the witness has no tie to break and its role comes off;
+// otherwise a witness in a third location makes three, or one voter is
+// written out.
 func (c *checker) twoVoters() {
-	if len(c.cfg.Etcd.Members) == 2 {
+	members := c.cfg.Etcd.Members
+	if len(members) != 2 {
+		return
+	}
+	if !c.cfg.Etcd.MembersDerived {
 		c.refuse("two-etcd-voters", "etcd.members",
 			"etcd has exactly two voters",
 			"exactly two etcd voters (%s and %s). Two voters are strictly worse than one: a majority of two is two, so either failing stops the cluster. Declare one member, or three.",
-			c.cfg.Etcd.Members[0], c.cfg.Etcd.Members[1])
+			members[0], members[1])
+		return
 	}
+	var data, witness []string
+	for _, name := range members {
+		if c.cfg.Sites[name].Has(config.RoleData) {
+			data = append(data, name)
+		} else {
+			witness = append(witness, name)
+		}
+	}
+	one := members[0]
+	if len(data) > 0 {
+		one = data[0]
+	}
+	fix := fmt.Sprintf("Give a site in a third location, one that fails independently of both, the witness role, which makes three voters; or write `etcd.members: [%s]` to run one voter, which gives up automatic failover.", one)
+	if len(data) == 1 && len(witness) == 1 {
+		fix = fmt.Sprintf("With one data site the witness has no tie to break: take the witness role off %s, and %s is the one voter.", witness[0], data[0])
+	}
+	c.refuse("two-etcd-voters", c.cfg.EtcdMembersKey(),
+		"etcd has exactly two voters",
+		"is left out, so the voters come from the roles, every witness and then every data site, and here that is exactly two (%s and %s). Two voters are strictly worse than one: a majority of two is two, so either failing stops the cluster. %s",
+		members[0], members[1], fix)
+}
+
+// votersVerb is how a finding says the file gives its voters.
+func (c *checker) votersVerb() string {
+	if c.cfg.Etcd.MembersDerived {
+		return "has"
+	}
+	return "declares"
 }
 
 // votersShareARelay refuses a mesh in which losing one site cuts the voters
@@ -273,20 +311,20 @@ func (c *checker) votersShareARelay() {
 	fix := fmt.Sprintf("Give a second voter a stable endpoint (sites.<name>.endpoint; for a home connection a dynamic DNS name and a forwarded UDP port is enough), so that the voters surviving any one loss dial each other directly. Here that is any of %s.", strings.Join(stranded, ", "))
 	switch {
 	case len(dialled) == 1:
-		c.refuse("voters-share-a-relay", "etcd.members",
+		c.refuse("voters-share-a-relay", c.cfg.EtcdMembersKey(),
 			"only one etcd voter has an endpoint",
-			"declares %d voters, and only %s has an endpoint. %s have none, so they reach each other only through %s, and losing %s leaves each of them alone, 1 of %d and no majority: the database goes read-only on every site. %s",
-			len(voters), dialled[0], strings.Join(stranded, " and "), dialled[0], dialled[0], len(voters), fix)
+			"%s %d voters, and only %s has an endpoint. %s have none, so they reach each other only through %s, and losing %s leaves each of them alone, 1 of %d and no majority: the database goes read-only on every site. %s",
+			c.votersVerb(), len(voters), dialled[0], strings.Join(stranded, " and "), dialled[0], dialled[0], len(voters), fix)
 	case len(relays) > 0:
-		c.refuse("voters-share-a-relay", "etcd.members",
+		c.refuse("voters-share-a-relay", c.cfg.EtcdMembersKey(),
 			"no etcd voter has an endpoint, so they peer through a relay",
-			"declares %d voters and none of them has an endpoint, so they reach each other only through %s, and losing %s leaves every voter alone, 1 of %d and no majority: the database goes read-only on every site. %s",
-			len(voters), relays[0], relays[0], len(voters), fix)
+			"%s %d voters and none of them has an endpoint, so they reach each other only through %s, and losing %s leaves every voter alone, 1 of %d and no majority: the database goes read-only on every site. %s",
+			c.votersVerb(), len(voters), relays[0], relays[0], len(voters), fix)
 	default:
-		c.refuse("voters-share-a-relay", "etcd.members",
+		c.refuse("voters-share-a-relay", c.cfg.EtcdMembersKey(),
 			"no etcd voter has an endpoint and no relay exists",
-			"declares %d voters and no site has an endpoint, so no two of them can ever peer: WireGuard needs one side to know where to send the first packet. %s",
-			len(voters), fix)
+			"%s %d voters and no site has an endpoint, so no two of them can ever peer: WireGuard needs one side to know where to send the first packet. %s",
+			c.votersVerb(), len(voters), fix)
 	}
 }
 
@@ -309,14 +347,19 @@ func without(all, some []string) []string {
 // list and doctor's membership check come from. A data site missing from it
 // runs a Patroni member that nothing routes to and nothing watches, so the
 // file describes a replica the deployment does not have.
+//
+// A derived list is every data site, so only a written one can leave one out.
 func (c *checker) dataSiteNotInCluster() {
+	if c.cfg.Cluster.SitesDerived {
+		return
+	}
 	for _, name := range c.cfg.DataSites() {
 		if slices.Contains(c.cfg.Cluster.Sites, name) {
 			continue
 		}
 		c.refuse("data-site-not-in-cluster", fmt.Sprintf("sites.%s.roles", name),
 			"data site is missing from cluster.sites",
-			"includes data, but cluster.sites does not list %s. The data role runs Patroni on the site, and cluster.sites is what HAProxy's backends, apply's leader wait and doctor are built from, so this would be a replica nothing routes to or watches. List %s in cluster.sites, at the end if the cluster is already running, or drop the role.", name, name)
+			"includes data, but cluster.sites does not list %s. The data role runs Patroni on the site, and cluster.sites is what HAProxy's backends, apply's leader wait and doctor are built from, so this would be a replica nothing routes to or watches. List %s in cluster.sites, at the end if the cluster is already running, or drop the role. Leaving cluster.sites out derives it from the roles.", name, name)
 	}
 }
 
@@ -334,10 +377,10 @@ func (c *checker) oneVoterNoFailover() {
 		return
 	}
 	voter := c.cfg.Etcd.Members[0]
-	c.warn("one-voter-no-failover", "etcd.members",
+	c.warn("one-voter-no-failover", c.cfg.EtcdMembersKey(),
 		"one etcd voter means no automatic failover",
-		"declares one voter, %s, while %d sites share the cluster. One member elects nobody: while %s is down every other site's Patroni loses etcd and stops taking writes, so the database stops rather than failing over, and promoting the replica is a manual step. A witness in a third failure domain makes three voters and restores automatic failover; without one, this is the manual promote mode and the runbook should say so.",
-		voter, len(c.cfg.Cluster.Sites), voter)
+		"%s one voter, %s, while %d sites share the cluster. One member elects nobody: while %s is down every other site's Patroni loses etcd and stops taking writes, so the database stops rather than failing over, and promoting the replica is a manual step. A witness in a third failure domain makes three voters and restores automatic failover; without one, this is the manual promote mode and the runbook should say so.",
+		c.votersVerb(), voter, len(c.cfg.Cluster.Sites), voter)
 }
 
 // asyncAutomaticFailover warns that automatic failover under asynchronous
@@ -372,7 +415,13 @@ func (c *checker) asyncAutomaticFailover() {
 // renderings disagree: it would receive HAProxy backends pointing at a Patroni
 // that was never rendered for it. There is no reading of this that works, so
 // it is a refusal rather than a warning.
+//
+// A derived list holds only data sites, so only a written one can name
+// another.
 func (c *checker) clusterSiteWithoutData() {
+	if c.cfg.Cluster.SitesDerived {
+		return
+	}
 	for i, name := range c.cfg.Cluster.Sites {
 		site, ok := c.cfg.Sites[name]
 		if !ok {
@@ -383,7 +432,7 @@ func (c *checker) clusterSiteWithoutData() {
 		}
 		c.refuse("cluster-site-without-data-role", fmt.Sprintf("cluster.sites[%d]", i),
 			"cluster site does not hold the data role",
-			"names site %q, which does not hold the data role. A site in the cluster runs Patroni and stores the database. Add the data role to %s, or remove it from the cluster.", name, name)
+			"names site %q, which does not hold the data role. A site in the cluster runs Patroni and stores the database. Add the data role to %s, or remove it from the cluster. Leaving cluster.sites out derives it from the roles.", name, name)
 	}
 }
 
@@ -561,10 +610,24 @@ func (c *checker) evenVoters() {
 	if count <= 2 || count%2 != 0 {
 		return
 	}
-	c.warn("even-etcd-voters", "etcd.members",
+	fix := fmt.Sprintf("Prefer %d.", count-1)
+	if c.cfg.Etcd.MembersDerived {
+		witnesses := 0
+		for _, name := range c.cfg.Etcd.Members {
+			if !c.cfg.Sites[name].Has(config.RoleData) {
+				witnesses++
+			}
+		}
+		if witnesses > 0 {
+			fix = fmt.Sprintf("Prefer %d: take the witness role off a site before the deployment is founded, or, once it runs, take a witness out with `paisans site remove`, which changes the live voters with the file; or write etcd.members with the %d voters wanted.", count-1, count-1)
+		} else {
+			fix = fmt.Sprintf("Give a site in a third location, one that fails independently, the witness role, which makes %d voters, or write etcd.members with the %d voters wanted.", count+1, count-1)
+		}
+	}
+	c.warn("even-etcd-voters", c.cfg.EtcdMembersKey(),
 		"etcd has an even number of voters",
-		"declares %d voters. A majority of %d is %d, which is the same number of losses %d members tolerate, so the extra member adds a machine that can fail and a vote to collect without improving anything. Prefer %d.",
-		count, count, count/2+1, count-1, count-1)
+		"%s %d voters. A majority of %d is %d, which is the same number of losses %d members tolerate, so the extra member adds a machine that can fail and a vote to collect without improving anything. %s",
+		c.votersVerb(), count, count, count/2+1, count-1, fix)
 }
 
 // siteOutsideMesh refuses a site address that is not in the declared mesh.
@@ -625,8 +688,13 @@ func (c *checker) undeclaredSites() {
 			}
 		}
 	}
-	check("cluster.sites", c.cfg.Cluster.Sites)
-	check("etcd.members", c.cfg.Etcd.Members)
+	// A derived list names only declared sites.
+	if !c.cfg.Cluster.SitesDerived {
+		check("cluster.sites", c.cfg.Cluster.Sites)
+	}
+	if !c.cfg.Etcd.MembersDerived {
+		check("etcd.members", c.cfg.Etcd.Members)
+	}
 	check("storage.garage.sites", c.cfg.Storage.Garage.Sites)
 
 	for _, appName := range c.cfg.AppNames() {

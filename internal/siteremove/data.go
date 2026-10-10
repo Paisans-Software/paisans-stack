@@ -79,7 +79,7 @@ func (p *Plan) probeEtcd() error {
 		switch {
 		case site == p.Site:
 		case !contains(p.cfg.Etcd.Members, site):
-			problems = append(problems, fmt.Sprintf("etcd has a member %s that etcd.members does not list", site))
+			problems = append(problems, fmt.Sprintf("etcd has a member %s that %s does not list", site, p.cfg.EtcdMembersKey()))
 		case m.IsLearner:
 			problems = append(problems, fmt.Sprintf("%s is still a learner", site))
 		}

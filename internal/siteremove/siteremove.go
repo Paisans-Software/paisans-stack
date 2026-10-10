@@ -282,6 +282,9 @@ func Refusal(cfg *config.Config, site string, o Options) error {
 		advice := "site remove takes one site out and changes nothing else, so the end state has to validate as it is"
 		if twoVoters {
 			advice = "Two data sites would stay as etcd voters, and neither can leave etcd while it holds data. Add a witness first, a site that holds no data with the witness role, as an etcd member, so that three voters remain without " + site
+			if cfg.Etcd.MembersDerived {
+				advice = "Two data sites would stay as etcd voters, and neither can leave etcd while it holds data. Give a site in a third location, one that fails independently, the witness role first, and join it, so that three voters remain without " + site
+			}
 		}
 		return fmt.Errorf("site remove %s: the configuration without it is refused:\n  %s\n%s", site, strings.Join(lines, "\n  "), advice)
 	}
@@ -464,11 +467,15 @@ func (p *Plan) buildConfig() *Stage {
 		Name:   "config",
 		Gate:   fmt.Sprintf("%s loads, and declares no site %s", p.ConfigPath, p.Site),
 		Short:  "configuration loads without " + p.Site,
-		Steps:  []Step{{Site: p.Site, Verb: "remove", Title: "remove " + p.Site + " from " + path.Base(p.ConfigPath), Text: fmt.Sprintf("sites.%s from %s, and its name from cluster.sites, etcd.members, storage.garage.sites and storage.garage.capacities, keeping every comment", p.Site, p.ConfigPath)}},
+		Steps:  []Step{{Site: p.Site, Verb: "remove", Title: "remove " + p.Site + " from " + path.Base(p.ConfigPath), Text: fmt.Sprintf("sites.%s from %s, and its name from %s, keeping every comment", p.Site, p.ConfigPath, p.writtenLists())}},
 	}
 	if p.witness != "" {
 		st.Gate += fmt.Sprintf(", etcd.members does not list %s, and %s has no witness role", p.witness, p.witness)
-		st.Steps = append(st.Steps, Step{Site: p.witness, Verb: "remove", Title: "remove witness " + p.witness, Text: fmt.Sprintf("%s from etcd.members and witness from sites.%s.roles, in the same write", p.witness, p.witness)})
+		text := fmt.Sprintf("%s from etcd.members and witness from sites.%s.roles, in the same write", p.witness, p.witness)
+		if p.cfg.Etcd.MembersDerived {
+			text = fmt.Sprintf("witness from sites.%s.roles, which takes %s out of etcd.members, derived from the roles", p.witness, p.witness)
+		}
+		st.Steps = append(st.Steps, Step{Site: p.witness, Verb: "remove", Title: "remove witness " + p.witness, Text: text})
 	}
 	st.run = func() error {
 		p.work("remove " + p.Site + " from " + path.Base(p.ConfigPath))
@@ -494,6 +501,21 @@ func (p *Plan) buildConfig() *Stage {
 		return nil
 	}
 	return st
+}
+
+// writtenLists names what stage 4 takes the site's name out of: each list
+// of site names the file writes, and the capacities. A list derived from the
+// roles is not in the file, and follows from the site's block going.
+func (p *Plan) writtenLists() string {
+	var out []string
+	if !p.cfg.Cluster.SitesDerived {
+		out = append(out, "cluster.sites")
+	}
+	if !p.cfg.Etcd.MembersDerived {
+		out = append(out, "etcd.members")
+	}
+	out = append(out, "storage.garage.sites")
+	return strings.Join(out, ", ") + " and storage.garage.capacities"
 }
 
 // Execute runs the stages in order. A stage's steps run only when it has

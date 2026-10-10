@@ -205,6 +205,20 @@ func TestThreeDataSitesToTwoIsRefused(t *testing.T) {
 	}
 }
 
+// The same refusal with the lists derived says to give a site the witness
+// role, since there is no etcd.members to add a witness to.
+func TestThreeDerivedDataSitesToTwoIsRefused(t *testing.T) {
+	cfg, _, _ := worldConfig(t,
+		replace("  vm:\n    roles: [gateway, witness]", "  vm:\n    roles: [gateway]"),
+		replace("  sites: [home-a, home-b, home-c]\n  port", "  port"),
+		replace("  members: [home-a, home-b, home-c, vm]\n", ""),
+	)
+	err := siteremove.Refusal(cfg, "home-c", siteremove.Options{})
+	if err == nil || !strings.Contains(err.Error(), "Give a site in a third location, one that fails independently, the witness role first") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 // fourData adds home-d, so home-b's removal leaves the leader and two
 // replicas.
 var fourData = []func(string) string{
@@ -356,5 +370,61 @@ func TestAReplicaThatLeadsByThenIsLeftAlone(t *testing.T) {
 	}
 	if len(w.recreated) != 0 {
 		t.Errorf("recreated %v", w.recreated)
+	}
+}
+
+// derivedLists leaves cluster.sites and etcd.members out of the two data
+// sites and a witness, so the roles give the same lists.
+var derivedLists = []func(string) string{
+	replace("  sites: [home-a, home-b]\n  port", "  port"),
+	replace("  members: [home-a, home-b, vm]\n", ""),
+}
+
+// With the lists derived, the end state is the one the written lists give,
+// the shrink runs the same, and the edit is the site's block and the
+// witness's role: no list is written into the file.
+func TestTheShrinkWithDerivedLists(t *testing.T) {
+	written, _, _ := worldConfig(t, twoAndAWitness...)
+	cfg, _, _ := worldConfig(t, append(append([]func(string) string(nil), twoAndAWitness...), derivedLists...)...)
+	if !cfg.Etcd.MembersDerived || !cfg.Cluster.SitesDerived {
+		t.Fatal("the world still writes the lists")
+	}
+	wantEnd, wantWitness, err := siteremove.EndState(written, "home-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	end, witness, err := siteremove.EndState(cfg, "home-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if witness != wantWitness || strings.Join(end.Etcd.Members, ",") != strings.Join(wantEnd.Etcd.Members, ",") || strings.Join(end.Cluster.Sites, ",") != strings.Join(wantEnd.Cluster.Sites, ",") {
+		t.Fatalf("end state: witness %q, members %v, cluster %v; written: %q, %v, %v", witness, end.Etcd.Members, end.Cluster.Sites, wantWitness, wantEnd.Etcd.Members, wantEnd.Cluster.Sites)
+	}
+
+	w := witnessWorld(t, derivedLists...)
+	p := w.mustBuild("home-b", siteremove.Options{})
+	if !hasStep(p, 4, "home-b", "remove", "its name from storage.garage.sites") || hasStep(p, 4, "home-b", "remove", "cluster.sites") {
+		t.Errorf("stage 4 names a list the file does not write:\n%s", printed(p))
+	}
+	if !hasStep(p, 4, "vm", "remove", "witness from sites.vm.roles, which takes vm out of etcd.members, derived from the roles") {
+		t.Errorf("stage 4 does not say the witness role is the whole edit:\n%s", printed(p))
+	}
+	rec := &ui.Recorder{}
+	p.Report = rec
+	if err := siteremove.Execute(p); err != nil {
+		t.Fatalf("%v\n%s", err, rec.Lines())
+	}
+	if len(w.etcd) != 1 || w.etcd[0].Name != "home-a" {
+		t.Errorf("etcd after: %v", w.etcd)
+	}
+	after, err := config.Load(w.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(after.Etcd.Members, ",") != "home-a" || !after.Etcd.MembersDerived || !after.Cluster.SitesDerived {
+		t.Errorf("paisans.yaml after: etcd.members %v, derived %t and %t", after.Etcd.Members, after.Etcd.MembersDerived, after.Cluster.SitesDerived)
+	}
+	if result := validate.Check(after); result.Refused() {
+		t.Errorf("the edited paisans.yaml is refused: %v", result.Refusals())
 	}
 }

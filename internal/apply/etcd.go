@@ -308,8 +308,8 @@ func EtcdRefusal(cfg *config.Config, plan *Plan, members []EtcdMember) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"%s: the running etcd cluster's members are %s, and etcd.members says %s, so this site's infrastructure stack was not touched. Applying it now would start an etcd the cluster has not admitted. Growing the cluster is `paisans site add <site>`, which adds each member as a learner and promotes it once it has caught up; run it for the site being added, then apply",
-		plan.Site, strings.Join(live, ", "), strings.Join(want, ", "))
+		"%s: the running etcd cluster's members are %s, and %s says %s, so this site's infrastructure stack was not touched. Applying it now would start an etcd the cluster has not admitted. Growing the cluster is `paisans site add <site>`, which adds each member as a learner and promotes it once it has caught up; run it for the site being added, then apply",
+		plan.Site, strings.Join(live, ", "), cfg.EtcdMembersKey(), strings.Join(want, ", "))
 }
 
 // touchesInfra reports whether a plan writes a file in, or acts on, the

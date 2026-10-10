@@ -1130,6 +1130,22 @@ before.
   moment a site was added, silently changing `TRUSTED_PROXIES` in every app.
   Declaring it also lets an operator avoid a range their hosts already route.
   Every site address must sit inside it, and that is a refusal.
+* **`etcd.members` and `cluster.sites` are resolved when the file loads.**
+  `config.Load` fills each list the file leaves out from the roles, into the
+  same field a written key fills, and records it in `Etcd.MembersDerived` and
+  `Cluster.SitesDerived`. Every command reads the field, so there is one list.
+  A `config.Config` built in a test leaves both flags false, which reads as
+  written. Whether a key is written comes from the yaml node, not the decoded
+  slice, since `members: []` and a key left out decode alike; a decoded list
+  the walk cannot see, behind a merge key, also counts as written. The flags
+  word messages (`EtcdMembersKey`, `ClusterSitesKey`, `site remove`'s stage 4
+  and its two voter refusal, `validate`'s voter advice), hold `validate`'s two
+  `cluster.sites` comparisons and its `undeclared-site` check to a written
+  list, and make `WithoutSite` derive a derived list again from the remaining
+  roles.
+  The yaml writers (`RemoveSite`, `RemoveSiteAndWitness`) read the file
+  itself and edit only a key it has. See
+  `docs/specs/2026-10-10-derived-members.md`.
 * **Every port a site binds is listed once, in `render.SiteListeners`**, from
   the constants the templates render. `validate`'s `port-collision` reads it,
   so a new listener added to a template without a constant, or a new kind's

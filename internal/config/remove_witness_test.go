@@ -68,3 +68,25 @@ func TestRemoveSiteAndWitnessRefusesALoneBlockRole(t *testing.T) {
 		t.Error("the file changed")
 	}
 }
+
+// With etcd.members left out, the witness's role coming off is what takes it
+// out of etcd, so that and the site's block are the whole edit, and the file
+// loads with the one data site as the one voter.
+func TestRemoveSiteAndWitnessWithDerivedMembers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	text := witnessFile[:strings.Index(witnessFile, "etcd:\n")]
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.RemoveSiteAndWitness(path, "home-b", "vm"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	want := strings.NewReplacer(
+		"  home-b:\n    roles: [data]\n    address: 10.44.0.2\n", "",
+		"      - witness\n", "",
+	).Replace(text)
+	if string(data) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", data, want)
+	}
+}

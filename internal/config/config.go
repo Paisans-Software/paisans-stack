@@ -290,17 +290,32 @@ func (s Site) Has(r Role) bool {
 }
 
 type Cluster struct {
-	Sites             []string `yaml:"sites"`
-	Port              int      `yaml:"port"`
-	PostgresVersion   string   `yaml:"postgres_version"`
-	Synchronous       bool     `yaml:"synchronous"`
-	SynchronousStrict bool     `yaml:"synchronous_strict"`
+	// Sites is the cluster's data sites: as written, or, when the file
+	// leaves the key out, every site with the data role, in name order.
+	// Load fills it either way, so every reader reads one list.
+	Sites []string `yaml:"sites"`
+	// SitesDerived records that the file left cluster.sites out and Sites
+	// came from the roles. validate's comparisons between the list and the
+	// data role hold by construction then, and the yaml writers leave a key
+	// the file does not have alone.
+	SitesDerived      bool   `yaml:"-"`
+	Port              int    `yaml:"port"`
+	PostgresVersion   string `yaml:"postgres_version"`
+	Synchronous       bool   `yaml:"synchronous"`
+	SynchronousStrict bool   `yaml:"synchronous_strict"`
 }
 
 type Etcd struct {
-	Members           []string `yaml:"members"`
-	HeartbeatMS       int      `yaml:"heartbeat_ms"`
-	ElectionTimeoutMS int      `yaml:"election_timeout_ms"`
+	// Members is etcd's voters: as written, or, when the file leaves the
+	// key out, every site with the witness role, then every site with the
+	// data role, each in name order. Witnesses come first because that is
+	// the order a new deployment is founded in. Load fills it either way.
+	Members []string `yaml:"members"`
+	// MembersDerived records that the file left etcd.members out, as
+	// Cluster.SitesDerived does for cluster.sites.
+	MembersDerived    bool `yaml:"-"`
+	HeartbeatMS       int  `yaml:"heartbeat_ms"`
+	ElectionTimeoutMS int  `yaml:"election_timeout_ms"`
 }
 
 type Storage struct {
@@ -585,6 +600,11 @@ func load(path string, noSubnet bool) (*Config, error) {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	cfg.Path = path
+	written, err := writtenLists(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	cfg.deriveLists(written)
 	if cfg.Storage.Garage.Capacity == "" {
 		cfg.Storage.Garage.Capacity = "100G"
 	}
@@ -595,6 +615,75 @@ func load(path string, noSubnet bool) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// Lists a file may leave out, to be derived from the roles.
+var (
+	membersKey      = []string{"etcd", "members"}
+	clusterSitesKey = []string{"cluster", "sites"}
+)
+
+// writtenLists reports which of etcd.members and cluster.sites the file has,
+// with any value, so an empty list or a key with no value counts as written.
+// The decoded struct cannot tell a key left out from one written empty.
+func writtenLists(data []byte) (map[string]bool, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return out, nil
+	}
+	for _, keys := range [][]string{membersKey, clusterSitesKey} {
+		out[strings.Join(keys, ".")] = walk(doc.Content[0], keys...) != nil
+	}
+	return out, nil
+}
+
+// deriveLists fills each of etcd.members and cluster.sites the file left out
+// from the roles, and records that it did.
+func (c *Config) deriveLists(written map[string]bool) {
+	// A list behind a merge key decodes, and the node walk cannot see it.
+	if !written["etcd.members"] && len(c.Etcd.Members) == 0 {
+		c.Etcd.Members = c.DerivedEtcdMembers()
+		c.Etcd.MembersDerived = true
+	}
+	if !written["cluster.sites"] && len(c.Cluster.Sites) == 0 {
+		c.Cluster.Sites = c.DataSites()
+		c.Cluster.SitesDerived = true
+	}
+}
+
+// EtcdMembersKey names etcd.members in a message, saying when the list was
+// derived, so an operator who never wrote the key is not sent looking for it.
+func (c *Config) EtcdMembersKey() string {
+	if c.Etcd.MembersDerived {
+		return "etcd.members (derived from the roles)"
+	}
+	return "etcd.members"
+}
+
+// ClusterSitesKey names cluster.sites in a message, as EtcdMembersKey does.
+func (c *Config) ClusterSitesKey() string {
+	if c.Cluster.SitesDerived {
+		return "cluster.sites (derived from the roles)"
+	}
+	return "cluster.sites"
+}
+
+// DerivedEtcdMembers is etcd.members as the roles give it: every witness, in
+// name order, then every data site, in name order. A site with both, which
+// validate refuses, is listed once, as a data site, so no quorum sum counts
+// it twice.
+func (c *Config) DerivedEtcdMembers() []string {
+	var witnesses []string
+	for _, name := range c.SiteNames() {
+		if s := c.Sites[name]; s.Has(RoleWitness) && !s.Has(RoleData) {
+			witnesses = append(witnesses, name)
+		}
+	}
+	return append(witnesses, c.DataSites()...)
 }
 
 // Deployment is this configuration's identity and every name and path
@@ -799,6 +888,12 @@ func (c *Config) structural(noSubnet bool) error {
 		}
 	}
 	problems = append(problems, smtpProblems("smtp", c.SMTP)...)
+	if !c.Etcd.MembersDerived && len(c.Etcd.Members) == 0 {
+		add("etcd.members: empty. No site would run etcd, so Patroni on every data site would have nowhere to keep its leader. Remove the key, and the voters are derived from the roles (every witness, then every data site), or list at least one site.")
+	}
+	if !c.Cluster.SitesDerived && len(c.Cluster.Sites) == 0 {
+		add("cluster.sites: empty. Remove the key, and the cluster is derived from the roles (every data site), or list the data sites.")
+	}
 	if c.ACME.Provider == "" && len(c.CaddySites()) > 0 {
 		// The providers are deliberately not listed here. This package does not
 		// import internal/acme, by design, so any list written out would be a

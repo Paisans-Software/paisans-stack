@@ -93,7 +93,7 @@ func Etcd(cfg *config.Config, in Input) []Finding {
 	p := in.Etcd
 	if p.Site == "" {
 		more := append([]string{}, p.Tried...)
-		more = append(more, fmt.Sprintf("etcd.members is %s, and quorum needs %d. Patroni keeps its leader key in etcd, so without an answer here nothing about the database can be trusted either.", strings.Join(members, ", "), quorum))
+		more = append(more, fmt.Sprintf("%s is %s, and quorum needs %d. Patroni keeps its leader key in etcd, so without an answer here nothing about the database can be trusted either.", cfg.EtcdMembersKey(), strings.Join(members, ", "), quorum))
 		return []Finding{{Section: SectionEtcd, Level: Fail, Line: "no etcd member reached, so quorum could not be read", More: more}}
 	}
 

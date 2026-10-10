@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -490,4 +491,64 @@ func TestEveryPlannedStepParses(t *testing.T) {
 			}
 		}
 	}
+}
+
+// derivedWithNewDataSite is the fixture with cluster.sites and etcd.members
+// left out and a site home-c given the data role, so the roles alone make it
+// a voter.
+func derivedWithNewDataSite(t *testing.T) *config.Config {
+	t.Helper()
+	data, err := os.ReadFile(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := regexp.MustCompile(`(?m)^  (sites|members): \[[^\]]*\]\n`).ReplaceAllString(string(data), "")
+	text = strings.Replace(text, "  vm:\n", `  home-c:
+    roles: [data]
+    address: 10.44.0.5
+    endpoint: 198.51.100.5:51820
+    ssh:
+      host: home-c.local
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+  vm:
+`, 1)
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Etcd.MembersDerived || !slices.Contains(cfg.Etcd.Members, "home-c") {
+		t.Fatalf("home-c is not a derived member: %v", cfg.Etcd.Members)
+	}
+	return cfg
+}
+
+// A site given the data role on a founded cluster, with etcd.members left
+// out, is a derived member that no founding record lists: it joins through
+// site add, as it would written into etcd.members by hand.
+func TestConvergeJoinsADerivedMember(t *testing.T) {
+	cfg := derivedWithNewDataSite(t)
+	founded := initial("home-a", "home-b", "vm")
+	steps := convergePlan(cfg, convergeState{Initial: map[string]render.EtcdInitial{"home-a": founded, "home-b": founded, "vm": founded}})
+	samePlan(t, steps,
+		"hosts: host prepare --site home-a",
+		"hosts: host prepare --site home-b",
+		"hosts: host prepare --site home-c",
+		"hosts: host prepare --site vm",
+		"hosts: host prepare --site watch",
+		"joining: site add home-c",
+		"other sites: apply --site watch",
+		"storage: storage add",
+		"pass two: apply --site home-a",
+		"pass two: apply --site home-b",
+		"pass two: apply --site home-c",
+		"pass two: apply --site vm",
+		"pass two: apply --site watch",
+		"dns: dns init",
+	)
 }

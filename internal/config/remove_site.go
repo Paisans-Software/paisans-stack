@@ -12,7 +12,8 @@ import (
 
 // WithoutSite is the configuration with one site taken out: its entry under
 // sites, its name in cluster.sites, etcd.members and storage.garage.sites,
-// and its storage.garage.capacities entry. It is what `site remove` renders
+// and its storage.garage.capacities entry; a list derived from the roles is
+// derived again from the sites that remain. It is what `site remove` renders
 // the remaining sites from, and exactly what RemoveSite writes. The
 // original is not changed.
 func (c *Config) WithoutSite(site string) *Config {
@@ -25,6 +26,14 @@ func (c *Config) WithoutSite(site string) *Config {
 	}
 	out.Cluster.Sites = without(c.Cluster.Sites, site)
 	out.Etcd.Members = without(c.Etcd.Members, site)
+	// A derived list is derived again from the remaining roles, which is
+	// what loading the edited file does.
+	if c.Cluster.SitesDerived {
+		out.Cluster.Sites = out.DataSites()
+	}
+	if c.Etcd.MembersDerived {
+		out.Etcd.Members = out.DerivedEtcdMembers()
+	}
 	out.Storage.Garage.Sites = without(c.Storage.Garage.Sites, site)
 	if c.Storage.Garage.Capacities != nil {
 		out.Storage.Garage.Capacities = map[string]string{}
@@ -48,7 +57,8 @@ func without(list []string, s string) []string {
 }
 
 // siteLists are the lists of site names RemoveSite takes the site out of,
-// as paths from the top of the file.
+// as paths from the top of the file. A list the file leaves out is derived
+// from the roles, so the site's block going is the whole edit for it.
 var siteLists = [][]string{{"cluster", "sites"}, {"etcd", "members"}, {"storage", "garage", "sites"}}
 
 // RemoveSite takes one site out of the declaration at path, the way

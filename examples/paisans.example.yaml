@@ -127,15 +127,21 @@ sites:
 # databases and replicates them together, so every app in it gets HA for free.
 # "HA for one app but not another" saves nothing. An app that must not share it
 # is `pinned` instead.
+#
+# cluster.sites and etcd.members are left out, and derived from the roles:
+# cluster.sites is every data site, and etcd.members every witness, then
+# every data site, each in name order. Here that is home-a and home-b, and
+# vm, home-a and home-b. Write either key only to choose differently, and
+# it is then used exactly as written: `etcd.members: [home-a]` runs one
+# voter by choice, which gives up automatic failover, and listing only some
+# of the data sites runs fewer voters than there are data sites.
 cluster:
-  sites: [home-a, home-b]
   port: 5000                  # local HAProxy port apps connect to
   postgres_version: "18"
   synchronous: true
   synchronous_strict: false     # degrade to standalone rather than block writes
 
 etcd:
-  members: [home-a, home-b, vm]
   # Defaults (100ms / 1000ms) assume one datacenter. Measure real RTT through
   # the tunnel and set these; identical on every member. Leaving the defaults
   # produces phantom elections every time a home connection hiccups.

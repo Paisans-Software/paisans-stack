@@ -300,10 +300,10 @@ func checkScope(cfg *config.Config, newSite string, transports map[string]apply.
 		return fmt.Errorf("site add %s: the site's roles must be exactly [data]. site add's stages start no app stacks, so join it as [data], then give it the apps role and run host prepare and apply on it, and apply on the gateway (Pocket ID stands by there while another site is active); a second gateway or witness is a separate change", newSite)
 	}
 	if !contains(cfg.Cluster.Sites, newSite) {
-		return fmt.Errorf("site add %s: cluster.sites does not list it, so there is no replica to add. List it there", newSite)
+		return fmt.Errorf("site add %s: cluster.sites is written and does not list it, so there is no replica to add. List it there, or leave the key out so it is derived from the roles, every data site", newSite)
 	}
 	if !contains(cfg.Etcd.Members, newSite) {
-		return fmt.Errorf("site add %s: etcd.members does not list it. A data site is an etcd voter, so list it there, and a witness with it if the cluster has one member today", newSite)
+		return fmt.Errorf("site add %s: etcd.members is written and does not list it. A data site is an etcd voter, so list it there, and a witness with it if the cluster has one member today; or leave the key out so it is derived from the roles, every witness and every data site", newSite)
 	}
 	for _, name := range cfg.SiteNames() {
 		if cfg.Sites[name].Endpoint == "" {
