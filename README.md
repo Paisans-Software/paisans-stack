@@ -13,8 +13,10 @@ runtime. [docs/decisions.md](docs/decisions.md) records why.
 
 It installs a complete community stack on one machine, then adds sites later as
 a manually invoked, additive step, without touching application configuration.
-Every command that changes a host prints its plan and changes nothing unless
-given `--execute`. Each step is one line; `--verbose` (`-v`) shows the reasons,
+Every command that changes a host prints its plan and changes nothing on a
+server unless given `--execute`. The one local exception is `paisans apply`
+without `--site`, whose dry run may add missing generated secrets to the local
+secrets file, and says so when it does. Each step is one line; `--verbose` (`-v`) shows the reasons,
 values and requests behind it.
 
 ```
@@ -3058,6 +3060,22 @@ its own command: the first Pocket ID admin (`app admin create`), a credential
 the toolkit cannot generate (`secrets set`), and a DNS record pointing
 elsewhere. `apply --site <name>` is unchanged, for one site at a time.
 `docs/specs/2026-10-09-apply-converge.md` is the approved specification.
+
+Its dry run changes nothing on the servers. When the yaml has its id and mesh
+subnet and the secrets file decrypts but lacks a generated secret, it generates
+the missing ones into that file, as `init` would: only what is missing, nothing
+overwritten, encrypted to the recipients in `.sops.yaml`. Its `init` line names
+what it wrote, never a value, and the closing line says the secrets were
+added; the later steps are then checked rather than waiting on init. A missing
+id, subnet or secrets file is still left to `init`, which `--execute` runs
+first:
+
+```
+configuration
+  ✓ init    generated 4 secrets into secrets.enc.yaml: cluster.admin_password, cluster.standby_password, cluster.superuser_password and 1 more
+...
+Nothing changed on the servers. Added 4 generated secrets to secrets.enc.yaml. Re-run with --execute to apply. ...
+```
 
 `etcd.members` here is the list as written or as derived from the roles. So a
 site given the `data` role on a founded cluster, with the key left out, is a

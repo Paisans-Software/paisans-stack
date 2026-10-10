@@ -4,7 +4,9 @@
 // validate and render touch nothing outside the working directory. init
 // reads every site to choose a mesh subnet, and writes only local files.
 // `host prepare`, `apply` and `storage init` reach a machine: each reads it to
-// show what it would do, and changes nothing unless told to with --execute.
+// show what it would do, and changes nothing on it unless told to with
+// --execute. apply without --site may, in its dry run, add missing generated
+// secrets to the local secrets file, as init would, and says so when it does.
 // `doctor` reaches every site to report what is stuck and changes nothing.
 package main
 
@@ -104,8 +106,10 @@ Commands:
              stack, running init, host prepare, apply, site add, storage
              and dns init in the order the deployment needs. With --site:
              compare that site's rendered artifacts with what is on its
-             host and show what would change. Writes nothing without
-             --execute.
+             host and show what would change. Changes nothing on a
+             host without --execute; without --site, the dry run may add
+             missing generated secrets to the local secrets file, and
+             says so when it does.
   site       add: join a new data site to the running cluster in seven gated
              stages: preflight, mesh, etcd (learners, then promoted), the
              Patroni replica, synchronous mode, HAProxy, and each existing
