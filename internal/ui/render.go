@@ -21,8 +21,6 @@ const (
 
 type writer struct {
 	mu sync.Mutex
-	// width is the title column Align set, 0 for titleWidth.
-	width int
 	// cols is how wide prose is wrapped: the terminal's width when it is
 	// known, never more than maxWidth.
 	cols int
@@ -43,7 +41,7 @@ type writer struct {
 }
 
 func newWriter(w io.Writer, verbose, terminal bool) *writer {
-	return &writer{w: w, cols: maxWidth, verbose: verbose, terminal: terminal, now: time.Now, tick: 100 * time.Millisecond}
+	return &writer{w: &tracked{w: w}, cols: maxWidth, verbose: verbose, terminal: terminal, now: time.Now, tick: 100 * time.Millisecond}
 }
 
 type step struct {
@@ -63,7 +61,25 @@ func (r *writer) Section(title string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.interruptLocked()
+	if t, ok := r.w.(*tracked); ok && t.wrote {
+		// A blank line sets the section apart from what came before.
+		fmt.Fprintln(r.w)
+	}
 	fmt.Fprintf(r.w, "%s\n", title)
+}
+
+// tracked is the reporter's output, and whether anything has been written
+// to it yet, so the first section of a run is not preceded by a blank line.
+type tracked struct {
+	w     io.Writer
+	wrote bool
+}
+
+func (t *tracked) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		t.wrote = true
+	}
+	return t.w.Write(p)
 }
 
 func (r *writer) Step(title string) Step {
