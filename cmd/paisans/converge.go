@@ -495,10 +495,12 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 			}
 			switch {
 			case err != nil:
+				// The hint is the line's result; what to do follows it at
+				// every verbosity, as a failure always says.
 				hint, explain := ui.Describe(err)
 				st = status{ui.Failed, hint}
 				if explain != "" {
-					line.Detail("%s", explain)
+					notes = append(notes, checkReport{Note: true, Text: "before " + s.Title + " can run", Detail: explain})
 				}
 			case summary == "":
 				st = status{ui.OK, ""}

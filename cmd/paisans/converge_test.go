@@ -1352,3 +1352,23 @@ func TestConvergeStopIsAProblem(t *testing.T) {
 		}
 	}
 }
+
+// A dry run's failed step says what to do at every verbosity, not only its
+// hint: the explanation is a note after the step's line.
+func TestConvergeDryRunShowsAFailedStepsExplanation(t *testing.T) {
+	fakeConverge(t, nil)
+	fakeChecks(t, map[string]any{
+		"host prepare --site watch": &ui.Problem{Hint: "watch's etcd members differ from the running cluster's", Explain: "Run paisans site add for the site being added, then apply."},
+	})
+	rec := recordConverge(t)
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	i := rec.Index("note", "host prepare --site watch")
+	if i < 0 || rec.Events[i].Extra != "Run paisans site add for the site being added, then apply." {
+		t.Errorf("no note with the explanation:\n%s", rec.Lines())
+	}
+	if f := rec.Index("fail", "host prepare --site watch"); f < 0 || f > i {
+		t.Errorf("the note is not after the step's line:\n%s", rec.Lines())
+	}
+}
