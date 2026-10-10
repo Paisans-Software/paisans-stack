@@ -342,7 +342,7 @@ func TestInitWarnsAboutADroppedSite(t *testing.T) {
 	sites := fakeSites()
 	path, out := initWorld(t, nil, sites, nil)
 	cfg, _ := config.Load(path)
-	sites["vm"].files = map[string]string{deployrecord.Path(cfg.Deployment()): `{"version":1,"sites":["home-a","home-b","vm","watch","monitor-a"],"apps":[],"pocket_id_groups":[]}`}
+	sites["vm"].files = map[string]string{deployrecord.Path(cfg.Deployment()): deployrecord.Encode(deployrecord.Record{Sites: []string{"home-a", "home-b", "vm", "watch", "monitor-a"}})}
 	if err := runInitQuietly(t, path); err != nil {
 		t.Fatal(err)
 	}

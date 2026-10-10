@@ -1,7 +1,6 @@
 package siteremove_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
@@ -10,7 +9,7 @@ import (
 )
 
 func recordListing(sites ...string) string {
-	return `{"version":1,"sites":["` + strings.Join(sites, `","`) + `"],"apps":[],"pocket_id_groups":[]}` + "\n"
+	return deployrecord.Encode(deployrecord.Record{Sites: sites})
 }
 
 // The remaining gateway's record no longer lists the removed site.
@@ -25,7 +24,7 @@ func TestSiteRemoveForgetsTheSiteOnEveryGateway(t *testing.T) {
 	if err := siteremove.Execute(p); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(vm.files[deployrecord.Path(dep)], "home-b") {
+	if r, _, _ := deployrecord.Read(vm, dep); r.Lists("sites", "home-b") {
 		t.Error("vm's record still lists home-b")
 	}
 }
@@ -56,7 +55,7 @@ func TestCleaningAGatewayDeletesItsRecord(t *testing.T) {
 func TestSiteRemoveWritesTheNewestRecordToEveryGateway(t *testing.T) {
 	w := setup(t)
 	vm := w.hosts["vm"]
-	vm.files[deployrecord.Path(dep)] = `{"version":1,"revision":2,"sites":["home-a","home-b","vm","watch"],"apps":[],"pocket_id_groups":[]}` + "\n"
+	vm.files[deployrecord.Path(dep)] = deployrecord.Encode(deployrecord.Record{Revision: 2, Sites: []string{"home-a", "home-b", "vm", "watch"}})
 	p := w.mustBuild("home-b", siteremove.Options{})
 	if err := siteremove.Execute(p); err != nil {
 		t.Fatal(err)

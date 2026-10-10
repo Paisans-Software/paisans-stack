@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -327,7 +326,7 @@ func TestPruneKeepsWhatTheRecordLists(t *testing.T) {
 		s.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "x"}
 		s.Sites["monitor-b"] = config.SiteSecrets{WireGuardPrivateKey: "y"}
 	})
-	withRecords(t, map[string]string{"vm": `{"version":1,"sites":["home-a","home-b","vm","watch","monitor-a"],"apps":[],"pocket_id_groups":[]}`})
+	withRecords(t, map[string]string{"vm": deployrecord.Encode(deployrecord.Record{Sites: []string{"home-a", "home-b", "vm", "watch", "monitor-a"}})})
 	out := captureStdout(t, func() {
 		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
@@ -362,14 +361,13 @@ func TestPruneWithoutRecordAsksAtATerminal(t *testing.T) {
 
 func fixtureRecord() string {
 	cfg, _ := config.Load(fixtureConfig())
-	data, _ := json.Marshal(deployrecord.FromConfig(cfg))
-	return string(data)
+	return deployrecord.Encode(deployrecord.FromConfig(cfg))
 }
 
 // prune says secrets are kept only for a dropped name that has some.
 func TestPruneSaysKeptOnlyWhenThereAreSecrets(t *testing.T) {
 	configPath, secretsPath := writeFixtureSecrets(t, func(s *config.Secrets) { s.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "x"} })
-	withRecords(t, map[string]string{"vm": `{"version":1,"sites":["home-a","home-b","vm","watch","monitor-a","monitor-b"],"apps":[],"pocket_id_groups":[]}`})
+	withRecords(t, map[string]string{"vm": deployrecord.Encode(deployrecord.Record{Sites: []string{"home-a", "home-b", "vm", "watch", "monitor-a", "monitor-b"}})})
 	out := captureStdout(t, func() {
 		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
@@ -415,8 +413,8 @@ func TestPruneTakesTheNewestRecord(t *testing.T) {
 	configPath, secretsPath := writeFixtureSecrets(t, func(s *config.Secrets) { s.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "x"} })
 	withTwoGateways(t, configPath)
 	withRecords(t, map[string]string{
-		"vm":  `{"version":1,"revision":9,"sites":["home-a","home-b","vm","vm2","watch"],"apps":[],"pocket_id_groups":[]}`,
-		"vm2": `{"version":1,"revision":8,"sites":["home-a","home-b","vm","vm2","watch","monitor-a"],"apps":[],"pocket_id_groups":[]}`,
+		"vm":  `{"version":1,"revision":9,"updated_at":"","sites":{"home-a":{"added":1},"home-b":{"added":1},"vm":{"added":1},"vm2":{"added":1},"watch":{"added":1},"monitor-a":{"added":1,"removed":9}},"apps":{},"pocket_id_groups":{}}`,
+		"vm2": deployrecord.Encode(deployrecord.Record{Revision: 8, Sites: []string{"home-a", "home-b", "vm", "vm2", "watch", "monitor-a"}}),
 	})
 	captureStdout(t, func() {
 		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"}, strings.NewReader(""), &bytes.Buffer{}); err != nil {

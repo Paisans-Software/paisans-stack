@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -109,7 +111,7 @@ type racer struct{ *fakeHost }
 
 func (r *racer) ReadFile(p string) (string, bool, error) {
 	c, ok, err := r.fakeHost.ReadFile(p)
-	r.files[p] = `{"version":1,"sites":["home-b"],"apps":[],"pocket_id_groups":[]}` + "\n"
+	r.files[p] = deployrecord.Encode(deployrecord.Record{Sites: []string{"home-b"}})
 	return c, ok, err
 }
 
@@ -179,8 +181,8 @@ func gateways(hs ...*fakeHost) map[string]registry.Runner {
 var now = time.Date(2026, 10, 9, 18, 40, 0, 0, time.UTC)
 
 func TestUpdateCatchesUpAStaleGateway(t *testing.T) {
-	fresh := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":1,"revision":5,"sites":["vm"],"apps":[],"pocket_id_groups":[]}`}}
-	stale := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":1,"revision":3,"sites":["vm","monitor-a"],"apps":[],"pocket_id_groups":[]}`}}
+	fresh := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(5, map[string][2]int{"vm": {1, 0}, "monitor-a": {1, 5}})}}
+	stale := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(3, map[string][2]int{"vm": {1, 0}, "monitor-a": {1, 0}})}}
 	res, err := deployrecord.Update(gateways(fresh, stale), dep, deployrecord.Adding(deployrecord.Record{}), now)
 	if err != nil || res.Changed || strings.Join(res.Wrote, ",") != "gw2" {
 		t.Fatalf("%+v %v", res, err)
@@ -192,8 +194,8 @@ func TestUpdateCatchesUpAStaleGateway(t *testing.T) {
 }
 
 func TestAChangeStartsFromTheNewestAndRaisesTheRevision(t *testing.T) {
-	fresh := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":1,"revision":5,"sites":["vm"],"apps":[],"pocket_id_groups":[]}`}}
-	stale := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":1,"revision":3,"sites":["vm","monitor-a"],"apps":[],"pocket_id_groups":[]}`}}
+	fresh := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(5, map[string][2]int{"vm": {1, 0}, "monitor-a": {1, 5}})}}
+	stale := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(3, map[string][2]int{"vm": {1, 0}, "monitor-a": {1, 0}})}}
 	res, err := deployrecord.Update(gateways(fresh, stale), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"home-a"}}), now)
 	if err != nil || !res.Changed || len(res.Wrote) != 2 {
 		t.Fatalf("%+v %v", res, err)
@@ -233,7 +235,7 @@ func TestUpdateStopsAtAMalformedRecord(t *testing.T) {
 }
 
 func TestUpdateWithNothingToChangeWritesNothing(t *testing.T) {
-	rec := `{"version":1,"revision":2,"updated_at":"x","sites":["vm"],"apps":[],"pocket_id_groups":[]}` + "\n"
+	rec := deployrecord.Encode(deployrecord.Record{Revision: 2, Sites: []string{"vm"}})
 	a := &fakeHost{files: map[string]string{deployrecord.Path(dep): rec}}
 	b := &fakeHost{files: map[string]string{deployrecord.Path(dep): rec}}
 	res, err := deployrecord.Update(gateways(a, b), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"vm"}}), now)
@@ -242,13 +244,75 @@ func TestUpdateWithNothingToChangeWritesNothing(t *testing.T) {
 	}
 }
 
-func TestEqualRevisionsReadAsTheirUnion(t *testing.T) {
-	n := deployrecord.Newest(
-		deployrecord.Record{Revision: 4, Sites: []string{"a"}},
-		deployrecord.Record{Revision: 4, Sites: []string{"b"}},
-		deployrecord.Record{Revision: 3, Sites: []string{"c"}},
-	)
-	if n.Revision != 4 || strings.Join(n.Sites, ",") != "a,b" {
-		t.Errorf("%+v", n)
+func stored(revision int, sites map[string][2]int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `{"version":1,"revision":%d,"updated_at":"","sites":{`, revision)
+	first := true
+	for _, n := range slices.Sorted(maps.Keys(sites)) {
+		if !first {
+			b.WriteString(",")
+		}
+		first = false
+		fmt.Fprintf(&b, `%q:{"added":%d,"removed":%d}`, n, sites[n][0], sites[n][1])
+	}
+	b.WriteString(`},"apps":{},"pocket_id_groups":{}}` + "\n")
+	return b.String()
+}
+
+func TestASplitKeepsEveryAddAndEveryRemoval(t *testing.T) {
+	a := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(4, map[string][2]int{"vm": {1, 0}, "m1": {1, 3}, "m2": {1, 4}})}}
+	b := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(2, map[string][2]int{"vm": {1, 0}, "m1": {1, 0}, "m2": {1, 0}, "y": {2, 0}})}}
+	r, _, _ := deployrecord.Gather(gateways(a, b), dep)
+	if strings.Join(r.Sites, ",") != "vm,y" {
+		t.Fatalf("merged %v", r.Sites)
+	}
+	if _, err := deployrecord.Update(gateways(a, b), dep, deployrecord.Adding(deployrecord.Record{}), now); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []*fakeHost{a, b} {
+		got, _, _ := deployrecord.Read(h, dep)
+		if strings.Join(got.Sites, ",") != "vm,y" || got.Revision != 4 {
+			t.Errorf("caught up to %+v", got)
+		}
+	}
+}
+
+func TestAGatewayAppliedAloneIsNotIgnored(t *testing.T) {
+	old := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(9, map[string][2]int{"vm": {1, 0}})}}
+	fresh := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(1, map[string][2]int{"vm2": {1, 0}})}}
+	r, _, _ := deployrecord.Gather(gateways(old, fresh), dep)
+	if strings.Join(r.Sites, ",") != "vm,vm2" {
+		t.Errorf("merged %v", r.Sites)
+	}
+}
+
+func TestATieKeepsTheName(t *testing.T) {
+	a := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(5, map[string][2]int{"x": {1, 5}})}}
+	b := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(5, map[string][2]int{"x": {5, 0}})}}
+	if r, _, _ := deployrecord.Gather(gateways(a, b), dep); !r.Lists("sites", "x") {
+		t.Error("a tie dropped the name")
+	}
+}
+
+func TestANameAddedAgainAfterItsRemoval(t *testing.T) {
+	h := &fakeHost{files: map[string]string{deployrecord.Path(dep): stored(3, map[string][2]int{"x": {1, 3}})}}
+	if _, err := deployrecord.Update(gateways(h), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"x"}}), now); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _ := deployrecord.Read(h, dep); !r.Lists("sites", "x") || r.Revision != 4 {
+		t.Fatalf("%+v", r)
+	}
+	if _, err := deployrecord.Update(gateways(h), dep, deployrecord.Forgetting(deployrecord.Record{Sites: []string{"x"}}), now); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _ := deployrecord.Read(h, dep); r.Lists("sites", "x") || r.Revision != 5 {
+		t.Errorf("%+v", r)
+	}
+}
+
+func TestTheListLayoutIsMalformed(t *testing.T) {
+	h := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":1,"sites":["vm"],"apps":[],"pocket_id_groups":[]}`}}
+	if _, _, err := deployrecord.Read(h, dep); !errors.Is(err, deployrecord.ErrMalformed) {
+		t.Errorf("err = %v", err)
 	}
 }

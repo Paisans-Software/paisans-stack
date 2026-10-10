@@ -79,13 +79,13 @@ func TestApplyRecordsTheDeploymentOnAGateway(t *testing.T) {
 
 func TestForgetInRecordsReachesEveryGatewayAndWarnsForOneDown(t *testing.T) {
 	cfg, _ := config.Load(fixtureConfig())
-	vm := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): `{"version":1,"sites":["vm","monitor-a"],"apps":[],"pocket_id_groups":[]}`}}
+	vm := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): deployrecord.Encode(deployrecord.Record{Sites: []string{"vm", "monitor-a"}})}}
 	saved := registryHost
 	registryHost = func(name string, _ config.Site, _ string, _ bool) registry.Runner { return vm }
 	t.Cleanup(func() { registryHost = saved })
 	rec := &ui.Recorder{}
 	forgetInRecords(rec, cfg, deployrecord.Record{Sites: []string{"monitor-a"}}, "monitor-a", true, true)
-	if strings.Contains(vm.files[deployrecord.Path(cfg.Deployment())], "monitor-a") {
+	if r, _, _ := deployrecord.Read(vm, cfg.Deployment()); r.Lists("sites", "monitor-a") {
 		t.Error("vm still lists monitor-a")
 	}
 	vm.down = true
@@ -109,7 +109,7 @@ func TestForgetAppCleansTheRecordWhenNothingElseIsLeft(t *testing.T) {
 // with nothing else left still points at --execute.
 func TestForgetInRecordsDryRunSaysWhetherARecordListsIt(t *testing.T) {
 	cfg, _ := config.Load(fixtureConfig())
-	vm := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): `{"version":1,"sites":["vm","monitor-a"],"apps":[],"pocket_id_groups":[]}`}}
+	vm := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): deployrecord.Encode(deployrecord.Record{Sites: []string{"vm", "monitor-a"}})}}
 	saved := registryHost
 	registryHost = func(string, config.Site, string, bool) registry.Runner { return vm }
 	t.Cleanup(func() { registryHost = saved })
@@ -138,7 +138,7 @@ func TestApplyNamesTheWayOutOfAMalformedRecord(t *testing.T) {
 // The record lines sit under a section of their own, not the last site's.
 func TestForgetInRecordsHasItsOwnSection(t *testing.T) {
 	cfg, _ := config.Load(fixtureConfig())
-	vm := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): `{"version":1,"sites":["monitor-a"],"apps":[],"pocket_id_groups":[]}`}}
+	vm := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): deployrecord.Encode(deployrecord.Record{Sites: []string{"monitor-a"}})}}
 	saved := registryHost
 	registryHost = func(string, config.Site, string, bool) registry.Runner { return vm }
 	t.Cleanup(func() { registryHost = saved })

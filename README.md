@@ -1396,15 +1396,19 @@ removal commands take names out, on every gateway: `site remove` in its stage
 the app and each group no remaining Pocket ID app names. Cleaning a gateway's
 host deletes its record.
 
-The gateways' records are kept in step. Each carries a `revision`, raised by
-one with every change, and an `updated_at` for people reading the file (it is
-the writer's clock, so nothing compares it). Every change starts from the
-newest record any gateway holds and is written to every gateway that answers;
-one that does not is warned about, never a failure, and the next change brings
-it up to date. Readers take the newest record, so a gateway that was down
-during a removal does not bring the removed site back. Two records at the same
-revision that disagree, left by two operators writing at once, are read as
-their union, which keeps secrets rather than deleting them.
+The gateways' records are kept in step, name by name. Each name keeps the
+revision of the change that last added it and of the one that last removed
+it, and a name is deployed when it was added at least as late as it was
+removed, so an add and a removal at the same revision keep it. A removed name
+stays in the file. Every change merges the records of the gateways that
+answer, for each name its latest add and latest removal, makes its own events
+at the next revision, and writes the merge to every gateway that answered; one
+that does not is warned about, never a failure, and the next change brings it
+up to date. Readers merge the same way. So an add only one gateway saw, while
+the others were down, is never lost to a later change on another, and a
+gateway that missed a removal does not bring the removed site back. The record
+also carries an `updated_at`, the writer's clock, for people reading the file;
+nothing compares it.
 
 | In `paisans.yaml` | In a record | `init` and `apply` | `secrets prune` |
 |---|---|---|---|
