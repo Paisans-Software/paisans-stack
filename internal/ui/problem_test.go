@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -250,5 +252,26 @@ func TestErrorVerboseShowsACauseOnce(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), "\n    outer\n") || !strings.Contains(b.String(), "\n    leaf\n") {
 		t.Errorf("chain:\n%s", b.String())
+	}
+}
+
+// A line that fits is left as written, so columns in it stay aligned.
+func TestWrapLeavesALineThatFits(t *testing.T) {
+	text := "  docker   27.3.1\n\tfirewall active"
+	if got := ui.Wrap(text, 80); strings.Join(got, "\n") != text {
+		t.Errorf("got %q", got)
+	}
+}
+
+// A path under the current directory reached through a symbolic link is
+// still shown relative to it.
+func TestShortPathThroughASymlink(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if got := ui.ShortPathFrom(filepath.Join(real, "a", "b.yaml"), link, ""); got != "a/b.yaml" {
+		t.Errorf("got %q", got)
 	}
 }

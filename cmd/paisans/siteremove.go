@@ -380,7 +380,7 @@ func forceAndHostGone() error {
 // sshFlagProblem is the Problem for an --ssh value that is not a
 // destination.
 func sshFlagProblem(value string, err error) error {
-	return &ui.Problem{Hint: fmt.Sprintf("--ssh %q is not a destination", value), Explain: err.Error() + ".", Cause: err}
+	return &ui.Problem{Hint: "--ssh is not a destination", Explain: err.Error() + ".", Cause: err}
 }
 
 // confirmSite asks for the site's name before --delete-data deletes its data.

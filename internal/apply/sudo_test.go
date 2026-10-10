@@ -326,7 +326,7 @@ func TestSudoRefusalsAreProblems(t *testing.T) {
 		hint    string
 		explain string
 	}{
-		{"no terminal", &sudoHost{password: "hunter2"}, nil, "sudo on box needs a password, and there is no terminal to ask on", "NOPASSWD"},
+		{"no terminal", &sudoHost{password: "hunter2"}, nil, "sudo on box needs a password and there is no terminal", "NOPASSWD"},
 		{"wrong password", &sudoHost{password: "hunter2"}, (&prompter{answer: "wrong"}).prompt, "sudo on box did not accept the password", "not tried again"},
 		{"no password", &sudoHost{password: "hunter2"}, (&prompter{answer: ""}).prompt, "no sudo password was given for box", "Run again"},
 		{"not a sudoer", &sudoHost{refuse: "ubuntu is not in the sudoers file.\n"}, (&prompter{answer: "x"}).prompt, "sudo on box refused the ssh user", "not in the sudoers file"},

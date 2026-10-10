@@ -404,8 +404,7 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 		switch {
 		case err == nil:
 		case s.Founding && errors.Is(err, apply.ErrFoundingWait):
-			hint, explain := ui.Describe(err)
-			r.Note(s.Title+" stopped at the founding stop; pass two applies it again", hint+".\n"+explain)
+			r.Note(s.Title+" stopped at the founding stop; pass two applies it again", sentences(err))
 		case errors.Is(err, dns.ErrConflict):
 			return convergeStop("apply stopped at "+s.Title, err, "Change each conflicting record above at your DNS provider, then run paisans apply --execute again.")
 		case errors.Is(err, storageadd.ErrWaiting):
@@ -424,6 +423,16 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 // the hint, and the step's own problem, its hint and explanation, ahead of
 // next, how to go on. The step's error is the cause, so -v shows it whole and
 // errors.Is still finds what it wraps.
+// sentences is err's hint as a sentence, then its explanation.
+func sentences(err error) string {
+	hint, explain := ui.Describe(err)
+	lines := []string{strings.TrimSuffix(hint, ".") + "."}
+	if explain != "" {
+		lines = append(lines, explain)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func convergeStop(hint string, err error, next string) error {
 	inner, explain := ui.Describe(err)
 	// A wait's own advice is storage add's, which a run of apply replaces

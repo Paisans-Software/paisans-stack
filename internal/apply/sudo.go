@@ -102,7 +102,7 @@ func (a *SudoAuth) resolve(t SSHTransport) (string, error) {
 	}
 	if a.Prompt == nil {
 		return "", a.refuse(&ui.Problem{
-			Hint:    "sudo on " + t.Describe() + " needs a password, and there is no terminal to ask on",
+			Hint:    "sudo on " + t.Describe() + " needs a password and there is no terminal",
 			Explain: "paisans asks for a sudo password only on a terminal, so an unattended run needs sudo without one: a sudoers rule giving the ssh user NOPASSWD. That makes the ssh key alone enough for root on this host, which is a decision about the host rather than about one run.",
 		})
 	}

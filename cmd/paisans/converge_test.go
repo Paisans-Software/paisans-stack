@@ -1372,3 +1372,26 @@ func TestConvergeDryRunShowsAFailedStepsExplanation(t *testing.T) {
 		t.Errorf("the note is not after the step's line:\n%s", rec.Lines())
 	}
 }
+
+// The founding stop's note is its hint and explanation, without a doubled
+// stop or a trailing blank.
+func TestTheFoundingNoteReadsCleanly(t *testing.T) {
+	fakeConverge(t, map[string]error{"apply --site home-a": &ui.Problem{Hint: "home-a is waiting on home-b to start etcd.", Cause: apply.ErrFoundingWait}})
+	rec := recordConverge(t)
+	if err := converge(t, "--execute"); err != nil {
+		t.Fatal(err)
+	}
+	i := rec.Index("note", "founding stop")
+	if i < 0 || rec.Events[i].Extra != "home-a is waiting on home-b to start etcd." {
+		t.Errorf("note:\n%s", rec.Lines())
+	}
+}
+
+// An --ssh that is not a destination is said once, plainly.
+func TestSSHFlagProblemSaysItOnce(t *testing.T) {
+	err := sshFlagProblem("myalias", errors.New(`"myalias" is not user@host[:port]`))
+	var p *ui.Problem
+	if !errors.As(err, &p) || p.Hint != "--ssh is not a destination" {
+		t.Errorf("got %#v", p)
+	}
+}

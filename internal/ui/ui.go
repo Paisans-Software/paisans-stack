@@ -141,11 +141,12 @@ func isTerminal(w io.Writer) bool {
 	return os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 }
 
-// terminalWidth is w's width in columns when w is a terminal that should be
-// drawn on, or 0.
+// terminalWidth is w's width in columns when w is a terminal, or 0. A
+// terminal drawn on without colour (NO_COLOR, TERM=dumb) is still as wide as
+// it is.
 func terminalWidth(w io.Writer) int {
 	f, ok := w.(*os.File)
-	if !ok || !isTerminal(w) {
+	if !ok || !term.IsTerminal(int(f.Fd())) {
 		return 0
 	}
 	cols, _, err := term.GetSize(int(f.Fd()))

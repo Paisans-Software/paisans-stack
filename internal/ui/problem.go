@@ -173,11 +173,17 @@ func ownText(e, next error) ([]string, bool) {
 func Wrap(text string, width int) []string {
 	var out []string
 	for _, line := range strings.Split(strings.Trim(text, "\n"), "\n") {
-		line = strings.TrimRight(line, " ")
+		line = strings.TrimRight(line, " \t")
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		body := strings.TrimLeft(line, " ")
+		// A line that fits is left as written, so columns in it stay
+		// aligned.
+		if len(line) <= width {
+			out = append(out, line)
+			continue
+		}
+		body := strings.TrimLeft(line, " \t")
 		lead := line[:len(line)-len(body)]
 		hang := lead
 		if strings.HasPrefix(body, "- ") {
@@ -217,8 +223,15 @@ func shortPath(path, wd, home string) string {
 		return path
 	}
 	if wd != "" {
-		if rel, err := filepath.Rel(wd, path); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+		if rel, ok := under(wd, path); ok {
 			return rel
+		}
+		// The directory, or the path, may be reached through a symbolic
+		// link, as macOS's /var is /private/var.
+		if rwd, err := filepath.EvalSymlinks(wd); err == nil {
+			if rel, ok := under(rwd, resolve(path)); ok {
+				return rel
+			}
 		}
 	}
 	if home != "" {
@@ -230,4 +243,27 @@ func shortPath(path, wd, home string) string {
 		}
 	}
 	return path
+}
+
+// under is path relative to dir, when path is dir or below it.
+func under(dir, path string) (string, bool) {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	return rel, true
+}
+
+// resolve is path with its symbolic links resolved, as far as it exists.
+func resolve(path string) string {
+	rest := ""
+	for p := path; ; p = filepath.Dir(p) {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(r, rest)
+		}
+		if filepath.Dir(p) == p {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+	}
 }
