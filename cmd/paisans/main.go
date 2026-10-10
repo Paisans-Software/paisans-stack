@@ -42,6 +42,8 @@ Usage:
   paisans render   [--config paisans.yaml] [--secrets secrets.enc.yaml] --out ./out
   paisans host prepare --site <name> [--config paisans.yaml] [--ssh <destination>]
                [--execute]
+  paisans apply    [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
+                   every site, from paisans.yaml to a running stack, in order
   paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                    [--ssh <destination>] [--overwrite <path>]... [--recreate <stack>]...
                    [--min-free <size>] [--keep-images] [--execute]
