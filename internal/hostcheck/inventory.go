@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -53,6 +54,9 @@ type Inventory struct {
 	// by full path and sorted: site blocks somebody added to the gateway's
 	// Caddy, which no deployment owns.
 	HostSites []string
+	// Registered are the deployment ids the host's registry has an entry
+	// for, none when it has no registry.
+	Registered map[string]bool
 }
 
 // Docker is the engine, if there is one.
@@ -219,6 +223,19 @@ func Inspect(t Transport, d deployment.Deployment) (*Inventory, error) {
 		}
 	}
 	sort.Strings(inv.HostSites)
+
+	reg, _, err := t.ReadFile(registry.Path)
+	if err != nil {
+		return nil, fail("reading "+registry.Path, err)
+	}
+	r, err := registry.Parse([]byte(reg))
+	if err != nil {
+		return nil, fail("reading "+registry.Path, err)
+	}
+	inv.Registered = map[string]bool{}
+	for id := range r.Deployments {
+		inv.Registered[id] = true
+	}
 
 	content, found, err := t.ReadFile(inv.ManifestPath)
 	if err != nil {

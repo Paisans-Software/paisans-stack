@@ -13,6 +13,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/patroni"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 )
 
 // doctorHost answers doctor's read commands from a table, records every
@@ -78,7 +79,7 @@ func readOnly(cfg *config.Config) (exact []string, prefixes []string) {
 		hostcheck.CgroupPrefix,
 	}
 	exact = append(exact, hostcheck.ReadCommands()...)
-	exact = append(exact, "read "+cfg.Deployment().Manifest())
+	exact = append(exact, "read "+cfg.Deployment().Manifest(), "read "+registry.Path)
 	return exact, prefixes
 }
 
