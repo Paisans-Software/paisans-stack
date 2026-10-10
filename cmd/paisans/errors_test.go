@@ -127,3 +127,15 @@ func TestAGarageWaitStillExits75(t *testing.T) {
 		t.Errorf("an ordinary error exits %d, want 1", code)
 	}
 }
+
+// A command line paisans cannot run says so in the error form, then the
+// usage, and exits 2.
+func TestUsageErrorIsInTheErrorForm(t *testing.T) {
+	var b strings.Builder
+	if code := usageError(&b, "host takes one subcommand, prepare or deployments"); code != 2 {
+		t.Errorf("exit %d, want 2", code)
+	}
+	if !strings.HasPrefix(b.String(), "FAIL host takes one subcommand, prepare or deployments\n\n"+usage[:20]) {
+		t.Errorf("got:\n%s", b.String()[:200])
+	}
+}

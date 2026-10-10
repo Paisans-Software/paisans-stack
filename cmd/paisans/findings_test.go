@@ -89,3 +89,22 @@ func TestRefusedConfigurationIsAProblem(t *testing.T) {
 		t.Errorf("got %#v", p)
 	}
 }
+
+// A configuration under the current directory is named relative to it by
+// default, and in full with -v.
+func TestFindingsNameTheFileShortByDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	path := filepath.Join(dir, "staging", "paisans.yaml")
+	res := validate.Result{Findings: []validate.Finding{{Level: validate.Warn, Rule: "r", Key: "k", Hint: "h", Message: "m"}}}
+	var b strings.Builder
+	reportFindings(ui.NewPlain(&b, false), path, res)
+	if strings.Contains(b.String(), dir) || !strings.HasPrefix(b.String(), "staging/paisans.yaml\n") || !strings.Contains(b.String(), "\nstaging/paisans.yaml: 1 warning") {
+		t.Errorf("default:\n%s", b.String())
+	}
+	b.Reset()
+	reportFindings(ui.NewPlain(&b, true), path, res)
+	if !strings.HasPrefix(b.String(), path+"\n") {
+		t.Errorf("verbose:\n%s", b.String())
+	}
+}

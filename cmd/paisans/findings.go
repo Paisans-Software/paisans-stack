@@ -17,6 +17,9 @@ func reportFindings(r ui.Reporter, path string, result validate.Result) {
 	if len(result.Findings) == 0 {
 		return
 	}
+	if !r.Verbose() {
+		path = ui.ShortPath(path)
+	}
 	r.Section(path)
 	for _, f := range result.Findings {
 		// The key goes first because many explanations are written to follow

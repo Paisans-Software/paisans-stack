@@ -248,8 +248,7 @@ func main() {
 		case len(os.Args) >= 3 && os.Args[2] == "deployments":
 			err = runHostDeployments(os.Args[3:])
 		default:
-			fmt.Fprintf(os.Stderr, "paisans: host takes one subcommand, prepare or deployments\n\n%s", usage)
-			os.Exit(2)
+			os.Exit(usageError(os.Stderr, "host takes one subcommand, prepare or deployments"))
 		}
 	case "site":
 		switch {
@@ -258,8 +257,7 @@ func main() {
 		case len(os.Args) >= 3 && os.Args[2] == "remove":
 			err = runSiteRemove(os.Args[3:], os.Stdin, os.Stdout)
 		default:
-			fmt.Fprintf(os.Stderr, "paisans: site takes one subcommand, add or remove\n\n%s", usage)
-			os.Exit(2)
+			os.Exit(usageError(os.Stderr, "site takes one subcommand, add or remove"))
 		}
 	case "secrets":
 		err = runSecrets(os.Args[2:])
@@ -278,8 +276,7 @@ func main() {
 		case len(os.Args) >= 3 && os.Args[2] == "rotate-key":
 			err = runStorageRotateKey(os.Args[3:])
 		default:
-			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init, add or rotate-key\n\n%s", usage)
-			os.Exit(2)
+			os.Exit(usageError(os.Stderr, "storage takes one subcommand, init, add or rotate-key"))
 		}
 	case "prune":
 		err = runPrune(os.Args[2:])
@@ -296,19 +293,25 @@ func main() {
 		case len(os.Args) >= 3 && os.Args[2] == "prune":
 			err = runDNSPrune(os.Args[3:])
 		default:
-			fmt.Fprintf(os.Stderr, "paisans: dns takes one subcommand, init or prune\n\n%s", usage)
-			os.Exit(2)
+			os.Exit(usageError(os.Stderr, "dns takes one subcommand, init or prune"))
 		}
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "paisans: unknown command %q\n\n%s", os.Args[1], usage)
-		os.Exit(2)
+		os.Exit(usageError(os.Stderr, fmt.Sprintf("unknown command %q", os.Args[1])))
 	}
 	if err != nil {
 		os.Exit(reportError(os.Stderr, err, verboseRun))
 	}
+}
+
+// usageError prints msg in the error form, then the usage, and returns the
+// status for a command line paisans cannot run.
+func usageError(w io.Writer, msg string) int {
+	ui.PrintError(w, errors.New(msg), false)
+	fmt.Fprintf(w, "\n%s", usage)
+	return 2
 }
 
 // reportError prints the error that ends a command, in the refusal's form
