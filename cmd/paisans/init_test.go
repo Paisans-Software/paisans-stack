@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployrecord"
 	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/ui"
@@ -21,6 +22,8 @@ type initFake struct {
 	registry string
 	routes   string
 	down     bool
+	// files are answered to ReadFile by path.
+	files map[string]string
 }
 
 func (f *initFake) Run(command string) (string, error) {
@@ -42,6 +45,9 @@ func (f *initFake) Run(command string) (string, error) {
 func (f *initFake) ReadFile(path string) (string, bool, error) {
 	if f.down {
 		return "", false, errors.New("ssh: connect to host " + f.name + " port 22: Operation timed out")
+	}
+	if c, ok := f.files[path]; ok && c != "" {
+		return c, true, nil
 	}
 	if path == registry.Path && f.registry != "" {
 		return f.registry, true, nil
@@ -294,5 +300,64 @@ func TestInitReportsStepsAndWhatIsOwed(t *testing.T) {
 	}
 	if !again.Has("result", "already present") {
 		t.Errorf("a second run does not say nothing was written:\n%s", again.Lines())
+	}
+}
+
+// A secret naming a site paisans.yaml no longer declares is warned about by
+// key, and init leaves it for `secrets prune`.
+func TestInitWarnsAboutOrphanedSecrets(t *testing.T) {
+	sites := fakeSites()
+	path, out := initWorld(t, nil, sites, nil)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sites["vm"].files = map[string]string{deployrecord.Path(cfg.Deployment()): fixtureRecord()}
+	secrets, err := config.LoadSecrets(fixtureSecretsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "not-a-real-key-0003"}
+	secretsPath := filepath.Join(filepath.Dir(path), "secrets.enc.yaml")
+	if err := config.WriteSecrets(secretsPath, secrets, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := runInitQuietly(t, path); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Lines(), "secrets: sites.monitor-a names a site paisans.yaml does not declare") {
+		t.Errorf("no warning:\n%s", out.Lines())
+	}
+	if strings.Contains(out.Lines(), "not-a-real-key-0003") {
+		t.Error("a secret value was printed")
+	}
+	if s, _ := config.LoadSecrets(secretsPath); s.Sites["monitor-a"].WireGuardPrivateKey == "" {
+		t.Error("init removed the orphan")
+	}
+}
+
+// A site the record lists that paisans.yaml no longer declares is warned
+// about, whether or not it has secrets.
+func TestInitWarnsAboutADroppedSite(t *testing.T) {
+	sites := fakeSites()
+	path, out := initWorld(t, nil, sites, nil)
+	cfg, _ := config.Load(path)
+	sites["vm"].files = map[string]string{deployrecord.Path(cfg.Deployment()): deployrecord.Encode(deployrecord.Record{Sites: []string{"home-a", "home-b", "vm", "watch", "monitor-a"}})}
+	if err := runInitQuietly(t, path); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Lines(), "sites.monitor-a is deployed but paisans.yaml no longer declares it") {
+		t.Errorf("no warning:\n%s", out.Lines())
+	}
+	secrets, err := config.LoadSecrets(filepath.Join(filepath.Dir(path), "secrets.enc.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, s := range secrets.Sites {
+		for _, value := range []string{s.WireGuardPrivateKey, s.HeartbeatToken} {
+			if value != "" && strings.Contains(out.Lines(), value) {
+				t.Errorf("a secret of sites.%s was printed", name)
+			}
+		}
 	}
 }

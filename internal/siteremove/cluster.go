@@ -10,6 +10,8 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/deployrecord"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -175,6 +177,23 @@ func (p *Plan) buildCluster() (*Stage, error) {
 			changes = append(changes, c)
 		}
 	}
+	// The site leaves every remaining gateway's deployment record, so
+	// secrets prune may remove its secrets.
+	records := map[string]registry.Runner{}
+	for _, gw := range p.end.GatewaySites() {
+		records[gw] = p.transports[gw]
+	}
+	deployed, found, missing := deployrecord.Gather(records, p.dep())
+	for _, gw := range sortedCopy(keys(missing)) {
+		if !errors.Is(missing[gw], deployrecord.ErrNoRecord) {
+			return nil, fmt.Errorf("site remove %s: %w", p.Site, missing[gw])
+		}
+	}
+	forget := found > 0 && deployed.Lists("sites", p.Site)
+	if forget {
+		on := strings.Join(sortedCopy(keys(records)), ", ")
+		st.Steps = append(st.Steps, Step{Site: on, Verb: "forget", Title: "forget " + p.Site + " in the deployment record", Text: fmt.Sprintf("%s out of %s on %s, so secrets prune may remove its secrets", p.Site, deployrecord.Path(p.dep()), on)})
+	}
 	replicas, err := p.replicaEnvs(st)
 	if err != nil {
 		return nil, err
@@ -219,6 +238,20 @@ func (p *Plan) buildCluster() (*Stage, error) {
 				return err
 			}
 			p.open.Detail("%s streams again", r.Site)
+		}
+		if forget {
+			p.work("forget " + p.Site + " in the deployment record")
+			res, err := deployrecord.Update(records, p.dep(), deployrecord.Forgetting(deployrecord.Record{Sites: []string{p.Site}}), now())
+			if err != nil {
+				return err
+			}
+			for _, gw := range sortedCopy(keys(res.Missed)) {
+				if errors.Is(res.Missed[gw], deployrecord.ErrChanged) {
+					p.Notes = append(p.Notes, recordRaced(gw, p.Site, res.Missed[gw].Error()))
+					continue
+				}
+				p.Notes = append(p.Notes, recordMissed(gw, res.Missed[gw].Error()))
+			}
 		}
 		return nil
 	}
@@ -612,4 +645,12 @@ func (p *Plan) meshGate(key string) error {
 		}
 	}
 	return nil
+}
+
+func keys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

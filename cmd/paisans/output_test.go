@@ -12,6 +12,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/appremove"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
@@ -234,11 +235,12 @@ func fixtureRuns(t *testing.T) map[string]string {
 	}
 
 	{
-		savedSite, savedApp := removeSiteHost, removeHost
-		t.Cleanup(func() { removeSiteHost, removeHost = savedSite, savedApp })
+		savedSite, savedApp, savedReg := removeSiteHost, removeHost, registryHost
+		t.Cleanup(func() { removeSiteHost, removeHost, registryHost = savedSite, savedApp, savedReg })
 		quiet := runningHost{failingHost{match: "\x00"}}
 		removeSiteHost = func(string, config.Site, bool) apply.Transport { return quiet }
 		removeHost = func(string, config.Site, bool) appremove.Host { return quiet }
+		registryHost = func(string, config.Site, string, bool) registry.Runner { return quiet }
 		runs["site remove dry run"] = runDefault(t, "site remove", func() error {
 			return runSiteRemove([]string{"watch", "--config", cfg, "--secrets", secrets, "--sudo=false"}, strings.NewReader(""), io.Discard)
 		})

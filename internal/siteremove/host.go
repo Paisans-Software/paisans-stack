@@ -11,6 +11,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/appremove"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployrecord"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
 	"github.com/paisans-software/paisans-stack/internal/ownership"
@@ -31,15 +32,20 @@ type hostPlan struct {
 	containers    []string
 	networks      []string
 	volumes       []string
-	files         []appremove.File
-	manifest      bool
-	wireguard     bool
-	units         []string
-	dropins       []string
-	rules         []string
-	keys          keyPlan
-	registry      bool
-	root          dirState
+	// images are the IDs of the images only this deployment's containers
+	// run, sorted.
+	images    []string
+	files     []appremove.File
+	manifest  bool
+	wireguard bool
+	units     []string
+	dropins   []string
+	rules     []string
+	keys      keyPlan
+	registry  bool
+	root      dirState
+	// record is whether the host holds this deployment's record, a gateway's.
+	record bool
 	// deleteRoot is --delete-data with no edited file under the root.
 	deleteRoot bool
 	handover   *handover
@@ -102,6 +108,71 @@ func (p *Plan) containersCommand() string {
 		rm += " -v"
 	}
 	return fmt.Sprintf(`set -e; ids=$(docker ps -aq --no-trunc %[1]s); if [ -n "$ids" ]; then docker stop $ids >/dev/null; %[2]s $ids >/dev/null; fi; nets=$(docker network ls -q --no-trunc %[1]s); if [ -n "$nets" ]; then docker network rm $nets >/dev/null; fi`, filter, rm)
+}
+
+// planImages finds the images only this deployment ran: those its containers
+// run from, and those its compose files name, which the manifest proves are
+// its own. The files find them even after a run stopped between removing the
+// containers and removing their images. An image any other container uses,
+// running or stopped, whoever's it is, is kept.
+func (p *Plan) planImages(t apply.Transport, hp *hostPlan, inv *hostcheck.Inventory, refs []string) error {
+	if !hp.dockerPresent {
+		return nil
+	}
+	d := p.dep()
+	ours, theirs := map[string]bool{}, map[string]bool{}
+	for _, c := range inv.Containers {
+		if c.Image == "" {
+			continue
+		}
+		if c.Deployment == d.ID {
+			ours[c.Image] = true
+		} else {
+			theirs[c.Image] = true
+		}
+	}
+	ids, err := apply.ProbeImages(dedupe(refs), t)
+	if err != nil {
+		return fmt.Errorf("site remove %s: %w", p.Site, err)
+	}
+	for _, id := range ids {
+		if id != "" {
+			ours[id] = true
+		}
+	}
+	for id := range ours {
+		if theirs[id] {
+			p.Kept = append(p.Kept, imageKept(p.Site, id, "a container this deployment does not own runs from it"))
+			continue
+		}
+		hp.images = append(hp.images, id)
+	}
+	sort.Strings(hp.images)
+	return nil
+}
+
+func dedupe(list []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range list {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// imagesCommand removes each image by ID, without -f, and answers per image,
+// so an image Docker refuses (one a container still runs from) is reported
+// rather than failing the stage.
+func imagesCommand(ids []string) string {
+	var q []string
+	for _, id := range ids {
+		q = append(q, quote(id))
+	}
+	return fmt.Sprintf(`for i in %s; do if out=$(docker image rm "$i" 2>&1); then echo "removed $i"; else echo "kept $i $(printf %%s "$out" | tr '\n' ' ')"; fi; done`, strings.Join(q, " "))
 }
 
 func (p *Plan) volumesCommand() string {
@@ -202,6 +273,7 @@ func (p *Plan) buildHost() (*Stage, error) {
 	}
 
 	edited := false
+	var refs []string
 	for _, e := range inv.ManifestFiles {
 		if strings.ContainsAny(e.Path, "'\n") {
 			return nil, fmt.Errorf("site remove %s: the manifest names %q, which this command will not put in a command line", p.Site, e.Path)
@@ -216,6 +288,13 @@ func (p *Plan) buildHost() (*Stage, error) {
 			f.State = appremove.Gone
 		case sum(content) == e.SHA256:
 			f.State = appremove.Remove
+			if strings.HasSuffix(e.Path, "/compose.yaml") {
+				named, err := apply.ComposeImages(content)
+				if err != nil {
+					return nil, fmt.Errorf("site remove %s: reading the images /%s names: %w", p.Site, e.Path, err)
+				}
+				refs = append(refs, named...)
+			}
 		default:
 			f.State = appremove.Edited
 			edited = true
@@ -224,7 +303,13 @@ func (p *Plan) buildHost() (*Stage, error) {
 		hp.files = append(hp.files, f)
 	}
 	sort.Slice(hp.files, func(i, j int) bool { return hp.files[i].Entry.Path < hp.files[j].Entry.Path })
+	if err := p.planImages(t, hp, inv, refs); err != nil {
+		return nil, err
+	}
 	hp.wireguard = inv.ManifestWireGuard || contains(inv.Links, d.Interface())
+	if _, hp.record, err = t.ReadFile(deployrecord.Path(d)); err != nil {
+		return nil, fmt.Errorf("site remove %s: reading %s: %w", p.Site, deployrecord.Path(d), err)
+	}
 
 	out, err := t.Run(p.unitsCommand())
 	if err != nil {
@@ -293,13 +378,15 @@ func (p *Plan) buildHost() (*Stage, error) {
 		}
 	}
 
-	report, err := ownership.Classify(p.cfg, p.Site, inv, inv.ManifestFiles)
-	if err != nil {
-		return nil, err
-	}
-	if p.cfg.Sites[p.Site].Has(config.RoleGateway) && report.Foreign() {
-		if hp.handover, err = p.probeHandover(t, inv, report); err != nil {
+	if p.cfg.Sites[p.Site].Has(config.RoleGateway) {
+		report, err := ownership.Classify(p.cfg, p.Site, inv, inv.ManifestFiles)
+		if err != nil {
 			return nil, err
+		}
+		if report.Foreign() {
+			if hp.handover, err = p.probeHandover(t, inv, report); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -327,6 +414,21 @@ func (p *Plan) probeKeys(t apply.Transport, hp *hostPlan) error {
 	d := p.dep()
 	user := p.cfg.Sites[p.Site].SSH.User
 	kp := keyPlan{user: user, record: hostprep.OwnedKeysPath(d, user)}
+	// Records this deployment made for another login user are that user's
+	// to clean: only the keys of the user reached here are read.
+	listed, err := t.Run(fmt.Sprintf(`for f in %s; do [ -f "$f" ] && echo "$f"; done; true`, hostprep.OwnedKeysPrefixGlob(d)))
+	if err != nil {
+		return fmt.Errorf("site remove %s: listing this deployment's key records: %w", p.Site, err)
+	}
+	for _, path := range strings.Fields(listed) {
+		if path == kp.record {
+			continue
+		}
+		other := hostprep.OwnedKeysUser(d, path)
+		reach := p.cfg.Sites[p.Site].Destination()
+		reach.User = other
+		p.Kept = append(p.Kept, keysOtherUserKept(p.Site, path, reach.String()))
+	}
 	content, found, err := t.ReadFile(kp.record)
 	if err != nil {
 		return fmt.Errorf("site remove %s: reading %s: %w", p.Site, kp.record, err)
@@ -420,6 +522,9 @@ func (p *Plan) hostSteps(st *Stage) {
 	if p.DeleteData && len(hp.volumes) > 0 {
 		add("delete", "delete volumes", "volumes %s", strings.Join(hp.volumes, ", "))
 	}
+	if len(hp.images) > 0 {
+		add("remove", "remove images", "images %s, which only this deployment's containers ran, by ID and without -f, so Docker refuses one in use", strings.Join(hp.images, ", "))
+	}
 	if hp.wireguard {
 		add("stop", "stop "+d.WireGuardUnit(), "%s, and disable it at boot", d.WireGuardUnit())
 	}
@@ -433,6 +538,9 @@ func (p *Plan) hostSteps(st *Stage) {
 	}
 	if hp.manifest {
 		add("delete", "delete the manifest", "%s, the manifest", d.Manifest())
+	}
+	if hp.record {
+		add("delete", "delete the deployment record", "%s, this deployment's record of what it deployed", deployrecord.Path(d))
 	}
 	for _, u := range hp.units {
 		add("remove", "remove units", "unit %s, disabled and stopped first", u)
@@ -488,6 +596,19 @@ func (p *Plan) runHost() error {
 				return err
 			}
 		}
+		if len(hp.images) > 0 {
+			p.work("remove images")
+			out, err := t.Run(imagesCommand(hp.images))
+			if err != nil {
+				return fmt.Errorf("%s: removing images: %w: %s", p.Site, err, lastLines(out, 3))
+			}
+			for _, line := range strings.Split(out, "\n") {
+				if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "kept "); ok {
+					id, why, _ := strings.Cut(rest, " ")
+					p.Kept = append(p.Kept, imageKept(p.Site, id, "Docker refused: "+why))
+				}
+			}
+		}
 	}
 	if hp.wireguard {
 		p.work("stop " + d.WireGuardUnit())
@@ -516,6 +637,12 @@ func (p *Plan) runHost() error {
 	if hp.manifest {
 		p.work("delete the manifest")
 		if err := run("deleting the manifest", "rm -f -- "+quote(d.Manifest())); err != nil {
+			return err
+		}
+	}
+	if hp.record {
+		p.work("delete the deployment record")
+		if err := run("deleting the deployment record", deployrecord.RemoveCommand(d)); err != nil {
 			return err
 		}
 	}

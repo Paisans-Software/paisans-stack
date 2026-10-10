@@ -24,6 +24,10 @@ func volumeKept(site, name string) string {
 	return fmt.Sprintf("%s: volume kept; --delete-data deletes it. It is %s, this deployment's data", site, name)
 }
 
+func imageKept(site, id, why string) string {
+	return fmt.Sprintf("%s: image kept; remove it yourself once nothing runs from it. It is %s: %s", site, id, why)
+}
+
 func editedFileKept(site, path string) string {
 	return fmt.Sprintf("%s: an edited file kept; delete it by hand once nothing needs it. It is /%s, edited on the host since apply wrote it", site, path)
 }
@@ -56,15 +60,27 @@ func keyLinesKept(site, file, record, user string) string {
 	return fmt.Sprintf("%s: SSH key lines kept; delete them yourself once another way in exists. They are in %s: deleting the key(s) %s lists would leave %s with no authorized key, and nobody could log in over SSH again", site, file, record, user)
 }
 
+func keysOtherUserKept(site, record, reach string) string {
+	return fmt.Sprintf("%s: another user's SSH keys kept; clean them by running again as that user. The record is %s; run again with --ssh %s", site, record, reach)
+}
+
+func recordMissed(gw, why string) string {
+	return fmt.Sprintf("%s: deployment record not updated; the next change catches it up. %s", gw, why)
+}
+
+func recordRaced(gw, site, why string) string {
+	return fmt.Sprintf("%s: deployment record changed meanwhile; take the site out again. Another command wrote it between the read and the write, so it may still list %s: run paisans site remove %s --force --ssh <its host> once this removal is done. %s", gw, site, site, why)
+}
+
 func secretsLeft(site string) string {
-	return fmt.Sprintf("secrets: remove sites.%s from the secrets file with sops. It is its WireGuard key, and this command never edits the file, so remove it once nothing needs it", site)
+	return fmt.Sprintf("secrets: run `paisans secrets prune` once nothing needs sites.%s. It holds its WireGuard key and heartbeat token, and this command never edits the secrets file", site)
 }
 
 func dnsLeft(addr string) string {
 	if addr == "" {
-		addr = "this host"
+		addr = "the address this host had"
 	}
-	return fmt.Sprintf("DNS: records pointing at this host stay; `paisans dns prune --execute` deletes them. They point at %s, and dns init made them", addr)
+	return fmt.Sprintf("DNS: records pointing at this host stay; delete them at the DNS provider by hand. They point at %s, and dns init made them; dns prune deletes only a record whose address paisans.yaml still declares", addr)
 }
 
 func ownedNote(site, owed string) string {

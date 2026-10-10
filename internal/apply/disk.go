@@ -317,3 +317,13 @@ func (p *Plan) probePrunes(ids map[string]string, t Transport) error {
 	p.Prunes = superseded(stacks, p.images, ids, listed, nil)
 	return nil
 }
+
+// ComposeImages is the images a compose file names, sorted and without
+// repeats.
+func ComposeImages(content string) ([]string, error) { return composeImages(content) }
+
+// ProbeImages is each ref's image ID on the host, empty for one it does not
+// have.
+func ProbeImages(refs []string, t Transport) (map[string]string, error) {
+	return probeImages(refs, t)
+}

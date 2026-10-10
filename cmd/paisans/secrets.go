@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployrecord"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 )
 
@@ -20,10 +22,123 @@ const maxSecret = 64 << 10
 
 // runSecrets dispatches `paisans secrets <subcommand>`.
 func runSecrets(args []string) error {
-	if len(args) < 1 || args[0] != "set" {
-		return fmt.Errorf("secrets takes one subcommand, set: paisans secrets set <dotted.key> [--secrets path] < value")
+	switch {
+	case len(args) >= 1 && args[0] == "set":
+		return runSecretsSet(args[1:], os.Stdin)
+	case len(args) >= 1 && args[0] == "prune":
+		return runSecretsPrune(args[1:], os.Stdin, os.Stdout)
 	}
-	return runSecretsSet(args[1:], os.Stdin)
+	return fmt.Errorf("secrets takes one subcommand, set or prune: paisans secrets set <dotted.key> [--secrets path] < value, or paisans secrets prune [--execute]")
+}
+
+// hasSecrets reports whether the secrets file holds anything under key, a
+// section and a name: sites.<n>, apps.<n> (with its sign-in client) or
+// pocket_id_groups.<n>.
+func hasSecrets(s *config.Secrets, key string) bool {
+	kind, name, _ := strings.Cut(key, ".")
+	switch kind {
+	case "sites":
+		_, ok := s.Sites[name]
+		return ok
+	case "apps":
+		_, app := s.Apps[name]
+		_, client := s.OIDCClients[name]
+		return app || client
+	case "pocket_id_groups":
+		_, ok := s.PocketIDGroups[name]
+		return ok
+	}
+	return false
+}
+
+// runSecretsPrune removes the secrets that name something paisans.yaml no
+// longer declares: a removed site's WireGuard key and heartbeat token, a
+// removed app's passwords and sign-in client, a Pocket ID group nothing
+// names. It lists them by key, never by value, and changes nothing without
+// --execute. A sign-in client's secret going does not delete the client at
+// Pocket ID, which it says.
+func runSecretsPrune(args []string, stdin io.Reader, stdout io.Writer) error {
+	fs := flag.NewFlagSet("secrets prune", flag.ContinueOnError)
+	reporter := commonFlags(fs)
+	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
+	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
+	execute := fs.Bool("execute", false, "actually remove them and write the file")
+	withoutRecord := fs.Bool("without-record", false, "trust paisans.yaml alone, when no gateway's deployment record can be read; asks for the word prune at a terminal")
+	sudo := fs.Bool("sudo", true, "read the gateways' deployment records through sudo, since /var/lib/paisans is root's")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	r := reporter()
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	if *secretsPath == "" {
+		*secretsPath = filepath.Join(filepath.Dir(*configPath), "secrets.enc.yaml")
+	}
+	secrets, err := config.LoadSecrets(*secretsPath)
+	if err != nil {
+		return err
+	}
+	var deployed *deployrecord.Record
+	if !*withoutRecord {
+		if len(cfg.GatewaySites()) == 0 {
+			return fmt.Errorf("secrets prune: %s declares no gateway, so there is no deployment record to read. Pass --without-record to trust paisans.yaml alone. Nothing was changed", *configPath)
+		}
+		rec, missing := deploymentRecord(cfg, func(gw string) registry.Runner { return registryHost(gw, cfg.Sites[gw], "", *sudo) })
+		if len(missing) > 0 {
+			gw := sortedKeys(missing)[0]
+			return fmt.Errorf("secrets prune: the deployment record on %s could not be read (%v), so nothing says whether what paisans.yaml no longer declares was removed or is still running. Apply the gateway first, or pass --without-record to trust paisans.yaml alone. Nothing was changed", gw, missing[gw])
+		}
+		deployed = &rec
+	}
+	for _, o := range secretsgen.Dropped(cfg, deployed) {
+		hint := o.Key + " " + o.Why
+		if hasSecrets(secrets, o.Key) {
+			hint += "; its secrets are kept"
+		}
+		r.Note(hint, o.Leaves)
+	}
+	orphans := secretsgen.Orphans(cfg, secrets, deployed)
+	if len(orphans) == 0 {
+		r.Result("%s names nothing paisans.yaml does not declare. Nothing to prune.", *secretsPath)
+		return nil
+	}
+	for _, o := range orphans {
+		detail := "removed by `paisans secrets prune --execute`"
+		if o.Leaves != "" {
+			detail = o.Leaves
+		}
+		r.Note("secrets: "+o.Key+" "+o.Why, detail)
+	}
+	if !*execute {
+		r.Result("Nothing changed: %d secret(s) to remove. Re-run with --execute to remove them.", len(orphans))
+		return nil
+	}
+	recipients, err := config.Recipients(filepath.Dir(*secretsPath))
+	if err != nil {
+		return err
+	}
+	if secrets.Encrypted && len(recipients) == 0 {
+		return fmt.Errorf("secrets prune: %s is encrypted, but no %s beside it names a recipient, so writing it back would leave it in plaintext. Nothing was written", *secretsPath, config.SOPSConfigName)
+	}
+	if *withoutRecord {
+		if err := confirmWord(stdin, stdout, "prune", fmt.Sprintf("This removes the %d secret(s) above for good, trusting paisans.yaml alone.", len(orphans))); err != nil {
+			return fmt.Errorf("secrets prune: %w", err)
+		}
+	}
+	s := r.Step("prune secrets")
+	secretsgen.Prune(secrets, orphans)
+	if err := config.WriteSecrets(*secretsPath, secrets, recipients); err != nil {
+		s.Fail(err)
+		return err
+	}
+	s.Done(fmt.Sprintf("%d removed", len(orphans)))
+	r.Result("%s no longer names anything paisans.yaml does not declare.", *secretsPath)
+	if len(recipients) == 0 {
+		warnUnencrypted(r, *secretsPath)
+	}
+	return nil
 }
 
 // runSecretsSet writes one value, read from stdin, into the encrypted secrets

@@ -62,6 +62,7 @@ Usage:
   paisans dns init [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
   paisans dns prune [--config paisans.yaml] [--secrets secrets.enc.yaml] [--name <fqdn>]... [--execute]
   paisans secrets set <dotted.key> [--config paisans.yaml] [--secrets secrets.enc.yaml] < value
+  paisans secrets prune [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
   paisans app admin create --app <pocket-id app> --username <u> --email <e>
                [--first-name <f>] [--last-name <l>] [--login-link]
                [--config paisans.yaml] [--secrets secrets.enc.yaml]
@@ -360,7 +361,8 @@ func runInit(args []string) error {
 	// The mesh subnet next, while nothing is deployed: it is the one value
 	// that has to be checked against every host before the first apply,
 	// and cannot change after it.
-	wrote, err := settleMesh(r, cfg, *configPath, initHosts(cfg, *sudo), meshRandom)
+	hosts := initHosts(cfg, *sudo)
+	wrote, err := settleMesh(r, cfg, *configPath, hosts, meshRandom)
 	if err != nil {
 		return err
 	}
@@ -380,6 +382,7 @@ func runInit(args []string) error {
 	case err != nil:
 		return err
 	}
+	warnSecrets(r, cfg, secrets, recordForWarnings(r, cfg, func(gw string) registry.Runner { return hosts[gw] }))
 
 	filled, err := secretsgen.Fill(cfg, secrets)
 	if err != nil {
@@ -557,6 +560,12 @@ func runApply(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
+	warnSecrets(r, cfg, secrets, recordForWarnings(r, cfg, func(gw string) registry.Runner {
+		if gw == *site {
+			return transport
+		}
+		return registryHost(gw, cfg.Sites[gw], "", *sudo)
+	}))
 	r.Section(fmt.Sprintf("%s (%s)", *site, transport.Describe()))
 	done := r.Step("check mesh subnet")
 	err = checkMeshLive(cfg, *site, transport)
@@ -701,6 +710,14 @@ func runApply(args []string) error {
 	}
 	if err := checkStandby(r, cfg, acted, *site, transport, func(name string) apply.Transport {
 		return siteTransport(name, cfg.Sites[name], "", *sudo)
+	}); err != nil {
+		return err
+	}
+	if err := recordApplied(r, cfg, *site, func(gw string) registry.Runner {
+		if gw == *site {
+			return transport
+		}
+		return registryHost(gw, cfg.Sites[gw], "", *sudo)
 	}); err != nil {
 		return err
 	}

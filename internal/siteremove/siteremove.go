@@ -94,6 +94,13 @@ type Plan struct {
 	// Kept is what the removal leaves on the host, with why: planned at
 	// Build and added to as the host stage runs.
 	Kept []string
+	// Current is set by BuildForced when the host is the declared site's
+	// own, which its cluster still counts on: the command asks for the
+	// site's name before cleaning it.
+	Current bool
+	// forced is a plan BuildForced made, and declared whether paisans.yaml
+	// still declares its site.
+	forced, declared bool
 	// Report receives each stage as a section, the work in it as steps and
 	// each gate as a step of its own. Nil discards it.
 	Report ui.Reporter
@@ -568,12 +575,20 @@ func (p *Plan) Show(r ui.Reporter) {
 // command.
 func (p *Plan) Remains() []string {
 	var out []string
-	if p.secrets != nil {
+	// A forced run on a still declared site leaves its secrets in use.
+	if p.secrets != nil && (!p.forced || !p.declared) {
 		if _, ok := p.secrets.Sites[p.Site]; ok {
 			out = append(out, secretsLeft(p.Site))
 		}
 	}
-	out = append(out, dnsLeft(p.cfg.Sites[p.Site].PublicAddress))
+	// A forced run leaves a still declared site's records wanted, and knows
+	// no address for an undeclared one.
+	switch {
+	case !p.forced:
+		out = append(out, dnsLeft(p.cfg.Sites[p.Site].PublicAddress))
+	case !p.declared:
+		out = append(out, dnsLeft(""))
+	}
 	out = append(out, p.Notes...)
 	out = append(out, p.Kept...)
 	return out
