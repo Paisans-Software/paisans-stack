@@ -70,7 +70,7 @@ func TestByIDCleansAMonitorWithNoConfiguration(t *testing.T) {
 func TestByIDSaysWhatItDidNotRead(t *testing.T) {
 	w := setup(t)
 	remains := strings.Join(byID(t, w, "watch", "f2a9", siteremove.Options{}).Remains(), "\n")
-	for _, want := range []string{"secrets: not read", "other hosts: not reached", "DNS records for this deployment, if any exist, were not modified"} {
+	for _, want := range []string{"secrets: not read", "DNS records for this deployment, if any exist, were not modified"} {
 		if !strings.Contains(remains, want) {
 			t.Errorf("no %q line:\n%s", want, remains)
 		}

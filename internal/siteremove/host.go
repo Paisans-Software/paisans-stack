@@ -367,8 +367,6 @@ func (p *Plan) buildHost() (*Stage, error) {
 			p.Kept = append(p.Kept, sshAllowKept(p.Site, r.Line))
 		case r.Owned:
 			hp.rules = append(hp.rules, r.Line)
-		default:
-			p.Kept = append(p.Kept, ufwRuleKept(p.Site, r.Line))
 		}
 	}
 

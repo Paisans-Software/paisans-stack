@@ -37,10 +37,6 @@ func sshAllowKept(site, rule string) string {
 	return fmt.Sprintf("%s: SSH allow rule kept; delete it yourself once nothing logs in through it. With incoming denied, deleting `%s` cuts the next connection", site, rule)
 }
 
-func ufwRuleKept(site, rule string) string {
-	return fmt.Sprintf("%s: ufw rule kept; it does not carry this deployment's tag. The rule is `%s`", site, rule)
-}
-
 func rootEditedKept(site, root string) string {
 	return fmt.Sprintf("%s: the deployment directory kept, because a file in it was edited on the host. It is %s, with everything in it", site, root)
 }
@@ -71,10 +67,6 @@ func caddyKept(site, container string, sites []string, dir string) string {
 
 func secretsNotRead(site string) string {
 	return fmt.Sprintf("secrets: not read; `paisans secrets prune` removes sites.%s from a surviving copy. This command read no paisans.yaml and no secrets file", site)
-}
-
-func otherHostsLeft(id string) string {
-	return fmt.Sprintf("other hosts: not reached; run this command on each host the deployment used. Each keeps its registry entry and what it ran of deployment %s, and a gateway's deployment record still lists this site", id)
 }
 
 func pocketIDNotChecked(site string) string {

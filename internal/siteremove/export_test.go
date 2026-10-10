@@ -55,13 +55,13 @@ func WorstCaseRemains() []string {
 	site, name, path, rule := strings.Repeat("s", 20), strings.Repeat("n", 60), "/"+strings.Repeat("p", 59), strings.Repeat("r", 60)
 	out := []string{
 		containerKept(site, name), networkKept(site, name), volumeKept(site, name), editedFileKept(site, path),
-		sshAllowKept(site, rule), ufwRuleKept(site, rule), rootEditedKept(site, path), dataLeft(site, path, 99999),
+		sshAllowKept(site, rule), rootEditedKept(site, path), dataLeft(site, path, 99999),
 		secretsLeft(site), DNSNotModified(deployment.Deployment{ID: strings.Repeat("i", 36)}, config.Destination{Host: "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"}), ownedNote(site, name),
 		apply.LeaderPatroniEnvNote(site),
 		imageKept(site, "sha256:"+strings.Repeat("f", 64), strings.Repeat("w", 80)),
 		recordMissed(site, strings.Repeat("w", 80)),
 		recordRaced(site, site, strings.Repeat("w", 80)),
-		secretsNotRead(site), otherHostsLeft(strings.Repeat("i", 36)), pocketIDNotChecked(site),
+		secretsNotRead(site), pocketIDNotChecked(site),
 	}
 	out = append(out, caddyKept(site, name, []string{path, path}, path))
 	return out
