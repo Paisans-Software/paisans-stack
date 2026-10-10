@@ -265,6 +265,12 @@ func readConvergeState(configPath, secretsPath string, sudo bool) (*config.Confi
 	} else if filled, err := secretsgen.Fill(cfg, secrets); err != nil || filled.Changed() {
 		st.NeedsInit = true
 	}
+	// A configuration validate refuses reaches no host: runConverge refuses
+	// it, and a typo in etcd.members would otherwise read as a host that did
+	// not answer.
+	if validate.Check(cfg).Refused() {
+		return cfg, st, nil
+	}
 	if st.Initial, err = convergeFounded(cfg, sudo); err != nil {
 		return nil, st, err
 	}
