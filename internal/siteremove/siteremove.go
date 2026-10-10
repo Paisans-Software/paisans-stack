@@ -101,6 +101,9 @@ type Plan struct {
 	// forced is a plan BuildForced made, and declared whether paisans.yaml
 	// still declares its site.
 	forced, declared bool
+	// noConfig is a plan BuildForcedByID made from a registry entry alone:
+	// what needs the rest of paisans.yaml is not planned.
+	noConfig bool
 	// Report receives each stage as a section, the work in it as steps and
 	// each gate as a step of its own. Nil discards it.
 	Report ui.Reporter

@@ -2,6 +2,7 @@ package siteremove
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -93,4 +94,23 @@ func handoverKept(site, dir string, env bool) []string {
 		lines = append(lines, fmt.Sprintf("%s: DNS token left on the host; rotate it once the owner has their own. %s/caddy.env holds a copy of secrets external.acme_dns_token, a credential this deployment no longer controls, left for the owner. Rotate it at the DNS provider that issued it", site, dir))
 	}
 	return lines
+}
+
+func handoverNotRendered(site string, hostSites []string) string {
+	if len(hostSites) == 0 {
+		return fmt.Sprintf("%s: Caddy not handed over, and nothing relied on it. %s held no *.caddy file, so this deployment's Caddy is removed with its other containers", site, render.HostSitesDir)
+	}
+	return fmt.Sprintf("%s: Caddy not handed over; the owner's sites in %s stop being served. Without paisans.yaml its Caddyfile cannot be rendered, so this deployment's Caddy is removed with its other containers. Each of %s needs a Caddy of the owner's own", site, render.HostSitesDir, strings.Join(hostSites, ", "))
+}
+
+func secretsNotRead(site string) string {
+	return fmt.Sprintf("secrets: not read; `paisans secrets prune` removes sites.%s from a surviving copy. This command read no paisans.yaml and no secrets file", site)
+}
+
+func otherHostsLeft(id string) string {
+	return fmt.Sprintf("other hosts: not reached; run this command on each host the deployment used. Each keeps its registry entry and what it ran of deployment %s, and a gateway's deployment record still lists this site", id)
+}
+
+func pocketIDNotChecked(site string) string {
+	return fmt.Sprintf("Pocket ID: not checked; sign in may stop until a standby takes over. Without paisans.yaml it is not known whether %s held the active instance", site)
 }

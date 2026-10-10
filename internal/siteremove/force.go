@@ -7,6 +7,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 )
 
@@ -33,11 +34,8 @@ func BuildForced(cfg *config.Config, secrets *config.Secrets, site string, dest 
 	p := &Plan{Site: site, Options: o, secrets: secrets, transports: map[string]apply.Transport{site: t}, forced: true, declared: isDeclared}
 	p.Current = isDeclared && declared.Destination() == dest
 
-	if out, err := t.Run("true"); err != nil {
-		if errors.Is(err, apply.ErrUnreachable) {
-			return nil, fmt.Errorf("site remove %s: %s does not answer over ssh (%v), so what is on it cannot be read or cleaned. Fix ssh and run again", site, dest, err)
-		}
-		return nil, fmt.Errorf("site remove %s: %s answered `true` with an error: %v: %s", site, dest, err, lastLines(out, 2))
+	if err := answers(site, dest, t); err != nil {
+		return nil, err
 	}
 	s := declared
 	s.SSH.User, s.SSH.Host, s.SSH.Port = dest.User, dest.Host, dest.Port
@@ -89,3 +87,88 @@ func BuildForced(cfg *config.Config, secrets *config.Secrets, site string, dest 
 	p.Stages = []*Stage{host}
 	return p, nil
 }
+
+// answers checks that dest answers over ssh before anything on it is read.
+func answers(what string, dest config.Destination, t apply.Transport) error {
+	if out, err := t.Run("true"); err != nil {
+		if errors.Is(err, apply.ErrUnreachable) {
+			return fmt.Errorf("site remove %s: %s does not answer over ssh (%v), so what is on it cannot be read or cleaned. Fix ssh and run again", what, dest, err)
+		}
+		return fmt.Errorf("site remove %s: %s answered `true` with an error: %v: %s", what, dest, err, lastLines(out, 2))
+	}
+	return nil
+}
+
+// BuildForcedByID plans `site remove --force --id`: the host at dest cleaned
+// of the deployment its registry names by ref, a full id or a token, with no
+// paisans.yaml and no secrets file (docs/specs/2026-10-10-remove-without-
+// config.md).
+//
+// The host stage reads the configuration for the id, the site's ssh user and
+// destination, and the site's roles, which the registry entry and dest hold.
+// So the plan runs against a configuration of just those, and is the forced
+// removal's own host stage. It is marked as having no configuration, which
+// leaves out what needs the rest: a gateway's Caddy hand over, which renders
+// its Caddyfile, and the Pocket ID note. The remains say what was not read.
+func BuildForcedByID(dest config.Destination, t apply.Transport, ref string, o Options) (*Plan, error) {
+	what := "--id " + ref
+	if o.HostGone {
+		return nil, fmt.Errorf("site remove %s: --force cleans one host, and --host-gone reaches none. Drop one of them", what)
+	}
+	if err := answers(what, dest, t); err != nil {
+		return nil, err
+	}
+	reg, err := registry.Read(t)
+	if err != nil {
+		return nil, fmt.Errorf("site remove %s: %w", what, err)
+	}
+	id, e, err := registry.Find(reg, ref)
+	if err != nil {
+		return nil, fmt.Errorf("site remove %s: %s: %w. Nothing was changed", what, dest, err)
+	}
+	// Every name removed is made from the id, so the entry must be the one
+	// a claim by that id writes.
+	d := deployment.Deployment{ID: id}
+	var wrong []string
+	if !deployment.ValidID(id) {
+		wrong = append(wrong, "its key is not a deployment id")
+	}
+	if e.Token != d.Token() {
+		wrong = append(wrong, fmt.Sprintf("its token is %q, not %s", e.Token, d.Token()))
+	}
+	if e.Root != d.Root() {
+		wrong = append(wrong, fmt.Sprintf("its root is %q, not %s", e.Root, d.Root()))
+	}
+	if e.Site == "" {
+		wrong = append(wrong, "it names no site")
+	}
+	if len(wrong) > 0 {
+		return nil, fmt.Errorf("site remove %s: the entry %s in %s on %s is not one a claim writes: %s. Nothing was changed. Look at the registry by hand", what, id, registry.Path, dest, strings.Join(wrong, ", "))
+	}
+
+	s := config.Site{}
+	s.SSH.User, s.SSH.Host, s.SSH.Port = dest.User, dest.Host, dest.Port
+	for _, r := range strings.Split(e.Roles, ",") {
+		if r != "" {
+			s.Roles = append(s.Roles, config.Role(r))
+		}
+	}
+	cfg := &config.Config{ID: id, Community: config.Community{Domain: e.Domain}, Sites: map[string]config.Site{e.Site: s}}
+	p := &Plan{Site: e.Site, Options: o, transports: map[string]apply.Transport{e.Site: t}, forced: true, noConfig: true, cfg: cfg}
+	host, err := p.buildHost()
+	if err != nil {
+		return nil, err
+	}
+	p.Notes = append(p.Notes, secretsNotRead(e.Site), otherHostsLeft(id))
+	if s.Has(config.RoleApps) {
+		p.Notes = append(p.Notes, pocketIDNotChecked(e.Site))
+	}
+	p.Stages = []*Stage{host}
+	return p, nil
+}
+
+// DeploymentID is the id of the deployment the plan removes.
+func (p *Plan) DeploymentID() string { return p.cfg.ID }
+
+// Domain is the community.domain of the deployment the plan removes.
+func (p *Plan) Domain() string { return p.cfg.Community.Domain }

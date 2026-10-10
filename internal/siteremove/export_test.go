@@ -63,6 +63,8 @@ func WorstCaseRemains() []string {
 		keysOtherUserKept(site, path, name),
 		recordMissed(site, strings.Repeat("w", 80)),
 		recordRaced(site, site, strings.Repeat("w", 80)),
+		handoverNotRendered(site, nil), handoverNotRendered(site, []string{path, path}),
+		secretsNotRead(site), otherHostsLeft(strings.Repeat("i", 36)), pocketIDNotChecked(site),
 	}
 	out = append(out, handoverKept(site, "/srv/caddy.d", true)...)
 	return out
