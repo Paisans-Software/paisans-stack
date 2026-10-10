@@ -12,6 +12,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
 // titles is the plan as "phase: title" lines.
@@ -317,5 +318,36 @@ func TestConvergePassesItsFlagsToEachStep(t *testing.T) {
 	}
 	if len(*full) == 0 {
 		t.Fatal("ran nothing")
+	}
+}
+
+// A monitor validate lets into etcd.members is founded with the other
+// members, since etcd needs it, and is still applied last in pass two, after
+// what it checks.
+func TestConvergeFoundsAMonitorMemberAndAppliesItLast(t *testing.T) {
+	cfg := fixture(t)
+	cfg.Etcd.Members = []string{"home-a", "home-b", "vm", "watch"}
+	if result := validate.Check(cfg); result.Refused() {
+		t.Fatalf("validate refuses a monitor in etcd.members: %v", result.Refusals())
+	}
+	got := strings.Join(titles(convergePlan(cfg, convergeState{})), "\n")
+	want := strings.Join([]string{
+		"hosts: host prepare --site home-a",
+		"hosts: host prepare --site home-b",
+		"hosts: host prepare --site vm",
+		"hosts: host prepare --site watch",
+		"founding: apply --site vm",
+		"founding: apply --site home-a",
+		"founding: apply --site home-b",
+		"founding: apply --site watch",
+		"storage: storage add",
+		"pass two: apply --site home-a",
+		"pass two: apply --site home-b",
+		"pass two: apply --site vm",
+		"pass two: apply --site watch",
+		"dns: dns init",
+	}, "\n")
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
 }

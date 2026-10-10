@@ -2987,7 +2987,7 @@ after another in the same process, stopping at the first failure:
 | joining | `site add <s>` | the cluster runs and a member has not joined it |
 | other sites | `apply --site <s>`, monitor sites last | every site not in `etcd.members` |
 | storage | `storage init --site <g>` for one Garage site, `storage add` for several | any Garage site |
-| pass two | `apply --site <s>` for every site, monitor sites last | always: it resumes a founding stop and moves what earlier steps changed |
+| pass two | `apply --site <s>` for every site, monitor sites last, a monitor in `etcd.members` too | always: it resumes a founding stop and moves what earlier steps changed |
 | dns | `dns init` | always; a record pointing elsewhere stops it, to be changed by hand |
 
 Run again, it reads live state again and carries on, so the same command is

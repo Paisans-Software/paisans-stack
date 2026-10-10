@@ -106,6 +106,10 @@ func convergePlan(cfg *config.Config, st convergeState) []convergeStep {
 		}
 	}
 
+	// A monitor checks every other site and app, so it is applied after
+	// them, in phase three and in pass two. One in etcd.members is founded
+	// with the other members, since etcd needs it, and is still last in pass
+	// two.
 	monitors := cfg.MonitorSites()
 	ordered := func(include func(string) bool) []string {
 		var first, last []string

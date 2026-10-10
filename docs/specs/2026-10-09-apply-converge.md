@@ -39,11 +39,11 @@ Out:
 |---|---|---|
 | 0. Configuration | `init`: the deployment id, the mesh subnet, every generated secret | the yaml has no id or no subnet, or the secrets file is missing or lacks a generated secret; once it has run, the rest is read and planned again |
 | 1. Hosts | `host prepare --site <s>` | every site; a prepared host plans nothing |
-| 2. Founding | `apply --site <w>` for each witness in `etcd.members`, then `apply --site <d>` for each other member, of those still being founded | a member holds no `infra/etcd-initial`, and either no member holds one or one's `--initial-cluster` lists it: the founding set is fixed by the first apply that wrote a record |
+| 2. Founding | `apply --site <w>` for each witness in `etcd.members`, then `apply --site <d>` for each other member, of those still being founded; a monitor among them too, since etcd needs it | a member holds no `infra/etcd-initial`, and either no member holds one or one's `--initial-cluster` lists it: the founding set is fixed by the first apply that wrote a record |
 | 2. Joining | `site add <s>` | a member holds no record and no record lists it: the cluster was founded without it |
 | 3. Other sites | `apply --site <s>` for every site not in `etcd.members`, monitor sites last | every such site; an applied site plans nothing |
 | 4. Storage | `storage init --site <g>` for one Garage site; `storage add` for several | `storage.garage.sites` is not empty |
-| 5. Pass two | `apply --site <s>` for every site again, monitor sites last | always: it resumes the data site the founding stop left, and moves what an earlier step changed, such as the keys storage made |
+| 5. Pass two | `apply --site <s>` for every site again, monitor sites last, a monitor in `etcd.members` among them | always: it resumes the data site the founding stop left, and moves what an earlier step changed, such as the keys storage made |
 | 6. DNS | `dns init` | always; it creates only what is missing, and stops on a record pointing elsewhere |
 
 A data site's apply that stops at the founding stop (its etcd is up and
