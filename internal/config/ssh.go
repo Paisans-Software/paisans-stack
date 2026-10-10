@@ -80,14 +80,23 @@ func (s SSH) PortOrDefault() int {
 }
 
 // SSHHost is the address the toolkit connects to: ssh.host, or failing that
-// the site's public_address. Defaulting to public_address is because on most
-// sites they are the same address, written twice; a site reached some other
-// way (a LAN name, a VPN address) says so with ssh.host.
+// the site's public_address, or failing that its endpoint's host. Defaulting
+// is because on most sites they are the same address, written twice; a site
+// reached some other way (a LAN name, a VPN address) says so with ssh.host.
+// The endpoint comes last because it may name a router that forwards only
+// WireGuard's port: there the connection fails and nothing is changed.
 func (s Site) SSHHost() string {
 	if s.SSH.Host != "" {
 		return s.SSH.Host
 	}
-	return s.PublicAddress
+	if s.PublicAddress != "" {
+		return s.PublicAddress
+	}
+	host, _, err := net.SplitHostPort(s.Endpoint)
+	if err != nil {
+		return ""
+	}
+	return host
 }
 
 // AuthorizedKey is one public key, as an authorized_keys line carries it.
@@ -203,8 +212,8 @@ func sshProblems(name string, site Site) []string {
 		add("sites.%s.ssh.port: %d is not a port. Give 1 to 65535, or leave it out for 22.", name, s.Port)
 	}
 	switch {
-	case s.Host == "" && site.PublicAddress == "":
-		add("sites.%s.ssh.host: required, because the site has no public_address to default to. Give the hostname or address the site is reached on.", name)
+	case s.Host == "" && site.PublicAddress == "" && site.Endpoint == "":
+		add("sites.%s.ssh.host: required, because the site has neither public_address nor endpoint to default to. Give the hostname or address the site is reached on.", name)
 	case s.Host != "" && net.ParseIP(s.Host) == nil && !isHostname(s.Host):
 		add("sites.%s.ssh.host: %q is neither a hostname nor an IP address. Give only the host; the user and port have keys of their own.", name, s.Host)
 	}

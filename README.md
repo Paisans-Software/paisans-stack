@@ -2314,7 +2314,7 @@ sites:
     address: 10.44.0.3
     public_address: 203.0.113.10
     ssh:
-      host: 203.0.113.10   # optional: defaults to public_address
+      host: 203.0.113.10   # optional: defaults to public_address, then endpoint's host
       user: ubuntu         # required, and must already exist on the host
       port: 22             # optional: empty or 0 means 22
       public_key: |        # required: one or more keys, one per line
@@ -2324,13 +2324,15 @@ sites:
 
 | Key | Required | Refused when |
 |-----|----------|--------------|
-| `host` | only without `public_address` | neither a hostname nor an IP address (so `user@host` is refused: the user has its own key) |
+| `host` | only without `public_address` or `endpoint` | neither a hostname nor an IP address (so `user@host` is refused: the user has its own key) |
 | `user` | yes | not a lowercase letter or underscore followed by lowercase letters, digits, underscores or hyphens, 32 characters at most |
 | `port` | no | outside 1 to 65535 |
 | `public_key` | yes | a line that is not an OpenSSH public key; a line with options (`from=`, `command=`, `restrict`); the same key twice, by fingerprint |
 
-`host` defaults to `public_address` because on most sites they are the same
-address written twice. The user name is held to a conservative form because it
+`host` defaults to `public_address`, and without that to the host in
+`endpoint`, because on most sites they are the same address written twice.
+`endpoint` comes last because it may name a router that forwards only
+WireGuard's port; there the connection fails and nothing is changed. The user name is held to a conservative form because it
 goes into commands and a file name on the host. Blank lines in `public_key` are
 ignored. Options are refused rather than carried: a line `host prepare` writes
 and later compares has to mean the same thing everywhere, and a restricted key
