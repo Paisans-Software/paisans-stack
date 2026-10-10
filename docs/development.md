@@ -1136,10 +1136,13 @@ before.
   `Cluster.SitesDerived`. Every command reads the field, so there is one list.
   A `config.Config` built in a test leaves both flags false, which reads as
   written. Whether a key is written comes from the yaml node, not the decoded
-  slice, since `members: []` and a key left out decode alike. The flags only
-  word messages (`EtcdMembersKey`, `ClusterSitesKey`, `site remove`'s stage
-  4), hold `validate`'s two `cluster.sites` comparisons to a written list, and
-  make `WithoutSite` derive a derived list again from the remaining roles.
+  slice, since `members: []` and a key left out decode alike; a decoded list
+  the walk cannot see, behind a merge key, also counts as written. The flags
+  word messages (`EtcdMembersKey`, `ClusterSitesKey`, `site remove`'s stage 4
+  and its two voter refusal, `validate`'s voter advice), hold `validate`'s two
+  `cluster.sites` comparisons and its `undeclared-site` check to a written
+  list, and make `WithoutSite` derive a derived list again from the remaining
+  roles.
   The yaml writers (`RemoveSite`, `RemoveSiteAndWitness`) read the file
   itself and edit only a key it has. See
   `docs/specs/2026-10-10-derived-members.md`.

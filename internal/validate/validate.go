@@ -379,8 +379,8 @@ func (c *checker) oneVoterNoFailover() {
 	voter := c.cfg.Etcd.Members[0]
 	c.warn("one-voter-no-failover", c.cfg.EtcdMembersKey(),
 		"one etcd voter means no automatic failover",
-		"declares one voter, %s, while %d sites share the cluster. One member elects nobody: while %s is down every other site's Patroni loses etcd and stops taking writes, so the database stops rather than failing over, and promoting the replica is a manual step. A witness in a third failure domain makes three voters and restores automatic failover; without one, this is the manual promote mode and the runbook should say so.",
-		voter, len(c.cfg.Cluster.Sites), voter)
+		"%s one voter, %s, while %d sites share the cluster. One member elects nobody: while %s is down every other site's Patroni loses etcd and stops taking writes, so the database stops rather than failing over, and promoting the replica is a manual step. A witness in a third failure domain makes three voters and restores automatic failover; without one, this is the manual promote mode and the runbook should say so.",
+		c.votersVerb(), voter, len(c.cfg.Cluster.Sites), voter)
 }
 
 // asyncAutomaticFailover warns that automatic failover under asynchronous
@@ -612,7 +612,17 @@ func (c *checker) evenVoters() {
 	}
 	fix := fmt.Sprintf("Prefer %d.", count-1)
 	if c.cfg.Etcd.MembersDerived {
-		fix = fmt.Sprintf("Prefer %d: take the witness role off a site, or write etcd.members with the %d voters wanted.", count-1, count-1)
+		witnesses := 0
+		for _, name := range c.cfg.Etcd.Members {
+			if !c.cfg.Sites[name].Has(config.RoleData) {
+				witnesses++
+			}
+		}
+		if witnesses > 0 {
+			fix = fmt.Sprintf("Prefer %d: take the witness role off a site before the deployment is founded, or, once it runs, take a witness out with `paisans site remove`, which changes the live voters with the file; or write etcd.members with the %d voters wanted.", count-1, count-1)
+		} else {
+			fix = fmt.Sprintf("Give a site in a third location, one that fails independently, the witness role, which makes %d voters, or write etcd.members with the %d voters wanted.", count+1, count-1)
+		}
 	}
 	c.warn("even-etcd-voters", c.cfg.EtcdMembersKey(),
 		"etcd has an even number of voters",

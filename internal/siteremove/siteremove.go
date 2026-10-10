@@ -282,6 +282,9 @@ func Refusal(cfg *config.Config, site string, o Options) error {
 		advice := "site remove takes one site out and changes nothing else, so the end state has to validate as it is"
 		if twoVoters {
 			advice = "Two data sites would stay as etcd voters, and neither can leave etcd while it holds data. Add a witness first, a site that holds no data with the witness role, as an etcd member, so that three voters remain without " + site
+			if cfg.Etcd.MembersDerived {
+				advice = "Two data sites would stay as etcd voters, and neither can leave etcd while it holds data. Give a site in a third location, one that fails independently, the witness role first, and join it, so that three voters remain without " + site
+			}
 		}
 		return fmt.Errorf("site remove %s: the configuration without it is refused:\n  %s\n%s", site, strings.Join(lines, "\n  "), advice)
 	}

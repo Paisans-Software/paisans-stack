@@ -46,8 +46,13 @@ a written list and a derived one must be told apart:
 * the two yaml writers, which edit a key only when the file has it.
 
 A key is written when the file has it at all. `etcd.members: []`,
-`etcd.members:` with no value, and the same for `cluster.sites`, are written
-and empty, and are refused (below).
+`etcd.members:` with no value or `~`, and the same for `cluster.sites`, are
+written and empty, and are refused (below). A list behind a yaml merge key
+counts as written too: a list the file gives is never replaced by a derived
+one.
+
+A site holding both `data` and `witness`, which `validate` refuses, is one
+derived voter, listed as a data site, so no quorum sum counts it twice.
 
 ## Refusals
 
@@ -73,9 +78,15 @@ Every rule still runs, on the list each command reads.
 * `two-etcd-voters` on a derived list says what to do in the file's own terms:
   give a site in a third location, one that fails independently of both, the
   `witness` role, or write `etcd.members: [<one site>]` to run one voter, which
-  gives up automatic failover.
-* `even-etcd-voters` on a derived list says the same: drop a witness, or write
-  `etcd.members` with the voters wanted.
+  gives up automatic failover. When the two are one data site and a witness,
+  the witness has no tie to break, and the message says to take its role off.
+* `even-etcd-voters` on a derived list says the same in its terms. With a
+  witness among the voters: take its role off before the deployment is
+  founded, take it out with `paisans site remove` once it runs, or write
+  `etcd.members`. With none: a witness in a third location makes the count
+  odd, or write `etcd.members`.
+* `site remove`'s refusal of two remaining data voters, on a derived list,
+  says to give a site in a third location the witness role first.
 
 ## The yaml writers
 

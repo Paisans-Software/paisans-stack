@@ -205,6 +205,20 @@ func TestThreeDataSitesToTwoIsRefused(t *testing.T) {
 	}
 }
 
+// The same refusal with the lists derived says to give a site the witness
+// role, since there is no etcd.members to add a witness to.
+func TestThreeDerivedDataSitesToTwoIsRefused(t *testing.T) {
+	cfg, _, _ := worldConfig(t,
+		replace("  vm:\n    roles: [gateway, witness]", "  vm:\n    roles: [gateway]"),
+		replace("  sites: [home-a, home-b, home-c]\n  port", "  port"),
+		replace("  members: [home-a, home-b, home-c, vm]\n", ""),
+	)
+	err := siteremove.Refusal(cfg, "home-c", siteremove.Options{})
+	if err == nil || !strings.Contains(err.Error(), "Give a site in a third location, one that fails independently, the witness role first") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 // fourData adds home-d, so home-b's removal leaves the leader and two
 // replicas.
 var fourData = []func(string) string{

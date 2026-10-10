@@ -108,3 +108,33 @@ func TestEvenDerivedVotersSayHowToChangeThem(t *testing.T) {
 		t.Errorf("message does not say how to change a derived count: %s", f.Message)
 	}
 }
+
+// Four derived voters with no witness cannot lose a witness role: the advice
+// is a fifth voter in a third location, or a written list.
+func TestEvenDerivedVotersWithoutAWitness(t *testing.T) {
+	cfg := load(t, "even-etcd-voters-derived")
+	for _, name := range []string{"vm", "extra"} {
+		s := cfg.Sites[name]
+		var roles []config.Role
+		for _, r := range s.Roles {
+			if r != config.RoleWitness {
+				roles = append(roles, r)
+			}
+		}
+		s.Roles = append(roles, config.RoleData)
+		cfg.Sites[name] = s
+	}
+	cfg.Etcd.Members = cfg.DerivedEtcdMembers()
+	f := findingFor(t, validate.Check(cfg), "even-etcd-voters")
+	if strings.Contains(f.Message, "witness role off") || !strings.Contains(f.Message, "third location") || !strings.Contains(f.Message, "write etcd.members") {
+		t.Errorf("advice for four data sites and no witness: %s", f.Message)
+	}
+}
+
+// With a witness, the advice says when taking its role off is safe.
+func TestEvenDerivedVotersWithAWitnessSayWhen(t *testing.T) {
+	f := findingFor(t, validate.Check(load(t, "even-etcd-voters-derived")), "even-etcd-voters")
+	if !strings.Contains(f.Message, "before the deployment is founded") || !strings.Contains(f.Message, "paisans site remove") {
+		t.Errorf("advice with witnesses: %s", f.Message)
+	}
+}
