@@ -98,14 +98,15 @@ paisans.yaml: 1 refusal. Nothing was changed.
 ## Line style
 
 On a terminal: `✓` green for a finished step, `✗` red for a failed step or a
-refusal, `!` yellow for a warning, and a spinner with the elapsed time while a
+refusal, `!` yellow for a warning, `○` yellow for a step a dry run found
+pending, a dim `·` line for a step that waits on an earlier one, and a spinner with the elapsed time while a
 step runs. The spinner line is rewritten in place and replaced by the finished
 line, so a pull that takes minutes shows that it is alive without filling the
 screen.
 
 When stdout is not a terminal, or `NO_COLOR` is set, or `TERM=dumb`: no colour,
 no cursor movement, no spinner, and words instead of glyphs (`ok`, `FAIL`,
-`WARN`). A step prints one line when it ends. Logs from cron or CI then read
+`WARN`, `todo` for pending, `wait` for waiting). A step prints one line when it ends. Logs from cron or CI then read
 cleanly.
 
 The second column is aligned within a block, so results line up.
@@ -131,6 +132,7 @@ type Reporter interface {
 type Step interface {
     Done(result string)                   // "", "4.1s", "created", "13.6 GiB free"
     Fail(err error)
+    End(m Mark, result string)            // ends with OK, Failed, Pending or Waiting, and a result
     Detail(format string, args ...any)    // attached under this step, --verbose only
 }
 ```
@@ -145,7 +147,7 @@ type Step interface {
 * The step's elapsed time is the default result for any step that takes over
   a second and reports no result of its own.
 * Writes are serialised by a mutex; the spinner runs on its own goroutine and
-  is stopped by `Done` or `Fail`.
+  is stopped by `Done`, `Fail` or `End`.
 
 ## The flag
 

@@ -63,14 +63,51 @@ hand would, and asks each host's sudo password once for the whole run.
 
 ## Dry run
 
-Without `--execute` it prints the plan, phase by phase, one line per step with
-why it is there, and changes nothing; with no deployment id yet it prints
-`init` alone, since nothing on a host can be read for a deployment that has no
-id. Both a dry run and a run end by naming what only the operator can do. It reads what decides the plan (whether
-init has work, which etcd members have been founded) and no more: a step's own
-detail needs the steps before it to have run (a host prepared before its files
-can be planned, Garage running before its keys can), so it is the step's own
-dry run, `paisans <command> --site <s>`, that shows it.
+Without `--execute` it changes nothing and prints the plan, phase by phase,
+one line per step with the step's status:
+
+| Mark | Status | Line |
+|---|---|---|
+| `✓` green | up to date: its own dry run finds nothing to do | the title |
+| `○` yellow | pending: `--execute` would change something | the title and what, Eg: `3 changes`, `2 records to create` |
+| `·` dim | waiting: it cannot be planned until an earlier step has run | the title and that step, Eg: `after host prepare --site home-a` |
+| `✗` red | the check failed, Eg: a host did not answer | the title and the error, on one line; the dry run carries on with the rest |
+
+Each status comes from the step's own dry run, run in this process with
+nothing it prints shown, which says how much it would change. That dry run is
+the same read only path `paisans <command>` without `--execute` takes, so a
+check changes nothing on a host. With `-v` each line is followed by why the
+step is in the plan. The detail of a pending step is its own dry run, Eg:
+`paisans apply --site <s>`, which the closing line names.
+
+A step is checked only once every step it waits on is up to date, since until
+then its own dry run would describe a host that is about to change:
+
+| Step | Waits on |
+|---|---|
+| `init` | nothing; its status is what init has to do |
+| every other step | `init`, when init has work: it writes the subnet and the secrets they read |
+| `host prepare --site <s>` | nothing else |
+| `apply --site <s>` | `host prepare --site <s>`; a founding member that is not a witness, each founding witness's apply too, since its gate refuses one founded before the witness; in pass two, the site's earlier `apply` or `site add` and the storage step |
+| `site add <s>` | `host prepare --site <s>` |
+| `storage init`, `storage add` | the host prepare and the first `apply` or `site add` of each Garage site: Garage has to be running to be asked |
+| `dns init` | nothing else: it reads the configuration and the provider, never a host |
+
+A command is checked once: an `apply` in pass two takes the status its
+site's earlier `apply` was checked to have. This reads every host, each step
+through its own dry run.
+
+With no deployment id yet it prints `init` alone as pending, since nothing on
+a host can be read for a deployment that has no id. Both a dry run and a run
+end by naming what only the operator can do.
+
+## Progress
+
+Validation findings print first. Then each etcd member's founding record is
+read, one step per member, `read <s>'s etcd record`, so a spinner shows while
+ssh works; then the plan. A sudo password prompt or an ssh host key question
+pauses the spinner while it waits on the operator, during these reads and
+during each step's check.
 
 ## Refusals
 
@@ -92,6 +129,10 @@ with the whole plan, in order.
 The run, with its steps replaced by fakes: steps run in order; the founding
 stop in phase 2 does not stop the run and the site is applied again in pass
 two; any other failure stops it with the resume hint, running nothing after,
-and a DNS conflict or a wait on Garage with its own hint. Every step of a real
+and a DNS conflict or a wait on Garage with its own hint. The dry run, with
+each step's check replaced by a fake: an up to date step `✓`, a pending one
+`○` with its summary, a step waiting on an earlier one `·` naming it, a check
+that fails `✗` with the rest still checked, and each etcd record read inside an
+open step. Every step of a real
 plan, with the flags the run adds, is put through its command's own flag
 parsing, stopped before the command does anything.
