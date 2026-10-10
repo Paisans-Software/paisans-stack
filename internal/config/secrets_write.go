@@ -52,12 +52,55 @@ func WriteSecrets(path string, s *Secrets, recipients []string) error {
 		out = append([]byte(secretsHeader), plain...)
 	}
 
-	// 0600 because this is the plaintext form on a workstation whenever it is
-	// not encrypted, and because an encrypted file still says which secrets
-	// exist.
-	if err := os.WriteFile(path, out, 0o600); err != nil {
+	if err := writeSecretsFile(path, out); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
+	return nil
+}
+
+// syncFile flushes a file to disk. Tests replace it.
+var syncFile = func(f interface{ Sync() error }) error { return f.Sync() }
+
+// writeSecretsFile writes data to path through a temporary file beside it, synced
+// and then renamed over path, so a write that fails partway leaves path as it
+// was rather than cut short: this file is the only place its secrets exist.
+// A path that exists and cannot be opened for writing is refused, as writing
+// it in place would be. The file is 0600, because this is the plaintext form
+// on a workstation whenever it is not encrypted, and because an encrypted
+// file still says which secrets exist.
+func writeSecretsFile(path string, data []byte) error {
+	if f, err := os.OpenFile(path, os.O_WRONLY, 0); err == nil {
+		f.Close()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	done := false
+	defer func() {
+		if !done {
+			tmp.Close()
+			os.Remove(tmp.Name())
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := syncFile(tmp); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	done = true
 	return nil
 }
 
