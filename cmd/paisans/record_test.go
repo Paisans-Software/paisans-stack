@@ -178,3 +178,19 @@ func TestApplyRecordsOnEveryGatewayAndReportsOneDown(t *testing.T) {
 		t.Errorf("no warning:\n%s", rec.Lines())
 	}
 }
+
+// With every gateway down the step does not claim the record was updated.
+func TestARecordChangeThatReachedNoGatewaySaysSo(t *testing.T) {
+	cfg, _ := config.Load(fixtureConfig())
+	down := &recordFake{files: map[string]string{}, down: true}
+	rec := &ui.Recorder{}
+	if err := recordApplied(rec, cfg, "vm", func(string) registry.Runner { return down }); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Has("done", "record the deployment") {
+		t.Errorf("the step ended as done:\n%s", rec.Lines())
+	}
+	if !rec.Has("fail", "record the deployment") {
+		t.Errorf("the step did not say it reached no gateway:\n%s", rec.Lines())
+	}
+}

@@ -99,9 +99,20 @@ func recordApplied(r ui.Reporter, cfg *config.Config, site string, hosts func(st
 		s.Fail(err)
 		return fmt.Errorf("%w. The apply itself finished; run it again to record it", err)
 	}
-	s.Done(recordResult(res))
+	endRecordStep(s, res)
 	reportMissed(r, res)
 	return nil
+}
+
+// endRecordStep ends a record change's step: as failed when it reached no
+// gateway, since nothing was written, and otherwise with what it did. Either
+// way the command goes on; reportMissed says which gateways to catch up.
+func endRecordStep(s ui.Step, res deployrecord.Result) {
+	if len(res.Wrote) == 0 && len(res.Missed) > 0 {
+		s.Fail(errors.New("no gateway answered, so no record was written"))
+		return
+	}
+	s.Done(recordResult(res))
 }
 
 func recordResult(res deployrecord.Result) string {
@@ -165,7 +176,7 @@ func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Recor
 		r.Warn("the deployment record still lists "+what, err.Error())
 		return false
 	}
-	s.Done(recordResult(res))
+	endRecordStep(s, res)
 	reportMissed(r, res)
 	return false
 }
