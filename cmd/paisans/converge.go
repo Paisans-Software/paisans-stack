@@ -445,11 +445,9 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 			st = status{ui.Waiting, "after " + after}
 			// An apply in pass two waits on the same command in an
 			// earlier phase, which its line names.
-			for _, e := range steps[:i] {
-				if after == s.Title && e.Title == after {
-					st.result += " in " + e.Phase
-					break
-				}
+			if after == s.Title {
+				j := slices.IndexFunc(steps[:i], func(e convergeStep) bool { return e.Title == after })
+				st.result += " in " + steps[j].Phase
 			}
 		case checked:
 			st = prior
@@ -519,6 +517,10 @@ func convergeWaits(cfg *config.Config, steps []convergeStep, i int) []string {
 			waits = append(waits, first(g)...)
 		}
 	}
+	ran := func(title string) int {
+		return slices.IndexFunc(earlier, func(e convergeStep) bool { return e.Title == title })
+	}
+	slices.SortStableFunc(waits, func(a, b string) int { return ran(a) - ran(b) })
 	return waits
 }
 

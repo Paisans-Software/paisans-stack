@@ -817,7 +817,7 @@ func TestConvergeDryRunMarksPendingWaitingAndFailed(t *testing.T) {
 		"· apply --site home-a: after apply --site vm",
 		"· apply --site home-b: after host prepare --site home-b",
 		"· apply --site watch: after host prepare --site watch",
-		"· storage add: after apply --site home-a",
+		"· storage add: after host prepare --site home-b",
 		"· apply --site home-a: after apply --site home-a in founding",
 		"· apply --site home-b: after host prepare --site home-b",
 		"· apply --site vm: after apply --site vm in founding",
@@ -999,5 +999,144 @@ func TestApplyDryRunSaysWhatItWouldChangeOrRefuse(t *testing.T) {
 	summary, err = checkStep(ui.Discard, convergeFlags(args, o), runStep)
 	if err == nil || summary != "" {
 		t.Errorf("a plan --execute refuses was %q, err %v", summary, err)
+	}
+}
+
+// convergeShaped is converge on the fixture as edit changes it, with every
+// etcd member reading as recorded holds it.
+func convergeShaped(t *testing.T, edit func(*config.Config), recorded map[string]render.EtcdInitial) error {
+	t.Helper()
+	saved := convergeRead
+	convergeRead = func(path, secrets string) (*config.Config, convergeState, error) {
+		cfg, err := config.Load(fixtureConfig())
+		if err == nil {
+			edit(cfg)
+			if result := validate.Check(cfg); result.Refused() {
+				t.Fatalf("validate refuses the edited fixture: %v", result.Refusals())
+			}
+		}
+		return cfg, convergeState{}, err
+	}
+	t.Cleanup(func() { convergeRead = saved })
+	convergeReadInitial = func(_ *config.Config, m string, _ bool) (render.EtcdInitial, bool, error) {
+		in, ok := recorded[m]
+		return in, ok, nil
+	}
+	return converge(t)
+}
+
+// What each step waits on, for each shape of deployment: a member joining
+// through site add, one Garage site, no etcd, no Garage, and a monitor in
+// etcd.members.
+func TestConvergeDryRunWaitsFollowTheDeployment(t *testing.T) {
+	founded := initial("home-a", "vm")
+	for _, c := range []struct {
+		name     string
+		edit     func(*config.Config)
+		recorded map[string]render.EtcdInitial
+		found    map[string]any
+		want     []string
+	}{
+		{
+			name:     "joining",
+			edit:     func(*config.Config) {},
+			recorded: map[string]render.EtcdInitial{"home-a": founded, "vm": founded},
+			found:    map[string]any{"site add home-b": "4 stages"},
+			want: []string{
+				"✓ host prepare --site home-a", "✓ host prepare --site home-b", "✓ host prepare --site vm", "✓ host prepare --site watch",
+				"○ site add home-b: 4 stages",
+				"✓ apply --site watch",
+				"· storage add: after site add home-b",
+				"· apply --site home-a: after storage add",
+				"· apply --site home-b: after site add home-b",
+				"· apply --site vm: after storage add",
+				"· apply --site watch: after storage add",
+				"✓ dns init",
+			},
+		},
+		{
+			name: "one Garage site",
+			edit: func(cfg *config.Config) {
+				cfg.Storage.Garage.Sites = []string{"home-a"}
+				cfg.Storage.Garage.Replication = 1
+			},
+			found: map[string]any{"apply --site home-b": "2 changes", "apply --site home-a": "3 changes"},
+			want: []string{
+				"✓ host prepare --site home-a", "✓ host prepare --site home-b", "✓ host prepare --site vm", "✓ host prepare --site watch",
+				"✓ apply --site vm",
+				"○ apply --site home-a: 3 changes",
+				"○ apply --site home-b: 2 changes",
+				"✓ apply --site watch",
+				"· storage init --site home-a: after apply --site home-a",
+				"· apply --site home-a: after apply --site home-a in founding",
+				"· apply --site home-b: after apply --site home-b in founding",
+				"· apply --site vm: after storage init --site home-a",
+				"· apply --site watch: after storage init --site home-a",
+				"✓ dns init",
+			},
+		},
+		{
+			name:  "no etcd",
+			edit:  func(cfg *config.Config) { cfg.Etcd.Members = nil },
+			found: map[string]any{"host prepare --site vm": "1 change"},
+			want: []string{
+				"✓ host prepare --site home-a", "✓ host prepare --site home-b", "○ host prepare --site vm: 1 change", "✓ host prepare --site watch",
+				"✓ apply --site home-a",
+				"✓ apply --site home-b",
+				"· apply --site vm: after host prepare --site vm",
+				"✓ apply --site watch",
+				"✓ storage add",
+				"✓ apply --site home-a",
+				"✓ apply --site home-b",
+				"· apply --site vm: after host prepare --site vm",
+				"✓ apply --site watch",
+				"✓ dns init",
+			},
+		},
+		{
+			name:  "no Garage",
+			edit:  func(cfg *config.Config) { cfg.Storage.Garage.Sites = nil },
+			found: map[string]any{"apply --site watch": "1 change"},
+			want: []string{
+				"✓ host prepare --site home-a", "✓ host prepare --site home-b", "✓ host prepare --site vm", "✓ host prepare --site watch",
+				"✓ apply --site vm",
+				"✓ apply --site home-a",
+				"✓ apply --site home-b",
+				"○ apply --site watch: 1 change",
+				"✓ apply --site home-a",
+				"✓ apply --site home-b",
+				"✓ apply --site vm",
+				"· apply --site watch: after apply --site watch in other sites",
+				"✓ dns init",
+			},
+		},
+		{
+			name:  "a monitor in etcd.members",
+			edit:  func(cfg *config.Config) { cfg.Etcd.Members = []string{"home-a", "home-b", "vm", "watch"} },
+			found: map[string]any{"apply --site vm": "6 changes"},
+			want: []string{
+				"✓ host prepare --site home-a", "✓ host prepare --site home-b", "✓ host prepare --site vm", "✓ host prepare --site watch",
+				"○ apply --site vm: 6 changes",
+				"· apply --site home-a: after apply --site vm",
+				"· apply --site home-b: after apply --site vm",
+				"· apply --site watch: after apply --site vm",
+				"· storage add: after apply --site home-a",
+				"· apply --site home-a: after apply --site home-a in founding",
+				"· apply --site home-b: after apply --site home-b in founding",
+				"· apply --site vm: after apply --site vm in founding",
+				"· apply --site watch: after apply --site watch in founding",
+				"✓ dns init",
+			},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fakeConverge(t, nil)
+			fakeChecks(t, c.found)
+			rec := recordConverge(t)
+			if err := convergeShaped(t, c.edit, c.recorded); err != nil {
+				t.Fatal(err)
+			}
+			sameLines(t, statuses(rec), c.want)
+		})
 	}
 }
