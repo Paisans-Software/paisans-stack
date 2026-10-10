@@ -85,8 +85,13 @@ dry run, `paisans <command> --site <s>`, that shows it.
 The plan is a pure function of what was read, tested without a host: a blank
 deployment; one founded (joining, not founding); a member not yet founded
 while the others are (site add); no Garage site; one Garage site and several;
-monitor sites last in phases 3 and 5; init needed or not.
+monitor sites last in phases 3 and 5, and a monitor in `etcd.members` founded
+with the members and last in phase 5; init needed or not. Each is compared
+with the whole plan, in order.
 
 The run, with its steps replaced by fakes: steps run in order; the founding
 stop in phase 2 does not stop the run and the site is applied again in pass
-two; any other failure stops it with the resume hint, running nothing after.
+two; any other failure stops it with the resume hint, running nothing after,
+and a DNS conflict or a wait on Garage with its own hint. Every step of a real
+plan, with the flags the run adds, is put through its command's own flag
+parsing, stopped before the command does anything.
