@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
@@ -47,7 +48,7 @@ func Reach(cfg *config.Config, list []SiteReach) []Finding {
 			}
 			more = append(more, "Start the host or fix the route to it. Every other check ran with the sites that answered.")
 			out = append(out, Finding{Section: SectionReach, Level: Fail,
-				Line: fmt.Sprintf("%s: ssh to %s did not answer (%s)", r.Site, r.Destination, firstLine(r.Err)),
+				Line: fmt.Sprintf("%s: ssh to %s did not answer (%s)", r.Site, r.Destination, sshReason(firstLine(r.Err))),
 				More: more})
 		}
 	}
@@ -109,4 +110,21 @@ func losses(cfg *config.Config, site string) string {
 		lost = append(lost, strings.Join(pinned, ", ")+", pinned here and running nowhere else")
 	}
 	return strings.Join(lost, "; ")
+}
+
+var (
+	sshConnect = regexp.MustCompile(`^ssh: connect to host \S+ port \d+: (.+)$`)
+	sshResolve = regexp.MustCompile(`^ssh: Could not resolve hostname \S+: (.+)$`)
+)
+
+// sshReason is ssh's error without the host it names, which the line it goes
+// into names already.
+func sshReason(err string) string {
+	if m := sshConnect.FindStringSubmatch(err); m != nil {
+		return m[1]
+	}
+	if m := sshResolve.FindStringSubmatch(err); m != nil {
+		return "the name does not resolve: " + m[1]
+	}
+	return err
 }
