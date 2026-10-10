@@ -38,7 +38,6 @@ const (
 	root    = "/srv/paisans/f2a9"
 	wgConf  = "/etc/wireguard/psns-f2a9.conf"
 	record  = "/etc/paisans/authorized_keys.ubuntu.paisans-f2a9.owned"
-	theirs  = "/etc/paisans/authorized_keys.ubuntu.paisans-0c1d.owned"
 	keysAt  = "/home/ubuntu/.ssh/authorized_keys"
 	alice   = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org"
 )
@@ -604,16 +603,6 @@ func (h *host) Run(command string) (string, error) {
 			}
 		}
 		return b.String(), nil
-	case strings.Contains(command, "/etc/paisans/authorized_keys.ubuntu.paisans-*.owned"):
-		var b strings.Builder
-		for _, p := range h.sortedFiles() {
-			if strings.HasPrefix(p, "/etc/paisans/authorized_keys.ubuntu.paisans-") {
-				b.WriteString(p + "\n")
-			}
-		}
-		return b.String(), nil
-	case strings.HasPrefix(command, "getent passwd "):
-		return "ubuntu:x:1000:1000:Ubuntu:/home/ubuntu:/bin/bash\n", nil
 	case strings.HasPrefix(command, "d='") && strings.Contains(command, "du -sb"):
 		dir := strings.TrimSuffix(strings.TrimPrefix(strings.SplitN(command, ";", 2)[0], "d='"), "'")
 		return h.dirAnswer(dir), nil
@@ -755,16 +744,6 @@ func (h *host) Run(command string) (string, error) {
 		}
 		data, _ := registry.Encode(registry.Remove(r, ourID))
 		h.files[registry.Path] = string(data)
-		return "", nil
-	case strings.Contains(command, "grep -vxF "):
-		lines := strings.Split(h.files[keysAt], "\n")
-		var kept []string
-		for _, l := range lines {
-			if !strings.Contains(command, shellQuote(l)) || l == "" {
-				kept = append(kept, l)
-			}
-		}
-		h.files[keysAt] = strings.Join(kept, "\n")
 		return "", nil
 	case strings.HasSuffix(command, " stop"), strings.HasSuffix(command, " up -d"):
 		return "", nil

@@ -41,9 +41,11 @@ type hostPlan struct {
 	units     []string
 	dropins   []string
 	rules     []string
-	keys      keyPlan
-	registry  bool
-	root      dirState
+	// keyRecords are this deployment's records of the authorized keys
+	// host prepare added, one per login user.
+	keyRecords []string
+	registry   bool
+	root       dirState
 	// record is whether the host holds this deployment's record, a gateway's.
 	record bool
 	// deleteRoot is --delete-data with no edited file under the root.
@@ -51,7 +53,7 @@ type hostPlan struct {
 	// caddy is the gateway's Caddy kept for the host owner's sites, nil
 	// when it goes like everything else.
 	caddy *caddyPlan
-	// verified is set once the run has checked the host, before the keys.
+	// verified is set once the run has checked the host.
 	verified bool
 }
 
@@ -61,18 +63,6 @@ type dirState struct {
 	bytes   int64
 	files   int
 	entries []string
-}
-
-// keyPlan is what happens to the authorized keys this deployment's record
-// lists.
-type keyPlan struct {
-	user   string
-	file   string
-	record string
-	// found is whether the record exists.
-	found bool
-	// lines are the key lines to delete from file.
-	lines []string
 }
 
 // unitsCommand lists every unit and drop-in named for this deployment's
@@ -200,21 +190,6 @@ func imagesCommand(ids []string) string {
 
 func (p *Plan) volumesCommand() string {
 	return fmt.Sprintf(`set -e; vols=$(docker volume ls -q --filter %s); if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi`, quote(p.dep().LabelFilter()))
-}
-
-// removeKeyLines drops exactly these lines from authorized_keys and nothing
-// else, through a temporary file given the original's owner and mode and
-// renamed over it, as host prepare removes a key. grep exits 1 when no line
-// is left, which is an empty file rather than a failure.
-func removeKeyLines(file string, lines []string) string {
-	f := quote(file)
-	tmp := quote(file + ".paisans-tmp")
-	var patterns []string
-	for _, l := range lines {
-		patterns = append(patterns, "-e "+quote(l))
-	}
-	return fmt.Sprintf("set -e; [ -f %[1]s ] || exit 0; grep -vxF %[3]s %[1]s > %[2]s || [ $? -eq 1 ]; chown --reference=%[1]s %[2]s; chmod --reference=%[1]s %[2]s; mv %[2]s %[1]s",
-		f, tmp, strings.Join(patterns, " "))
 }
 
 func parseDir(out string) (dirState, error) {
@@ -426,13 +401,13 @@ func (p *Plan) buildHost() (*Stage, error) {
 	}
 
 	p.hostSteps(st)
-	st.Gate = "no container, network or unit of this deployment's on the host, no manifest, no ufw rule with its tag but the SSH allow, no registry entry, checked before the keys go; then the keys its record lists, unless another deployment's record lists them too or they are the user's last"
+	st.Gate = "no container, network or unit of this deployment's on the host, no manifest, no ufw rule with its tag but the SSH allow, no registry entry"
 	if hp.caddy != nil {
-		st.Gate = "no container, network or unit of this deployment's on the host but its Caddy, whose Caddyfile is reduced to the host owner's sites, no ufw rule with its tag but the SSH allow, and its registry entry marked kept, checked before the keys go; then the keys its record lists, unless another deployment's record lists them too or they are the user's last"
+		st.Gate = "no container, network or unit of this deployment's on the host but its Caddy, whose Caddyfile is reduced to the host owner's sites, no ufw rule with its tag but the SSH allow, and its registry entry marked kept"
 	}
 	st.run = p.runHost
-	// The run checks the host before the keys go and records that it did;
-	// a run with nothing left to do checks it here.
+	// The run checks the host last and records that it did; a run with
+	// nothing left to do checks it here.
 	st.gate = func() error {
 		if hp.verified {
 			return nil
@@ -509,100 +484,16 @@ func (p *Plan) planKeptRoot(t apply.Transport, hp *hostPlan, edited bool) error 
 	return nil
 }
 
-// probeKeys reads the user's authorized_keys, this deployment's record of the
-// keys host prepare added, and every other deployment's record, and plans
-// which lines go.
+// probeKeys finds this deployment's records of the authorized keys host
+// prepare added. The keys themselves are never removed: they may be the only
+// way into the host, and nothing here can tell whether another exists. The
+// records are this deployment's own files, so they go with it.
 func (p *Plan) probeKeys(t apply.Transport, hp *hostPlan) error {
-	d := p.dep()
-	user := p.cfg.Sites[p.Site].SSH.User
-	kp := keyPlan{user: user, record: hostprep.OwnedKeysPath(d, user)}
-	// Records this deployment made for another login user are that user's
-	// to clean: only the keys of the user reached here are read.
-	listed, err := t.Run(fmt.Sprintf(`for f in %s; do [ -f "$f" ] && echo "$f"; done; true`, hostprep.OwnedKeysPrefixGlob(d)))
+	out, err := t.Run(fmt.Sprintf(`for f in %s; do [ -f "$f" ] && echo "$f"; done; true`, hostprep.OwnedKeysPrefixGlob(p.dep())))
 	if err != nil {
 		return fmt.Errorf("site remove %s: listing this deployment's key records: %w", p.Site, err)
 	}
-	for _, path := range strings.Fields(listed) {
-		if path == kp.record {
-			continue
-		}
-		other := hostprep.OwnedKeysUser(d, path)
-		reach := p.cfg.Sites[p.Site].Destination()
-		reach.User = other
-		p.Kept = append(p.Kept, keysOtherUserKept(p.Site, path, reach.String()))
-	}
-	content, found, err := t.ReadFile(kp.record)
-	if err != nil {
-		return fmt.Errorf("site remove %s: reading %s: %w", p.Site, kp.record, err)
-	}
-	kp.found = found
-	if !found {
-		hp.keys = kp
-		return nil
-	}
-	ours := hostprep.ParseOwnedKeys(content)
-
-	out, err := t.Run(fmt.Sprintf(`for f in %s; do [ -f "$f" ] && echo "$f"; done; true`, hostprep.OwnedKeysGlob(user)))
-	if err != nil {
-		return fmt.Errorf("site remove %s: listing key records: %w", p.Site, err)
-	}
-	others := map[string]bool{}
-	for _, path := range strings.Fields(out) {
-		if path == kp.record {
-			continue
-		}
-		c, _, err := t.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("site remove %s: reading %s: %w", p.Site, path, err)
-		}
-		for _, fp := range hostprep.ParseOwnedKeys(c) {
-			others[fp] = true
-		}
-	}
-
-	entry, err := t.Run("getent passwd " + quote(user) + " || true")
-	if err != nil {
-		return fmt.Errorf("site remove %s: reading %s's passwd entry: %w", p.Site, user, err)
-	}
-	fields := strings.Split(strings.TrimSpace(entry), ":")
-	if len(fields) < 7 || fields[5] == "" {
-		p.Kept = append(p.Kept, keysNoPasswd(p.Site, kp.record, user))
-		hp.keys = kp
-		return nil
-	}
-	kp.file = strings.TrimSuffix(fields[5], "/") + "/.ssh/authorized_keys"
-	keys, _, err := t.ReadFile(kp.file)
-	if err != nil {
-		return fmt.Errorf("site remove %s: reading %s: %w", p.Site, kp.file, err)
-	}
-	total := 0
-	var candidates []string
-	for _, raw := range strings.Split(keys, "\n") {
-		raw = strings.TrimSuffix(raw, "\r")
-		trimmed := strings.TrimSpace(raw)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		key, options, err := config.ParseKeyLine(trimmed)
-		if err != nil {
-			continue
-		}
-		total++
-		if len(options) > 0 || !contains(ours, key.Fingerprint) {
-			continue
-		}
-		if others[key.Fingerprint] {
-			p.Kept = append(p.Kept, keySharedKept(p.Site, key.Fingerprint, kp.file))
-			continue
-		}
-		candidates = append(candidates, raw)
-	}
-	if len(candidates) > 0 && len(candidates) == total {
-		p.Kept = append(p.Kept, keyLinesKept(p.Site, kp.file, kp.record, user))
-		candidates = nil
-	}
-	kp.lines = candidates
-	hp.keys = kp
+	hp.keyRecords = strings.Fields(out)
 	return nil
 }
 
@@ -670,12 +561,6 @@ func (p *Plan) hostSteps(st *Stage) {
 	}
 	if cp != nil && cp.mark {
 		add("mark", "mark the registry entry kept", "deployment %s in %s, as %q: the kept Caddy still holds the gateway role and %s", d.ID, registry.Path, "kept: "+registry.KeptCaddy, d.Root())
-	}
-	if len(hp.keys.lines) > 0 {
-		add("remove", "remove SSH keys", "%d key line(s) from %s that %s lists, last, since they may be what this command reaches the host with", len(hp.keys.lines), hp.keys.file, hp.keys.record)
-	}
-	if hp.keys.found {
-		add("delete", "remove SSH keys", "%s", hp.keys.record)
 	}
 }
 
@@ -820,29 +705,25 @@ func (p *Plan) runHost() error {
 			return err
 		}
 	}
-	p.work("check the host before the keys go")
+	if len(hp.keyRecords) > 0 {
+		q := make([]string, len(hp.keyRecords))
+		for i, r := range hp.keyRecords {
+			q[i] = quote(r)
+		}
+		if err := run("deleting the key records", "rm -f -- "+strings.Join(q, " ")); err != nil {
+			return err
+		}
+	}
+	p.work("check the host")
 	if err := p.verifyHost(t); err != nil {
-		return fmt.Errorf("%s: before the keys: %w", p.Site, err)
+		return fmt.Errorf("%s: %w", p.Site, err)
 	}
 	hp.verified = true
-	if len(hp.keys.lines) > 0 || hp.keys.found {
-		p.work("remove SSH keys")
-	}
-	if len(hp.keys.lines) > 0 {
-		if err := run("removing keys from "+hp.keys.file, removeKeyLines(hp.keys.file, hp.keys.lines)); err != nil {
-			return err
-		}
-	}
-	if hp.keys.found {
-		if err := run("deleting "+hp.keys.record, "rm -f -- "+quote(hp.keys.record)); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
-// verifyHost is the host stage's gate, checked before the keys go, since
-// once they have the host may not answer again.
+// verifyHost is the host stage's gate: nothing of this deployment's is left
+// on the host.
 func (p *Plan) verifyHost(t apply.Transport) error {
 	d := p.dep()
 	inv, err := inspect(t, p.cfg)

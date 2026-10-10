@@ -164,14 +164,21 @@ func TestTheDNSLineSaysByHand(t *testing.T) {
 	}
 }
 
-// Cleaning through another user leaves the keys host prepare added for the
-// deployment's own user, and the report says which --ssh cleans them.
-func TestKeysOfAnotherUserAreReported(t *testing.T) {
+// Cleaning through another user deletes this deployment's record of the
+// deployment's own user's keys too, and leaves the keys themselves.
+func TestKeyRecordsOfAnotherUserGo(t *testing.T) {
 	w := setup(t)
+	b := w.hosts["home-b"]
+	keys := b.files[keysAt]
 	dest, _ := config.ParseDestination("root@192.0.2.12")
-	p := forced(t, w, w.cfg, "home-b", dest, siteremove.Options{})
-	if !strings.Contains(strings.Join(p.Remains(), "\n"), "--ssh ubuntu@192.0.2.12") {
-		t.Errorf("the ubuntu user's keys are not reported:\n%s", strings.Join(p.Remains(), "\n"))
+	if err := siteremove.Execute(forced(t, w, w.cfg, "home-b", dest, siteremove.Options{})); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.files[record]; ok {
+		t.Error("the ubuntu user's record is still there")
+	}
+	if b.files[keysAt] != keys {
+		t.Errorf("authorized_keys changed:\n%s", b.files[keysAt])
 	}
 }
 
