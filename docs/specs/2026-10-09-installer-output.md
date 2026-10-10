@@ -316,7 +316,10 @@ A question asked on the terminal holds the reporter's drawing while it waits
   the open step's spinner redraws on the row the prompt took. A password that
   was refused, or could not be read, is explained by the error that follows.
   Off a terminal nothing is written, and a terminal that is not drawn on
-  (`TERM=dumb`, `NO_COLOR`) keeps the prompt, followed by a blank line.
+  (`TERM=dumb`, `NO_COLOR`) keeps the prompt, followed by a blank line. So
+  does a terminal whose stdout or stderr is piped (`paisans apply | tee log`):
+  the report then reaches the terminal through another process at its own
+  pace, so the rows above the cursor are not known to be the prompt's.
 * **ssh's question about a host key is followed by a blank line**, since it is
   ssh's own text, over several lines, and cannot be erased reliably. The blank
   line is written before the drawing resumes, so the spinner redraws below it
