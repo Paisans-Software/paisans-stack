@@ -738,6 +738,13 @@ survive one loss; **2 members survive nothing and are strictly worse than 1.**
 So a join must take the cluster from one voter to three in a single operation —
 the second site and a witness together. It can never rest at two.
 
+With `etcd.members` left out (see *`etcd.members` and `cluster.sites` follow
+from the roles*), that is one edit to the roles: the new site gets `data`
+and the site in the third location gets `witness`, in the same change.
+Giving a second site `data` alone derives two voters, which `validate`
+refuses, naming both ways out: a witness in a third location, or
+`etcd.members` written with one site, which gives up automatic failover.
+
 ## The witness is a third location, not a cloud account
 
 A witness is a voting member that stores no data and serves no traffic. It
@@ -752,6 +759,10 @@ change. One box, two jobs.
 **It is not required.** What is required is a location that fails independently
 of both sites. Another organizer's house works. A machine at a workplace, or a
 friend's spare room, works.
+
+The `witness` role is what makes a site a voter. With `etcd.members` left out,
+every site holding it is one, before the data sites; written, the list says
+which sites vote and the role only says what the site runs.
 
 ### A witness must never share a failure domain with a voter
 
@@ -810,10 +821,13 @@ The `data` role says a site runs Patroni and stores the database.
 `cluster.sites` is the list every HAProxy's backends are rendered from, the
 list `apply` waits on for a leader, and the membership `doctor` and `site
 add` check against. A site in one and not the other is a replica the
-deployment half has: the toolkit already refuses a cluster member without
-the role (`cluster-site-without-data-role`), and it refuses the inverse too
-(`data-site-not-in-cluster`), a data site the list leaves out, which would run
-a Patroni that nothing routes to or watches.
+deployment half has.
+
+Left out, `cluster.sites` is every data site, so the two cannot disagree.
+Written, it is used as written, and the toolkit refuses a cluster member
+without the role (`cluster-site-without-data-role`) and the inverse
+(`data-site-not-in-cluster`), a data site the list leaves out, which would
+run a Patroni that nothing routes to or watches.
 
 ### Asynchronous replication and automatic failover
 
@@ -888,6 +902,34 @@ Nothing about current state belongs in these files — not which node is primary
 not replication lag. `paisans failover status` reads etcd. A config file that
 starts recording status drifts, and someone trusts a stale value during an
 incident.
+
+### `etcd.members` and `cluster.sites` follow from the roles
+
+A site's roles already say which sites hold the database and which are
+witnesses, so both lists are optional, and a file that leaves them out says
+each fact once:
+
+| Key | Left out | Written |
+|-----|----------|---------|
+| `etcd.members` | every site with the `witness` role, in name order, then every site with the `data` role, in name order | used exactly as written |
+| `cluster.sites` | every site with the `data` role, in name order | used exactly as written |
+
+Witnesses come first because a new deployment is founded witness first (see
+*A new deployment is applied witness first*); nothing else reads either list
+for its order. Write a key only to choose something the roles do not say:
+`etcd.members: [home-a]` beside two data sites runs one voter by choice,
+which gives up automatic failover, and listing only some data sites runs
+fewer voters than there are data sites. A written key that is empty, or has
+no value, is refused: an empty `etcd.members` leaves Patroni nowhere to keep
+its leader, and an empty `cluster.sites` says nothing that leaving it out
+does not. A finding about a list the file left out names it as `etcd.members
+(derived from the roles)`, so an operator who never wrote the key is not sent
+looking for it.
+
+`site remove`, the one command that edits either list, edits only a key the
+file has. With the key left out, the site's block going, or the witness
+role coming off the witness, is the whole edit.
+`docs/specs/2026-10-10-derived-members.md` is the approved specification.
 
 ### A deployment has an id, and a host knows every deployment on it
 
@@ -3009,6 +3051,11 @@ the toolkit cannot generate (`secrets set`), and a DNS record pointing
 elsewhere. `apply --site <name>` is unchanged, for one site at a time.
 `docs/specs/2026-10-09-apply-converge.md` is the approved specification.
 
+`etcd.members` here is the list as written or as derived from the roles. So a
+site given the `data` role on a founded cluster, with the key left out, is a
+member no founding record lists, and joins through `site add`, exactly as it
+would written into `etcd.members` by hand.
+
 ### A new deployment is applied witness first
 
 The first time a deployment's sites are applied, the order matters, and it is
@@ -4371,7 +4418,9 @@ paisans site add vm --roles gateway,witness --ssh vm.example.org
 5. Push both; bring both up.
 6. **Verify handshakes in both directions.** Stop here on failure.
 7. etcd stays a single member. The VM does not become a voter yet, because two
-   voters are worse than one.
+   voters are worse than one. With `etcd.members` left out, the `witness` role
+   is what would make it one, so the VM joins as `gateway` alone and gains
+   `witness` in the join that adds the second data site.
 
 ### `site add` — a second data site, and the one hard problem
 
@@ -4594,7 +4643,7 @@ re-run impossible: a failure there names the `apply` that finishes it.
 | 1. Data out of the site | the leader switched over to the `Sync Standby` when the site holds it; `synchronous_mode` turned off when one data site remains, since a leader waiting on a standby that is leaving stops taking writes; Patroni stopped on the site and its member key deleted from etcd; its Garage node removed from the layout and the layout applied | another site leads and `patronictl list` no longer lists the site, with a `Sync Standby` when the end state wants one; no layout row for the site, and every remaining node settled (one live layout version, an empty resync queue) within an hour, and a run that times out resumes at this gate while Garage carries on copying |
 | 2. Out of the cluster | `etcdctl member remove`, then the site's etcd stopped; with two data sites and a witness, the witness's member next (below); on every remaining site, the files whose render changes with the site gone, by scoped `apply`: `psns-<token>.conf` (`wg syncconf`), `haproxy.cfg` (HAProxy restarted with its database apps stopped around it, as `site add` does) and the gateway's routes (validated, then Caddy reloaded); then each remaining replica's `patroni.env`, one at a time, as `site add`'s stage 7 does; last, the site taken out of every remaining gateway's deployment record | the voters are exactly the end state's and all healthy; no remaining site has the site's key as a WireGuard peer; HAProxy lists exactly the end state's cluster sites with the leader `UP`; each replica streaming again before the next |
 | 3. Clean the host | below; skipped with `--host-gone`. When the site holds the active Pocket ID instance, the plan says that once this stage stops it, sign in is unavailable for a few seconds while a standby takes over, up to about 90 seconds if the instance does not stop cleanly | checked before the keys go: nothing of this deployment's left but what the plan said it keeps |
-| 4. Config | the site taken out of `paisans.yaml`: its block, its name in `cluster.sites`, `etcd.members` and `storage.garage.sites`, its capacity; with two data sites and a witness, the witness out of `etcd.members` and its `witness` role, in the same write; every other byte as it was | the file loads and no longer declares it |
+| 4. Config | the site taken out of `paisans.yaml`: its block, its name in `cluster.sites`, `etcd.members` and `storage.garage.sites` where the file writes them, its capacity; with two data sites and a witness, the witness out of a written `etcd.members` and its `witness` role, in the same write; every other byte as it was | the file loads and no longer declares it |
 | 5. Monitor | every remaining monitor site's `uptime` stack applied on its own, so its `monitors.json`, rendered from the end state, no longer names the site and the restarted monitor deletes its ping and direct checks; skipped when no site holds the monitor role (see *Topology commands reseed the monitor*). The monitor site itself is never the one removed, since its app is pinned to it | the seed on the host matches the render and the stack is healthy; a failure here comes after the removal and names the `apply` that finishes it |
 
 **Two data sites and a witness go to one voter.** Taking one data site out of
