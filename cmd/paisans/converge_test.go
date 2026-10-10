@@ -1293,3 +1293,26 @@ func TestCheckReportsShowUnderTheStep(t *testing.T) {
 		t.Errorf("pending %d, detail %d, note %d:\n%s", pending, detail, note, rec.Lines())
 	}
 }
+
+// A secrets file that exists but does not read (no age key, say) stops the
+// run at once, before any host is read: init cannot fix it, since init needs
+// the same key.
+func TestConvergeStopsOnASecretsFileThatDoesNotRead(t *testing.T) {
+	fakeConverge(t, nil)
+	read := false
+	convergeReadInitial = func(*config.Config, string, bool) (render.EtcdInitial, bool, error) {
+		read = true
+		return render.EtcdInitial{}, false, nil
+	}
+	unreadable := t.TempDir() // a directory: present, and not a secrets file
+	var err error
+	captureStdout(t, func() {
+		err = runApply([]string{"--config", fixtureConfig(), "--secrets", unreadable, "--sudo=false"})
+	})
+	if err == nil || !strings.Contains(err.Error(), unreadable) {
+		t.Errorf("err = %v, want it to name %s", err, unreadable)
+	}
+	if read {
+		t.Error("a host was read with secrets that do not read")
+	}
+}

@@ -293,9 +293,12 @@ func readConvergeState(configPath, secretsPath string) (*config.Config, converge
 	if secrets, err := config.LoadSecrets(secretsPath); errors.Is(err, fs.ErrNotExist) {
 		why = append(why, "no secrets file yet")
 	} else if err != nil {
-		why = append(why, "the secrets file does not read: "+err.Error())
+		// A file that is there and does not read (no age key, most often)
+		// is not init's to fix: init needs the same key. So nothing is
+		// planned and no host is read.
+		return nil, st, fmt.Errorf("apply: %w", err)
 	} else if filled, err := secretsgen.Fill(cfg, secrets); err != nil {
-		why = append(why, "generating secrets fails: "+err.Error())
+		return nil, st, fmt.Errorf("apply: generating the secrets %s lacks: %w", secretsPath, err)
 	} else if filled.Changed() {
 		why = append(why, missingSecrets(filled.Generated))
 	}
