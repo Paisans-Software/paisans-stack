@@ -1,0 +1,79 @@
+# Two witnesses and two data sites, with etcd.members left out: the roles
+# derive four voters.
+version: 1
+id: f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01
+
+community:
+  name: "Fixture Community"
+  domain: example.org
+
+mesh:
+  subnet: 10.44.0.0/24
+
+acme:
+  provider: desec
+
+sites:
+  home-a:
+    roles: [data, apps]
+    address: 10.44.0.1
+    endpoint: home-a.example.org:51820
+    ssh:
+      host: home-a.local
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+  home-b:
+    roles: [data, apps]
+    address: 10.44.0.2
+    ssh:
+      host: home-b.local
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+  extra:
+    roles: [witness]
+    address: 10.44.0.4
+    ssh:
+      host: extra.example.org
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+  vm:
+    roles: [gateway, witness]
+    address: 10.44.0.3
+    endpoint: vm.example.org:51820
+    ssh:
+      host: vm.example.org
+      user: ubuntu
+      public_key: |
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+
+cluster:
+  port: 5000
+  postgres_version: "18"
+  synchronous: true
+  synchronous_strict: false
+
+etcd:
+  heartbeat_ms: 200
+  election_timeout_ms: 2000
+
+storage:
+  garage:
+    sites: [home-a]
+    replication: 1
+
+apps:
+  docs:
+    kind: outline
+    hostname: docs.example.org
+    placement: cluster
+    settings:
+      s3_bucket: docs-uploads
+  auth:
+    kind: pocket-id
+    hostname: id.example.org
+    placement: cluster
+    settings:
+      file_backend: database
