@@ -290,6 +290,22 @@ func TestAJoinOutsideTheScopeIsRefused(t *testing.T) {
 	}
 }
 
+// A written list that leaves the new site out is refused, naming the key and
+// that leaving it out derives it from the roles.
+func TestAWrittenListWithoutTheSiteIsRefused(t *testing.T) {
+	for key, edit := range map[string]func(*config.Config){
+		"cluster.sites": func(c *config.Config) { c.Cluster.Sites = []string{"home-a"} },
+		"etcd.members":  func(c *config.Config) { c.Etcd.Members = []string{"home-a", "vm"} },
+	} {
+		w := newWorld(t)
+		edit(w.cfg)
+		_, err := siteadd.Build(w.cfg, w.secrets, "home-b", w.transports())
+		if err == nil || !strings.Contains(err.Error(), key+" is written and does not list it") || !strings.Contains(err.Error(), "derived from the roles") {
+			t.Errorf("%s without home-b: %v", key, err)
+		}
+	}
+}
+
 // etcd refuses a learner add as an "unhealthy cluster" until every voter has
 // been connected for five seconds, so the second learner, added right after the
 // first is promoted, is refused at first. The first real join stopped there.
