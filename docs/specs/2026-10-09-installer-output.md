@@ -57,7 +57,7 @@ Dry run:
 
 ```
 paisans.yaml
-  ! garage consistency is dangerous: reads can miss recent uploads while a site is behind
+  ! garage consistency is dangerous: uploads confirmed with 1 of 2 copies written
 luthen-rael (ubuntu@192.0.2.10)
   ✓ host check              clean
   ✓ disk space              13.6 GiB free
@@ -255,8 +255,20 @@ their call sites (about 90, in `validate.go`, `monitor.go`, `pocketid.go` and
 `public_address.go`) get a hint written for them. The rule ID stays the
 stable identifier tests assert on; it is shown only with `--verbose`.
 
-The count line becomes `paisans.yaml: 1 warning` (plural only when needed),
-and it is not printed when there are no findings at all.
+Findings print under a section that says what they are about, then a count
+line, `paisans.yaml: 1 refusal, 1 warning` (plural only when needed):
+
+* `paisans validate` prints them under the file's path, since the file is its
+  subject, and always ends with the count line, or with `no problems found`.
+* Every other command prints them under the file's path and prints the count
+  line only when there is a refusal, since the command then stops on it. A
+  warning-only count would name the file a second time and say nothing the
+  lines above it do not.
+* `paisans apply` without `--site` prints them under its `configuration`
+  section, the one its `init` step belongs to: the header once, the findings,
+  then `init` when it has work. The path is not a section there, and appears
+  only in the count line of a refusal.
+* Nothing is printed for a file without findings.
 
 ## Plans and progress
 
@@ -284,6 +296,24 @@ and it is not printed when there are no findings at all.
 * **Staged commands** (`site add`, `site remove`, `storage add`,
   `rotate-key`) print each stage as a `Section` and its work as steps, and a
   gate that passes is a step whose result is `passed`.
+
+## Prompts
+
+A question asked on the terminal holds the reporter's drawing while it waits
+(`ui.Hold`), so the spinner cannot erase it.
+
+* **The sudo password prompt is erased once it is answered**, right or wrong,
+  on a terminal: a carriage return, then for each row the prompt took a cursor
+  up and a line clear. The rows are the prompt's length over the terminal's
+  width, rounded up, so a prompt that wrapped is erased whole. Nothing else is
+  written, so the step lines go on directly under their section header, and
+  the open step's spinner redraws on the row the prompt took. A password that
+  was refused, or could not be read, is explained by the error that follows.
+  Off a terminal nothing is written.
+* **ssh's question about a host key is followed by a blank line**, since it is
+  ssh's own text, over several lines, and cannot be erased reliably. The blank
+  line is written before the drawing resumes, so the spinner redraws below it
+  rather than leaving a frame behind.
 
 ## Wording
 

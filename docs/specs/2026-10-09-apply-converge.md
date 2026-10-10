@@ -138,11 +138,33 @@ left for the operator, not about a step. No key, token or secret is printed.
 
 ## Progress
 
-Validation findings print first. Then each etcd member's founding record is
-read, one step per member, `read <s>'s etcd record`, so a spinner shows while
-ssh works; then the plan. A sudo password prompt or an ssh host key question
-pauses the spinner while it waits on the operator, during these reads,
-during each step's check, and during the check for a Pocket ID admin.
+The `configuration` section comes first: its header once, then the
+validation findings, then, in a dry run, the `init` step when it has work.
+The findings are not under the file's path, and a count line follows them
+only when there is a refusal (see the installer output spec, *Validate
+findings*). Then each etcd member's founding record is read, one step per
+member, `read <s>'s etcd record`, so a spinner shows while ssh works; then the
+rest of the plan.
+
+| Mark | A read that |
+|---|---|
+| `✓` `founded` | found the member's founding record |
+| `○` `not founded yet` | found none: founding it is work the plan will do |
+| `✗` | failed; the plan stops, since founding or joining cannot be decided |
+
+A sudo password prompt or an ssh host key question pauses the spinner while it
+waits on the operator, during these reads, during each step's check, and
+during the check for a Pocket ID admin. A sudo prompt is erased once answered,
+so the reads sit directly under their header:
+
+```
+configuration
+  ! garage consistency is dangerous: uploads confirmed with 1 of 2 copies written
+  ○ init                          the deployment id, the mesh subnet and every generated secret
+etcd members
+  ○ read home-a's etcd record     not founded yet
+  ○ read home-b's etcd record     not founded yet
+```
 
 ## Refusals
 
