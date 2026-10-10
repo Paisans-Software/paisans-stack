@@ -393,3 +393,26 @@ func TestWriteSecretsRefusesAReadOnlyFile(t *testing.T) {
 		t.Error("a read only file changed")
 	}
 }
+
+// A key the Secrets type does not hold is noted, at any depth, since writing
+// the file back would drop it.
+func TestLoadSecretsNotesUnknownKeys(t *testing.T) {
+	for body, want := range map[string]bool{
+		"version: 1\ncluster:\n  admin_password: x\n":                  false,
+		"version: 1\nextra: x\n":                                       true,
+		"version: 1\ncluster:\n  admin_password: x\n  other: y\n":      true,
+		"version: 1\nsites:\n  a:\n    heartbeat_token: x\n    z: 1\n": true,
+	} {
+		path := filepath.Join(t.TempDir(), "secrets.enc.yaml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := config.LoadSecrets(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.UnknownKeys != want {
+			t.Errorf("%q: UnknownKeys %t", body, s.UnknownKeys)
+		}
+	}
+}

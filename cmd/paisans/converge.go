@@ -330,31 +330,42 @@ func convergeSecretsPath(configPath, secretsPath string) string {
 
 // convergeGenerate is the dry run generating the secrets init would: the
 // generated secrets the file at path lacks are filled and the file written,
-// by fillSecrets, as init does. It returns their names; none when the file
-// is left to init, which is when it is encrypted and no .sops.yaml recipient
-// is found beside it, since writing it would leave it in plaintext. Why a
-// write failed is a ui.Problem.
-func convergeGenerate(cfg *config.Config, path string) ([]string, error) {
+// by fillSecrets, as init does. It returns their names and the recipients
+// the file was encrypted to. A file writing would harm is left to init, and
+// left says why: one holding a key this toolkit does not read, which writing
+// would drop, and one encrypted with no .sops.yaml recipient beside it,
+// which writing would leave in plaintext. Why it failed is a ui.Problem.
+func convergeGenerate(cfg *config.Config, path string) (names, recipients []string, left string, err error) {
 	secrets, err := config.LoadSecrets(path)
 	if err != nil {
-		return nil, generateProblem(path, err)
+		return nil, nil, "", generateProblem(path, err)
+	}
+	if secrets.UnknownKeys {
+		return nil, nil, "it holds keys this toolkit does not read, which writing it would drop", nil
 	}
 	if secrets.Encrypted {
-		if recipients, err := config.Recipients(filepath.Dir(path)); err == nil && len(recipients) == 0 {
-			return nil, nil
+		if r, err := config.Recipients(filepath.Dir(path)); err == nil && len(r) == 0 {
+			return nil, nil, "no " + config.SOPSConfigName + " recipient beside it, so it would be written in plaintext", nil
 		}
 	}
-	filled, _, err := fillSecrets(cfg, path, secrets)
+	filled, recipients, err := fillSecrets(cfg, path, secrets)
 	if err != nil {
-		return nil, generateProblem(path, err)
+		return nil, nil, "", generateProblem(path, err)
 	}
-	return filled.Generated, nil
+	return filled.Generated, recipients, "", nil
 }
 
+// generateProblem is why the dry run could not generate the secrets the file
+// at path lacks: writing it, or reading what writing it needs.
 func generateProblem(path string, err error) error {
+	hint := "could not generate the secrets " + ui.ShortPath(path) + " lacks"
+	var failed *secretsWriteError
+	if errors.As(err, &failed) {
+		hint = "could not write the generated secrets to " + ui.ShortPath(path)
+	}
 	return &ui.Problem{
-		Hint:    "could not write the generated secrets to " + filepath.Base(path),
-		Explain: errLine(err) + ".\nNothing was written, and nothing on a server changed. Once the file can be written, run paisans apply again.",
+		Hint:    hint,
+		Explain: errLine(err) + ".\nNothing on a server changed. Once that is fixed, run paisans apply again.",
 		Cause:   err,
 	}
 }
@@ -456,9 +467,12 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 			r.Section("configuration")
 		}
 		line := r.Step("init")
+		path := convergeSecretsPath(configPath, secretsPath)
+		var recipients []string
+		var left string
 		var err error
 		if st.SecretsOnly {
-			generated, err = convergeGenerate(cfg, convergeSecretsPath(configPath, secretsPath))
+			generated, recipients, left, err = convergeGenerate(cfg, path)
 		}
 		switch {
 		case err != nil:
@@ -466,8 +480,13 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 			line.End(ui.Failed, hint)
 			r.Note("before init can run", explain)
 		case len(generated) > 0:
-			line.Done(generatedSecrets(generated, convergeSecretsPath(configPath, secretsPath)))
+			line.Done(generatedSecrets(generated, path))
+			if len(recipients) == 0 {
+				warnPlaintext(r, path)
+			}
 			st.NeedsInit = false
+		case left != "":
+			line.End(ui.Pending, initWhy(st)+"; left to init: "+left)
 		default:
 			line.End(ui.Pending, initWhy(st))
 		}

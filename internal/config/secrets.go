@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -43,6 +44,9 @@ type Secrets struct {
 	// is accepted so that tests and examples work without a key, and the
 	// caller is expected to say so out loud.
 	Encrypted bool `yaml:"-"`
+	// UnknownKeys records that the file holds a key this type does not, at
+	// any depth, which writing the file back would drop.
+	UnknownKeys bool `yaml:"-"`
 }
 
 type ClusterSecrets struct {
@@ -104,6 +108,9 @@ func LoadSecrets(path string) (*Secrets, error) {
 	}
 	s.Path = path
 	s.Encrypted = encrypted
+	strict := yaml.NewDecoder(bytes.NewReader(plain))
+	strict.KnownFields(true)
+	s.UnknownKeys = strict.Decode(&Secrets{}) != nil
 	if s.Version != 1 {
 		return nil, &ui.Problem{
 			Hint:    fmt.Sprintf("%s is a version %d secrets file", ui.ShortPath(path), s.Version),

@@ -397,3 +397,30 @@ func TestConvergeExecuteAfterTheDryRunFillsNothingMore(t *testing.T) {
 		t.Error("the secrets file changed")
 	}
 }
+
+// A secrets file holding a key the toolkit does not read is left to init,
+// since writing it would drop that key: init is pending, saying why, and the
+// file is as it was.
+func TestConvergeDryRunLeavesAFileWithUnknownKeysToInit(t *testing.T) {
+	secrets, err := config.LoadSecrets(fixtureSecretsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropGenerated(secrets)
+	body, err := yaml.Marshal(secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath, secretsPath := secretsDir(t, string(body)+"kept_by_hand: not-a-secret\n")
+	files := snapshot(t, filepath.Dir(configPath))
+	rec, _, checked := dryRun(t, configPath, secretsPath)
+	if got := initLine(rec); !strings.HasPrefix(got, "○ ") || !strings.Contains(got, "keys this toolkit does not read") {
+		t.Errorf("init's line: %s", got)
+	}
+	if len(checked) != 0 {
+		t.Errorf("checked %v", checked)
+	}
+	if now := snapshot(t, filepath.Dir(configPath)); !reflect.DeepEqual(files, now) {
+		t.Error("a file was written")
+	}
+}
