@@ -13,9 +13,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
@@ -38,7 +40,13 @@ var ErrMalformed = errors.New("not a deployment record this toolkit reads")
 
 // Record is the names a deployment has deployed, each list sorted.
 type Record struct {
-	Version        int      `json:"version"`
+	Version int `json:"version"`
+	// Revision orders records: every change raises it by one, and the
+	// highest is the newest.
+	Revision int `json:"revision"`
+	// UpdatedAt is when the change was made, RFC 3339 by the writer's
+	// clock, for a person reading the file. Nothing compares it.
+	UpdatedAt      string   `json:"updated_at"`
 	Sites          []string `json:"sites"`
 	Apps           []string `json:"apps"`
 	PocketIDGroups []string `json:"pocket_id_groups"`
@@ -123,7 +131,7 @@ func normal(r Record) Record {
 		sort.Strings(out)
 		return out
 	}
-	return Record{Version: Version, Sites: clean(r.Sites), Apps: clean(r.Apps), PocketIDGroups: clean(r.PocketIDGroups)}
+	return Record{Version: Version, Revision: r.Revision, UpdatedAt: r.UpdatedAt, Sites: clean(r.Sites), Apps: clean(r.Apps), PocketIDGroups: clean(r.PocketIDGroups)}
 }
 
 func encode(r Record) string {
@@ -164,31 +172,154 @@ func read(t registry.Runner, d deployment.Deployment) (Record, string, bool, err
 	return r, content, true, nil
 }
 
-// Add adds names to the record, creating it. It reports whether it wrote.
+// ErrNoRecord is a gateway that answered with no deployment record.
+var ErrNoRecord = errors.New("it has no deployment record, which its next apply writes")
+
+// Newest is the record with the highest revision. Records at that revision
+// that disagree, left by two writers at once, are read as their union, which
+// keeps secrets rather than deleting them.
+func Newest(rs ...Record) Record {
+	if len(rs) == 0 {
+		return normal(Record{})
+	}
+	top := rs[0].Revision
+	for _, r := range rs {
+		top = max(top, r.Revision)
+	}
+	var at []Record
+	updated := ""
+	for _, r := range rs {
+		if r.Revision == top {
+			at = append(at, r)
+			updated = max(updated, r.UpdatedAt)
+		}
+	}
+	out := Union(at...)
+	out.Revision, out.UpdatedAt = top, updated
+	return out
+}
+
+// Gather reads the record on every host, keyed by gateway: the newest of
+// those found, how many were found, and why each other gateway gave none,
+// ErrNoRecord for one that answered without one.
+func Gather(hosts map[string]registry.Runner, d deployment.Deployment) (Record, int, map[string]error) {
+	missing := map[string]error{}
+	var found []Record
+	for _, gw := range slices.Sorted(maps.Keys(hosts)) {
+		rec, _, ok, err := read(hosts[gw], d)
+		switch {
+		case err != nil:
+			missing[gw] = err
+		case !ok:
+			missing[gw] = ErrNoRecord
+		default:
+			found = append(found, rec)
+		}
+	}
+	return Newest(found...), len(found), missing
+}
+
+// Result is what Update did: whether the names changed, which gateways it
+// wrote, and why it missed each one it could not.
+type Result struct {
+	Changed bool
+	Wrote   []string
+	Missed  map[string]error
+}
+
+// Adding adds names to a record.
+func Adding(names Record) func(Record) Record {
+	return func(r Record) Record { return Union(r, names) }
+}
+
+// Forgetting takes names out of a record.
+func Forgetting(names Record) func(Record) Record {
+	return func(r Record) Record { return minus(r, names) }
+}
+
+// Update changes the record on every gateway at once: it reads each one that
+// answers, applies change to the newest, and writes the result with the
+// revision raised to every gateway that answered. When the names come out as
+// they were, nothing is raised, and only a gateway holding another record is
+// written, which is how one that missed changes is brought up to date. A
+// gateway that does not answer, or whose write is refused, is in Missed; a
+// malformed record stops it before anything is written, since what that
+// record held is unknown.
+func Update(hosts map[string]registry.Runner, d deployment.Deployment, change func(Record) Record, now time.Time) (Result, error) {
+	res := Result{Missed: map[string]error{}}
+	type seen struct {
+		rec   Record
+		raw   string
+		found bool
+	}
+	read1 := map[string]seen{}
+	var found []Record
+	for _, gw := range slices.Sorted(maps.Keys(hosts)) {
+		rec, raw, ok, err := read(hosts[gw], d)
+		switch {
+		case errors.Is(err, ErrMalformed):
+			return res, err
+		case err != nil:
+			res.Missed[gw] = err
+			continue
+		}
+		read1[gw] = seen{rec, raw, ok}
+		if ok {
+			found = append(found, rec)
+		}
+	}
+	base := Newest(found...)
+	target := normal(change(base))
+	if sameNames(target, base) {
+		if len(found) == 0 {
+			return res, nil
+		}
+		target = base
+	} else {
+		target.Revision = base.Revision + 1
+		target.UpdatedAt = now.UTC().Format(time.RFC3339)
+		res.Changed = true
+	}
+	want := encode(target)
+	for _, gw := range slices.Sorted(maps.Keys(read1)) {
+		s := read1[gw]
+		if s.found && encode(s.rec) == want {
+			continue
+		}
+		if err := write(hosts[gw], d, s.raw, s.found, target); err != nil {
+			res.Missed[gw] = err
+			continue
+		}
+		res.Wrote = append(res.Wrote, gw)
+	}
+	return res, nil
+}
+
+func sameNames(a, b Record) bool {
+	return slices.Equal(a.Sites, b.Sites) && slices.Equal(a.Apps, b.Apps) && slices.Equal(a.PocketIDGroups, b.PocketIDGroups)
+}
+
+// Add adds names to the record on one gateway, creating it. It reports
+// whether it wrote.
 func Add(t registry.Runner, d deployment.Deployment, names Record) (bool, error) {
-	cur, raw, found, err := read(t, d)
+	return one(t, d, Adding(names))
+}
+
+// Forget takes names out of the record on one gateway. A gateway with none
+// is left without one.
+func Forget(t registry.Runner, d deployment.Deployment, names Record) (bool, error) {
+	return one(t, d, Forgetting(names))
+}
+
+func one(t registry.Runner, d deployment.Deployment, change func(Record) Record) (bool, error) {
+	res, err := Update(map[string]registry.Runner{"": t}, d, change, time.Now())
 	if err != nil {
 		return false, err
 	}
-	next := Union(cur, names)
-	if found && encode(next) == encode(cur) {
-		return false, nil
-	}
-	return true, write(t, d, raw, found, next)
-}
-
-// Forget takes names out of the record. A gateway with none is left
-// without one.
-func Forget(t registry.Runner, d deployment.Deployment, names Record) (bool, error) {
-	cur, raw, found, err := read(t, d)
-	if err != nil || !found {
+	if err := res.Missed[""]; err != nil {
 		return false, err
 	}
-	next := minus(cur, names)
-	if encode(next) == encode(cur) {
-		return false, nil
-	}
-	return true, write(t, d, raw, found, next)
+	return len(res.Wrote) > 0, nil
 }
 
 // write replaces the record with next, under the registry's lock, only if

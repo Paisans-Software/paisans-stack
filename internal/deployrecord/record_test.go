@@ -5,21 +5,29 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/deployrecord"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 )
 
 var dep = deployment.Deployment{ID: "f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"}
 
 // fakeHost runs the record's write command as the shell would: refuse on a
 // changed hash, else replace the file.
-type fakeHost struct{ files map[string]string }
+type fakeHost struct {
+	files map[string]string
+	down  bool
+}
+
+var errDown = errors.New("ssh: connect to host vm.example.org port 22: Operation timed out")
 
 var (
 	pathRe = regexp.MustCompile(`f='([^']+)'`)
@@ -29,10 +37,16 @@ var (
 
 func (h *fakeHost) Describe() string { return "ubuntu@vm.example.org" }
 func (h *fakeHost) ReadFile(p string) (string, bool, error) {
+	if h.down {
+		return "", false, errDown
+	}
 	c, ok := h.files[p]
 	return c, ok, nil
 }
 func (h *fakeHost) Run(command string) (string, error) {
+	if h.down {
+		return "", errDown
+	}
 	path := pathRe.FindStringSubmatch(command)[1]
 	cur := "none"
 	if c, ok := h.files[path]; ok {
@@ -151,5 +165,90 @@ func TestAFailedWriteSaysItsOutputOnce(t *testing.T) {
 	_, err := deployrecord.Add(h, dep, deployrecord.Record{Sites: []string{"vm"}})
 	if err == nil || strings.Count(err.Error(), "mv: cannot move") != 1 {
 		t.Errorf("err = %v", err)
+	}
+}
+
+func gateways(hs ...*fakeHost) map[string]registry.Runner {
+	out := map[string]registry.Runner{}
+	for i, h := range hs {
+		out[fmt.Sprintf("gw%d", i+1)] = h
+	}
+	return out
+}
+
+var now = time.Date(2026, 10, 9, 18, 40, 0, 0, time.UTC)
+
+func TestUpdateCatchesUpAStaleGateway(t *testing.T) {
+	fresh := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":1,"revision":5,"sites":["vm"],"apps":[],"pocket_id_groups":[]}`}}
+	stale := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":1,"revision":3,"sites":["vm","monitor-a"],"apps":[],"pocket_id_groups":[]}`}}
+	res, err := deployrecord.Update(gateways(fresh, stale), dep, deployrecord.Adding(deployrecord.Record{}), now)
+	if err != nil || res.Changed || strings.Join(res.Wrote, ",") != "gw2" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	r, _, _ := deployrecord.Read(stale, dep)
+	if r.Revision != 5 || r.Lists("sites", "monitor-a") {
+		t.Errorf("stale gateway not caught up: %+v", r)
+	}
+}
+
+func TestAChangeStartsFromTheNewestAndRaisesTheRevision(t *testing.T) {
+	fresh := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":1,"revision":5,"sites":["vm"],"apps":[],"pocket_id_groups":[]}`}}
+	stale := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":1,"revision":3,"sites":["vm","monitor-a"],"apps":[],"pocket_id_groups":[]}`}}
+	res, err := deployrecord.Update(gateways(fresh, stale), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"home-a"}}), now)
+	if err != nil || !res.Changed || len(res.Wrote) != 2 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	for _, h := range []*fakeHost{fresh, stale} {
+		r, _, _ := deployrecord.Read(h, dep)
+		if r.Revision != 6 || r.UpdatedAt != "2026-10-09T18:40:00Z" || strings.Join(r.Sites, ",") != "home-a,vm" {
+			t.Errorf("%+v", r)
+		}
+	}
+}
+
+func TestUpdateReportsAGatewayItMissed(t *testing.T) {
+	up := &fakeHost{files: map[string]string{}}
+	down := &fakeHost{files: map[string]string{}, down: true}
+	res, err := deployrecord.Update(gateways(up, down), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"vm"}}), now)
+	if err != nil || res.Missed["gw2"] == nil || strings.Join(res.Wrote, ",") != "gw1" {
+		t.Errorf("%+v %v", res, err)
+	}
+}
+
+func TestUpdateWithEveryGatewayDownWritesNothing(t *testing.T) {
+	down := &fakeHost{files: map[string]string{}, down: true}
+	res, err := deployrecord.Update(gateways(down), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"vm"}}), now)
+	if err != nil || len(res.Wrote) != 0 || res.Missed["gw1"] == nil {
+		t.Errorf("%+v %v", res, err)
+	}
+}
+
+func TestUpdateStopsAtAMalformedRecord(t *testing.T) {
+	ok := &fakeHost{files: map[string]string{}}
+	bad := &fakeHost{files: map[string]string{deployrecord.Path(dep): "{"}}
+	_, err := deployrecord.Update(gateways(ok, bad), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"vm"}}), now)
+	if !errors.Is(err, deployrecord.ErrMalformed) || len(ok.files) != 0 {
+		t.Errorf("err %v, wrote %v", err, ok.files)
+	}
+}
+
+func TestUpdateWithNothingToChangeWritesNothing(t *testing.T) {
+	rec := `{"version":1,"revision":2,"updated_at":"x","sites":["vm"],"apps":[],"pocket_id_groups":[]}` + "\n"
+	a := &fakeHost{files: map[string]string{deployrecord.Path(dep): rec}}
+	b := &fakeHost{files: map[string]string{deployrecord.Path(dep): rec}}
+	res, err := deployrecord.Update(gateways(a, b), dep, deployrecord.Adding(deployrecord.Record{Sites: []string{"vm"}}), now)
+	if err != nil || res.Changed || len(res.Wrote) != 0 {
+		t.Errorf("%+v %v", res, err)
+	}
+}
+
+func TestEqualRevisionsReadAsTheirUnion(t *testing.T) {
+	n := deployrecord.Newest(
+		deployrecord.Record{Revision: 4, Sites: []string{"a"}},
+		deployrecord.Record{Revision: 4, Sites: []string{"b"}},
+		deployrecord.Record{Revision: 3, Sites: []string{"c"}},
+	)
+	if n.Revision != 4 || strings.Join(n.Sites, ",") != "a,b" {
+		t.Errorf("%+v", n)
 	}
 }
