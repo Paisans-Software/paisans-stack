@@ -4802,6 +4802,60 @@ monitors survive on hosts that also run other people's services:
    conflict until it is changed; the monitors' records, whose addresses are no
    longer declared, are deleted by hand too.
 
+#### `--id` cleans a host when `paisans.yaml` is lost
+
+`--force` names the deployment by the `id` in `paisans.yaml`. When that file
+is lost, the id is still on every host the deployment reached, in the
+registry. `paisans host deployments` lists it, and `--id` cleans the host of
+it, reading neither `paisans.yaml` nor the secrets file.
+`docs/specs/2026-10-10-remove-without-config.md` is the approved
+specification.
+
+```sh
+paisans host deployments --ssh admin@203.0.113.9                                   # read only
+paisans site remove --force --ssh admin@203.0.113.9 --id f2a9                      # dry run
+paisans site remove --force --ssh admin@203.0.113.9 --id f2a9 --execute            # asks for the name
+paisans site remove --force --ssh admin@203.0.113.9 --id f2a9 --execute --delete-data
+```
+
+`host deployments` shows each registry entry: id, token, domain, site, roles
+and root. Under *not in the registry* it lists any `/srv/paisans/<token>`
+directory and any labelled compose project whose deployment has no entry.
+Those are left over from something no command can name, and are removed by
+hand. It changes nothing.
+
+`--id` is the full id or its token, and exactly one entry must match; no match
+and several are refused, listing what the host holds. The entry must be one a
+claim by that id writes: its key an id, its token and root the id's. The host
+stage is the one `--force` runs, with the site and roles from the entry and the
+ssh user from `--ssh`, so it removes the same things, proven the same way:
+containers and networks by label, images by ID without `-f`, named volumes only
+with `--delete-data`, the files the manifest proves, the units, ufw rules and
+keys, `/srv/paisans/<token>` (empty directories, or everything with
+`--delete-data`), the deployment record and the registry entry.
+
+What needs the rest of `paisans.yaml` is not done, and the report says so, one
+line each: the secrets file is not read, other hosts are not reached, and on an
+`apps` site it is not known whether this host held Pocket ID's active instance.
+**A gateway's Caddy is not handed over**, since the hand over renders its
+Caddyfile. It is removed with the deployment's other containers, nothing in
+`/srv/caddy.d` or `/srv/caddy` is touched, and the report lists each
+`/srv/caddy.d/*.caddy` file, a site of the host's owner that the removed Caddy
+served and that needs a Caddy of their own. A deployment with no gateway on the
+host, such as a monitor, is unaffected.
+
+Nothing says whether the deployment still runs elsewhere, so `--execute`
+always asks for the site's name at a terminal.
+
+| Refused | Because |
+|---|---|
+| `--id` without `--force`, or without `--ssh` | `--id` names what `--force` cleans off the host `--ssh` names |
+| `--id` with `--config`, `--secrets` or a site | it reads no configuration, and the registry entry names the site |
+| `--id` neither an id nor four hex digits | it matches no entry; Eg: `--id f2a9` |
+| no entry matches, or several do | the refusal lists every entry on the host |
+| an entry that is not the id's | everything removed is named from the id |
+| `--execute` without a terminal | it asks for the site's name |
+
 ### Preflight
 
 Half the design's assumptions are mechanically checkable, and every unchecked one
