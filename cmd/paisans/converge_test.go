@@ -552,3 +552,37 @@ func TestConvergeJoinsADerivedMember(t *testing.T) {
 		"dns: dns init",
 	)
 }
+
+// init's line says what it has to do, by name: the subnet, the secrets file,
+// or which generated secrets are missing.
+func TestConvergeSaysWhatInitIsFor(t *testing.T) {
+	fakeConverge(t, nil)
+	_, st, err := readConvergeState(fixtureConfig(), filepath.Join(t.TempDir(), "secrets.enc.yaml"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.NeedsInit || st.InitWhy != "no secrets file yet" {
+		t.Errorf("NeedsInit %t, why %q", st.NeedsInit, st.InitWhy)
+	}
+	steps := convergePlan(fixture(t), convergeState{NeedsInit: true, InitWhy: "no mesh subnet"})
+	if steps[0].Why != "no mesh subnet" {
+		t.Errorf("init's reason %q", steps[0].Why)
+	}
+}
+
+// Missing generated secrets are named, the first three and a count of the
+// rest, never by value.
+func TestInitWhyNamesMissingSecrets(t *testing.T) {
+	for _, c := range []struct {
+		names []string
+		want  string
+	}{
+		{[]string{"a"}, "generated secret missing: a"},
+		{[]string{"a", "b", "c"}, "generated secrets missing: a, b, c"},
+		{[]string{"a", "b", "c", "d", "e"}, "generated secrets missing: a, b, c and 2 more"},
+	} {
+		if got := missingSecrets(c.names); got != c.want {
+			t.Errorf("%v: %q, want %q", c.names, got, c.want)
+		}
+	}
+}
