@@ -176,6 +176,9 @@ func fakeConvergeArgs(t *testing.T, fail map[string]error) (*[]string, *[][]stri
 	// A dry run's checks are each step's own dry run, which reaches a host;
 	// here every step is up to date. fakeChecks says otherwise.
 	convergeCheck = func(ui.Reporter, []string) (string, []checkReport, error) { return "", nil, nil }
+	// Asking Pocket ID for an admin reaches a host too; here it has none.
+	// fakeAdminCheck says otherwise.
+	fakeAdminCheck(t, false, nil)
 	convergeRun = func(args []string) error {
 		full = append(full, args)
 		title := strings.Join(args, " ")
@@ -755,7 +758,7 @@ func statuses(rec *ui.Recorder) []string {
 			out = nil
 		}
 		mark := map[string]string{"done": "✓", "pending": "○", "waiting": "·", "fail": "✗"}[e.Kind]
-		if mark == "" || strings.Contains(e.Text, "etcd record") {
+		if mark == "" || strings.Contains(e.Text, "etcd record") || strings.HasSuffix(e.Text, "for an admin") {
 			continue
 		}
 		line := mark + " " + e.Text
@@ -1393,5 +1396,190 @@ func TestSSHFlagProblemSaysItOnce(t *testing.T) {
 	var p *ui.Problem
 	if !errors.As(err, &p) || p.Hint != "--ssh is not a destination" {
 		t.Errorf("got %#v", p)
+	}
+}
+
+// fakeAdminCheck replaces asking a Pocket ID app whether it has an admin: it
+// answers has, or err. It returns the apps asked, in order.
+func fakeAdminCheck(t *testing.T, has bool, err error) *[]string {
+	t.Helper()
+	var asked []string
+	saved := convergeAdminCheck
+	convergeAdminCheck = func(_ *config.Config, app string, o convergeOptions) (bool, error) {
+		asked = append(asked, app)
+		return has, err
+	}
+	t.Cleanup(func() { convergeAdminCheck = saved })
+	return &asked
+}
+
+// adminNotes is every note about a Pocket ID app's admin, as "hint | detail".
+func adminNotes(rec *ui.Recorder) []string {
+	var out []string
+	for _, e := range rec.Events {
+		if e.Kind == "note" && strings.HasPrefix(e.Text, "Pocket ID") {
+			out = append(out, e.Text+" | "+e.Extra)
+		}
+	}
+	return out
+}
+
+const authAdminCommand = "paisans app admin create --app auth --username <name> --email <address>"
+
+// A dry run in which a step that brings Pocket ID up is not up to date names
+// no admin, and does not ask: the app is not running yet.
+func TestConvergeDryRunNamesNoAdminBeforePocketIDRuns(t *testing.T) {
+	fakeConverge(t, nil)
+	fakeChecks(t, map[string]any{"apply --site home-b": "2 changes"})
+	asked := fakeAdminCheck(t, false, nil)
+	rec := recordConverge(t)
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	if len(*asked) != 0 {
+		t.Errorf("asked %v for an admin", *asked)
+	}
+	if notes := adminNotes(rec); len(notes) != 0 || rec.Has("step", "for an admin") {
+		t.Errorf("named an admin:\n%s", rec.Lines())
+	}
+}
+
+// Init with work is a step that brings Pocket ID up, so no admin is named.
+func TestConvergeDryRunNamesNoAdminWhileInitHasWork(t *testing.T) {
+	fakeConverge(t, nil)
+	fakeChecks(t, nil)
+	asked := fakeAdminCheck(t, false, nil)
+	saved := convergeRead
+	convergeRead = func(c, s string) (*config.Config, convergeState, error) {
+		cfg, st, err := readConvergeState(c, s)
+		st.NeedsInit, st.InitWhy = true, "no mesh subnet"
+		return cfg, st, err
+	}
+	t.Cleanup(func() { convergeRead = saved })
+	rec := recordConverge(t)
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	if len(*asked) != 0 || len(adminNotes(rec)) != 0 {
+		t.Errorf("asked %v:\n%s", *asked, rec.Lines())
+	}
+}
+
+// With every step that brings Pocket ID up ✓, it is asked, in a step of its
+// own, even while a step about another site is pending; with no admin, that
+// is named as a fact with the command.
+func TestConvergeDryRunNamesAMissingAdmin(t *testing.T) {
+	fakeConverge(t, nil)
+	fakeChecks(t, map[string]any{"apply --site watch": "1 change", "dns init": "2 records to create"})
+	asked := fakeAdminCheck(t, false, nil)
+	rec := recordConverge(t)
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(*asked, []string{"auth"}) {
+		t.Errorf("asked %v", *asked)
+	}
+	sameLines(t, adminNotes(rec), []string{"Pocket ID auth has no admin yet | " + authAdminCommand})
+	step := rec.Index("step", "check auth for an admin")
+	note := rec.Index("note", "Pocket ID auth")
+	if step < 0 || note < step {
+		t.Errorf("the check is not a step ahead of its note:\n%s", rec.Lines())
+	}
+}
+
+// An admin that exists is not named.
+func TestConvergeDryRunNamesNoAdminWhenOneExists(t *testing.T) {
+	fakeConverge(t, nil)
+	fakeChecks(t, nil)
+	asked := fakeAdminCheck(t, true, nil)
+	rec := recordConverge(t)
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	if len(*asked) != 1 || len(adminNotes(rec)) != 0 {
+		t.Errorf("asked %v:\n%s", *asked, rec.Lines())
+	}
+	if !rec.Has("done", "check auth for an admin") {
+		t.Errorf("the check's step did not end done:\n%s", rec.Lines())
+	}
+}
+
+// A check that fails names the admin anyway, with why it could not check on
+// one line, and does not fail the dry run.
+func TestConvergeDryRunSaysWhenItCouldNotCheckForAnAdmin(t *testing.T) {
+	fakeConverge(t, nil)
+	fakeChecks(t, nil)
+	fakeAdminCheck(t, false, errors.New("GET /api/users: curl: (7) connection refused\nmore detail"))
+	rec := recordConverge(t)
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	sameLines(t, adminNotes(rec), []string{"Pocket ID auth: could not check for an admin (GET /api/users: curl: (7) connection refused) | " + authAdminCommand})
+}
+
+// A run that completed asks, and names a missing admin.
+func TestConvergeRunNamesAMissingAdmin(t *testing.T) {
+	fakeConverge(t, nil)
+	asked := fakeAdminCheck(t, false, nil)
+	rec := recordConverge(t)
+	if err := converge(t, "--execute"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(*asked, []string{"auth"}) {
+		t.Errorf("asked %v", *asked)
+	}
+	sameLines(t, adminNotes(rec), []string{"Pocket ID auth has no admin yet | " + authAdminCommand})
+}
+
+// A run that stopped names no admin and does not ask.
+func TestConvergeStoppedRunNamesNoAdmin(t *testing.T) {
+	fakeConverge(t, map[string]error{"apply --site vm": errors.New("vm: boom")})
+	asked := fakeAdminCheck(t, false, nil)
+	rec := recordConverge(t)
+	if err := converge(t, "--execute"); err == nil {
+		t.Fatal("the run did not stop")
+	}
+	if len(*asked) != 0 || len(adminNotes(rec)) != 0 {
+		t.Errorf("asked %v:\n%s", *asked, rec.Lines())
+	}
+}
+
+// The check asks the Pocket ID app admin create would call, with its key, read
+// only, through the run's sudo, and answers whether a user is an admin.
+func TestConvergeAdminCheckAsksPocketIDReadOnly(t *testing.T) {
+	fake := withPIDFake(t)
+	key := fixtureAPIKey(t)
+	cfg := fixture(t)
+	o := convergeOptions{Config: fixtureConfig(), Secrets: fixtureSecretsPath(), Sudo: true}
+	has, err := convergeAdminCheck(cfg, "auth", o)
+	if err != nil || has {
+		t.Fatalf("has %t, err %v", has, err)
+	}
+	fake.created = true
+	if has, err = convergeAdminCheck(cfg, "auth", o); err != nil || !has {
+		t.Fatalf("has %t, err %v", has, err)
+	}
+	if fake.mutated || !fake.sudo {
+		t.Errorf("mutated %t, sudo %t", fake.mutated, fake.sudo)
+	}
+	for i, c := range fake.commands {
+		if strings.Contains(c, key) {
+			t.Errorf("a command line carries the API key: %s", c)
+		}
+		if !strings.Contains(fake.stdins[i], `request = "GET"`) || !strings.Contains(fake.stdins[i], "http://10.44.0.1:1411/api/users?") {
+			t.Errorf("request %d was not a GET of the users on home-a's mesh port:\n%s", i, strings.ReplaceAll(fake.stdins[i], key, "<key>"))
+		}
+	}
+}
+
+// A missing key is an error, not an answer, and names no secret's value.
+func TestConvergeAdminCheckFailsWithoutAKey(t *testing.T) {
+	fake := withPIDFake(t)
+	o := convergeOptions{Config: fixtureConfig(), Secrets: filepath.Join(t.TempDir(), "absent.enc.yaml")}
+	if has, err := convergeAdminCheck(fixture(t), "auth", o); err == nil || has {
+		t.Fatalf("has %t, err %v", has, err)
+	}
+	if len(fake.commands) != 0 {
+		t.Error("Pocket ID was asked without a key")
 	}
 }
