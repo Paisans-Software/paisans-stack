@@ -313,7 +313,15 @@ func (p *Plan) deleteBesideKept() string {
 		sort.Strings(names)
 		loops = append(loops, head+fmt.Sprintf(` case "${f##*/}" in %s) ;; *) rm -rf -- "$f";; esac; done`, strings.Join(names, "|")))
 	}
-	return "set -e; " + strings.Join(loops, "; ")
+	// A directory walked that is a symbolic link would take the loop out of
+	// the root, Eg: snippets pointing at the owner's sites: nothing is
+	// deleted then.
+	var quoted []string
+	for _, dir := range dirs {
+		quoted = append(quoted, quote(dir))
+	}
+	guard := fmt.Sprintf(`for d in %s; do if [ -L "$d" ]; then echo "$d is a symbolic link, so nothing under the root was deleted"; exit 3; fi; done`, strings.Join(quoted, " "))
+	return "set -e; " + guard + "; " + strings.Join(loops, "; ")
 }
 
 // emptyBesideKept removes the empty directories under the root, but never a

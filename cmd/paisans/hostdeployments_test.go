@@ -290,3 +290,18 @@ func TestHostDeploymentsFlagsAnOrphanedCaddy(t *testing.T) {
 		t.Errorf("a kept Caddy with its entry:\n%s", got)
 	}
 }
+
+// A kept Caddy whose sites are gone says the next removal takes it.
+func TestHostDeploymentsKeptCaddyWithNoSitesLeft(t *testing.T) {
+	r, _ := registry.Parse([]byte(twoDeployments(t)))
+	r.Deployments[neighbour] = registry.KeepCaddy(r.Deployments[neighbour])
+	data, _ := registry.Encode(r)
+	withHost(t, &listedHost{t: t, registry: string(data), probe: "root 0c1d\nend\n"})
+	out := plainOutput(t)
+	if err := runHostDeployments([]string{"--ssh", "admin@192.0.2.30"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "caddy kept, but /srv/caddy.d holds no site now: paisans site remove --force --ssh admin@192.0.2.30 --id 0c1d removes it") {
+		t.Errorf("printed:\n%s", got)
+	}
+}

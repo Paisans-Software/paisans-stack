@@ -118,8 +118,11 @@ func runHostDeployments(args []string) error {
 			roles = "none"
 		}
 		line := fmt.Sprintf("%s: token %s, %s, site %s, roles %s, root %s", id, e.Token, e.Domain, e.Site, roles, e.Root)
-		if e.Kept == registry.KeptCaddy {
+		switch {
+		case e.Kept == registry.KeptCaddy && len(found.sites) > 0:
 			line += fmt.Sprintf("; caddy kept: serves %s sites (%s)", render.HostSitesDir, strings.Join(found.sites, ", "))
+		case e.Kept == registry.KeptCaddy:
+			line += fmt.Sprintf("; caddy kept, but %s holds no site now: paisans site remove --force --ssh %s --id %s removes it", render.HostSitesDir, *sshFlag, e.Token)
 		}
 		r.Item(line)
 	}
