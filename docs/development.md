@@ -655,7 +655,7 @@ undo:
 
 * **The end state is `siteremove.EndState`**: `config.WithoutSite`, and, when
   that would leave one data site and a witness as two etcd voters, the
-  witness out of `etcd.members` and its `witness` role too. Stage 4 writes
+  witness out of `etcd.members` and its `witness` role too. Stage 5 writes
   exactly that with `config.RemoveSite`, or `config.RemoveSiteAndWitness` in
   the witness case, both editing `paisans.yaml` in place the way
   `config.SetMesh` does: the site's block and the comment lines directly
@@ -811,8 +811,12 @@ needs*. Four things about the code are easy to undo by accident:
   resolve rather than handed to an overwrite. Adding one is a design change,
   not a convenience.
 * **`Delete` exists for prune alone.** Its one caller is `ExecutePrune`, which
-  deletes only what `BuildPrune` marked remove after every rule in
-  `internal/dns/prune.go`. Loosening a rule, and above all deciding by the
+  deletes only what a prune plan marked remove after every rule in
+  `internal/dns/prune.go`. Two builders make that plan, `BuildPrune` for `dns
+  prune` and `BuildSiteRemoval` for `site remove`'s DNS stage, and both fill
+  the one `pruneRules` the one planner applies: they differ only in the
+  address set of rule 4, the configuration rule 5 compares against, and the
+  shared-address reason. Loosening a rule, and above all deciding by the
   comment alone, reopens a founder decision; the README section says why.
 * **The provider's base URL is a struct field, not a flag.** Tests point it at
   an `httptest` server; an operator has no reason to send the zone token
@@ -1168,7 +1172,7 @@ before.
   written. Whether a key is written comes from the yaml node, not the decoded
   slice, since `members: []` and a key left out decode alike; a decoded list
   the walk cannot see, behind a merge key, also counts as written. The flags
-  word messages (`EtcdMembersKey`, `ClusterSitesKey`, `site remove`'s stage 4
+  word messages (`EtcdMembersKey`, `ClusterSitesKey`, `site remove`'s stage 5
   and its two voter refusal, `validate`'s voter advice), hold `validate`'s two
   `cluster.sites` comparisons and its `undeclared-site` check to a written
   list, and make `WithoutSite` derive a derived list again from the remaining

@@ -6,6 +6,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 )
 
@@ -55,7 +56,7 @@ func WorstCaseRemains() []string {
 	out := []string{
 		containerKept(site, name), networkKept(site, name), volumeKept(site, name), editedFileKept(site, path),
 		sshAllowKept(site, rule), ufwRuleKept(site, rule), rootEditedKept(site, path), dataLeft(site, path, 99999),
-		secretsLeft(site), dnsLeft(strings.Repeat("a", 60)), dnsLeft(""), ownedNote(site, name),
+		secretsLeft(site), DNSNotModified(deployment.Deployment{ID: strings.Repeat("i", 36)}, config.Destination{Host: "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"}), ownedNote(site, name),
 		apply.LeaderPatroniEnvNote(site),
 		imageKept(site, "sha256:"+strings.Repeat("f", 64), strings.Repeat("w", 80)),
 		recordMissed(site, strings.Repeat("w", 80)),

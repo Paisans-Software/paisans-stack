@@ -30,6 +30,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
@@ -44,6 +45,9 @@ type Options struct {
 	DeleteData bool
 	// ConfigPath is the paisans.yaml the last stage edits.
 	ConfigPath string
+	// DNSProvider makes the provider the DNS stage deletes through, from
+	// acme.provider and the token. Nil is dns.For; tests hand in a fake.
+	DNSProvider func(name, token string) (dns.Provider, error)
 }
 
 // Step is one thing a stage will do, for the plan an operator reads.
@@ -79,9 +83,48 @@ type Stage struct {
 	Short string
 	// Skipped says why the stage does nothing, empty when it runs.
 	Skipped string
+	// SkipLine is a skipped stage's why, short enough to follow its name on
+	// the one line the skip is shown as. Empty, the why is a detail.
+	SkipLine string
+	// Kept are what the stage found and leaves alone, with why.
+	Kept []Kept
 
 	run  func() error
 	gate func() error
+}
+
+// Kept is one thing a stage found and leaves alone.
+type Kept struct {
+	Title string
+	Why   []string
+	// Shown is one whose why an operator needs at every verbosity; the rest
+	// are listed with --verbose.
+	Shown bool
+}
+
+// show reports what a stage keeps: each shown one as a note with its why,
+// and with --verbose the others as details.
+func (st *Stage) show(r ui.Reporter) {
+	for _, k := range st.Kept {
+		if k.Shown {
+			r.Note(k.Title, strings.Join(k.Why, "; "))
+			continue
+		}
+		if r.Verbose() {
+			r.Detail("%s", k.Title)
+			for _, why := range k.Why {
+				r.Detail("    %s", why)
+			}
+		}
+	}
+}
+
+// skipTitle is the one line a skipped stage is shown as.
+func (st *Stage) skipTitle() string {
+	if st.SkipLine != "" {
+		return "skip " + st.Name + ": " + st.SkipLine
+	}
+	return "skip " + st.Name
 }
 
 // Plan is a whole removal, decided from the live deployment.
@@ -101,9 +144,13 @@ type Plan struct {
 	// CaddyKept are the host owner's site files in /srv/caddy.d that the
 	// gateway's Caddy is kept for, empty when it is not kept.
 	CaddyKept []string
-	// forced is a plan BuildForced made, and declared whether paisans.yaml
-	// still declares its site.
+	// forced is a plan BuildForced or BuildForcedByID made, and declared
+	// whether paisans.yaml still declares its site.
 	forced, declared bool
+	// byID is a plan BuildForcedByID made, with no configuration, and dest
+	// the host it cleans.
+	byID bool
+	dest config.Destination
 	// Report receives each stage as a section, the work in it as steps and
 	// each gate as a step of its own. Nil discards it.
 	Report ui.Reporter
@@ -426,6 +473,11 @@ func Build(cfg *config.Config, secrets *config.Secrets, site string, transports 
 	}
 	p.notePocketID(host)
 	p.Stages = append(p.Stages, host)
+	dnsSt, err := p.buildDNS(cfg, p.end)
+	if err != nil {
+		return nil, err
+	}
+	p.Stages = append(p.Stages, dnsSt)
 	p.Stages = append(p.Stages, p.buildConfig())
 	monitor, err := p.buildMonitor()
 	if err != nil {
@@ -467,10 +519,10 @@ func (p *Plan) render(cfg *config.Config) (*render.Plan, error) {
 	return render.Build(cfg, p.secrets, opts...)
 }
 
-// buildConfig is stage 4: the site out of paisans.yaml.
+// buildConfig is stage 5: the site out of paisans.yaml.
 func (p *Plan) buildConfig() *Stage {
 	st := &Stage{
-		Number: 4,
+		Number: 5,
 		Name:   "config",
 		Gate:   fmt.Sprintf("%s loads, and declares no site %s", p.ConfigPath, p.Site),
 		Short:  "configuration loads without " + p.Site,
@@ -533,9 +585,14 @@ func Execute(p *Plan) error {
 	for _, st := range p.Stages {
 		r.Section(stageTitle(st))
 		if st.Skipped != "" {
-			s := r.Step("skip " + st.Name)
+			s := r.Step(st.skipTitle())
 			s.Detail("%s", st.Skipped)
-			s.Done("skipped")
+			// A title that says why already reads as a skip.
+			result := "skipped"
+			if st.SkipLine != "" {
+				result = ""
+			}
+			s.Done(result)
 			continue
 		}
 		if st.run != nil && len(st.Steps) > 0 {
@@ -546,6 +603,7 @@ func Execute(p *Plan) error {
 			}
 			p.idle()
 		}
+		st.show(r)
 		g := r.Step("gate: " + st.Short)
 		g.Detail("%s", st.Gate)
 		if st.gate != nil {
@@ -577,11 +635,11 @@ func (p *Plan) Show(r ui.Reporter) {
 	for _, st := range p.Stages {
 		r.Section(stageTitle(st))
 		if st.Skipped != "" {
-			r.Item("skip " + st.Name)
+			r.Item(st.skipTitle())
 			r.Detail("%s", st.Skipped)
 			continue
 		}
-		if len(st.Steps) == 0 {
+		if len(st.Steps) == 0 && len(st.Kept) == 0 {
 			r.Item("nothing to do here")
 			r.Detail("nothing to do here, and the gate is still checked")
 		}
@@ -593,15 +651,17 @@ func (p *Plan) Show(r ui.Reporter) {
 			}
 			r.Detail("%s: %s", step.Site, step.Text)
 		}
+		st.show(r)
 		r.Item("gate: " + st.Short)
 		r.Detail("%s", st.Gate)
 	}
 }
 
 // Remains is what the operator still has to see to once the plan has run:
-// the site's secrets, its DNS records, what a scoped apply did not move, and
-// everything kept on the host, with why. Nothing here is changed by this
-// command.
+// the site's secrets, what a scoped apply did not move, and everything kept
+// on the host, with why; and, with no configuration, that DNS was not
+// modified. Nothing here is changed by this command. With a configuration,
+// the DNS stage reports the site's records itself.
 func (p *Plan) Remains() []string {
 	var out []string
 	// A forced run on a still declared site leaves its secrets in use.
@@ -610,13 +670,8 @@ func (p *Plan) Remains() []string {
 			out = append(out, secretsLeft(p.Site))
 		}
 	}
-	// A forced run leaves a still declared site's records wanted, and knows
-	// no address for an undeclared one.
-	switch {
-	case !p.forced:
-		out = append(out, dnsLeft(p.cfg.Sites[p.Site].PublicAddress))
-	case !p.declared:
-		out = append(out, dnsLeft(""))
+	if p.byID {
+		out = append(out, DNSNotModified(p.dep(), p.dest))
 	}
 	out = append(out, p.Notes...)
 	out = append(out, p.Kept...)

@@ -34,7 +34,8 @@ Out, each for a stated reason:
   claimed by that id. They are removed by hand.
 * **Every other host.** One host at a time, as with `--force`.
 * **The secrets, DNS and Pocket ID.** Not read and not changed; the closing
-  report says so.
+  report says so. DNS has no provider or token without a configuration, so
+  nothing there can be deleted safely.
 
 ## `host deployments`
 
@@ -135,7 +136,17 @@ Besides what the host stage keeps, with why, one line each:
   deployment until this command runs there.
 * **Pocket ID**, on a site with the `apps` role: not checked; if this host held
   the active instance, sign in stops until a standby takes over.
-* **DNS:** the forced removal's line for an undeclared site, unchanged.
+* **DNS:** on every `--id` run, dry run and `--execute` alike, and when the
+  host holds nothing of the deployment, one warning:
+
+  ```
+  ! DNS records for this deployment, if any exist, were not modified
+    They carry the comment "paisans-f2a9: created by paisans dns init"
+  ```
+
+  With no configuration there is no provider and no token, so nothing can be
+  deleted safely. The detail line gives the comment to search for at the
+  provider, and adds the address when `--ssh` named the host by one.
 
 ### Confirmation
 

@@ -10,7 +10,7 @@ import (
 )
 
 // monitorStage is the stage number of the monitor's reseed, the last.
-const monitorStage = 5
+const monitorStage = 6
 
 // buildMonitor is stage 5, the last: every remaining monitor site's uptime
 // stack applied on its own, so that its monitors.json, rendered from the end

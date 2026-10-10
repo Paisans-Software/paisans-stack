@@ -40,6 +40,9 @@ type fakeCloudflare struct {
 	// echoToken makes every response an error quoting the Authorization
 	// header back, the worst thing a provider could do with it.
 	echoToken bool
+	// failDelete is a record id whose DELETE the provider answers with an
+	// error, to prove a run that stops partway says where it stopped.
+	failDelete string
 }
 
 func newFake() *fakeCloudflare {
@@ -95,6 +98,10 @@ func (f *fakeCloudflare) handle(w http.ResponseWriter, r *http.Request) {
 		writeEnvelope(w, http.StatusOK, result)
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/zones/") && strings.Contains(path, "/dns_records/"):
 		zoneID, recordID, _ := strings.Cut(strings.TrimPrefix(path, "/zones/"), "/dns_records/")
+		if recordID == f.failDelete {
+			writeEnvelope(w, http.StatusInternalServerError, nil, "Internal error")
+			return
+		}
 		f.deletes = append(f.deletes, recordID)
 		kept := f.records[zoneID][:0:0]
 		found := false

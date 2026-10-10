@@ -61,13 +61,6 @@ func secretsLeft(site string) string {
 	return fmt.Sprintf("secrets: run `paisans secrets prune` once nothing needs sites.%s. It holds its WireGuard key and heartbeat token, and this command never edits the secrets file", site)
 }
 
-func dnsLeft(addr string) string {
-	if addr == "" {
-		addr = "the address this host had"
-	}
-	return fmt.Sprintf("DNS: records pointing at this host stay; delete them at the DNS provider by hand. They point at %s, and dns init made them; dns prune deletes only a record whose address paisans.yaml still declares", addr)
-}
-
 func ownedNote(site, owed string) string {
 	return fmt.Sprintf("%s: run `paisans apply --site %s` when that is acceptable. %s", site, site, owed)
 }

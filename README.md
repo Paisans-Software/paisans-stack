@@ -2221,7 +2221,7 @@ A record is deleted only when every one of these holds:
 | Rule | Why |
 |------|-----|
 | it carries exactly the comment this deployment's `dns init` writes, `paisans-<token>: created by paisans dns init` | a record without it was never this deployment's: one with another token is another deployment's, and one with no token was never the toolkit's |
-| it is an A or AAAA record | those are the only types `dns init` creates |
+| it is an A or AAAA record, holding an address of that record's family | those are the only types `dns init` creates, and an IPv4-mapped address in an AAAA record would otherwise match an IPv4 address |
 | its name is `community.domain`, a name under it, or a name the configuration produces now | every media hostname, derived or declared, is under the domain, and so was the shared one per app hostnames replaced |
 | its address is a site's `public_address` or `public_address6` | it pointed at this deployment's own host |
 | no record of its type is wanted at its name | prune removes names, it does not repoint them |
@@ -2244,6 +2244,12 @@ every page of the listing, because it decides from what is missing from the
 configuration as well as from what is in it. After `--execute` it lists each
 zone again and fails if any deleted record is still there; a run that stopped
 partway plans again from a fresh listing, so a re-run resumes.
+
+`site remove` deletes a removed site's records with the same planner and the
+same delete, comparing against the configuration before and without the site
+rather than as it stands (see *`site remove` takes a site out*). That is the
+one case prune cannot cover: once the site is out of `paisans.yaml`, its
+address is no longer declared, and prune keeps every record pointing at it.
 
 ### A data site's watchdog is declared, not assumed
 
@@ -4658,7 +4664,7 @@ paisans site remove home-b --host-gone --execute       # the host is never comin
 | a host that does not answer over ssh | what is on it cannot be read; fix ssh, or say `--host-gone` |
 | `--delete-data` without a terminal, or with `--host-gone` | the same rule as `app remove`; and nothing is deleted on a host that is not reached |
 
-**Five stages, each ending at a gate.** Each is planned from live state, so a
+**Six stages, each ending at a gate.** Each is planned from live state, so a
 stage already done plans no steps, its gate is still checked, and a re-run
 after a fixed problem resumes at the first stage with anything left to do.
 The last one is the exception, since the stage before it is what makes a
@@ -4669,8 +4675,9 @@ re-run impossible: a failure there names the `apply` that finishes it.
 | 1. Data out of the site | the leader switched over to the `Sync Standby` when the site holds it; `synchronous_mode` turned off when one data site remains, since a leader waiting on a standby that is leaving stops taking writes; Patroni stopped on the site and its member key deleted from etcd; its Garage node removed from the layout and the layout applied | another site leads and `patronictl list` no longer lists the site, with a `Sync Standby` when the end state wants one; no layout row for the site, and every remaining node settled (one live layout version, an empty resync queue) within an hour, and a run that times out resumes at this gate while Garage carries on copying |
 | 2. Out of the cluster | `etcdctl member remove`, then the site's etcd stopped; with two data sites and a witness, the witness's member next (below); on every remaining site, the files whose render changes with the site gone, by scoped `apply`: `psns-<token>.conf` (`wg syncconf`), `haproxy.cfg` (HAProxy restarted with its database apps stopped around it, as `site add` does) and the gateway's routes (validated, then Caddy reloaded); then each remaining replica's `patroni.env`, one at a time, as `site add`'s stage 7 does; last, the site taken out of every remaining gateway's deployment record | the voters are exactly the end state's and all healthy; no remaining site has the site's key as a WireGuard peer; HAProxy lists exactly the end state's cluster sites with the leader `UP`; each replica streaming again before the next |
 | 3. Clean the host | below; skipped with `--host-gone`. When the site holds the active Pocket ID instance, the plan says that once this stage stops it, sign in is unavailable for a few seconds while a standby takes over, up to about 90 seconds if the instance does not stop cleanly | checked last: nothing of this deployment's left but what the plan said it keeps |
-| 4. Config | the site taken out of `paisans.yaml`: its block, its name in `cluster.sites`, `etcd.members` and `storage.garage.sites` where the file writes them, its capacity; with two data sites and a witness, the witness out of a written `etcd.members` and its `witness` role, in the same write; every other byte as it was | the file loads and no longer declares it |
-| 5. Monitor | every remaining monitor site's `uptime` stack applied on its own, so its `monitors.json`, rendered from the end state, no longer names the site and the restarted monitor deletes its ping and direct checks; skipped when no site holds the monitor role (see *Topology commands reseed the monitor*). The monitor site itself is never the one removed, since its app is pinned to it | the seed on the host matches the render and the stack is healthy; a failure here comes after the removal and names the `apply` that finishes it |
+| 4. DNS | the address records this deployment's `dns init` made for the site, deleted at the provider (below, *The site's DNS records go with it*); skipped, saying why in one line, when `acme.provider` is not set, its token is not in the secrets, or the site has no public address | listing the zones again finds nothing left to delete |
+| 5. Config | the site taken out of `paisans.yaml`: its block, its name in `cluster.sites`, `etcd.members` and `storage.garage.sites` where the file writes them, its capacity; with two data sites and a witness, the witness out of a written `etcd.members` and its `witness` role, in the same write; every other byte as it was | the file loads and no longer declares it |
+| 6. Monitor | every remaining monitor site's `uptime` stack applied on its own, so its `monitors.json`, rendered from the end state, no longer names the site and the restarted monitor deletes its ping and direct checks; skipped when no site holds the monitor role (see *Topology commands reseed the monitor*). The monitor site itself is never the one removed, since its app is pinned to it | the seed on the host matches the render and the stack is healthy; a failure here comes after the removal and names the `apply` that finishes it |
 
 **Two data sites and a witness go to one voter.** Taking one data site out of
 two and a witness would leave two etcd voters, and two are worse than one. With
@@ -4760,26 +4767,64 @@ approved specification.
   orphaned Caddy.
 
 **`--host-gone` is for a host that is never coming back.** The host is not
-reached at all: stages 1, 2 and 4 run and stage 3 is skipped. The report lists
+reached at all: stages 1, 2, 4, 5 and 6 run and stage 3 is skipped. The DNS
+stage runs: the records point at a host that is gone, which is when they
+should go. The report lists
 what the host still holds if it ever returns, by name, and nothing it runs can
 reach the cluster again, since no remaining site has it as a WireGuard peer
 and its etcd member is gone.
 
-**It leaves three things and says so,** as `app remove` does: the site's
+**The site's DNS records go with it.** Stage 4 deletes the A and AAAA
+records this deployment's `dns init` made for the site, through the same
+provider and token as `dns init` and `dns prune`, and under `dns prune`'s rules
+with the configuration before and without the site in place of the
+configuration as it stands. A record is deleted only when every one of these
+holds:
+
+| Rule | Why |
+|------|-----|
+| it carries exactly this deployment's comment, `paisans-<token>: created by paisans dns init` | anything else was never this deployment's |
+| it is an A or AAAA record, holding an address of that record's family | the only types `dns init` creates |
+| its name is `community.domain`, a name under it, or one the configuration before removal produces | it sits where this deployment's names sit |
+| its address is the site's own `public_address` or `public_address6` | it points at the host being removed |
+| the configuration without the site wants no record of its type at its name | a name still wanted is kept |
+| no remaining site declares the same address | a shared address may be the other site's record, so it is kept and the plan says so |
+
+Every record carrying the comment that fails a rule is listed as kept with its
+reasons; one kept although it points at the site's address shows them at every
+verbosity. The dry run reads the provider and changes nothing:
+
+```
+stage 4, dns
+  · delete A blog.example.org → 203.0.113.7
+  ! keep A home-b.example.org → 203.0.113.7
+    203.0.113.7 is also sites.home-a.public_address, which stays, so the record may be home-a's
+  · gate: no record of home-b's is left
+```
+
+`--execute` plans again from a fresh listing, deletes each record by its id,
+and lists each zone again to confirm it is gone. A provider error stops the
+stage, naming what was deleted and what was not; running the same command
+again resumes, since `paisans.yaml` still declares the site until stage 5.
+Without `acme.provider`, without its token in the secrets, for a site with
+no public address, or when the provider cannot be read as the plan is made,
+the stage is skipped with one line saying why, and the removal goes on.
+
+**It leaves two things and says so,** as `app remove` does: the site's
 WireGuard key and heartbeat token in the secrets file, which it never edits,
 for `paisans secrets prune` (see *Pasted and captured secrets go in through a
-pipe*); the DNS records `dns init` made for the host's public address, which
-are deleted at the DNS provider by hand, since `paisans dns prune` deletes only
-a record pointing at an address `paisans.yaml` still declares; and everything
-kept above, with why.
+pipe*); and everything kept above, with why.
 
 #### `--force` cleans one host and nothing else
 
 A full removal checks the cluster first, and when the other hosts are gone
 every one of its refusals holds, so nothing cleans the host that is left.
-`--force` runs stage 3 alone against one host: stages 1, 2, 4 and 5 do not
+`--force` runs stage 3 alone against one host: stages 1, 2, 5 and 6 do not
 run, none of their refusals are checked, no other site is reached, and neither
-`paisans.yaml` nor the secrets file is edited.
+`paisans.yaml` nor the secrets file is edited. A site `paisans.yaml` still
+declares has no DNS stage, since its records are still wanted; for one it does
+not declare, the DNS stage follows and is skipped, saying its records are
+deleted by hand, since nothing names its public address.
 `docs/specs/2026-10-09-site-remove-force.md` is the approved specification.
 
 ```sh
@@ -4873,6 +4918,10 @@ keys, `/srv/paisans/<token>` (empty directories, or everything with
 What needs the rest of `paisans.yaml` is not done, and the report says so, one
 line each: the secrets file is not read, other hosts are not reached, and on an
 `apps` site it is not known whether this host held Pocket ID's active instance.
+Every `--id` run, dry run or not, warns
+`DNS records for this deployment, if any exist, were not modified`: there is no
+provider or token to delete them with. The line under it is the comment to
+search for at the provider, and the address when `--ssh` named one.
 A gateway's Caddy is kept for the owner's sites exactly as with a
 configuration, since the reduced Caddyfile is built from the one on the host.
 

@@ -33,8 +33,10 @@ Out, each for a stated reason:
   voters remain.
 * **Moving an app.** A site an app is pinned to is refused; moving the app is
   its own operation (README, *Moving a pinned app*).
-* **Editing the secrets file or DNS.** Like `app remove`, the command reports
-  both and changes neither.
+* **Editing the secrets file.** Like `app remove`, the command reports it and
+  does not change it. The site's DNS records are deleted by the DNS stage,
+  added 2026-10-10 (docs/specs/2026-10-09-site-remove-force.md, *DNS: the
+  removed site's address records*).
 
 ## The operator's flow
 
@@ -85,7 +87,8 @@ evidence. Nothing after it runs.
 | 1. Data out of the site | The site's Patroni leadership switched over to the Sync Standby; synchronous mode turned off when one cluster site remains; Patroni stopped on the site and its member key deleted from etcd; the site's Garage node removed from the layout and the layout applied | the new leader leads; `patronictl list` no longer lists the site; a Sync Standby exists when the end state wants one; no layout row for the site, and Garage settled (one live layout version, empty resync queue) on every remaining node, within a bounded wait |
 | 2. Out of the cluster | `etcdctl member remove`, then the site's etcd stopped, since a removed member cannot rejoin and would restart in a loop; with two data sites and a witness, the witness's member too (below); on every remaining site, the files whose render changes with the site taken out, by scoped applies: the mesh file (`wg syncconf`), HAProxy (restarted with its database apps stopped around it, as `site add` does) and the gateway's routes (validated, then Caddy reloaded); then every remaining replica's `patroni.env`, one replica at a time (below) | etcd's voters are exactly the end state's and every member is healthy; HAProxy lists exactly the end state's cluster sites with the leader `UP`; no remaining site has the removed site as a WireGuard peer; each replica streams again before the next is touched |
 | 3. Clean the host | Below. Skipped with `--host-gone`. When the site holds the active Pocket ID instance, the plan says that once this stage stops it, sign in is unavailable for a few seconds while a standby on another site takes over, up to about 90 seconds if the instance does not stop cleanly. The stop is clean, so the standby takes over at its next retry; 90 seconds is how long a registration takes to age when an instance dies (`docs/specs/2026-10-07-pocket-id-standby.md`) | nothing of this deployment's is left on the host but what the plan said it keeps |
-| 4. Config | The site taken out of `paisans.yaml`, comments kept; with two data sites and a witness, in the same write, the witness out of `etcd.members` and the `witness` role off its site | the file loads without the site, and without the witness in etcd |
+| 4. DNS | The address records this deployment's `dns init` made for the site, deleted when the configuration without it wants none at their names and no remaining site shares their address (docs/specs/2026-10-09-site-remove-force.md); skipped, with one line, without a provider, a token or a public address | listing the zones again finds nothing left to delete |
+| 5. Config | The site taken out of `paisans.yaml`, comments kept; with two data sites and a witness, in the same write, the witness out of `etcd.members` and the `witness` role off its site | the file loads without the site, and without the witness in etcd |
 
 ### Two data sites and a witness
 
@@ -190,7 +193,7 @@ goes like every other container.
 
 ### What `--host-gone` leaves
 
-Stages 1, 2 and 4 run; stage 3 is skipped and the report lists what a host
+Stages 1, 2, 4 and 5 run; stage 3 is skipped and the report lists what a host
 that comes back still holds: this deployment's containers, files under
 `/srv/paisans/<token>`, its units, its ufw rules, its keys and record, its
 registry entry. Nothing it runs can reach the cluster again, because no
@@ -198,8 +201,7 @@ remaining site has it as a WireGuard peer and its etcd member is gone.
 
 ## What it reports at the end
 
-The site's secrets in `secrets.enc.yaml`, which it never edits; the DNS records
-pointing at the host's public address, which `paisans dns prune` deletes; the
+The site's secrets in `secrets.enc.yaml`, which it never edits; the
 leader's `patroni.env` and the files a scoped apply does not move; everything
 kept on the host, with why.
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/siteremove"
 	"github.com/paisans-software/paisans-stack/internal/ui"
@@ -176,5 +177,61 @@ func TestForcedOnAHostWithOnlyAKeptCaddySaysSo(t *testing.T) {
 	out := rec.Lines()
 	if !strings.Contains(out, "Caddy") || !strings.Contains(out, "/srv/caddy.d/blog.caddy") || strings.Contains(out, "holds nothing of this deployment.") {
 		t.Errorf("printed:\n%s", out)
+	}
+}
+
+// idHost is an empty running host whose registry holds the fixture
+// deployment's monitor and a neighbour's entry.
+type idHost struct {
+	runningHost
+	registry string
+}
+
+func (h idHost) ReadFile(path string) (string, bool, error) {
+	if path == registry.Path {
+		return h.registry, true, nil
+	}
+	return h.runningHost.ReadFile(path)
+}
+
+// Every --id run says DNS was not modified, in one line and the comment to
+// search for, since with no configuration there is no provider to ask.
+func TestSiteRemoveByIDWarnsThatDNSWasNotModified(t *testing.T) {
+	withHost(t, idHost{runningHost{failingHost{match: "\x00"}}, twoDeployments(t)})
+	out := plainOutput(t)
+	if err := runSiteRemove([]string{"--force", "--ssh", "admin@192.0.2.30", "--id", "f2a9", "--sudo=false"}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	t.Log("\n" + got)
+	if strings.Count(got, "DNS") != 1 {
+		t.Errorf("want the warning once:\n%s", got)
+	}
+	got = strings.Join(strings.Fields(got), " ")
+	for _, want := range []string{
+		"WARN DNS records for this deployment, if any exist, were not modified They carry",
+		`They carry the comment "paisans-f2a9: created by paisans dns init", and may point at 192.0.2.30`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in:\n%s", want, got)
+		}
+	}
+}
+
+// A forced removal of a site paisans.yaml no longer declares has no address
+// for it, so its DNS stage skips, and no provider is made.
+func TestForcedRemovalOfAnUndeclaredSiteMakesNoProvider(t *testing.T) {
+	savedSite, savedReg, savedDNS := removeSiteHost, registryHost, dnsProviderFor
+	t.Cleanup(func() { removeSiteHost, registryHost, dnsProviderFor = savedSite, savedReg, savedDNS })
+	removeSiteHost = func(string, config.Site, bool) apply.Transport { return runningHost{failingHost{match: "\x00"}} }
+	registryHost = func(string, config.Site, string, bool) registry.Runner { return &recordFake{} }
+	dnsProviderFor = func(string, string) (dns.Provider, error) {
+		t.Error("a DNS provider was made")
+		return nil, nil
+	}
+	plainOutput(t)
+	err := runSiteRemove([]string{"monitor-a", "--force", "--ssh", "admin@192.0.2.1", "--config", fixtureConfig(), "--secrets", fixtureSecretsPath(), "--sudo=false"}, strings.NewReader(""), &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
