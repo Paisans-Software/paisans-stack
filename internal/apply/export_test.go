@@ -157,3 +157,23 @@ func OnBlankLine(f func()) func() {
 	blankLineOnTerminal = f
 	return func() { blankLineOnTerminal = old }
 }
+
+// MuxArgs exposes the connection sharing options every ssh is given.
+func MuxArgs() []string { return muxArgs() }
+
+// SetMux points the socket directory at bases, records each master
+// CloseConnections asks to exit in exits, and starts from no directory. It
+// returns a function closing what it made and restoring the real ones.
+func SetMux(bases []string, exits *[][]string) func() {
+	CloseConnections()
+	oldBases, oldExit := muxBases, runMuxExit
+	muxBases = func() []string { return bases }
+	runMuxExit = func(args []string) { *exits = append(*exits, args) }
+	return func() {
+		CloseConnections()
+		muxBases, runMuxExit = oldBases, oldExit
+	}
+}
+
+// ControlPathMax exposes the longest socket directory allowed.
+const ControlPathMax = controlPathMax

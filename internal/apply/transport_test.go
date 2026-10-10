@@ -26,7 +26,7 @@ const (
 func TestSSHArgsForASection(t *testing.T) {
 	tr := apply.SSHTransport{User: "ubuntu", Host: "203.0.113.10", Port: 2222, PublicKeys: []string{keyA, keyB}}
 	got := tr.SSHArgs([]string{"/tmp/k/key-1.pub", "/tmp/k/key-2.pub"}, "uptime")
-	want := []string{"-p", "2222", "-o", "IdentitiesOnly=yes", "-i", "/tmp/k/key-1.pub", "-i", "/tmp/k/key-2.pub", "ubuntu@203.0.113.10", apply.RemoteCommand("uptime")}
+	want := append(apply.MuxArgs(), "-p", "2222", "-o", "IdentitiesOnly=yes", "-i", "/tmp/k/key-1.pub", "-i", "/tmp/k/key-2.pub", "ubuntu@203.0.113.10", apply.RemoteCommand("uptime"))
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh args:\n got %q\nwant %q", got, want)
 	}
@@ -39,7 +39,7 @@ func TestSSHArgsForASection(t *testing.T) {
 func TestSSHArgsConnectTimeout(t *testing.T) {
 	tr := apply.SSHTransport{User: "ubuntu", Host: "vm.example.org", PublicKeys: []string{keyA}, ConnectTimeout: 10}
 	got := tr.SSHArgs([]string{"k1"}, "true")
-	want := []string{"-p", "22", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=10", "-i", "k1", "ubuntu@vm.example.org", apply.RemoteCommand("true")}
+	want := append(apply.MuxArgs(), "-p", "22", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=10", "-i", "k1", "ubuntu@vm.example.org", apply.RemoteCommand("true"))
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh args:\n got %q\nwant %q", got, want)
 	}
@@ -47,7 +47,7 @@ func TestSSHArgsConnectTimeout(t *testing.T) {
 
 func TestSSHArgsDefaultToPort22(t *testing.T) {
 	tr := apply.SSHTransport{User: "ubuntu", Host: "vm.example.org", PublicKeys: []string{keyA}}
-	got := tr.SSHArgs([]string{"k1"}, "true")
+	got := tr.SSHArgs([]string{"k1"}, "true")[len(apply.MuxArgs()):]
 	if got[0] != "-p" || got[1] != "22" {
 		t.Fatalf("an undeclared port is not 22: %q", got)
 	}
@@ -56,10 +56,11 @@ func TestSSHArgsDefaultToPort22(t *testing.T) {
 	}
 }
 
-// --ssh is an escape hatch: given verbatim, with nothing of the section added.
+// --ssh is an escape hatch: given verbatim, with nothing of the section
+// added. Only the connection sharing options go before it.
 func TestSSHArgsDestinationOverrideIsVerbatim(t *testing.T) {
 	tr := apply.SSHTransport{Destination: "jump-alias", User: "ubuntu", Host: "203.0.113.10", Port: 2222, PublicKeys: []string{keyA}}
-	if got, want := tr.SSHArgs(nil, "true"), []string{"jump-alias", apply.RemoteCommand("true")}; !reflect.DeepEqual(got, want) {
+	if got, want := tr.SSHArgs(nil, "true"), append(apply.MuxArgs(), "jump-alias", apply.RemoteCommand("true")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("override args: got %q, want %q", got, want)
 	}
 	args, cleanup, err := apply.SSHCommand(tr, "true")
@@ -67,7 +68,7 @@ func TestSSHArgsDestinationOverrideIsVerbatim(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	if want := []string{"ssh", "jump-alias", apply.RemoteCommand("true")}; !reflect.DeepEqual(args, want) {
+	if want := append(append([]string{"ssh"}, apply.MuxArgs()...), "jump-alias", apply.RemoteCommand("true")); !reflect.DeepEqual(args, want) {
 		t.Fatalf("override command: got %q, want %q", args, want)
 	}
 }
