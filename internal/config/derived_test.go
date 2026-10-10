@@ -178,3 +178,43 @@ func TestTheExampleDerivesItsLists(t *testing.T) {
 		t.Errorf("the example derives %v and %v", cfg.Etcd.Members, cfg.Cluster.Sites)
 	}
 }
+
+// A site holding both data and witness, which validate refuses, is still one
+// voter: listing it twice would count it twice in every quorum sum.
+func TestASiteWithDataAndWitnessIsOneDerivedVoter(t *testing.T) {
+	body := strings.Replace(derivedBase, "  home-a:\n    roles: [data, apps]", "  home-a:\n    roles: [data, witness]", 1)
+	cfg, err := config.Load(write(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"box", "vm", "home-a", "home-b"}; !same(cfg.Etcd.Members, want) {
+		t.Errorf("etcd.members derived as %v, want %v", cfg.Etcd.Members, want)
+	}
+}
+
+// A null value is written and empty; an empty etcd block is left out.
+func TestNullIsWrittenAndAnEmptyBlockIsNot(t *testing.T) {
+	if _, err := config.Load(write(t, strings.Replace(derivedBase, "  heartbeat_ms: 200\n", "  heartbeat_ms: 200\n  members: ~\n", 1))); err == nil || !strings.Contains(err.Error(), "etcd.members: empty") {
+		t.Errorf("members: ~ loaded: %v", err)
+	}
+	cfg, err := config.Load(write(t, strings.Replace(derivedBase, "etcd:\n  heartbeat_ms: 200\n", "etcd: {}\n", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Etcd.MembersDerived || len(cfg.Etcd.Members) != 4 {
+		t.Errorf("etcd: {} gave %v, derived %t", cfg.Etcd.Members, cfg.Etcd.MembersDerived)
+	}
+}
+
+// A list the yaml node walk cannot see, behind a merge key, is still written:
+// a decoded list is never replaced by a derived one.
+func TestAMergedListIsWritten(t *testing.T) {
+	body := strings.Replace(derivedBase, "  heartbeat_ms: 200\n", "  heartbeat_ms: 200\n  <<: {members: [home-a]}\n", 1)
+	cfg, err := config.Load(write(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Etcd.MembersDerived || !same(cfg.Etcd.Members, []string{"home-a"}) {
+		t.Errorf("a merged list loaded as %v, derived %t", cfg.Etcd.Members, cfg.Etcd.MembersDerived)
+	}
+}

@@ -644,11 +644,12 @@ func writtenLists(data []byte) (map[string]bool, error) {
 // deriveLists fills each of etcd.members and cluster.sites the file left out
 // from the roles, and records that it did.
 func (c *Config) deriveLists(written map[string]bool) {
-	if !written["etcd.members"] {
+	// A list behind a merge key decodes, and the node walk cannot see it.
+	if !written["etcd.members"] && len(c.Etcd.Members) == 0 {
 		c.Etcd.Members = c.DerivedEtcdMembers()
 		c.Etcd.MembersDerived = true
 	}
-	if !written["cluster.sites"] {
+	if !written["cluster.sites"] && len(c.Cluster.Sites) == 0 {
 		c.Cluster.Sites = c.DataSites()
 		c.Cluster.SitesDerived = true
 	}
@@ -672,11 +673,13 @@ func (c *Config) ClusterSitesKey() string {
 }
 
 // DerivedEtcdMembers is etcd.members as the roles give it: every witness, in
-// name order, then every data site, in name order.
+// name order, then every data site, in name order. A site with both, which
+// validate refuses, is listed once, as a data site, so no quorum sum counts
+// it twice.
 func (c *Config) DerivedEtcdMembers() []string {
 	var witnesses []string
 	for _, name := range c.SiteNames() {
-		if c.Sites[name].Has(RoleWitness) {
+		if s := c.Sites[name]; s.Has(RoleWitness) && !s.Has(RoleData) {
 			witnesses = append(witnesses, name)
 		}
 	}
