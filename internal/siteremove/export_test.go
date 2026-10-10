@@ -61,7 +61,6 @@ func WorstCaseRemains() []string {
 		imageKept(site, "sha256:"+strings.Repeat("f", 64), strings.Repeat("w", 80)),
 		recordMissed(site, strings.Repeat("w", 80)),
 		recordRaced(site, site, strings.Repeat("w", 80)),
-		pocketIDNotChecked(site),
 	}
 	out = append(out, caddyKept(site, name, []string{path, path}, path))
 	return out

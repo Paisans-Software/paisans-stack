@@ -60,7 +60,3 @@ func ownedNote(site, owed string) string {
 func caddyKept(site, container string, sites []string, dir string) string {
 	return fmt.Sprintf("%s: Caddy kept; it serves the host owner's sites in %s. It is %s, serving %s; its compose file, Caddyfile, caddy.env, certificates and state stay in %s, with --delete-data too, and so do its ufw allows for 80 and 443. Run this again once those sites have moved, and it goes", site, render.HostSitesDir, container, strings.Join(sites, ", "), dir)
 }
-
-func pocketIDNotChecked(site string) string {
-	return fmt.Sprintf("Pocket ID: not checked; sign in may stop until a standby takes over. Without paisans.yaml it is not known whether %s held the active instance", site)
-}

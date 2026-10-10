@@ -174,9 +174,6 @@ func BuildForcedByID(dest config.Destination, t apply.Transport, ref string, o O
 	if err != nil {
 		return nil, err
 	}
-	if s.Has(config.RoleApps) {
-		p.Notes = append(p.Notes, pocketIDNotChecked(e.Site))
-	}
 	p.Stages = []*Stage{host}
 	return p, nil
 }
