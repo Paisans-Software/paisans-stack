@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/deployrecord"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
@@ -41,6 +43,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv, /etc and Docker are root's")
 	force := fs.Bool("force", false, "clean this deployment off one host and nothing else: no cluster stage or refusal, and neither paisans.yaml nor the secrets file edited")
 	sshFlag := fs.String("ssh", "", "with --force: the host to clean, user@host[:port], any host; only what carries this deployment's id or token is removed")
+	idFlag := fs.String("id", "", "with --force and --ssh, and no paisans.yaml: the deployment to clean off the host, by its full id or its token, as `paisans host deployments` lists it")
 	var site string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		site, args = args[0], args[1:]
@@ -57,6 +60,11 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("site remove takes one site: paisans site remove <site> [--execute] [--host-gone] [--delete-data] [--force [--ssh user@host[:port]]]. Got extra argument(s): %s", strings.Join(fs.Args(), " "))
+	}
+	if *idFlag != "" {
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		return runSiteRemoveByID(r, site, byIDArgs{id: *idFlag, ssh: *sshFlag, force: *force, config: set["config"], secrets: set["secrets"], execute: *execute, hostGone: *hostGone, deleteData: *deleteData, sudo: *sudo}, stdin, stdout)
 	}
 	if site == "" {
 		return fmt.Errorf("site remove: name the site, Eg: paisans site remove home-b")
@@ -246,6 +254,81 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 	forget(true)
 	reportRemains(r, plan.Remains())
 	r.Result("%s is cleaned of this deployment. %s and the secrets file are unchanged.", dest, a.config)
+	return nil
+}
+
+type byIDArgs struct {
+	id, ssh                                                     string
+	force, config, secrets, execute, hostGone, deleteData, sudo bool
+}
+
+// tokenShape is a token as --id takes it: deployment.TokenLength lowercase
+// hex digits.
+var tokenShape = regexp.MustCompile(fmt.Sprintf("^[0-9a-f]{%d}$", deployment.TokenLength))
+
+// runSiteRemoveByID is `site remove --force --ssh <dest> --id <id or token>`:
+// one host cleaned of the deployment its registry names, with no
+// paisans.yaml and no secrets file. See siteremove.BuildForcedByID and
+// docs/specs/2026-10-10-remove-without-config.md.
+//
+// Nothing says whether the deployment still runs elsewhere, or whether
+// someone still holds its paisans.yaml, so --execute always asks for the
+// site's name at a terminal.
+func runSiteRemoveByID(r ui.Reporter, site string, a byIDArgs, stdin io.Reader, stdout io.Writer) error {
+	switch {
+	case !a.force:
+		return fmt.Errorf("site remove --id: --id names a deployment for --force to clean off one host, so add --force")
+	case site != "":
+		return fmt.Errorf("site remove --id: the host's registry entry names the site, so drop %s", site)
+	case a.config:
+		return fmt.Errorf("site remove --id: --id reads no paisans.yaml, and a configuration names its own id. Drop --config, or --id")
+	case a.secrets:
+		return fmt.Errorf("site remove --id: --id reads no secrets file. Drop --secrets")
+	case a.hostGone:
+		return fmt.Errorf("site remove --id %s: --force cleans one host, and --host-gone reaches none. Drop one of them", a.id)
+	case a.ssh == "":
+		return fmt.Errorf("site remove --id %s: with no configuration there is no ssh section to reach the host through, so name it with --ssh user@host[:port]", a.id)
+	case !deployment.ValidID(a.id) && !tokenShape.MatchString(a.id):
+		return fmt.Errorf("site remove --id %q: it is neither a deployment id nor its %d hex digit token, as paisans host deployments lists them. Eg: --id f2a9", a.id, deployment.TokenLength)
+	}
+	dest, err := config.ParseDestination(a.ssh)
+	if err != nil {
+		return fmt.Errorf("site remove --id %s: --ssh: %w", a.id, err)
+	}
+	// Refused before any host is read, so an unattended run stops with
+	// nothing asked of anything.
+	if a.execute && !stdinIsTerminal(stdin) {
+		return fmt.Errorf("site remove --id %s --force: nothing says whether this deployment still runs, so it asks for the site's name at a terminal and stdin is not one. Run it from an interactive shell. Nothing was changed", a.id)
+	}
+	t := reachDestination(dest, a.sudo)
+	plan, err := siteremove.BuildForcedByID(dest, t, a.id, siteremove.Options{DeleteData: a.deleteData})
+	if err != nil {
+		return err
+	}
+	if forcedNothingToDo(r, plan, dest, false) {
+		return nil
+	}
+	if !a.execute || r.Verbose() {
+		plan.Show(r)
+	}
+	if !a.execute {
+		reportRemains(r, plan.Remains())
+		r.Result("Nothing changed. Re-run with --execute to apply.")
+		return nil
+	}
+	what := fmt.Sprintf("This cleans deployment %s (%s), site %s, off %s, and nothing says whether it still runs.", plan.DeploymentID(), plan.Domain(), plan.Site, dest)
+	if a.deleteData {
+		what += fmt.Sprintf(" It deletes this deployment's data on %s above, for good.", dest)
+	}
+	if err := confirmSiteFor(stdin, stdout, plan.Site, what); err != nil {
+		return err
+	}
+	plan.Report = r
+	if err := siteremove.Execute(plan); err != nil {
+		return err
+	}
+	reportRemains(r, plan.Remains())
+	r.Result("%s is cleaned of deployment %s. No paisans.yaml or secrets file was read.", dest, plan.DeploymentID())
 	return nil
 }
 

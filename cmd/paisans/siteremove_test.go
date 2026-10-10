@@ -22,6 +22,12 @@ func noSiteHosts(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { removeSiteHost = saved })
+	savedDest := reachDestination
+	reachDestination = func(config.Destination, bool) apply.Transport {
+		t.Fatal("a host was reached")
+		return nil
+	}
+	t.Cleanup(func() { reachDestination = savedDest })
 }
 
 // Deleting member data needs a person at a terminal, and there is no flag

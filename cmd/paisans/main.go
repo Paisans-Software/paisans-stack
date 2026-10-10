@@ -42,6 +42,7 @@ Usage:
   paisans render   [--config paisans.yaml] [--secrets secrets.enc.yaml] --out ./out
   paisans host prepare --site <name> [--config paisans.yaml] [--ssh <destination>]
                [--execute]
+  paisans host deployments --ssh <user@host[:port]> [--sudo=false]
   paisans apply    [--config paisans.yaml] [--secrets secrets.enc.yaml]
                    [--min-free <size>] [--keep-images] [--execute]
                    every site, from paisans.yaml to a running stack, in order
@@ -52,6 +53,8 @@ Usage:
                [--execute]
   paisans site remove <site> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--host-gone] [--delete-data] [--force --ssh <user@host[:port]>] [--execute]
+  paisans site remove --force --ssh <user@host[:port]> --id <id or token>
+               [--delete-data] [--sudo=false] [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
   paisans storage add [--config paisans.yaml] [--secrets secrets.enc.yaml]
@@ -87,9 +90,13 @@ Commands:
              into it; then generate the secrets it needs, filling in only
              what is missing, and say what is still owed from elsewhere.
   render     Validate, then write per site artifacts to a local directory.
-  host       Take a blank host to the state apply assumes: Docker, the
-             WireGuard tools, a firewall, and a watchdog on a data site.
+  host       prepare: take a blank host to the state apply assumes: Docker,
+             the WireGuard tools, a firewall, and a watchdog on a data site.
              Installs only what is missing. Writes nothing without --execute.
+             deployments: list every deployment in the registry of the host
+             --ssh names (id, token, domain, site, roles and root), and any
+             deployment directory or labelled compose project no registry
+             entry names. Needs no paisans.yaml; changes nothing.
   apply      Without --site: take every site from paisans.yaml to a running
              stack, running init, host prepare, apply, site add, storage
              and dns init in the order the deployment needs. With --site:
@@ -117,6 +124,11 @@ Commands:
              the host; --delete-data deletes its data after the site's
              name is typed at a terminal. Writes nothing without
              --execute.
+             remove --force --ssh <host> --id <id or token>, with no
+             paisans.yaml: clean that host of the deployment its registry
+             names, as --force does, from the registry entry alone. A
+             gateway's Caddy is not handed over. --execute asks for the
+             site's name at a terminal.
   storage    init: provision object storage on a site: each app's key and
              bucket, and the layout when it is the only Garage site.
              add: join every site in storage.garage.sites into one Garage
@@ -191,12 +203,12 @@ Commands:
              any FAIL. With the toolkit's own Caddy in front (ingress mode
              paisans), only the first two apply.
 
-host prepare, apply, prune, site add, site remove, storage init, storage
-add, storage rotate-key, app admin create, app remove, oidc client create,
-preflight, failover test, doctor and init are the only commands that reach a
-host.
-Each reads it to plan, and changes it only with --execute; preflight, doctor and
-init have no --execute and never change it. With --execute, a command first
+host prepare, host deployments, apply, prune, site add, site remove, storage
+init, storage add, storage rotate-key, app admin create, app remove, oidc
+client create, preflight, failover test, doctor and init are the only
+commands that reach a host.
+Each reads it to plan, and changes it only with --execute; host deployments,
+preflight, doctor and init have no --execute and never change it. With --execute, a command first
 claims each host it writes to in /var/lib/paisans/registry.json, and refuses if
 another deployment there holds this one's token, WireGuard interface or listen
 port, or a mesh subnet overlapping this one's. apply and host prepare also
@@ -227,11 +239,15 @@ func main() {
 	case "apply":
 		err = runApply(os.Args[2:])
 	case "host":
-		if len(os.Args) < 3 || os.Args[2] != "prepare" {
-			fmt.Fprintf(os.Stderr, "paisans: host takes one subcommand, prepare\n\n%s", usage)
+		switch {
+		case len(os.Args) >= 3 && os.Args[2] == "prepare":
+			err = runHostPrepare(os.Args[3:])
+		case len(os.Args) >= 3 && os.Args[2] == "deployments":
+			err = runHostDeployments(os.Args[3:])
+		default:
+			fmt.Fprintf(os.Stderr, "paisans: host takes one subcommand, prepare or deployments\n\n%s", usage)
 			os.Exit(2)
 		}
-		err = runHostPrepare(os.Args[3:])
 	case "site":
 		switch {
 		case len(os.Args) >= 3 && os.Args[2] == "add":
