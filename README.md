@@ -4971,9 +4971,8 @@ with `--delete-data`, the files the manifest proves, the units, ufw rules and
 keys, `/srv/paisans/<token>` (empty directories, or everything with
 `--delete-data`), the deployment record and the registry entry.
 
-What needs the rest of `paisans.yaml` is not done, and the report says so, one
-line each: the secrets file is not read, and on an `apps` site it is not known
-whether this host held Pocket ID's active instance.
+What needs the rest of `paisans.yaml` is not done. On an `apps` site the
+report says it is not known whether this host held Pocket ID's active instance.
 Every `--id` run, dry run or not, warns
 `DNS records for this deployment, if any exist, were not modified`: there is no
 provider or token to delete them with. The line under it is the comment to

@@ -65,15 +65,16 @@ func TestByIDCleansAMonitorWithNoConfiguration(t *testing.T) {
 	}
 }
 
-// What the configuration would have said is reported as not read, one line
-// each.
+// What the configuration would have said is reported as unchecked, one line
+// each, and the secrets file is not mentioned.
 func TestByIDSaysWhatItDidNotRead(t *testing.T) {
 	w := setup(t)
 	remains := strings.Join(byID(t, w, "watch", "f2a9", siteremove.Options{}).Remains(), "\n")
-	for _, want := range []string{"secrets: not read", "DNS records for this deployment, if any exist, were not modified"} {
-		if !strings.Contains(remains, want) {
-			t.Errorf("no %q line:\n%s", want, remains)
-		}
+	if !strings.Contains(remains, "DNS records for this deployment, if any exist, were not modified") {
+		t.Errorf("no DNS line:\n%s", remains)
+	}
+	if strings.Contains(remains, "secrets") {
+		t.Errorf("an --id run mentions secrets:\n%s", remains)
 	}
 	if strings.Contains(remains, "Pocket ID") {
 		t.Errorf("a monitor-only site is told about Pocket ID:\n%s", remains)
