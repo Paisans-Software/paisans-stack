@@ -144,7 +144,7 @@ func TestTheWitnessGoesFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = apply.WitnessFirstRefusal(cfg, p, true, map[string]bool{"home-b": true})
-	if err == nil || !strings.Contains(err.Error(), "`paisans apply --site vm`") {
+	if err == nil || !strings.Contains(err.Error(), "paisans apply --site vm") {
 		t.Fatalf("a data site was founded before the witness: %v", err)
 	}
 	if err := apply.WitnessFirstRefusal(cfg, p, true, map[string]bool{"vm": true}); err != nil {
@@ -296,7 +296,7 @@ func TestAFoundingWitnessWithAnotherSetIsRefused(t *testing.T) {
 	}
 	running := map[string]bool{"vm": true}
 	err = apply.EtcdGates(cfg, p, transports, true, running)
-	if err == nil || !strings.Contains(err.Error(), "the running etcd cluster's members are home-a, vm") {
+	if err == nil || !strings.Contains(err.Error(), "The running cluster's members are home-a, vm") {
 		t.Errorf("a witness founded with another set was let through: %v", err)
 	}
 }
@@ -381,5 +381,29 @@ func TestAPlanLeavingInfraAloneAsksEtcdNothing(t *testing.T) {
 	}
 	if len(host.commands) != 0 {
 		t.Errorf("an apply leaving infra alone asked: %v", host.commands)
+	}
+}
+
+// apply's etcd refusals and the founding stop each end the command with a
+// short hint, and say what to run in the explanation.
+func TestEtcdRefusalsAreProblems(t *testing.T) {
+	cfg := fixtureConfig(t)
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), newHost())
+	if err != nil {
+		t.Fatal(err)
+	}
+	members, _ := apply.ParseEtcdMembers(memberListOne)
+	q := problemOf(t, apply.EtcdRefusal(cfg, p, members))
+	if q.Hint != "home-a's etcd members differ from the running cluster's" || !strings.Contains(q.Explain, "paisans site add <site>") {
+		t.Errorf("etcd refusal: %q\n%q", q.Hint, q.Explain)
+	}
+	q = problemOf(t, apply.WitnessFirstRefusal(cfg, p, true, map[string]bool{"home-b": true}))
+	if q.Hint != "home-a would found etcd while the witness vm runs none" || !strings.Contains(q.Explain, "paisans apply --site vm") {
+		t.Errorf("witness first: %q\n%q", q.Hint, q.Explain)
+	}
+	for _, h := range []string{q.Hint} {
+		if len(h) > 80 {
+			t.Errorf("hint longer than 80: %q", h)
+		}
 	}
 }

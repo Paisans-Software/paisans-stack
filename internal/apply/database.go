@@ -12,6 +12,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/kinds"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Database is one clustered app's role and database, owned by that role.
@@ -274,9 +275,13 @@ var ErrFoundingWait = errors.New("waiting on")
 // the apply before any app stack is started.
 func runBootstrap(plan *Plan, t Transport) error {
 	if waiting := plan.Bootstrap.EtcdUnstarted; len(waiting) > 0 {
-		return fmt.Errorf(
-			"%s: the infrastructure stack is up, and etcd is %w %s: a new etcd cluster settles its version only once every founding member runs, and Patroni takes no leader key before that. No app database was created and no app stack was started. Apply %s, then apply this site again: it resumes here",
-			plan.Site, ErrFoundingWait, strings.Join(waiting, ", "), strings.Join(waiting, ", then "))
+		return &ui.Problem{
+			Hint: fmt.Sprintf("%s is waiting on %s to start etcd", plan.Site, strings.Join(waiting, ", ")),
+			Explain: fmt.Sprintf(
+				"The infrastructure stack is up. A new etcd cluster settles its version only once every founding member runs, and Patroni takes no leader key before that, so no app database was created and no app stack was started. Apply %s, then apply this site again: it resumes here.",
+				strings.Join(waiting, ", then ")),
+			Cause: fmt.Errorf("%s: etcd is %w %s", plan.Site, ErrFoundingWait, strings.Join(waiting, ", ")),
+		}
 	}
 	done := plan.step("wait for Patroni primary")
 	err := waitForPrimary(plan, t)

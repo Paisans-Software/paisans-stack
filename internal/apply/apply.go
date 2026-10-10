@@ -993,11 +993,17 @@ func Refusal(plan *Plan) error {
 	if conflicts := plan.Conflicts(); len(conflicts) > 0 {
 		var names []string
 		for _, c := range conflicts {
-			names = append(names, c.Path)
+			names = append(names, "- "+c.Path)
 		}
-		return fmt.Errorf(
-			"%s: %d file(s) were edited on the host and would be overwritten:\n  %s\nRendered files are build artifacts and nothing edits them in place, so a difference here is a change somebody made on the machine. Copy what is wanted into the configuration and apply again, or, once you have looked at a file and want the rendered one, name it with --overwrite <path>",
-			plan.Site, len(conflicts), strings.Join(names, "\n  "))
+		files := fmt.Sprintf("%d files on %s were", len(conflicts), plan.Site)
+		if len(conflicts) == 1 {
+			files = "1 file on " + plan.Site + " was"
+		}
+		return &ui.Problem{
+			Hint: files + " edited on the host",
+			Explain: strings.Join(names, "\n") +
+				"\nRendered files are build artifacts and nothing edits them in place, so a difference here is a change somebody made on the machine, and applying would overwrite it. Copy what is wanted into the configuration and apply again, or, once you have looked at a file and want the rendered one, name it with --overwrite <path>.",
+		}
 	}
 
 	// A pull that fills the disk fails part way through a stack's action,
