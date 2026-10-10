@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -154,4 +155,68 @@ func loadFixtureConfig(t *testing.T) *config.Config {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+// derivedFile is removeFile with cluster.sites and etcd.members left out.
+var derivedFile = strings.NewReplacer(
+	"  sites: [home-a, home-b, home-c]   # all of them\n", "",
+	"  members:\n    - home-a\n    - home-b   # joined second\n    - home-c\n    - vm\n", "",
+).Replace(removeFile)
+
+// A list the file leaves out is not added, and the site's block is the edit.
+func TestRemoveSiteLeavesDerivedListsOut(t *testing.T) {
+	if derivedFile == removeFile || strings.Contains(derivedFile, "members:") {
+		t.Fatal("the fixture still writes the lists")
+	}
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	if err := os.WriteFile(path, []byte(derivedFile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.RemoveSite(path, "home-b"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	want := strings.NewReplacer(
+		"  # The second data site, joined later.\n  home-b:\n    roles: [data]\n    address: 10.44.0.2\n    # its own comment\n", "",
+		"sites: [home-a, home-b, home-c]\n    replication", "sites: [home-a, home-c]\n    replication",
+		"      home-b: 50G\n", "",
+	).Replace(derivedFile)
+	if string(got) != want {
+		t.Errorf("RemoveSite wrote:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// The edit and the in memory end state agree for derived lists too, and the
+// end state still knows they are derived.
+func TestRemoveSiteMatchesWithoutSiteWhenDerived(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "render", "testdata", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := regexp.MustCompile(`(?m)^  (sites|members): \[[^\]]*\]\n`).ReplaceAllString(string(data), "")
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Etcd.MembersDerived || !cfg.Cluster.SitesDerived {
+		t.Fatal("the fixture still writes the lists")
+	}
+	want := cfg.WithoutSite("home-b")
+	if err := config.RemoveSite(path, "home-b"); err != nil {
+		t.Fatal(err)
+	}
+	edited, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(edited.Cluster.Sites, want.Cluster.Sites) || !reflect.DeepEqual(edited.Etcd.Members, want.Etcd.Members) {
+		t.Errorf("the file derives %v %v, WithoutSite %v %v", edited.Cluster.Sites, edited.Etcd.Members, want.Cluster.Sites, want.Etcd.Members)
+	}
+	if !want.Etcd.MembersDerived || !want.Cluster.SitesDerived {
+		t.Error("WithoutSite lost the record that the lists are derived")
+	}
 }
