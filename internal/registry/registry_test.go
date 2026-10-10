@@ -536,3 +536,31 @@ func TestFind(t *testing.T) {
 		t.Errorf("empty registry: %v", err)
 	}
 }
+
+// Kept marks an entry whose deployment left something running on the host:
+// the merge writes it, and a claim by the same id, which For makes, drops it.
+func TestKeptCaddyEntry(t *testing.T) {
+	base := Registry{Version: Version, Deployments: map[string]Entry{ours: entry("f2a9", "example.org", "vm")}}
+	input, _ := Encode(base)
+	kept := KeepCaddy(base.Deployments[ours])
+	if kept.Kept != KeptCaddy || kept.Token != "f2a9" {
+		t.Fatalf("KeepCaddy = %+v", kept)
+	}
+	stdout, stderr, code := runMerge(t, string(input), ours, kept)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	got, err := Parse([]byte(stdout))
+	if err != nil || got.Deployments[ours] != kept {
+		t.Fatalf("got %+v, %v", got.Deployments[ours], err)
+	}
+	if !strings.Contains(stdout, `"kept":"caddy"`) {
+		t.Errorf("the entry does not say what is kept:\n%s", stdout)
+	}
+	if !strings.Contains(Describe(ours, kept), "caddy kept") {
+		t.Errorf("Describe = %s", Describe(ours, kept))
+	}
+	if strings.Contains(Describe(ours, base.Deployments[ours]), "kept") {
+		t.Errorf("Describe of an entry with nothing kept = %s", Describe(ours, base.Deployments[ours]))
+	}
+}

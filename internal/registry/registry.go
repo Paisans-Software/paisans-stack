@@ -97,6 +97,40 @@ type Entry struct {
 	// Roles is the site's roles, sorted and joined with commas, one string
 	// because the awk merge matches a role in it with index().
 	Roles string `json:"roles,omitempty"`
+	// Kept names what the deployment left running on the host after a site
+	// remove cleaned it, empty for nothing: KeptCaddy for a gateway's Caddy
+	// still serving the host owner's sites. The entry stays, because what is
+	// kept still holds the role and the root it names. A claim by the same
+	// id writes the entry without it.
+	Kept string `json:"kept,omitempty"`
+}
+
+// KeptCaddy is Kept for a gateway's Caddy kept for the host owner's sites in
+// /srv/caddy.d (docs/specs/2026-10-10-gateway-caddy-kept.md).
+const KeptCaddy = "caddy"
+
+// KeepCaddy is e marked as a deployment whose only part left on the host is
+// its Caddy.
+func KeepCaddy(e Entry) Entry {
+	e.Kept = KeptCaddy
+	return e
+}
+
+// Keep writes e, marked by KeepCaddy, as id's entry, under the claim's lock
+// and through the claim's merge, so every other entry stays as it was.
+func Keep(t Runner, id string, e Entry) error {
+	command, err := ClaimCommand(id, KeepCaddy(e))
+	if err != nil {
+		return err
+	}
+	out, err := t.Run(command)
+	if err == nil {
+		return nil
+	}
+	if refusal := ParseClaim(out); refusal != nil {
+		return fmt.Errorf("%s: marking deployment %s's Caddy kept in %s: %w", t.Describe(), id, Path, refusal)
+	}
+	return fmt.Errorf("%s: marking deployment %s's Caddy kept in %s: %w\n%s", t.Describe(), id, Path, err, strings.TrimSpace(out))
 }
 
 // exclusiveRoles are the roles one host gives to one deployment: the gateway
@@ -704,5 +738,9 @@ func Describe(id string, e Entry) string {
 	if roles == "" {
 		roles = "none"
 	}
-	return fmt.Sprintf("%s (token %s, %s, site %s, roles %s)", id, e.Token, e.Domain, e.Site, roles)
+	out := fmt.Sprintf("%s (token %s, %s, site %s, roles %s", id, e.Token, e.Domain, e.Site, roles)
+	if e.Kept != "" {
+		out += ", " + e.Kept + " kept"
+	}
+	return out + ")"
 }
