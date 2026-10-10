@@ -1385,11 +1385,32 @@ something the configuration does not declare:
 | `oidc_clients.<name>` | no app `<name>` is declared |
 | `pocket_id_groups.<name>` | no Pocket ID app's `signup_default_groups` names `<name>` |
 
-`init` and `apply` warn once per orphan, by key and never by value, and never
-refuse: nothing reads it. `paisans secrets prune` lists them and changes
-nothing; with `--execute` it removes them and writes the file, encrypted to the
-same recipients, and refuses an encrypted file with no `.sops.yaml` beside it
-rather than writing it in plaintext. Pruning an `oidc_clients` entry does not
+**What is deployed is recorded on each gateway**, so that a site or an app
+missing from `paisans.yaml` by mistake (commented out, renamed, a bad merge)
+does not lose its secrets. `/var/lib/paisans/deployed.<token>.json` on every
+gateway lists the names of the sites, apps and Pocket ID groups deployed, and
+nothing else. A gateway's `apply` adds every name the yaml declares and never
+takes one out, so an `apply` of a yaml mid-edit cannot shrink it. Only the
+removal commands take names out, on every gateway: `site remove` in its stage
+2, `site remove --force` for a site no longer declared, and `app remove` for
+the app and each group no remaining Pocket ID app names. Cleaning a gateway's
+host deletes its record. A name any gateway lists counts as deployed.
+
+| In `paisans.yaml` | In a record | `init` and `apply` | `secrets prune` |
+|---|---|---|---|
+| yes | either | nothing | keeps its secrets |
+| no | yes | warn that it is deployed but no longer declared, with what to do, whether or not it has secrets | keeps its secrets, and says why |
+| no | no | warn that its secrets are orphaned | removes them |
+
+`init` and `apply` warn by key and never by value, and never refuse: a gateway
+whose record cannot be read is a warning too, and one not applied since the
+record existed is silent. `paisans secrets prune` reads every gateway's record
+and refuses when one cannot be read or has none: apply the gateway first, or
+pass `--without-record` to trust `paisans.yaml` alone, which with `--execute`
+asks for the word `prune` at a terminal. It lists what it would remove and
+changes nothing; with `--execute` it removes them and writes the file,
+encrypted to the same recipients, and refuses an encrypted file with no
+`.sops.yaml` beside it rather than writing it in plaintext. Pruning an `oidc_clients` entry does not
 delete the client at Pocket ID, which it says: delete it there by hand if that
 Pocket ID still runs. A removed site's WireGuard key is safe to prune once no
 site's mesh lists it, which is true after a full `site remove`, or after every
@@ -1398,6 +1419,7 @@ remaining site's next `apply`.
 ```sh
 paisans secrets prune             # lists them
 paisans secrets prune --execute   # removes them
+paisans secrets prune --without-record --execute   # no gateway to read; asks for the word prune
 ```
 
 **A gateway without its DNS token is refused at `render` and `apply`.** `init`
@@ -4515,7 +4537,7 @@ re-run impossible: a failure there names the `apply` that finishes it.
 | Stage | What runs | Gate |
 |-------|-----------|------|
 | 1. Data out of the site | the leader switched over to the `Sync Standby` when the site holds it; `synchronous_mode` turned off when one data site remains, since a leader waiting on a standby that is leaving stops taking writes; Patroni stopped on the site and its member key deleted from etcd; its Garage node removed from the layout and the layout applied | another site leads and `patronictl list` no longer lists the site, with a `Sync Standby` when the end state wants one; no layout row for the site, and every remaining node settled (one live layout version, an empty resync queue) within an hour, and a run that times out resumes at this gate while Garage carries on copying |
-| 2. Out of the cluster | `etcdctl member remove`, then the site's etcd stopped; with two data sites and a witness, the witness's member next (below); on every remaining site, the files whose render changes with the site gone, by scoped `apply`: `psns-<token>.conf` (`wg syncconf`), `haproxy.cfg` (HAProxy restarted with its database apps stopped around it, as `site add` does) and the gateway's routes (validated, then Caddy reloaded); then each remaining replica's `patroni.env`, one at a time, as `site add`'s stage 7 does | the voters are exactly the end state's and all healthy; no remaining site has the site's key as a WireGuard peer; HAProxy lists exactly the end state's cluster sites with the leader `UP`; each replica streaming again before the next |
+| 2. Out of the cluster | `etcdctl member remove`, then the site's etcd stopped; with two data sites and a witness, the witness's member next (below); on every remaining site, the files whose render changes with the site gone, by scoped `apply`: `psns-<token>.conf` (`wg syncconf`), `haproxy.cfg` (HAProxy restarted with its database apps stopped around it, as `site add` does) and the gateway's routes (validated, then Caddy reloaded); then each remaining replica's `patroni.env`, one at a time, as `site add`'s stage 7 does; last, the site taken out of every remaining gateway's deployment record | the voters are exactly the end state's and all healthy; no remaining site has the site's key as a WireGuard peer; HAProxy lists exactly the end state's cluster sites with the leader `UP`; each replica streaming again before the next |
 | 3. Clean the host | below; skipped with `--host-gone`. When the site holds the active Pocket ID instance, the plan says that once this stage stops it, sign in is unavailable for a few seconds while a standby takes over, up to about 90 seconds if the instance does not stop cleanly | checked before the keys go: nothing of this deployment's left but what the plan said it keeps |
 | 4. Config | the site taken out of `paisans.yaml`: its block, its name in `cluster.sites`, `etcd.members` and `storage.garage.sites`, its capacity; with two data sites and a witness, the witness out of `etcd.members` and its `witness` role, in the same write; every other byte as it was | the file loads and no longer declares it |
 | 5. Monitor | every remaining monitor site's `uptime` stack applied on its own, so its `monitors.json`, rendered from the end state, no longer names the site and the restarted monitor deletes its ping and direct checks; skipped when no site holds the monitor role (see *Topology commands reseed the monitor*). The monitor site itself is never the one removed, since its app is pinned to it | the seed on the host matches the render and the stack is healthy; a failure here comes after the removal and names the `apply` that finishes it |
@@ -4561,6 +4583,7 @@ place, and everything else found is listed as kept:
 | authorized keys | a fingerprint in `/etc/paisans/authorized_keys.<user>.paisans-<token>.owned` | the key's plain lines deleted, last, then the record. A key another deployment's record lists stays, because both added it as one line; so do the keys when deleting them would leave the user with none |
 | the deployment's directory | its path, `/srv/paisans/<token>` | empty directories removed; what apply did not write, the data in its bind mounts, is kept, and `--delete-data` deletes it all unless a file in it was edited |
 | the registry entry | this id's line in `/var/lib/paisans/registry.json` | deleted under the same lock as a claim, by the same kind of awk program |
+| the deployment record, on a gateway | `/var/lib/paisans/deployed.<token>.json`, named for the token | deleted |
 
 The keys go last, after the registry entry and the check that nothing else is
 left, because they may be what the command reaches the host with.
@@ -4663,11 +4686,13 @@ monitors survive on hosts that also run other people's services:
    run `paisans site remove <monitor> --force --ssh <its host> --execute
    --delete-data` once per monitor, from a terminal. Only what is this
    deployment's goes; the owner's containers, images, Caddy and ufw rules stay.
-2. `paisans secrets prune --execute` removes the monitors' and their apps'
-   secrets.
-3. The destroyed sites stay declared, keeping their identity in the secrets
+2. The destroyed sites stay declared, keeping their identity in the secrets
    file. Change their `ssh` sections and addresses to the new hosts, Eg:
-   `203.0.113.20`, and `apply` deploys them there.
+   `203.0.113.20`, and `apply` deploys them there. The new gateway's first
+   `apply` writes a fresh deployment record from the yaml, which no longer
+   names the monitors.
+3. `paisans secrets prune --execute` reads that record and removes the
+   monitors' and their apps' secrets.
 4. Change DNS at the provider by hand. `paisans dns` never updates a record,
    so each name still wanted that points at a lost address is reported as a
    conflict until it is changed; the monitors' records, whose addresses are no

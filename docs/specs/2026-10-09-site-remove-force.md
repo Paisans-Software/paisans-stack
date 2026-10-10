@@ -189,10 +189,12 @@ survived on hosts that also run other people's services:
    <its host> --execute --delete-data` runs once per monitor, from a terminal.
    Only what is this deployment's goes; the owner's containers, images, Caddy
    and ufw rules stay.
-2. `paisans secrets prune --execute` removes the monitors' and their apps'
+2. The destroyed sites stay declared. Their ssh sections and addresses are
+   changed to the new hosts, and `apply` deploys them there; the new
+   gateway's first `apply` writes its deployment record
+   (docs/specs/2026-10-09-deployment-record.md).
+3. `paisans secrets prune --execute` removes the monitors' and their apps'
    secrets.
-3. The destroyed sites stay declared. Their ssh sections and addresses are
-   changed to the new hosts, and `apply` deploys them there.
 4. DNS is changed at the provider by hand. `paisans dns` never updates a
    record, so each name still wanted that points at a lost address (the
    gateway's) is reported as a conflict; the operator changes it to the new
