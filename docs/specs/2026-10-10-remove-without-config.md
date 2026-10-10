@@ -32,9 +32,6 @@ Out, each for a stated reason:
   directory and its compose projects, and `--id` does not remove them: the
   entry is what names the site and the roles, and is the proof the host was
   claimed by that id. They are removed by hand.
-* **A gateway's Caddy hand over.** It writes a Caddyfile with the snippets of
-  the one the gateway was rendered with, which needs the configuration. See
-  *A gateway* below.
 * **Every other host.** One host at a time, as with `--force`.
 * **The secrets, DNS and Pocket ID.** Not read and not changed; the closing
   report says so.
@@ -105,30 +102,25 @@ entry, last but for the keys.
 
 ### How it reuses the forced removal
 
-The host stage reads the configuration for four things: the id, the site's ssh
-user and destination, the site's roles, and, on a gateway, the rendered
-Caddyfile. The first three are in the registry entry and `--ssh`. So
+The host stage reads the configuration for three things: the id, the site's
+ssh user and destination, and the site's roles, which the registry entry and
+`--ssh` hold. So
 `siteremove.BuildForcedByID` reads the registry, resolves `--id`, and builds a
 configuration holding only the id, the entry's domain and one site with `--ssh`
 as its destination and the entry's roles. The plan it makes is marked as having
 no configuration, and the host stage is the same `buildHost` and `runHost` the
-forced removal runs. The mark changes three things only:
+forced removal runs. The mark changes two things only:
 
-* a gateway's hand over is not planned (below);
 * the Pocket ID note at the head of the stage is not made, since it reads the
   configuration's apps;
 * the remains say what was not read.
 
 ### A gateway
 
-Without the configuration the hand over cannot render its Caddyfile, so it is
-not planned. This deployment's Caddy is removed with its other containers, by
-label, and nothing in `/srv/caddy.d` or `/srv/caddy` is touched. The remains
-say the hand over was not done and list the `*.caddy` files in `/srv/caddy.d`:
-each is a site the host's owner serves through the removed Caddy, which stops
-being served until the owner runs a Caddy of their own for it. A host with no
-such files says there was nothing to hand over. The certificates stay under
-`/srv/paisans/<token>/infra/caddy/data` unless `--delete-data` deletes them.
+As with a configuration (docs/specs/2026-10-10-gateway-caddy-kept.md): while
+`/srv/caddy.d` holds a site file, the Caddy container is kept and its
+Caddyfile reduced to the owner's sites, built from the Caddyfile on the host,
+so the result is the same with `--id` as with a configuration.
 
 A deployment whose roles include no gateway, the first real use being a
 monitor-only one, is unaffected.
@@ -144,7 +136,6 @@ Besides what the host stage keeps, with why, one line each:
 * **Pocket ID**, on a site with the `apps` role: not checked; if this host held
   the active instance, sign in stops until a standby takes over.
 * **DNS:** the forced removal's line for an undeclared site, unchanged.
-* **Caddy**, on a gateway: as above.
 
 ### Confirmation
 
@@ -152,8 +143,8 @@ Nothing says whether the deployment still runs elsewhere, or whether someone
 still holds its `paisans.yaml`. So `--execute` always asks for the site's name,
 as the entry records it, at a terminal, with `--delete-data` or without. No
 flag answers it. The question names the deployment and the host, the owner's
-sites in `/srv/caddy.d` that stop being served on a gateway, and the data when
-`--delete-data` deletes it, since `--execute` shows no plan.
+sites in `/srv/caddy.d` a kept Caddy goes on serving on a gateway, and the
+data when `--delete-data` deletes it, since `--execute` shows no plan.
 
 ## Refusals
 
@@ -182,10 +173,11 @@ In `internal/siteremove`, against the existing fake world:
   same as the forced removal's with one;
 * on a host carrying another deployment, nothing of that deployment's
   (container, unit, ufw rule, registry entry) is planned or touched;
-* a gateway: no hand over planned, and the remains name `/srv/caddy.d`'s files;
+* a gateway with sites in `/srv/caddy.d`: the same Caddy result as with a
+  configuration;
 * an entry whose token or root disagrees with its id refused, and a full id
   refused when another entry holds its token or root;
-* the question `--execute` asks naming a gateway's unserved sites.
+* the question `--execute` asks naming the sites a kept Caddy serves.
 
 In `cmd/paisans`: the refusals that need no host, reaching none; `--id` with
 `--config` refused; no match and an ambiguous match through a fake host;

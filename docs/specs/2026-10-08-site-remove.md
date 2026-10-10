@@ -22,8 +22,8 @@ In:
   the same removal (below, *Two data sites and a witness*).
 * Every remaining replica's `patroni.env` applied, one replica at a time.
 * The host cleaned of this deployment, with `--host-gone` for a host that is
-  never coming back, and the gateway's Caddy handed over to the host's owner
-  when somebody else's sites rely on it.
+  never coming back, and the gateway's Caddy kept, serving only the host
+  owner's sites, when they rely on it.
 
 Out, each for a stated reason:
 
@@ -182,32 +182,11 @@ what the command reaches the host with.
 ### The gateway's Caddy, when somebody else relies on it
 
 A gateway's Caddy also serves the host owner's sites in `/srv/caddy.d`
-(README, *The gateway host's own sites live in `/srv/caddy.d`*). Removing it
-would take those sites down. When `internal/ownership` reports a `*.caddy`
-file there, the Caddy is handed over:
-
-1. `/srv/caddy/` is written: `compose.yaml` with project `caddy`, no
-   deployment label, the same image and host networking, mounting
-   `/srv/caddy.d` and a `Caddyfile` with only the global options ACME needs,
-   the snippets the owner's files may import (`upstream_unavailable`,
-   `upstream_failover`, `upstream_single`) and `import /etc/caddy.d/*.caddy`.
-   The DNS provider's token is copied on the host into `/srv/caddy/caddy.env`,
-   because the owner's certificates were issued and renew through DNS-01; the
-   report says plainly that it is a credential left for the owner.
-2. The configuration is validated in a one-off container before anything
-   stops.
-3. The paisans Caddy is stopped, its `data` and `config` directories moved to
-   `/srv/caddy/`, so certificates survive, and the new Caddy started.
-4. Gate: the new Caddy runs and `caddy validate` passes inside it. On failure
-   it is stopped, the directories moved back and the paisans Caddy started
-   again.
-5. `/srv/caddy/HANDED-OVER` records the deployment id, domain, site and time.
-
-From then on paisans never touches `/srv/caddy`. A run that finds the marker
-with this id treats the hand-over as done; one that finds `/srv/caddy` holding
-anything the hand-over did not write, or a compose project named `caddy`
-already on the host, refuses. With no foreign user, the Caddy goes like every
-other container.
+(README, *The gateway host's own sites live in `/srv/caddy.d`*). While a
+`*.caddy` file is there, the Caddy container is kept and its Caddyfile
+reduced to those sites, and everything else of the deployment goes:
+docs/specs/2026-10-10-gateway-caddy-kept.md. With no file there, the Caddy
+goes like every other container.
 
 ### What `--host-gone` leaves
 
@@ -229,7 +208,7 @@ kept on the host, with why.
 Unit tests against a fake world in maps (etcd, Patroni, Garage's layout, Docker
 objects, files, units, ufw rules and keys per host): every refusal, a whole
 removal leaving nothing to do, resuming from each stage, `--host-gone`, foreign
-containers, files and rules kept, an edited file kept, the gateway hand-over
+containers, files and rules kept, an edited file kept, the gateway Caddy kept
 and the plain removal, the registry's awk against its Go counterpart, and
 `--delete-data` refused without a terminal. For two data sites and a witness:
 the shrink end to end, a resume after the first member removal and after the
