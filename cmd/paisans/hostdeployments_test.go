@@ -52,8 +52,8 @@ func (h *listedHost) Run(command string) (string, error) {
 
 func twoDeployments(t *testing.T) string {
 	data, err := registry.Encode(registry.Registry{Version: registry.Version, Deployments: map[string]registry.Entry{
-		monitorID: {Token: "f2a9", Root: "/srv/paisans/f2a9", Domain: "example.org", Site: "watch", Roles: "monitor"},
-		neighbour: {Token: "0c1d", Root: "/srv/paisans/0c1d", Domain: "example.net", Site: "edge", Roles: "apps,gateway"},
+		monitorID: {Token: "f2a9", Root: "/srv/paisans/f2a9", Domain: "example.org", Site: "watch", Roles: "monitor", ClaimedAt: "2026-10-01T00:00:00Z", Interface: "psns-f2a9", Subnet: "10.44.0.0/24", Address: "10.44.0.6"},
+		neighbour: {Token: "0c1d", Root: "/srv/paisans/0c1d", Domain: "example.net", Site: "edge", Roles: "apps,gateway", ClaimedAt: "2026-10-01T00:00:00Z", Interface: "psns-0c1d", Subnet: "10.45.0.0/24", Address: "10.45.0.2"},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +172,7 @@ func TestSiteRemoveByIDRefusesNoMatchAndSeveral(t *testing.T) {
 		t.Errorf("no match: %v", err)
 	}
 	r, _ := registry.Parse([]byte(h.registry))
-	r.Deployments["f2a91111-2222-4333-8444-555566667777"] = registry.Entry{Token: "f2a9", Root: "/srv/paisans/f2a9", Domain: "example.com", Site: "y"}
+	r.Deployments["f2a91111-2222-4333-8444-555566667777"] = registry.Entry{Token: "f2a9", Root: "/srv/paisans/f2a9", Domain: "example.com", Site: "y", Roles: "monitor", ClaimedAt: "2026-10-01T00:00:00Z", Interface: "psns-f2a9", Subnet: "10.46.0.0/24", Address: "10.46.0.2"}
 	data, _ := registry.Encode(r)
 	h.registry = string(data)
 	err = runSiteRemove([]string{"--force", "--ssh", "admin@192.0.2.30", "--id", "f2a9"}, strings.NewReader(""), &bytes.Buffer{})

@@ -184,9 +184,9 @@ func (c Conflict) Error() string {
 
 // clashes is everything theirs holds that ours needs: the same token, root,
 // interface or listen port, a mesh subnet overlapping ours either way, or the
-// gateway or data role when ours claims it too.
-// An empty or zero value holds nothing, so an entry written before a field
-// existed never clashes on it.
+// gateway or data role when ours claims it too. A listen port of zero is a
+// site with no endpoint, which WireGuard gives a port of its own, and holds
+// none.
 func clashes(theirs, ours Entry) []string {
 	var out []string
 	if theirs.Token == ours.Token {
@@ -195,7 +195,7 @@ func clashes(theirs, ours Entry) []string {
 	if theirs.Root == ours.Root {
 		out = append(out, "root "+theirs.Root)
 	}
-	if theirs.Interface != "" && theirs.Interface == ours.Interface {
+	if theirs.Interface == ours.Interface {
 		out = append(out, "WireGuard interface "+theirs.Interface)
 	}
 	if theirs.ListenPort != 0 && theirs.ListenPort == ours.ListenPort {
@@ -253,7 +253,7 @@ func Meshes(r Registry, id, on string) []mesh.Taken {
 	var out []mesh.Taken
 	for _, other := range ids {
 		e := r.Deployments[other]
-		if other == id || e.Subnet == "" {
+		if other == id {
 			continue
 		}
 		p, err := mesh.ParsePrefix(e.Subnet)
@@ -388,7 +388,7 @@ $0 == footer { done = 1; next }
 	key = substr(line, 2, index(line, "\":") - 2)
 	if (key == id) next
 	if (index(line, "\"token\":\"" token "\"") || index(line, "\"root\":\"" root "\"") ||
-		(iface != "" && str(line, "interface") == iface) ||
+		str(line, "interface") == iface ||
 		(port != "" && port != "0" && num(line, "listen_port") == port) ||
 		(subnet != "" && overlaps(subnet, str(line, "subnet"))) ||
 		(hasrole(roles, "gateway") && hasrole(str(line, "roles"), "gateway")) ||

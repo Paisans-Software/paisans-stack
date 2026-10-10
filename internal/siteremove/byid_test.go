@@ -205,7 +205,7 @@ func TestByIDRefusesNoMatchAndSeveral(t *testing.T) {
 		t.Errorf("no match: %v", err)
 	}
 	reg, _ := registry.Parse([]byte(b.files[registry.Path]))
-	reg.Deployments["f2a91111-2222-4333-8444-555566667777"] = registry.Entry{Token: "f2a9", Root: root, Domain: "example.com", Site: "y"}
+	reg.Deployments["f2a91111-2222-4333-8444-555566667777"] = registry.Entry{Token: "f2a9", Root: root, Domain: "example.com", Site: "y", Roles: "monitor", ClaimedAt: "2026-10-01T00:00:00Z", Interface: "psns-f2a9", Subnet: "10.46.0.0/24", Address: "10.46.0.2"}
 	b.files[registry.Path] = encode(t, reg)
 	if _, err := siteremove.BuildForcedByID(dest, b, "f2a9", siteremove.Options{}); err == nil || !strings.Contains(err.Error(), "full id") {
 		t.Errorf("several: %v", err)
@@ -228,8 +228,8 @@ func TestByIDRefusesHostGone(t *testing.T) {
 // would share them.
 func TestByIDRefusesAFullIDWhoseTokenAnotherEntryHolds(t *testing.T) {
 	for name, e := range map[string]registry.Entry{
-		"token": {Token: "f2a9", Root: "/srv/paisans/beef", Domain: "example.com", Site: "y"},
-		"root":  {Token: "beef", Root: root, Domain: "example.com", Site: "y"},
+		"token": {Token: "f2a9", Root: "/srv/paisans/beef", Domain: "example.com", Site: "y", Roles: "monitor", ClaimedAt: "2026-10-01T00:00:00Z", Interface: "psns-f2a9", Subnet: "10.46.0.0/24", Address: "10.46.0.2"},
+		"root":  {Token: "beef", Root: root, Domain: "example.com", Site: "y", Roles: "monitor", ClaimedAt: "2026-10-01T00:00:00Z", Interface: "psns-beef", Subnet: "10.46.0.0/24", Address: "10.46.0.2"},
 	} {
 		w := setup(t)
 		h := w.hosts["watch"]

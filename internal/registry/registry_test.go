@@ -19,7 +19,7 @@ const (
 )
 
 func entry(token, domain, site string) Entry {
-	return Entry{Token: token, Root: "/srv/paisans/" + token, Domain: domain, Site: site, ClaimedAt: "2026-10-01T00:00:00Z"}
+	return Entry{Token: token, Root: "/srv/paisans/" + token, Domain: domain, Site: site, ClaimedAt: "2026-10-01T00:00:00Z", Interface: "psns-" + token}
 }
 
 func TestParseEmptyIsAnEmptyRegistry(t *testing.T) {
