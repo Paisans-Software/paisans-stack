@@ -25,6 +25,7 @@ package dns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -386,6 +387,20 @@ func classify(w Want, records []Record, wanted map[string]bool) (Action, string)
 	return Present, ""
 }
 
+// ErrConflict is what Execute returns, wrapped, when the plan has a conflict:
+// a record that points somewhere else, which only the operator can change at
+// the provider. Running again finds it again.
+var ErrConflict = errors.New("dns: conflicting records")
+
+// conflictError is Execute's refusal of a plan with n conflicts.
+type conflictError struct{ n int }
+
+func (e conflictError) Error() string {
+	return fmt.Sprintf("dns: %d conflicting record(s), listed above. Nothing was created: a partial set of records is a deployment some names reach and others do not", e.n)
+}
+
+func (e conflictError) Unwrap() error { return ErrConflict }
+
 // Execute creates every missing record, then reads each back. It refuses to
 // write anything if the plan has a conflict.
 //
@@ -394,7 +409,7 @@ func classify(w Want, records []Record, wanted map[string]bool) (Action, string)
 // starting over.
 func Execute(ctx context.Context, provider Provider, plan *Plan, r ui.Reporter) error {
 	if conflicts := plan.Conflicts(); len(conflicts) > 0 {
-		return fmt.Errorf("dns: %d conflicting record(s), listed above. Nothing was created: a partial set of records is a deployment some names reach and others do not", len(conflicts))
+		return conflictError{len(conflicts)}
 	}
 	for _, e := range plan.Creates() {
 		step := r.Step(fmt.Sprintf("create %s %s", e.Type, e.Name))

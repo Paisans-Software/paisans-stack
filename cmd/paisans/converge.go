@@ -10,8 +10,10 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/storageadd"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 	"gopkg.in/yaml.v3"
@@ -336,6 +338,11 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 		case err == nil:
 		case s.Founding && errors.Is(err, apply.ErrFoundingWait):
 			r.Note(s.Title+" stopped at the founding stop; pass two applies it again", err.Error())
+		case errors.Is(err, dns.ErrConflict):
+			return fmt.Errorf("apply: stopped at %s: %w\nChange each conflicting record above at your DNS provider, then run paisans apply --execute again.", s.Title, err)
+		case errors.Is(err, storageadd.ErrWaiting):
+			// Not a failure, and main exits 75 for it as storage add does.
+			return fmt.Errorf("apply: waiting at %s: %w\nNothing failed: Garage is still moving data. Run paisans apply --execute again later.", s.Title, err)
 		default:
 			return fmt.Errorf("apply: stopped at %s: %w\nRun paisans apply --execute again to resume.", s.Title, err)
 		}

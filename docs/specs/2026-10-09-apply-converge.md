@@ -49,7 +49,12 @@ Out:
 A data site's apply that stops at the founding stop (its etcd is up and
 another founding member's is not) is not a failure in phase 2: pass two
 applies it again. Any other failure stops the run, naming the step and the
-command, with `Run paisans apply --execute again to resume.`
+command, with `Run paisans apply --execute again to resume.` Two stops get the
+hint that fits them instead, since running again alone does not get past
+them: a DNS record pointing elsewhere is changed at the provider by hand
+first, and a `storage add` gate waiting on Garage to finish moving data is not
+a failure, so the run exits with status 75 as `storage add` does, to be run
+again later.
 
 Each step runs the existing command in the same process, with the flags the
 plan sets and those of apply's that reach it (`-v` every step, `--keep-images`

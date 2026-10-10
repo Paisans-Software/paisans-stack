@@ -2996,7 +2996,10 @@ step is the command an operator would type, so it plans, gates, claims and
 refuses as that command does, and the sudo password each host asks for is
 asked once for the run. `-v` reaches every step, and `--keep-images` and
 `--min-free` each `apply`; `--ssh`, `--overwrite`, `--only` and `--recreate`
-are about one site, and are refused without `--site`. A data site's founding stop is expected, not a
+are about one site, and are refused without `--site`. A stop names its step and how
+to carry on: usually by running it again, but a DNS record pointing elsewhere
+is first changed at the provider, and a `storage add` gate still waiting on
+Garage to move data exits with status 75, to be run again later. A data site's founding stop is expected, not a
 failure: pass two applies it again. It never takes anything out: a site or an
 app the yaml no longer declares is reported by the deployment record's warning,
 with the command that removes it. What only the operator can decide is left to

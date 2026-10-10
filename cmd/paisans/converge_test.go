@@ -11,7 +11,9 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/storageadd"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -349,5 +351,38 @@ func TestConvergeFoundsAMonitorMemberAndAppliesItLast(t *testing.T) {
 	}, "\n")
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A stop running again cannot get past says what can: a conflicting DNS
+// record is changed at the provider by hand, and Garage is waited for. Each
+// hint stays one short line.
+func TestConvergeStopsWithTheHintThatFits(t *testing.T) {
+	conflict := fmt.Errorf("dns: 1 conflicting record(s), listed above: %w", dns.ErrConflict)
+	waiting := fmt.Errorf("storage add is waiting at stage 3 (sync): blocks are still moving: %w", storageadd.ErrWaiting)
+	for _, tc := range []struct {
+		step string
+		err  error
+		want string
+	}{
+		{"dns init", conflict, "Change each conflicting record above at your DNS provider, then run paisans apply --execute again."},
+		{"storage add", waiting, "Nothing failed: Garage is still moving data. Run paisans apply --execute again later."},
+		{"apply --site vm", errors.New("vm: boom"), "Run paisans apply --execute again to resume."},
+	} {
+		fakeConverge(t, map[string]error{tc.step: tc.err})
+		err := converge(t, "--execute")
+		if err == nil {
+			t.Fatalf("%s: no error", tc.step)
+		}
+		if !errors.Is(err, tc.err) {
+			t.Errorf("%s: the step's error is not wrapped: %v", tc.step, err)
+		}
+		lines := strings.Split(err.Error(), "\n")
+		if hint := lines[len(lines)-1]; hint != tc.want {
+			t.Errorf("%s: hint %q, want %q", tc.step, hint, tc.want)
+		}
+		if hint := lines[len(lines)-1]; len(hint) > 100 {
+			t.Errorf("%s: %d characters: %s", tc.step, len(hint), hint)
+		}
 	}
 }
