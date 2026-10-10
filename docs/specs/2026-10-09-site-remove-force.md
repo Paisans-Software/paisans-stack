@@ -91,7 +91,7 @@ images. Every match is by this deployment's id, or the token taken from it:
 | rendered files | an entry in this deployment's manifest whose hash the file still has | yes; an edited file is kept and named |
 | `wg-quick@psns-<token>` and its config | the token in the name, and the file's hash | yes |
 | units and drop-ins | `paisans-<token>-*` under `/etc/systemd/system` | yes |
-| ufw rules | a comment starting `paisans-<token>:` | yes, except the SSH allow |
+| ufw rules | a comment starting `paisans-<token>:` | yes, except the SSH allow, which is always kept so the host stays reachable |
 | the registry entry | the `<id>` key in `/var/lib/paisans/registry.json` | yes |
 | authorized keys | this deployment's record of the keys it added | yes, unless another deployment's record lists them or they are the user's last |
 | `/srv/paisans/<token>` | its path | empty directories; everything with `--delete-data` |

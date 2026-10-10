@@ -364,7 +364,8 @@ func (p *Plan) buildHost() (*Stage, error) {
 		case r.Owned && r.Web && cp != nil:
 			// The kept Caddy's way in: ufw denies incoming by default.
 		case r.Owned && r.SSH:
-			p.Kept = append(p.Kept, sshAllowKept(p.Site, r.Line))
+			// Always kept, and not reported: with incoming denied, deleting
+			// it would cut the host off.
 		case r.Owned:
 			hp.rules = append(hp.rules, r.Line)
 		}

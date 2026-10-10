@@ -174,7 +174,7 @@ kept, with why.
 | rendered files | an entry in this deployment's manifest whose hash the file still has | deleted; an edited file is kept and named; then the manifest |
 | `wg-quick@psns-<token>` and `/etc/wireguard/psns-<token>.conf` | the token in the name, and the file hashing to its manifest entry | the unit disabled and stopped, the file deleted with the other rendered files |
 | units and drop-ins | the name `paisans-<token>-*` under `/etc/systemd/system`, and drop-in directories there | disabled, stopped, deleted, and systemd reloaded |
-| ufw rules | a comment starting with exactly `paisans-<token>:` | deleted, except the SSH allow, which `host prepare` never removes either: with incoming denied, deleting it cuts the next connection |
+| ufw rules | a comment starting with exactly `paisans-<token>:` | deleted, except the SSH allow, which is always kept so the host stays reachable, and is not listed: with incoming denied, deleting it would cut the next connection |
 | authorized keys | a fingerprint in this deployment's record, `/etc/paisans/authorized_keys.<user>.paisans-<token>.owned` | the key's plain lines deleted, unless another deployment's record lists the same fingerprint (both added one line, so it stays) or deleting them would leave the user with no key at all; then the record |
 | the deployment root, `/srv/paisans/<token>` | its path | empty directories removed; with `--delete-data`, all of it, unless an edited file is in it |
 | the registry entry | this id's line in `/var/lib/paisans/registry.json` | deleted under the same flock as a claim |

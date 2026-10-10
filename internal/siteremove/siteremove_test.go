@@ -78,7 +78,7 @@ func TestTheDryRunPlansEveryStageAndChangesNothing(t *testing.T) {
 	}
 	out := printed(p)
 	t.Log("\n" + out)
-	for _, want := range []string{"someone-elses-db", "the SSH allow", "patroni.env"} {
+	for _, want := range []string{"someone-elses-db", "patroni.env"} {
 		if !strings.Contains(out+strings.Join(p.Remains(), "\n"), want) {
 			t.Errorf("the plan and report do not mention %q", want)
 		}
@@ -267,4 +267,43 @@ func hasStepIn(st *siteremove.Stage, site, verb, text string) bool {
 		}
 	}
 	return false
+}
+
+// The SSH allow is how the host is reached, so no removal deletes it: not
+// the full one, not --force, not --id, with or without --delete-data. Its
+// plan never names it, and after the removal it is still there.
+func TestNoRemovalDeletesTheSSHAllow(t *testing.T) {
+	const ssh = "allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'"
+	builds := map[string]func(*world, siteremove.Options) *siteremove.Plan{
+		"full": func(w *world, o siteremove.Options) *siteremove.Plan { return w.mustBuild("home-b", o) },
+		"forced": func(w *world, o siteremove.Options) *siteremove.Plan {
+			return forced(t, w, w.cfg, "home-b", w.cfg.Sites["home-b"].Destination(), o)
+		},
+		"by id": func(w *world, o siteremove.Options) *siteremove.Plan { return byID(t, w, "home-b", ourID, o) },
+	}
+	for name, build := range builds {
+		for _, deleteData := range []bool{false, true} {
+			w := setup(t)
+			b := w.hosts["home-b"]
+			if !contains(b.rules, ssh) {
+				t.Fatalf("home-b has no SSH allow to keep: %v", b.rules)
+			}
+			p := build(w, siteremove.Options{DeleteData: deleteData})
+			plan := printed(p) + strings.Join(p.Remains(), "\n")
+			if strings.Contains(plan, "22/tcp") || strings.Contains(plan, "ssh, the bootstrap route") {
+				t.Errorf("%s, --delete-data %v: the plan names the SSH allow:\n%s", name, deleteData, plan)
+			}
+			if err := siteremove.Execute(p); err != nil {
+				t.Fatalf("%s, --delete-data %v: %v", name, deleteData, err)
+			}
+			if !contains(b.rules, ssh) {
+				t.Errorf("%s, --delete-data %v: the SSH allow is gone: %v", name, deleteData, b.rules)
+			}
+			for _, c := range b.commands {
+				if strings.HasPrefix(c, "ufw delete") && strings.Contains(c, "ssh") {
+					t.Errorf("%s, --delete-data %v: ran %q", name, deleteData, c)
+				}
+			}
+		}
+	}
 }
