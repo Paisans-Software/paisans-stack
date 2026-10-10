@@ -587,7 +587,12 @@ func Execute(p *Plan) error {
 		if st.Skipped != "" {
 			s := r.Step(st.skipTitle())
 			s.Detail("%s", st.Skipped)
-			s.Done("skipped")
+			// A title that says why already reads as a skip.
+			result := "skipped"
+			if st.SkipLine != "" {
+				result = ""
+			}
+			s.Done(result)
 			continue
 		}
 		if st.run != nil && len(st.Steps) > 0 {
