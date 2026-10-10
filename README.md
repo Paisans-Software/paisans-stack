@@ -671,7 +671,7 @@ the gateway no gate is engaged for it. A deployment with no monitor renders
 no pusher.
 
 **Topology commands reseed the monitor.** The seed is correct whenever the
-monitor site is applied, and nothing else applies it: `apply` is one site at
+monitor site is applied, and nothing else applies it: `apply --site` is one site at
 a time, and `site add`, `site remove`, `storage add` and `app remove` move
 files on the sites they change, which the monitor's is not. Left there, a
 monitor keeps pinging a site that is gone and alerting for it until somebody
@@ -1889,11 +1889,12 @@ the site is the one Garage site; joining several is `storage add`, below. Like `
 writes nothing without `--execute`.
 
 It has to run after the infrastructure stack is up, because Garage has to be
-reachable to be asked what it already has. **`paisans apply` alone leaves
-object storage unusable**: the containers come up, but no bucket exists and no
+reachable to be asked what it already has. **`paisans apply --site` alone
+leaves object storage unusable**: the containers come up, but no bucket exists and no
 application key can reach one, so the failure an adopter meets is an
 application error with no obvious cause, not a message naming a missing step.
-`storage init` is that missing step.
+`storage init` is that missing step, and `paisans apply` without `--site` runs
+it once every site is up.
 
 #### More than one Garage site: `storage add`
 
@@ -2987,14 +2988,19 @@ after another in the same process, stopping at the first failure:
 | joining | `site add <s>` | the cluster runs and a member has not joined it |
 | other sites | `apply --site <s>`, monitor sites last | every site not in `etcd.members` |
 | storage | `storage init --site <g>` for one Garage site, `storage add` for several | any Garage site |
-| pass two | `apply --site <s>` for every site, monitor sites last | always: it resumes a founding stop and moves what earlier steps changed |
+| pass two | `apply --site <s>` for every site, monitor sites last, a monitor in `etcd.members` too | always: it resumes a founding stop and moves what earlier steps changed |
 | dns | `dns init` | always; a record pointing elsewhere stops it, to be changed by hand |
 
 Run again, it reads live state again and carries on, so the same command is
 the first install, the resume after a failure, and every later change. Each
 step is the command an operator would type, so it plans, gates, claims and
 refuses as that command does, and the sudo password each host asks for is
-asked once for the run. A data site's founding stop is expected, not a
+asked once for the run. `-v` reaches every step, and `--keep-images` and
+`--min-free` each `apply`; `--ssh`, `--overwrite`, `--only` and `--recreate`
+are about one site, and are refused without `--site`. A stop names its step and how
+to carry on: usually by running it again, but a DNS record pointing elsewhere
+is first changed at the provider, and a `storage add` gate still waiting on
+Garage to move data exits with status 75, to be run again later. A data site's founding stop is expected, not a
 failure: pass two applies it again. It never takes anything out: a site or an
 app the yaml no longer declares is reported by the deployment record's warning,
 with the command that removes it. What only the operator can decide is left to

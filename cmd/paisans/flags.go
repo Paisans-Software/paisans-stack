@@ -1,13 +1,42 @@
 package main
 
 import (
+	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
+
+// flagsOnly, set by a test, stops each command parseFlags parses for once its
+// flags parse, so a test can prove a command accepts the arguments apply
+// without --site hands it without running it.
+var flagsOnly bool
+
+// errFlagsOnly is what a command returns when flagsOnly stopped it.
+var errFlagsOnly = errors.New("flags parsed; stopped before doing anything")
+
+// parseFlags is fs.Parse for each command apply without --site runs as a
+// step. With flagsOnly set it returns a bad flag or a stray argument as an
+// error rather than exiting, and errFlagsOnly once the flags parse.
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	if !flagsOnly {
+		return fs.Parse(args)
+	}
+	fs.Init(fs.Name(), flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("%s: %q is extra", fs.Name(), fs.Arg(0))
+	}
+	return errFlagsOnly
+}
 
 // commonFlags registers the flags every command takes, and returns the
 // reporter for the command's stdout once the flags are parsed. -v and

@@ -39,20 +39,26 @@ Out:
 |---|---|---|
 | 0. Configuration | `init`: the deployment id, the mesh subnet, every generated secret | the yaml has no id or no subnet, or the secrets file is missing or lacks a generated secret; once it has run, the rest is read and planned again |
 | 1. Hosts | `host prepare --site <s>` | every site; a prepared host plans nothing |
-| 2. Founding | `apply --site <w>` for each witness in `etcd.members`, then `apply --site <d>` for each other member, of those still being founded | a member holds no `infra/etcd-initial`, and either no member holds one or one's `--initial-cluster` lists it: the founding set is fixed by the first apply that wrote a record |
+| 2. Founding | `apply --site <w>` for each witness in `etcd.members`, then `apply --site <d>` for each other member, of those still being founded; a monitor among them too, since etcd needs it | a member holds no `infra/etcd-initial`, and either no member holds one or one's `--initial-cluster` lists it: the founding set is fixed by the first apply that wrote a record |
 | 2. Joining | `site add <s>` | a member holds no record and no record lists it: the cluster was founded without it |
 | 3. Other sites | `apply --site <s>` for every site not in `etcd.members`, monitor sites last | every such site; an applied site plans nothing |
 | 4. Storage | `storage init --site <g>` for one Garage site; `storage add` for several | `storage.garage.sites` is not empty |
-| 5. Pass two | `apply --site <s>` for every site again, monitor sites last | always: it resumes the data site the founding stop left, and moves what an earlier step changed, such as the keys storage made |
+| 5. Pass two | `apply --site <s>` for every site again, monitor sites last, a monitor in `etcd.members` among them | always: it resumes the data site the founding stop left, and moves what an earlier step changed, such as the keys storage made |
 | 6. DNS | `dns init` | always; it creates only what is missing, and stops on a record pointing elsewhere |
 
 A data site's apply that stops at the founding stop (its etcd is up and
 another founding member's is not) is not a failure in phase 2: pass two
 applies it again. Any other failure stops the run, naming the step and the
-command, with `Run paisans apply --execute again to resume.`
+command, with `Run paisans apply --execute again to resume.` Two stops get the
+hint that fits them instead, since running again alone does not get past
+them: a DNS record pointing elsewhere is changed at the provider by hand
+first, and a `storage add` gate waiting on Garage to finish moving data is not
+a failure, so the run exits with status 75 as `storage add` does, to be run
+again later.
 
 Each step runs the existing command in the same process, with the flags the
-plan sets, so it plans, gates, claims, reports and refuses exactly as typed by
+plan sets and those of apply's that reach it (`-v` every step, `--keep-images`
+and `--min-free` each `apply`), so it plans, gates, claims, reports and refuses exactly as typed by
 hand would, and asks each host's sudo password once for the whole run.
 
 ## Dry run
@@ -79,8 +85,13 @@ dry run, `paisans <command> --site <s>`, that shows it.
 The plan is a pure function of what was read, tested without a host: a blank
 deployment; one founded (joining, not founding); a member not yet founded
 while the others are (site add); no Garage site; one Garage site and several;
-monitor sites last in phases 3 and 5; init needed or not.
+monitor sites last in phases 3 and 5, and a monitor in `etcd.members` founded
+with the members and last in phase 5; init needed or not. Each is compared
+with the whole plan, in order.
 
 The run, with its steps replaced by fakes: steps run in order; the founding
 stop in phase 2 does not stop the run and the site is applied again in pass
-two; any other failure stops it with the resume hint, running nothing after.
+two; any other failure stops it with the resume hint, running nothing after,
+and a DNS conflict or a wait on Garage with its own hint. Every step of a real
+plan, with the flags the run adds, is put through its command's own flag
+parsing, stopped before the command does anything.

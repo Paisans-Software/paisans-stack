@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -300,6 +301,9 @@ func TestConflictRefusesBeforeAnyWrite(t *testing.T) {
 			err := Execute(context.Background(), c, p, ui.Discard)
 			if err == nil {
 				t.Fatal("execute should refuse a plan with a conflict")
+			}
+			if !errors.Is(err, ErrConflict) || err.Error() != "dns: 1 conflicting record(s), listed above. Nothing was created: a partial set of records is a deployment some names reach and others do not" {
+				t.Errorf("err = %v, want ErrConflict with its message unchanged", err)
 			}
 			if len(fake.posts) != 0 {
 				t.Fatalf("a conflict on one record must stop every write, got %d POST(s)", len(fake.posts))

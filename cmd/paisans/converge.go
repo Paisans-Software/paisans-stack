@@ -10,8 +10,10 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
+	"github.com/paisans-software/paisans-stack/internal/storageadd"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 	"gopkg.in/yaml.v3"
@@ -43,8 +45,8 @@ type convergeStep struct {
 	// common flags.
 	Title string
 	Why   string
-	// Args is the command and its own flags; the run adds --config,
-	// --secrets, --execute and --sudo.
+	// Args is the command and its own flags; the run adds the common ones,
+	// by convergeFlags.
 	Args []string
 	// Founding is an apply whose founding stop is expected: pass two
 	// applies it again.
@@ -106,6 +108,10 @@ func convergePlan(cfg *config.Config, st convergeState) []convergeStep {
 		}
 	}
 
+	// A monitor checks every other site and app, so it is applied after
+	// them, in phase three and in pass two. One in etcd.members is founded
+	// with the other members, since etcd needs it, and is still last in pass
+	// two.
 	monitors := cfg.MonitorSites()
 	ordered := func(include func(string) bool) []string {
 		var first, last []string
@@ -186,22 +192,47 @@ var convergeFounded = func(cfg *config.Config, sudo bool) (map[string]render.Etc
 	return records, nil
 }
 
-// convergeFlags is the common flags each command takes, of --config,
-// --secrets, --execute and --sudo.
-func convergeFlags(args []string, configPath, secretsPath string, execute, sudo bool) []string {
+// convergeOptions is what apply without --site hands on to its steps: the
+// flags every command takes, and apply's own that are not about one site.
+type convergeOptions struct {
+	Config, Secrets string
+	Execute, Sudo   bool
+	// Verbose is -v, which every command takes.
+	Verbose bool
+	// KeepImages and MinFree are apply's, so each apply step takes them.
+	KeepImages bool
+	MinFree    string
+}
+
+// convergeFlags is args with the flags o hands on, each to the commands that
+// take it: --config and -v to every one, --secrets to all but host prepare,
+// --execute to all but init, --sudo to all but dns, and --min-free and
+// --keep-images to apply alone.
+func convergeFlags(args []string, o convergeOptions) []string {
 	out := append([]string(nil), args...)
-	out = append(out, "--config", configPath)
+	out = append(out, "--config", o.Config)
 	takesSecrets := !(args[0] == "host")
 	takesExecute := args[0] != "init"
 	takesSudo := !(args[0] == "dns")
-	if takesSecrets && secretsPath != "" {
-		out = append(out, "--secrets", secretsPath)
+	if takesSecrets && o.Secrets != "" {
+		out = append(out, "--secrets", o.Secrets)
 	}
-	if takesExecute && execute {
+	if takesExecute && o.Execute {
 		out = append(out, "--execute")
 	}
 	if takesSudo {
-		out = append(out, fmt.Sprintf("--sudo=%t", sudo))
+		out = append(out, fmt.Sprintf("--sudo=%t", o.Sudo))
+	}
+	if o.Verbose {
+		out = append(out, "-v")
+	}
+	if args[0] == "apply" {
+		if o.MinFree != "" {
+			out = append(out, "--min-free", o.MinFree)
+		}
+		if o.KeepImages {
+			out = append(out, "--keep-images")
+		}
 	}
 	return out
 }
@@ -256,7 +287,8 @@ func missingID(path string) bool {
 // paisans.yaml to a complete, running stack, run in the order the deployment
 // needs them and stopped at the first failure. Run again, it reads live state
 // again and carries on. See docs/specs/2026-10-09-apply-converge.md.
-func runConverge(r ui.Reporter, configPath, secretsPath string, execute, sudo bool) error {
+func runConverge(r ui.Reporter, o convergeOptions) error {
+	configPath, secretsPath, execute, sudo := o.Config, o.Secrets, o.Execute, o.Sudo
 	cfg, st, err := convergeRead(configPath, secretsPath, sudo)
 	if err != nil {
 		return err
@@ -264,7 +296,7 @@ func runConverge(r ui.Reporter, configPath, secretsPath string, execute, sudo bo
 	if st.NeedsInit && execute {
 		// init writes the id, the subnet and the secrets the rest is
 		// planned from, so the state is read again once it has run.
-		if err := convergeRun(convergeFlags([]string{"init"}, configPath, secretsPath, true, sudo)); err != nil {
+		if err := convergeRun(convergeFlags([]string{"init"}, o)); err != nil {
 			return fmt.Errorf("apply: stopped at init: %w\nRun paisans apply --execute again to resume.", err)
 		}
 		if cfg, st, err = convergeRead(configPath, secretsPath, sudo); err != nil {
@@ -301,11 +333,16 @@ func runConverge(r ui.Reporter, configPath, secretsPath string, execute, sudo bo
 		if s.Title == "init" {
 			continue
 		}
-		err := convergeRun(convergeFlags(s.Args, configPath, secretsPath, true, sudo))
+		err := convergeRun(convergeFlags(s.Args, o))
 		switch {
 		case err == nil:
 		case s.Founding && errors.Is(err, apply.ErrFoundingWait):
 			r.Note(s.Title+" stopped at the founding stop; pass two applies it again", err.Error())
+		case errors.Is(err, dns.ErrConflict):
+			return fmt.Errorf("apply: stopped at %s: %w\nChange each conflicting record above at your DNS provider, then run paisans apply --execute again.", s.Title, err)
+		case errors.Is(err, storageadd.ErrWaiting):
+			// Not a failure, and main exits 75 for it as storage add does.
+			return fmt.Errorf("apply: waiting at %s: %w\nNothing failed: Garage is still moving data. Run paisans apply --execute again later.", s.Title, err)
 		default:
 			return fmt.Errorf("apply: stopped at %s: %w\nRun paisans apply --execute again to resume.", s.Title, err)
 		}

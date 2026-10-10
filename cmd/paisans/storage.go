@@ -31,7 +31,7 @@ func runStorageAdd(args []string) error {
 	wait := fs.Duration("wait", 0, "how long a stage waiting on Garage polls before the run exits, Eg: 2h. By default it reads once and exits with status 75")
 	stopTest := fs.Bool("stop-test", false, "in the smoke stage, stop Garage on the last listed site, prove reads and an upload survive, and start it again. Refused unless uploads survive one node down: replication 3 on three sites, or consistency dangerous")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	r := reporter()

@@ -42,7 +42,8 @@ Usage:
   paisans render   [--config paisans.yaml] [--secrets secrets.enc.yaml] --out ./out
   paisans host prepare --site <name> [--config paisans.yaml] [--ssh <destination>]
                [--execute]
-  paisans apply    [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
+  paisans apply    [--config paisans.yaml] [--secrets secrets.enc.yaml]
+                   [--min-free <size>] [--keep-images] [--execute]
                    every site, from paisans.yaml to a running stack, in order
   paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                    [--ssh <destination>] [--overwrite <path>]... [--recreate <stack>]...
@@ -89,8 +90,12 @@ Commands:
   host       Take a blank host to the state apply assumes: Docker, the
              WireGuard tools, a firewall, and a watchdog on a data site.
              Installs only what is missing. Writes nothing without --execute.
-  apply      Compare one site's rendered artifacts with what is on that host
-             and show what would change. Writes nothing without --execute.
+  apply      Without --site: take every site from paisans.yaml to a running
+             stack, running init, host prepare, apply, site add, storage
+             and dns init in the order the deployment needs. With --site:
+             compare that site's rendered artifacts with what is on its
+             host and show what would change. Writes nothing without
+             --execute.
   site       add: join a new data site to the running cluster in seven gated
              stages: preflight, mesh, etcd (learners, then promoted), the
              Patroni replica, synchronous mode, HAProxy, and each existing
@@ -335,7 +340,7 @@ func runInit(args []string) error {
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets file (default: secrets.enc.yaml beside the config)")
 	sudo := fs.Bool("sudo", true, "read each site through sudo, since the host registry is root's")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	r := reporter()
@@ -488,7 +493,8 @@ func runRender(args []string) error {
 }
 
 // runApply compares one site against what is rendered for it, and changes
-// nothing unless told to.
+// nothing unless told to. Without --site it converges every site instead, by
+// runConverge.
 //
 // A dry run by default is not politeness. This is the only command that
 // reaches a machine, the machine it reaches is running a community, and the
@@ -515,7 +521,7 @@ func runApply(args []string) error {
 	minFree := fs.String("min-free", "3G", "free space Docker's data root must have before a stack pulls an image, Eg: 2G")
 	keepImages := fs.Bool("keep-images", false, "leave the images this apply supersedes on the host, Eg: to keep one to roll back to")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	r := reporter()
@@ -527,7 +533,8 @@ func runApply(args []string) error {
 		if *destination != "" || len(overwrite) > 0 || len(only) > 0 || len(recreate) > 0 {
 			return fmt.Errorf("apply: --ssh, --overwrite, --only and --recreate are about one site, and apply without --site converges every site. Name it with --site")
 		}
-		return runConverge(r, *configPath, *secretsPath, *execute, *sudo)
+		verbose := fs.Lookup("verbose").Value.(flag.Getter).Get().(bool)
+		return runConverge(r, convergeOptions{Config: *configPath, Secrets: *secretsPath, Execute: *execute, Sudo: *sudo, Verbose: verbose, KeepImages: *keepImages, MinFree: *minFree})
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -822,12 +829,12 @@ func runStorageInit(args []string) error {
 	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	execute := fs.Bool("execute", false, "actually create what is missing")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	r := reporter()
 	if *site == "" {
-		return fmt.Errorf("storage init: --site is required. A site at a time is deliberate, the same reason apply takes one")
+		return fmt.Errorf("storage init: --site is required. A site at a time is deliberate, the same reason apply --site takes one")
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -902,12 +909,12 @@ func runHostPrepare(args []string) error {
 	destination := fs.String("ssh", "", "ssh destination, used verbatim in place of the site's ssh section (its user, host, port and keys are then ignored)")
 	execute := fs.Bool("execute", false, "actually install and configure what is missing")
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since packages, the firewall and kernel modules are root's")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	r := reporter()
 	if *site == "" {
-		return fmt.Errorf("host prepare: --site is required. A site at a time is deliberate, the same reason apply takes one")
+		return fmt.Errorf("host prepare: --site is required. A site at a time is deliberate, the same reason apply --site takes one")
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -1067,7 +1074,7 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 	configPath := fs.String("config", "paisans.yaml", "path to the deployment declaration")
 	secretsPath := fs.String("secrets", "", "path to the secrets (default: secrets.enc.yaml beside the config)")
 	execute := fs.Bool("execute", false, executeHelp)
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return nil, nil, nil, nil, false, err
 	}
 	r := reporter()
