@@ -174,7 +174,7 @@ func BuildForcedByID(dest config.Destination, t apply.Transport, ref string, o O
 	if err != nil {
 		return nil, err
 	}
-	p.Notes = append(p.Notes, secretsNotRead(e.Site), otherHostsLeft(id))
+	p.Notes = append(p.Notes, secretsNotRead(e.Site))
 	if s.Has(config.RoleApps) {
 		p.Notes = append(p.Notes, pocketIDNotChecked(e.Site))
 	}

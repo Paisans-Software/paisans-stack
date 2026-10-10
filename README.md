@@ -4772,7 +4772,7 @@ place, and everything else found is listed as kept:
 | rendered files | an entry in this deployment's manifest whose hash the file still has | deleted, then the manifest; a file edited on the host is kept and named |
 | the mesh interface | `wg-quick@psns-<token>`, named for the token, and its file hashing to its manifest entry | the unit disabled and stopped; the file deleted with the rendered files |
 | units and drop-ins | named `paisans-<token>-*` under `/etc/systemd/system` and its drop-in directories | disabled, stopped, deleted; systemd reloaded |
-| ufw rules | a comment starting with exactly `paisans-<token>:` | deleted, except the SSH allow, which `host prepare` never removes either: with incoming denied, deleting it cuts the next connection |
+| ufw rules | a comment starting with exactly `paisans-<token>:` | deleted, except the SSH allow, which `host prepare` never removes either: with incoming denied, deleting it cuts the next connection; a rule without that comment is not this deployment's, so it stays and is not listed |
 | authorized keys | nothing can prove one: a key `host prepare` added is a key the operator logs in with | never removed. A key may be the only way into the host, and nothing on it says whether another exists; the operator deletes one by hand once it is no longer needed |
 | the deployment's directory | its path, `/srv/paisans/<token>` | empty directories removed; what apply did not write, the data in its bind mounts, is kept, and `--delete-data` deletes it all unless a file in it was edited |
 | the registry entry | this id's line in `/var/lib/paisans/registry.json` | deleted under the same lock as a claim, by the same kind of awk program |
@@ -4972,8 +4972,8 @@ keys, `/srv/paisans/<token>` (empty directories, or everything with
 `--delete-data`), the deployment record and the registry entry.
 
 What needs the rest of `paisans.yaml` is not done, and the report says so, one
-line each: the secrets file is not read, other hosts are not reached, and on an
-`apps` site it is not known whether this host held Pocket ID's active instance.
+line each: the secrets file is not read, and on an `apps` site it is not known
+whether this host held Pocket ID's active instance.
 Every `--id` run, dry run or not, warns
 `DNS records for this deployment, if any exist, were not modified`: there is no
 provider or token to delete them with. The line under it is the comment to

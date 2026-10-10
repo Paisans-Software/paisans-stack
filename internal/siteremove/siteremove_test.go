@@ -78,9 +78,15 @@ func TestTheDryRunPlansEveryStageAndChangesNothing(t *testing.T) {
 	}
 	out := printed(p)
 	t.Log("\n" + out)
-	for _, want := range []string{"someone-elses-db", "allow 8080/tcp", "paisans-0c1d: wireguard", "the SSH allow", "patroni.env"} {
+	for _, want := range []string{"someone-elses-db", "the SSH allow", "patroni.env"} {
 		if !strings.Contains(out+strings.Join(p.Remains(), "\n"), want) {
 			t.Errorf("the plan and report do not mention %q", want)
+		}
+	}
+	// A ufw rule without this deployment's tag is not this command's business.
+	for _, unwanted := range []string{"allow 8080/tcp", "paisans-0c1d: wireguard"} {
+		if strings.Contains(out+strings.Join(p.Remains(), "\n"), unwanted) {
+			t.Errorf("the plan or report mentions %q", unwanted)
 		}
 	}
 	for name, h := range w.hosts {
