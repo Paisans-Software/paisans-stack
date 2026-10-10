@@ -57,7 +57,21 @@ func terminalAvailable() bool {
 func promptOnTerminal(host string) (string, error) {
 	resume := holdOutput()
 	defer resume()
-	return readPassword(host)
+	password, err := readPassword(host)
+	blankLineOnTerminal()
+	return password, err
+}
+
+// blankLineOnTerminal writes an empty line to the controlling terminal after
+// the password prompt, so the next question or the report starts apart from
+// it. Tests replace it.
+var blankLineOnTerminal = func() {
+	tty, err := openTTY()
+	if err != nil {
+		return
+	}
+	defer tty.Close()
+	fmt.Fprintln(tty)
 }
 
 // readPassword asks on the controlling terminal. Tests replace it, since a

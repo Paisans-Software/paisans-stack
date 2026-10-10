@@ -139,3 +139,13 @@ func ForgetContacts() {
 	defer contactedMu.Unlock()
 	contacted = map[string]bool{}
 }
+
+// FakeHostKeys replaces the known_hosts lookup with known, and the blank line
+// written after a host key question with a count of them. It returns a
+// function restoring the real ones.
+func FakeHostKeys(known func(SSHTransport) bool, blanks *int) func() {
+	oldKnown, oldBlank := hostKeyKnown, blankLineOnTerminal
+	hostKeyKnown = known
+	blankLineOnTerminal = func() { *blanks++ }
+	return func() { hostKeyKnown, blankLineOnTerminal = oldKnown, oldBlank }
+}

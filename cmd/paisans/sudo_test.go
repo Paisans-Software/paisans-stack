@@ -58,3 +58,19 @@ func TestErrReporterTakesTheHold(t *testing.T) {
 		t.Error("the hold still points at the stdout reporter after errReporter")
 	}
 }
+
+// The sudo password prompt is followed by a blank line, so the next question
+// or the report starts apart from it.
+func TestSudoPromptIsFollowedByABlankLine(t *testing.T) {
+	savedRead, savedBlank := readPassword, blankLineOnTerminal
+	t.Cleanup(func() { readPassword, blankLineOnTerminal = savedRead, savedBlank })
+	blanks := 0
+	readPassword = func(string) (string, error) { return "secret", nil }
+	blankLineOnTerminal = func() { blanks++ }
+	if _, err := promptOnTerminal("home-a"); err != nil {
+		t.Fatal(err)
+	}
+	if blanks != 1 {
+		t.Errorf("%d blank lines after the prompt, want 1", blanks)
+	}
+}

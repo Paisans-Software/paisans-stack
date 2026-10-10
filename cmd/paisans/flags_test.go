@@ -71,7 +71,7 @@ func withRecorder(t *testing.T, verbose bool) *ui.Recorder {
 func retryOnce(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
-	script := "#!/bin/sh\nif [ ! -e '" + filepath.Join(dir, "seen") + "' ]; then : > '" + filepath.Join(dir, "seen") + "'; echo 'ssh: connect to host x port 22: Connection refused'; exit 255; fi\nexit 0\n"
+	script := "#!/bin/sh\n[ \"$1\" = -G ] && exit 0\nif [ ! -e '" + filepath.Join(dir, "seen") + "' ]; then : > '" + filepath.Join(dir, "seen") + "'; echo 'ssh: connect to host x port 22: Connection refused'; exit 255; fi\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
