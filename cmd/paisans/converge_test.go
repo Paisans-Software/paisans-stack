@@ -586,3 +586,24 @@ func TestInitWhyNamesMissingSecrets(t *testing.T) {
 		}
 	}
 }
+
+// A path given without --config is refused with the flag to use, not
+// ignored for the default paisans.yaml.
+func TestApplyRefusesAStrayArgument(t *testing.T) {
+	fakeConverge(t, nil)
+	err := runApply([]string{"--sudo=false", "staging/paisans.yaml"})
+	if err == nil || !strings.Contains(err.Error(), "--config staging/paisans.yaml") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// site remove's usage entry names every flag it takes.
+func TestSiteRemoveUsageNamesForceAndSSH(t *testing.T) {
+	start := strings.Index(usage, "paisans site remove")
+	entry := usage[start : start+strings.Index(usage[start:], "\n  paisans storage")]
+	for _, flag := range []string{"--force", "--ssh"} {
+		if !strings.Contains(entry, flag) {
+			t.Errorf("site remove's usage leaves out %s:\n%s", flag, entry)
+		}
+	}
+}

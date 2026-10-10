@@ -51,7 +51,7 @@ Usage:
   paisans site add <site> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--execute]
   paisans site remove <site> [--config paisans.yaml] [--secrets secrets.enc.yaml]
-               [--host-gone] [--delete-data] [--execute]
+               [--host-gone] [--delete-data] [--force --ssh <user@host[:port]>] [--execute]
   paisans storage init --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                [--ssh <destination>] [--execute]
   paisans storage add [--config paisans.yaml] [--secrets secrets.enc.yaml]
@@ -523,6 +523,9 @@ func runApply(args []string) error {
 	sudo := fs.Bool("sudo", true, "run remote commands through sudo, since /srv and /etc are not the deploy user's")
 	if err := parseFlags(fs, args); err != nil {
 		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("apply: %q is not a flag, and apply takes no arguments. Give the configuration with --config %s", fs.Arg(0), fs.Arg(0))
 	}
 	r := reporter()
 	needFree, err := apply.ParseSize(*minFree)
