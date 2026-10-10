@@ -164,7 +164,7 @@ func TestDoctorDiagnosesTheStuckReplicaAndOnlyReads(t *testing.T) {
 		"done: check mesh home-a psns-f2a9 is up",
 		"done: check mesh home-a nothing on the host overlaps the mesh subnet 10.44.0.0/24",
 		"refuse: check mesh vm: the mesh subnet 10.44.0.0/24 overlaps route 10.44.0.0/16 dev wg9",
-		"refuse: check reach home-b: ssh to ubuntu@home-b.local did not answer (ssh: connect to host home-b.local port 22: Operation timed out)",
+		"refuse: check reach home-b: ssh to ubuntu@home-b.local did not answer (Operation timed out)",
 		"warn: check etcd quorum: 2 of 3 members healthy (needs 2), asked from home-a",
 		"refuse: check patroni: no primary: home-a is a replica and will not promote while home-b, which led, is gone",
 		"refuse: check containers home-a: paisans-f2a9-talk-app-1 restarting (exit 1, restarted 9 time(s))",

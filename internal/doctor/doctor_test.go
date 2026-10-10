@@ -163,7 +163,7 @@ func TestUnreachableSiteSaysWhatIsLost(t *testing.T) {
 		{Site: "home-b", Destination: "ubuntu@home-b.local", Err: "ssh: connect to host home-b.local port 22: Operation timed out"},
 		{Site: "vm", Destination: "ubuntu@vm.example.org", Err: "ssh: connect to host vm.example.org port 22: Connection refused"},
 	})
-	b := find(t, findings, SectionReach, "home-b: ssh to ubuntu@home-b.local did not answer (ssh: connect to host home-b.local port 22: Operation timed out)")
+	b := find(t, findings, SectionReach, "home-b: ssh to ubuntu@home-b.local did not answer (Operation timed out)")
 	if b.Level != Fail {
 		t.Fatalf("level %v", b.Level)
 	}
@@ -516,5 +516,21 @@ func TestContainersAreThisDeploymentsByLabel(t *testing.T) {
 	got := Containers(d, sites, "")
 	if len(got) != 1 || got[0].Level != OK || got[0].Line != "home-a: 1 paisans container(s), all running" {
 		t.Fatalf("got %+v, want one OK line counting only this deployment's container", got)
+	}
+}
+
+// The reason in an unreachable site's line is ssh's, without the host ssh
+// names again: the line already names the site and its destination.
+func TestUnreachableLineNamesTheHostOnce(t *testing.T) {
+	cfg := fixture(t)
+	for err, want := range map[string]string{
+		"ssh: connect to host home-b.local port 22: Connection refused":                              "home-b: ssh to ubuntu@home-b.local did not answer (Connection refused)",
+		"ssh: Could not resolve hostname home-b.local: nodename nor servname provided, or not known": "home-b: ssh to ubuntu@home-b.local did not answer (the name does not resolve: nodename nor servname provided, or not known)",
+		"kex_exchange_identification: read: Connection reset by peer":                                "home-b: ssh to ubuntu@home-b.local did not answer (kex_exchange_identification: read: Connection reset by peer)",
+	} {
+		findings := Reach(cfg, []SiteReach{{Site: "home-b", Destination: "ubuntu@home-b.local", Err: err}})
+		if findings[0].Line != want {
+			t.Errorf("%q:\n got %q\nwant %q", err, findings[0].Line, want)
+		}
 	}
 }
