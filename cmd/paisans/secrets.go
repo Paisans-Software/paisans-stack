@@ -31,6 +31,26 @@ func runSecrets(args []string) error {
 	return fmt.Errorf("secrets takes one subcommand, set or prune: paisans secrets set <dotted.key> [--secrets path] < value, or paisans secrets prune [--execute]")
 }
 
+// hasSecrets reports whether the secrets file holds anything under key, a
+// section and a name: sites.<n>, apps.<n> (with its sign-in client) or
+// pocket_id_groups.<n>.
+func hasSecrets(s *config.Secrets, key string) bool {
+	kind, name, _ := strings.Cut(key, ".")
+	switch kind {
+	case "sites":
+		_, ok := s.Sites[name]
+		return ok
+	case "apps":
+		_, app := s.Apps[name]
+		_, client := s.OIDCClients[name]
+		return app || client
+	case "pocket_id_groups":
+		_, ok := s.PocketIDGroups[name]
+		return ok
+	}
+	return false
+}
+
 // runSecretsPrune removes the secrets that name something paisans.yaml no
 // longer declares: a removed site's WireGuard key and heartbeat token, a
 // removed app's passwords and sign-in client, a Pocket ID group nothing
@@ -73,7 +93,11 @@ func runSecretsPrune(args []string, stdin io.Reader, stdout io.Writer) error {
 		deployed = &rec
 	}
 	for _, o := range secretsgen.Dropped(cfg, deployed) {
-		r.Note(o.Key+" "+o.Why+"; its secrets are kept", o.Leaves)
+		hint := o.Key + " " + o.Why
+		if hasSecrets(secrets, o.Key) {
+			hint += "; its secrets are kept"
+		}
+		r.Note(hint, o.Leaves)
 	}
 	orphans := secretsgen.Orphans(cfg, secrets, deployed)
 	if len(orphans) == 0 {

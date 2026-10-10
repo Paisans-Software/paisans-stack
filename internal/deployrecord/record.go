@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -29,6 +30,11 @@ const Version = 1
 // the read and the write: another command wrote it, and running again reads
 // that.
 const ChangedMarker = "paisans: the deployment record changed while it was read"
+
+// ErrMalformed is a record that cannot be read as one: corrupt, or written
+// by a toolkit with a newer layout. Nothing rewrites it, since what it held
+// is unknown; it is deleted by hand and the gateway applied again.
+var ErrMalformed = errors.New("not a deployment record this toolkit reads")
 
 // Record is the names a deployment has deployed, each list sorted.
 type Record struct {
@@ -153,7 +159,7 @@ func read(t registry.Runner, d deployment.Deployment) (Record, string, bool, err
 	}
 	r, err := parse(content)
 	if err != nil {
-		return Record{}, "", false, fmt.Errorf("%s: %s is not a deployment record: %w", t.Describe(), Path(d), err)
+		return Record{}, "", false, fmt.Errorf("%s: %s is %w: %v", t.Describe(), Path(d), ErrMalformed, err)
 	}
 	return r, content, true, nil
 }
@@ -199,7 +205,7 @@ func write(t registry.Runner, d deployment.Deployment, raw string, found bool, n
 		if strings.Contains(out, ChangedMarker) {
 			return fmt.Errorf("%s: %s. Run the command again", t.Describe(), ChangedMarker)
 		}
-		return fmt.Errorf("%s: writing %s: %w: %s", t.Describe(), Path(d), err, strings.TrimSpace(out))
+		return fmt.Errorf("writing %s: %w", Path(d), err)
 	}
 	return nil
 }

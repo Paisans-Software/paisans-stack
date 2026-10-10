@@ -129,3 +129,27 @@ func TestFromConfig(t *testing.T) {
 		t.Errorf("%+v", r)
 	}
 }
+
+// A malformed record is ErrMalformed, which callers name with the way out.
+func TestAMalformedRecordIsErrMalformed(t *testing.T) {
+	h := &fakeHost{files: map[string]string{deployrecord.Path(dep): `{"version":2}`}}
+	if _, _, err := deployrecord.Read(h, dep); !errors.Is(err, deployrecord.ErrMalformed) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// failingWrite is a host whose write fails the way SSHTransport's does: the
+// error already carries the remote output.
+type failingWrite struct{ *fakeHost }
+
+func (f failingWrite) Run(string) (string, error) {
+	return "mv: cannot move\n", errors.New("ubuntu@vm.example.org: exit status 1: mv: cannot move")
+}
+
+func TestAFailedWriteSaysItsOutputOnce(t *testing.T) {
+	h := failingWrite{&fakeHost{files: map[string]string{}}}
+	_, err := deployrecord.Add(h, dep, deployrecord.Record{Sites: []string{"vm"}})
+	if err == nil || strings.Count(err.Error(), "mv: cannot move") != 1 {
+		t.Errorf("err = %v", err)
+	}
+}

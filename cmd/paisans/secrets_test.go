@@ -365,3 +365,20 @@ func fixtureRecord() string {
 	data, _ := json.Marshal(deployrecord.FromConfig(cfg))
 	return string(data)
 }
+
+// prune says secrets are kept only for a dropped name that has some.
+func TestPruneSaysKeptOnlyWhenThereAreSecrets(t *testing.T) {
+	configPath, secretsPath := writeFixtureSecrets(t, func(s *config.Secrets) { s.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "x"} })
+	withRecords(t, map[string]string{"vm": `{"version":1,"sites":["home-a","home-b","vm","watch","monitor-a","monitor-b"],"apps":[],"pocket_id_groups":[]}`})
+	out := captureStdout(t, func() {
+		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "sites.monitor-a is deployed but paisans.yaml no longer declares it; its secrets are kept") {
+		t.Errorf("monitor-a:\n%s", out)
+	}
+	if strings.Contains(out, "monitor-b is deployed but paisans.yaml no longer declares it; its secrets are kept") {
+		t.Errorf("monitor-b has no secrets:\n%s", out)
+	}
+}

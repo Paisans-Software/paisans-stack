@@ -94,6 +94,10 @@ func recordApplied(r ui.Reporter, cfg *config.Config, site string, t registry.Ru
 	}
 	s := r.Step("record the deployment on " + site)
 	changed, err := deployrecord.Add(t, cfg.Deployment(), deployrecord.FromConfig(cfg))
+	if errors.Is(err, deployrecord.ErrMalformed) {
+		s.Fail(err)
+		return fmt.Errorf("%w. The apply itself finished. What the record held cannot be read, so it is not rewritten: delete it on %s with `sudo rm %s`, then apply %s again, which writes it from paisans.yaml", err, site, deployrecord.Path(cfg.Deployment()), site)
+	}
 	if err != nil {
 		s.Fail(err)
 		return fmt.Errorf("%w. The apply itself finished; run it again to record it", err)
@@ -109,17 +113,25 @@ func recordApplied(r ui.Reporter, cfg *config.Config, site string, t registry.Ru
 // record keeps the secrets, which a later run of the same removal frees.
 func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Record, what string, execute, sudo bool) bool {
 	d := cfg.Deployment()
-	left := false
+	left, sectioned := false, false
+	section := func() {
+		if !sectioned {
+			r.Section("deployment record")
+			sectioned = true
+		}
+	}
 	for _, gw := range cfg.GatewaySites() {
 		t := registryHost(gw, cfg.Sites[gw], "", sudo)
 		rec, found, err := deployrecord.Read(t, d)
 		if err != nil {
+			section()
 			r.Warn("the deployment record on "+gw+" still lists "+what, err.Error())
 			continue
 		}
 		if !found || !listsAny(rec, names) {
 			continue
 		}
+		section()
 		title := "forget " + what + " in the deployment record on " + gw
 		if !execute {
 			r.Item(title)

@@ -123,3 +123,29 @@ func TestForgetInRecordsDryRunSaysWhetherARecordListsIt(t *testing.T) {
 		t.Error("a dry run wrote")
 	}
 }
+
+// A malformed record stops a gateway's apply with the way out, not "run it
+// again".
+func TestApplyNamesTheWayOutOfAMalformedRecord(t *testing.T) {
+	cfg, _ := config.Load(fixtureConfig())
+	gw := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): "{"}}
+	err := recordApplied(&ui.Recorder{}, cfg, "vm", gw)
+	if err == nil || !strings.Contains(err.Error(), "rm "+deployrecord.Path(cfg.Deployment())) || strings.Contains(err.Error(), "run it again") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// The record lines sit under a section of their own, not the last site's.
+func TestForgetInRecordsHasItsOwnSection(t *testing.T) {
+	cfg, _ := config.Load(fixtureConfig())
+	vm := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): `{"version":1,"sites":["monitor-a"],"apps":[],"pocket_id_groups":[]}`}}
+	saved := registryHost
+	registryHost = func(string, config.Site, string, bool) registry.Runner { return vm }
+	t.Cleanup(func() { registryHost = saved })
+	rec := &ui.Recorder{}
+	forgetInRecords(rec, cfg, deployrecord.Record{Sites: []string{"monitor-a"}}, "monitor-a", false, true)
+	s, i := rec.Index("section", "deployment record"), rec.Index("item", "forget monitor-a")
+	if s < 0 || i < s {
+		t.Errorf("section %d, item %d:\n%s", s, i, rec.Lines())
+	}
+}
