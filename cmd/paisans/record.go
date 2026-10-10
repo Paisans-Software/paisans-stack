@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployrecord"
@@ -81,67 +82,92 @@ func confirmWord(stdin io.Reader, stdout io.Writer, word, what string) error {
 }
 
 // recordApplied adds what paisans.yaml declares to the deployment record on
-// a gateway, after its apply: apply only ever adds, so a yaml edited by
-// mistake cannot take a running site's protection away.
-func recordApplied(r ui.Reporter, cfg *config.Config, site string, t registry.Runner) error {
+// every gateway, after a gateway's apply: apply only ever adds, so a yaml
+// edited by mistake cannot take a running site's protection away. A gateway
+// it cannot reach is warned about and caught up by the next change.
+func recordApplied(r ui.Reporter, cfg *config.Config, site string, hosts func(string) registry.Runner) error {
 	if !cfg.Sites[site].Has(config.RoleGateway) {
 		return nil
 	}
-	s := r.Step("record the deployment on " + site)
-	changed, err := deployrecord.Add(t, cfg.Deployment(), deployrecord.FromConfig(cfg))
+	s := r.Step("record the deployment")
+	res, err := deployrecord.Update(gatewayHosts(cfg, hosts), cfg.Deployment(), deployrecord.Adding(deployrecord.FromConfig(cfg)), time.Now())
 	if errors.Is(err, deployrecord.ErrMalformed) {
 		s.Fail(err)
-		return fmt.Errorf("%w. The apply itself finished. What the record held cannot be read, so it is not rewritten: delete it on %s with `sudo rm %s`, then apply %s again, which writes it from paisans.yaml", err, site, deployrecord.Path(cfg.Deployment()), site)
+		return fmt.Errorf("%w. The apply itself finished. What the record held cannot be read, so it is not rewritten: delete it on that gateway with `sudo rm %s`, then apply %s again, which writes it from paisans.yaml", err, deployrecord.Path(cfg.Deployment()), site)
 	}
 	if err != nil {
 		s.Fail(err)
 		return fmt.Errorf("%w. The apply itself finished; run it again to record it", err)
 	}
-	s.Done(map[bool]string{true: "updated", false: "up to date"}[changed])
+	s.Done(recordResult(res))
+	reportMissed(r, res)
 	return nil
+}
+
+func recordResult(res deployrecord.Result) string {
+	switch {
+	case res.Changed:
+		return "updated"
+	case len(res.Wrote) > 0:
+		return "brought " + strings.Join(res.Wrote, ", ") + " up to date"
+	}
+	return "up to date"
+}
+
+// reportMissed warns once per gateway a change to the deployment record did
+// not reach. It is never a failure: the next change catches it up.
+func reportMissed(r ui.Reporter, res deployrecord.Result) {
+	for _, gw := range sortedKeys(res.Missed) {
+		r.Warn(gw+" missed this change to the deployment record", res.Missed[gw].Error()+". It is brought up to date the next time a command that writes the record reaches it")
+	}
 }
 
 // forgetInRecords takes names out of the deployment record on every gateway
 // paisans.yaml declares. Without execute it lists them, and reports whether
-// any record still lists one. The removal they follow is done whether or not this
-// reaches every gateway, so a gateway it cannot reach is a warning: its
-// record keeps the secrets, which a later run of the same removal frees.
+// the newest record still lists one. A gateway it cannot reach is warned
+// about, never a failure: the removal it follows is done, and the next change
+// to the record catches that gateway up.
 func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Record, what string, execute, sudo bool) bool {
+	hosts := gatewayHosts(cfg, func(gw string) registry.Runner { return registryHost(gw, cfg.Sites[gw], "", sudo) })
+	if len(hosts) == 0 {
+		return false
+	}
 	d := cfg.Deployment()
-	left, sectioned := false, false
-	section := func() {
-		if !sectioned {
+	title := "forget " + what + " in the deployment record"
+	if !execute {
+		newest, found, missing := deployrecord.Gather(hosts, d)
+		listed := found > 0 && listsAny(newest, names)
+		unread := []string{}
+		for _, gw := range sortedKeys(missing) {
+			if !errors.Is(missing[gw], deployrecord.ErrNoRecord) {
+				unread = append(unread, gw)
+			}
+		}
+		if listed || len(unread) > 0 {
 			r.Section("deployment record")
-			sectioned = true
 		}
-	}
-	for _, gw := range cfg.GatewaySites() {
-		t := registryHost(gw, cfg.Sites[gw], "", sudo)
-		rec, found, err := deployrecord.Read(t, d)
-		if err != nil {
-			section()
-			r.Warn("the deployment record on "+gw+" still lists "+what, err.Error())
-			continue
+		for _, gw := range unread {
+			r.Warn("could not read the deployment record on "+gw, missing[gw].Error())
 		}
-		if !found || !listsAny(rec, names) {
-			continue
-		}
-		section()
-		title := "forget " + what + " in the deployment record on " + gw
-		if !execute {
+		if listed {
 			r.Item(title)
-			left = true
-			continue
 		}
-		s := r.Step(title)
-		if _, err := deployrecord.Forget(t, d, names); err != nil {
-			s.Fail(err)
-			r.Warn("the deployment record on "+gw+" still lists "+what, err.Error()+". Run the same command again to take it out")
-			continue
-		}
-		s.Done("")
+		return listed
 	}
-	return left
+	res, err := deployrecord.Update(hosts, d, deployrecord.Forgetting(names), time.Now())
+	if err == nil && !res.Changed && len(res.Wrote) == 0 && len(res.Missed) == 0 {
+		return false
+	}
+	r.Section("deployment record")
+	s := r.Step(title)
+	if err != nil {
+		s.Fail(err)
+		r.Warn("the deployment record still lists "+what, err.Error())
+		return false
+	}
+	s.Done(recordResult(res))
+	reportMissed(r, res)
+	return false
 }
 
 func listsAny(rec, names deployrecord.Record) bool {

@@ -64,6 +64,10 @@ func keysOtherUserKept(site, record, reach string) string {
 	return fmt.Sprintf("%s: another user's SSH keys kept; clean them by running again as that user. The record is %s; run again with --ssh %s", site, record, reach)
 }
 
+func recordMissed(gw, why string) string {
+	return fmt.Sprintf("%s: deployment record not updated; the next change catches it up. %s", gw, why)
+}
+
 func secretsLeft(site string) string {
 	return fmt.Sprintf("secrets: run `paisans secrets prune` once nothing needs sites.%s. It holds its WireGuard key and heartbeat token, and this command never edits the secrets file", site)
 }

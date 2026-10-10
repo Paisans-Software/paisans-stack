@@ -713,7 +713,12 @@ func runApply(args []string) error {
 	}); err != nil {
 		return err
 	}
-	if err := recordApplied(r, cfg, *site, transport); err != nil {
+	if err := recordApplied(r, cfg, *site, func(gw string) registry.Runner {
+		if gw == *site {
+			return transport
+		}
+		return registryHost(gw, cfg.Sites[gw], "", *sudo)
+	}); err != nil {
 		return err
 	}
 	err = clients.result()

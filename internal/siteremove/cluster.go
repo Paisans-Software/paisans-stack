@@ -11,6 +11,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/deployrecord"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -178,16 +179,20 @@ func (p *Plan) buildCluster() (*Stage, error) {
 	}
 	// The site leaves every remaining gateway's deployment record, so
 	// secrets prune may remove its secrets.
-	var forgets []string
+	records := map[string]registry.Runner{}
 	for _, gw := range p.end.GatewaySites() {
-		rec, found, err := deployrecord.Read(p.transports[gw], p.dep())
-		if err != nil {
-			return nil, fmt.Errorf("site remove %s: %w", p.Site, err)
+		records[gw] = p.transports[gw]
+	}
+	newest, found, missing := deployrecord.Gather(records, p.dep())
+	for _, gw := range sortedCopy(keys(missing)) {
+		if !errors.Is(missing[gw], deployrecord.ErrNoRecord) {
+			return nil, fmt.Errorf("site remove %s: %w", p.Site, missing[gw])
 		}
-		if found && rec.Lists("sites", p.Site) {
-			forgets = append(forgets, gw)
-			st.Steps = append(st.Steps, Step{Site: gw, Verb: "forget", Title: "forget " + p.Site + " in the deployment record on " + gw, Text: fmt.Sprintf("%s out of %s, so secrets prune may remove its secrets", p.Site, deployrecord.Path(p.dep()))})
-		}
+	}
+	forget := found > 0 && newest.Lists("sites", p.Site)
+	if forget {
+		on := strings.Join(sortedCopy(keys(records)), ", ")
+		st.Steps = append(st.Steps, Step{Site: on, Verb: "forget", Title: "forget " + p.Site + " in the deployment record", Text: fmt.Sprintf("%s out of %s on %s, so secrets prune may remove its secrets", p.Site, deployrecord.Path(p.dep()), on)})
 	}
 	replicas, err := p.replicaEnvs(st)
 	if err != nil {
@@ -234,10 +239,14 @@ func (p *Plan) buildCluster() (*Stage, error) {
 			}
 			p.open.Detail("%s streams again", r.Site)
 		}
-		for _, gw := range forgets {
-			p.work("forget " + p.Site + " in the deployment record on " + gw)
-			if _, err := deployrecord.Forget(p.transports[gw], p.dep(), deployrecord.Record{Sites: []string{p.Site}}); err != nil {
+		if forget {
+			p.work("forget " + p.Site + " in the deployment record")
+			res, err := deployrecord.Update(records, p.dep(), deployrecord.Forgetting(deployrecord.Record{Sites: []string{p.Site}}), now())
+			if err != nil {
 				return err
+			}
+			for _, gw := range sortedCopy(keys(res.Missed)) {
+				p.Notes = append(p.Notes, recordMissed(gw, res.Missed[gw].Error()))
 			}
 		}
 		return nil
@@ -632,4 +641,12 @@ func (p *Plan) meshGate(key string) error {
 		}
 	}
 	return nil
+}
+
+func keys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

@@ -50,3 +50,19 @@ func TestCleaningAGatewayDeletesItsRecord(t *testing.T) {
 		t.Error("the record is still on the host")
 	}
 }
+
+// A gateway that missed the removal is written with the newest record when
+// the removal runs, so it no longer lists the site.
+func TestSiteRemoveWritesTheNewestRecordToEveryGateway(t *testing.T) {
+	w := setup(t)
+	vm := w.hosts["vm"]
+	vm.files[deployrecord.Path(dep)] = `{"version":1,"revision":2,"sites":["home-a","home-b","vm","watch"],"apps":[],"pocket_id_groups":[]}` + "\n"
+	p := w.mustBuild("home-b", siteremove.Options{})
+	if err := siteremove.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+	r, _, _ := deployrecord.Read(vm, dep)
+	if r.Revision != 3 || r.Lists("sites", "home-b") {
+		t.Errorf("%+v", r)
+	}
+}

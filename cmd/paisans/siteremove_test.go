@@ -154,7 +154,7 @@ func TestForcedRunReportsAGatewayItCouldNotReach(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "the deployment record on vm still lists monitor-a") {
+	if !strings.Contains(out, "vm missed this change to the deployment record") {
 		t.Errorf("no warning:\n%s", out)
 	}
 }

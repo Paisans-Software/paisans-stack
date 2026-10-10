@@ -64,7 +64,7 @@ func TestApplyRecordsTheDeploymentOnAGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	gw := &recordFake{files: map[string]string{}}
-	if err := recordApplied(&ui.Recorder{}, cfg, "vm", gw); err != nil {
+	if err := recordApplied(&ui.Recorder{}, cfg, "vm", func(string) registry.Runner { return gw }); err != nil {
 		t.Fatal(err)
 	}
 	rec, found, _ := deployrecord.Read(gw, cfg.Deployment())
@@ -72,7 +72,7 @@ func TestApplyRecordsTheDeploymentOnAGateway(t *testing.T) {
 		t.Errorf("%+v %v", rec, found)
 	}
 	other := &recordFake{files: map[string]string{}}
-	if err := recordApplied(&ui.Recorder{}, cfg, "home-b", other); err != nil || len(other.files) != 0 || len(other.ran) != 0 {
+	if err := recordApplied(&ui.Recorder{}, cfg, "home-b", func(string) registry.Runner { return other }); err != nil || len(other.files) != 0 || len(other.ran) != 0 {
 		t.Errorf("a non gateway was written: %v %v", err, other.files)
 	}
 }
@@ -91,7 +91,7 @@ func TestForgetInRecordsReachesEveryGatewayAndWarnsForOneDown(t *testing.T) {
 	vm.down = true
 	rec = &ui.Recorder{}
 	forgetInRecords(rec, cfg, deployrecord.Record{Sites: []string{"monitor-b"}}, "monitor-b", true, true)
-	if !strings.Contains(rec.Lines(), "still lists monitor-b") {
+	if !strings.Contains(rec.Lines(), "vm missed this change to the deployment record") {
 		t.Errorf("no warning:\n%s", rec.Lines())
 	}
 }
@@ -129,7 +129,7 @@ func TestForgetInRecordsDryRunSaysWhetherARecordListsIt(t *testing.T) {
 func TestApplyNamesTheWayOutOfAMalformedRecord(t *testing.T) {
 	cfg, _ := config.Load(fixtureConfig())
 	gw := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): "{"}}
-	err := recordApplied(&ui.Recorder{}, cfg, "vm", gw)
+	err := recordApplied(&ui.Recorder{}, cfg, "vm", func(string) registry.Runner { return gw })
 	if err == nil || !strings.Contains(err.Error(), "rm "+deployrecord.Path(cfg.Deployment())) || strings.Contains(err.Error(), "run it again") {
 		t.Errorf("err = %v", err)
 	}
@@ -147,5 +147,34 @@ func TestForgetInRecordsHasItsOwnSection(t *testing.T) {
 	s, i := rec.Index("section", "deployment record"), rec.Index("item", "forget monitor-a")
 	if s < 0 || i < s {
 		t.Errorf("section %d, item %d:\n%s", s, i, rec.Lines())
+	}
+}
+
+// withGateway is cfg with one more site, name, holding the gateway role.
+func withGateway(cfg *config.Config, name string) *config.Config {
+	out := *cfg
+	out.Sites = map[string]config.Site{}
+	for k, v := range cfg.Sites {
+		out.Sites[k] = v
+	}
+	out.Sites[name] = config.Site{Roles: []config.Role{config.RoleGateway}}
+	return &out
+}
+
+// apply of a gateway writes every gateway it reaches, and reports one down.
+func TestApplyRecordsOnEveryGatewayAndReportsOneDown(t *testing.T) {
+	cfg, _ := config.Load(fixtureConfig())
+	vm := &recordFake{files: map[string]string{}}
+	down := &recordFake{files: map[string]string{}, down: true}
+	rec := &ui.Recorder{}
+	hosts := func(gw string) registry.Runner { return map[string]registry.Runner{"vm": vm, "vm2": down}[gw] }
+	if err := recordApplied(rec, withGateway(cfg, "vm2"), "vm", hosts); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := deployrecord.Read(vm, cfg.Deployment()); !found {
+		t.Error("vm was not written")
+	}
+	if !strings.Contains(rec.Lines(), "vm2 missed this change") {
+		t.Errorf("no warning:\n%s", rec.Lines())
 	}
 }
