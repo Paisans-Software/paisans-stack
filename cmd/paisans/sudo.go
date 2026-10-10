@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -53,25 +56,12 @@ func terminalAvailable() bool {
 // echo off, with the reporter's drawing held. The first sudo command runs
 // inside an open step, so without the hold the spinner's next frame would
 // erase the prompt and leave the operator watching a spinner that waits on
-// them without saying so.
+// them without saying so. The prompt is erased once answered, so the
+// spinner redraws on the row it took.
 func promptOnTerminal(host string) (string, error) {
 	resume := holdOutput()
 	defer resume()
-	password, err := readPassword(host)
-	blankLineOnTerminal()
-	return password, err
-}
-
-// blankLineOnTerminal writes an empty line to the controlling terminal after
-// the password prompt, so the next question or the report starts apart from
-// it. Tests replace it.
-var blankLineOnTerminal = func() {
-	tty, err := openTTY()
-	if err != nil {
-		return
-	}
-	defer tty.Close()
-	fmt.Fprintln(tty)
+	return readPassword(host)
 }
 
 // readPassword asks on the controlling terminal. Tests replace it, since a
@@ -82,11 +72,58 @@ var readPassword = func(host string) (string, error) {
 		return "", err
 	}
 	defer tty.Close()
-	fmt.Fprintf(tty, "sudo password for %s: ", host)
-	password, err := term.ReadPassword(int(tty.Fd()))
+	fd := int(tty.Fd())
+	cols, _, err := term.GetSize(fd)
+	if err != nil {
+		cols = 0
+	}
+	return askPassword(tty, sudoPrompt(host), cols, promptErasable(), func() ([]byte, error) { return term.ReadPassword(fd) })
+}
+
+// promptErasable reports whether the terminal may be drawn on to erase the
+// prompt: not when TERM=dumb or NO_COLOR asks for plain output, as the
+// reporter draws nothing then either.
+func promptErasable() bool {
+	return os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+}
+
+func sudoPrompt(host string) string { return "sudo password for " + host + ": " }
+
+// askPassword writes prompt to tty, a terminal cols wide, reads the answer
+// with read, and, when erase is set, erases the prompt, whether the answer
+// was read or not: what follows says whether it was right. Echo is off while
+// read waits, so the newline that ends the prompt is written here, and then,
+// from the row below the prompt, a carriage return and, for each row the
+// prompt took, a cursor up and a line clear. The cursor ends at the start of
+// the prompt's first row, which is empty, where the held spinner redraws.
+// Without erase the prompt stays, and a blank line sets what follows apart.
+//
+// The erase counts rows from where the cursor is, so it assumes nothing else
+// reached the terminal while the prompt waited. The hold keeps the reporter
+// quiet; output piped elsewhere and echoed back to the terminal, by tee for
+// one, is not held.
+func askPassword(tty io.Writer, prompt string, cols int, erase bool, read func() ([]byte, error)) (string, error) {
+	fmt.Fprint(tty, prompt)
+	password, err := read()
 	fmt.Fprintln(tty)
+	if erase {
+		fmt.Fprint(tty, "\r"+strings.Repeat("\x1b[1A\x1b[2K", promptRows(prompt, cols)))
+	} else {
+		fmt.Fprintln(tty)
+	}
 	if err != nil {
 		return "", err
 	}
 	return string(password), nil
+}
+
+// promptRows is how many rows prompt takes on a terminal cols wide: one
+// when the width is not known, since a terminal too narrow to say is also
+// too unusual to guess for.
+func promptRows(prompt string, cols int) int {
+	n := utf8.RuneCountInString(prompt)
+	if cols <= 0 || n <= cols {
+		return 1
+	}
+	return (n + cols - 1) / cols
 }

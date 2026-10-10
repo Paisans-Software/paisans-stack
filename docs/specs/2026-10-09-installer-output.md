@@ -57,7 +57,7 @@ Dry run:
 
 ```
 paisans.yaml
-  ! garage consistency is dangerous: reads can miss recent uploads while a site is behind
+  ! garage consistency is dangerous: an upload is confirmed even if only 1 of 2 copies is written
 luthen-rael (ubuntu@192.0.2.10)
   ✓ host check              clean
   ✓ disk space              13.6 GiB free
@@ -187,10 +187,9 @@ type Problem struct {
 }
 ```
 
-* `Hint` follows the findings' hint rules: one line, at most about 80
-  characters, naming the problem in an operator's words rather than the
-  mechanism that found it (`no usable age key was found`, not `0 successful
-  groups required`).
+* `Hint` is one line, at most about 80 characters, naming the problem in an
+  operator's words rather than the mechanism that found it (`no usable age key
+  was found`, not `0 successful groups required`).
 * `Explain` is what to do. Everything an operator needs to act is here or in
   the hint, never only in the cause, since the cause is hidden by default.
   A list (each conflict a host check found, each problem in a file) is one
@@ -224,7 +223,11 @@ gets a line of its own. A line that fits is left as written, so aligned
 columns keep their spacing. A line keeps its indentation when wrapped, and a list
 item's continuation lines align under its text after `- `. Step lines, details
 and traces are not wrapped: a trace is a command's own output, and a step line
-is short by design.
+is short by design. A warning's or a refusal's hint is one line,
+whole, unless the terminal is known to be narrower than that line: then it
+wraps at spaces, its continuation lines aligned under the hint's text, rather
+than being broken mid-word by the terminal. Output whose width is not known,
+a log for one, keeps it whole.
 
 ### Paths
 
@@ -246,8 +249,9 @@ accept the flag, so an operator never has to remember which commands take it.
 
 `validate.Finding` gains `Hint` beside `Message`:
 
-* `Hint` is one line, at most about 80 characters, saying what is wrong in an
-  operator's words.
+* `Hint` is one line, at most 100 characters, saying what is wrong in an
+  operator's words. Most are far shorter; the cap leaves room for a hint that
+  must name a number and its consequence in the same sentence to be accurate.
 * `Message` keeps the explanation: why it matters and what to do, as today.
 
 `c.warn` and `c.refuse` take `(rule, key, hint, format, args...)`, and all of
@@ -255,8 +259,21 @@ their call sites (about 90, in `validate.go`, `monitor.go`, `pocketid.go` and
 `public_address.go`) get a hint written for them. The rule ID stays the
 stable identifier tests assert on; it is shown only with `--verbose`.
 
-The count line becomes `paisans.yaml: 1 warning` (plural only when needed),
-and it is not printed when there are no findings at all.
+Findings print under a section that says what they are about, then a count
+line, `paisans.yaml: 1 refusal, 1 warning` (plural only when needed):
+
+* `paisans validate` prints them under the file's path, since the file is its
+  subject, and always ends with the count line, or with `no problems found`.
+* Every other command prints them under the file's path and prints the count
+  line only when there is a refusal, since the command then stops on it. A
+  warning-only count would name the file a second time and say nothing the
+  lines above it do not.
+* `paisans apply` without `--site` prints them under its `configuration`
+  section, the one its `init` step belongs to: the header once, the findings,
+  then `init` when it has work. When `--execute` has just run `init`, init
+  has reported them, under the file's path, and they are not repeated. The path is not a section there, and appears
+  only in the count line of a refusal.
+* Nothing is printed for a file without findings.
 
 ## Plans and progress
 
@@ -284,6 +301,26 @@ and it is not printed when there are no findings at all.
 * **Staged commands** (`site add`, `site remove`, `storage add`,
   `rotate-key`) print each stage as a `Section` and its work as steps, and a
   gate that passes is a step whose result is `passed`.
+
+## Prompts
+
+A question asked on the terminal holds the reporter's drawing while it waits
+(`ui.Hold`), so the spinner cannot erase it.
+
+* **The sudo password prompt is erased once it is answered**, right or wrong,
+  on a terminal: the newline that ends it, a carriage return, then for each
+  row the prompt took a cursor up and a line clear. The rows are the prompt's
+  length over the terminal's width, rounded up, so a prompt that wrapped is
+  erased whole. Nothing else is
+  written, so the step lines go on directly under their section header, and
+  the open step's spinner redraws on the row the prompt took. A password that
+  was refused, or could not be read, is explained by the error that follows.
+  Off a terminal nothing is written, and a terminal that is not drawn on
+  (`TERM=dumb`, `NO_COLOR`) keeps the prompt, followed by a blank line.
+* **ssh's question about a host key is followed by a blank line**, since it is
+  ssh's own text, over several lines, and cannot be erased reliably. The blank
+  line is written before the drawing resumes, so the spinner redraws below it
+  rather than leaving a frame behind.
 
 ## Wording
 

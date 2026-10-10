@@ -272,11 +272,16 @@ func TestConvergeRefusesBeforeReadingAHost(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	rec := recordConverge(t)
 	captureStdout(t, func() {
 		err = runApply([]string{"--config", path, "--secrets", fixtureSecretsPath(), "--sudo=false"})
 	})
 	if err == nil || !strings.Contains(err.Error(), "was refused") {
 		t.Errorf("err = %v, want the configuration refused", err)
+	}
+	// The refusal stops the run, so its count line stays.
+	if rec.Index("section", "configuration") != 0 || !rec.Has("result", "1 refusal") {
+		t.Errorf("not under configuration, or not counted:\n%s", rec.Lines())
 	}
 	if read {
 		t.Error("a host was read for a refused configuration")
@@ -659,9 +664,97 @@ func TestConvergeReadsEachEtcdRecordInAStep(t *testing.T) {
 			t.Errorf("%v: findings at %d, first read at %d, plan at %d:\n%s", args, findings, first, plan, rec.Lines())
 		}
 		for _, m := range read {
-			if !rec.Has("done", "read "+m+"'s etcd record") {
+			if !rec.Has("pending", "read "+m+"'s etcd record") {
 				t.Errorf("%v: %s's read step did not end:\n%s", args, m, rec.Lines())
 			}
+		}
+	}
+}
+
+// A member with a founding record reads as founded; one without is not a
+// success but work the plan will do, so it is marked pending.
+func TestEtcdReadsMarkAnUnfoundedMemberPending(t *testing.T) {
+	fakeConverge(t, nil)
+	rec := recordConverge(t)
+	founded := initial("home-a", "vm")
+	convergeReadInitial = func(_ *config.Config, m string, _ bool) (render.EtcdInitial, bool, error) {
+		return founded, m == "home-a", nil
+	}
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range rec.Events {
+		if strings.HasSuffix(e.Text, "etcd record") && e.Kind != "step" {
+			got = append(got, e.Kind+" "+e.Text+": "+e.Extra)
+		}
+	}
+	var want []string
+	for _, m := range fixture(t).Etcd.Members {
+		if m == "home-a" {
+			want = append(want, "done read home-a's etcd record: founded")
+		} else {
+			want = append(want, "pending read "+m+"'s etcd record: not founded yet")
+		}
+	}
+	sameLines(t, got, want)
+}
+
+// The run opens with its configuration section: the header once, the
+// findings, then init in a dry run when it has work, before the etcd reads.
+// The path is not a section, and a warning is not counted.
+func TestConvergeFindingsOpenTheConfigurationSection(t *testing.T) {
+	fakeConverge(t, nil)
+	fakeChecks(t, nil)
+	rec := recordConverge(t)
+	needsInit := false
+	saved := convergeRead
+	convergeRead = func(path, secrets string) (*config.Config, convergeState, error) {
+		cfg, err := config.Load(fixtureConfig())
+		return cfg, convergeState{NeedsInit: needsInit, InitWhy: "no secrets file yet"}, err
+	}
+	t.Cleanup(func() { convergeRead = saved })
+	for _, c := range []struct {
+		init bool
+		args []string
+		want []string
+	}{
+		{true, nil, []string{"section configuration", "warn", "step init", "pending init", "section etcd members"}},
+		{false, nil, []string{"section configuration", "warn", "section etcd members"}},
+		{false, []string{"--execute"}, []string{"section configuration", "warn", "section etcd members"}},
+		// init ran first and reported the findings itself, under the file's
+		// path; they are not reported a second time.
+		{true, []string{"--execute"}, []string{"section etcd members"}},
+	} {
+		rec.Events = nil
+		needsInit = c.init
+		if err := converge(t, c.args...); err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, e := range rec.Events {
+			line := e.Kind
+			switch e.Kind {
+			case "warn":
+			case "section", "step", "pending":
+				line += " " + e.Text
+			default:
+				continue
+			}
+			if len(got) > 0 && line == "warn" && got[len(got)-1] == "warn" {
+				continue
+			}
+			got = append(got, line)
+			if line == "section etcd members" {
+				break
+			}
+		}
+		sameLines(t, got, c.want)
+		if n := strings.Count(rec.Lines(), "section: configuration"); n != 1 && c.want[0] == "section configuration" {
+			t.Errorf("init %v %v: configuration header %d times:\n%s", c.init, c.args, n, rec.Lines())
+		}
+		if rec.Has("section", "paisans.yaml") || rec.Has("result", "warning") {
+			t.Errorf("init %v %v: the path is a section or a warning is counted:\n%s", c.init, c.args, rec.Lines())
 		}
 	}
 }
@@ -751,13 +844,10 @@ func fakeChecks(t *testing.T, found map[string]any) *[]string {
 }
 
 // statuses is each plan step's status as "mark title: result", in order,
-// from the events of the dry run's steps after the etcd reads.
+// from the events of the dry run's steps but the etcd reads.
 func statuses(rec *ui.Recorder) []string {
 	var out []string
 	for _, e := range rec.Events {
-		if e.Kind == "section" && e.Text == "etcd members" {
-			out = nil
-		}
 		mark := map[string]string{"done": "✓", "pending": "○", "waiting": "·", "fail": "✗"}[e.Kind]
 		if mark == "" || strings.Contains(e.Text, "etcd record") || strings.HasSuffix(e.Text, "for an admin") {
 			continue

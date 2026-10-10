@@ -149,3 +149,11 @@ func FakeHostKeys(known func(SSHTransport) bool, blanks *int) func() {
 	blankLineOnTerminal = func() { *blanks++ }
 	return func() { hostKeyKnown, blankLineOnTerminal = oldKnown, oldBlank }
 }
+
+// OnBlankLine replaces the blank line written after a host key question with
+// f. It returns a function restoring the real one.
+func OnBlankLine(f func()) func() {
+	old := blankLineOnTerminal
+	blankLineOnTerminal = f
+	return func() { blankLineOnTerminal = old }
+}

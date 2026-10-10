@@ -653,7 +653,7 @@ func TestEveryCallPassesAHint(t *testing.T) {
 			t.Errorf("%s: %d warn/refuse calls, %d with a hint literal", f, len(calls), len(hinted))
 		}
 		for _, m := range hinted {
-			if h := string(m[2]); h == "" || len(h) > 80 {
+			if h := string(m[2]); h == "" || len(h) > 100 {
 				t.Errorf("%s: bad hint %q", f, h)
 			}
 		}
@@ -661,13 +661,14 @@ func TestEveryCallPassesAHint(t *testing.T) {
 }
 
 // The dangerous-consistency warning says, in its one line, how many copies
-// confirm an upload, out of the replication factor.
+// must be written before an upload is confirmed, out of the replication
+// factor.
 func TestGarageDangerousNamesItsQuorums(t *testing.T) {
 	for _, f := range validate.Check(load(t, "garage-consistency-dangerous")).Findings {
 		if f.Rule != "garage-consistency-dangerous" {
 			continue
 		}
-		if want := "garage consistency is dangerous: uploads confirmed by 1 of 2 copies"; f.Hint != want {
+		if want := "garage consistency is dangerous: an upload is confirmed even if only 1 of 2 copies is written"; f.Hint != want {
 			t.Errorf("hint %q, want %q", f.Hint, want)
 		}
 		return

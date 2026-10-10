@@ -8,19 +8,56 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
-// reportFindings shows a configuration's findings under its path. A
-// refusal shows its hint and explanation, since the operator must act on
-// it; a warning shows its hint, and its explanation with --verbose. Nothing
+// reportFindings shows a configuration's findings under its path, for a
+// command that goes on to do its work. A refusal shows its hint and
+// explanation, since the operator must act on it; a warning shows its hint,
+// and its explanation with --verbose. A count line closes them only when
+// there is a refusal, since the command stops on it: after warnings alone it
+// would name the file again and say nothing the lines above do not. Nothing
 // is printed for a clean file: a command that goes on to do its work does
 // not need to say that the file was fine.
 func reportFindings(r ui.Reporter, path string, result validate.Result) {
+	reportFindingsUnder(r, findingsPath(r, path), path, result)
+}
+
+// reportFindingsUnder is reportFindings under section, a heading of the
+// command's own, rather than the path. It reports whether it printed the
+// heading, which it does only when there are findings.
+func reportFindingsUnder(r ui.Reporter, section, path string, result validate.Result) bool {
+	if len(result.Findings) == 0 {
+		return false
+	}
+	r.Section(section)
+	showFindings(r, result)
+	if result.Refused() {
+		r.Result("%s: %s", findingsPath(r, path), counts(len(result.Refusals()), len(result.Warnings())))
+	}
+	return true
+}
+
+// reportValidation is reportFindings for paisans validate, whose subject is
+// the file: the count line closes every report that has findings.
+func reportValidation(r ui.Reporter, path string, result validate.Result) {
 	if len(result.Findings) == 0 {
 		return
 	}
-	if !r.Verbose() {
-		path = ui.ShortPath(path)
-	}
+	path = findingsPath(r, path)
 	r.Section(path)
+	showFindings(r, result)
+	r.Result("%s: %s", path, counts(len(result.Refusals()), len(result.Warnings())))
+}
+
+// findingsPath is path as findings name it: short by default, in full with
+// --verbose.
+func findingsPath(r ui.Reporter, path string) string {
+	if r.Verbose() {
+		return path
+	}
+	return ui.ShortPath(path)
+}
+
+// showFindings is each finding's lines.
+func showFindings(r ui.Reporter, result validate.Result) {
 	for _, f := range result.Findings {
 		// The key goes first because many explanations are written to follow
 		// it ("is %q, which ..."), and it says which site or app the
@@ -35,7 +72,6 @@ func reportFindings(r ui.Reporter, path string, result validate.Result) {
 			r.Warn(f.Hint, detail)
 		}
 	}
-	r.Result("%s: %s", path, counts(len(result.Refusals()), len(result.Warnings())))
 }
 
 // refused is the error that ends a command whose configuration validate
