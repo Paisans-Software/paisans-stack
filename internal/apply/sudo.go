@@ -93,6 +93,13 @@ func (a *SudoAuth) resolve(t SSHTransport) (string, error) {
 	if errors.Is(err, ErrUnreachable) {
 		return "", fmt.Errorf("%s: asking whether sudo needs a password: %w\n%s", t.Describe(), err, out)
 	}
+	var exit interface{ ExitCode() int }
+	var sshProblem *ui.Problem
+	if !errors.As(err, &exit) || errors.As(err, &sshProblem) {
+		// ssh never ran (no key to offer, say), or ran and would not log in
+		// (a key or host key it refused), so sudo was never asked.
+		return "", err
+	}
 	if !strings.Contains(out, "a password is required") {
 		return "", a.refuse(&ui.Problem{
 			Hint:    "sudo on " + t.Describe() + " refused the ssh user",

@@ -391,3 +391,26 @@ func TestSSHAuthenticationFailuresAreProblems(t *testing.T) {
 	}
 	apply.ForgetContacts()
 }
+
+// A sudo probe that never reached ssh (here: no key to offer) is that
+// failure, not sudo refusing the user, which it never asked.
+func TestASudoProbeThatNeverRanIsNotARefusal(t *testing.T) {
+	tr := apply.SSHTransport{User: "ubuntu", Host: "192.0.2.10", Sudo: true, Auth: apply.NewSudoAuth(nil)}
+	_, err := tr.Run("true")
+	if err == nil || strings.Contains(err.Error(), "refused") || !strings.Contains(err.Error(), "no public key") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// An ssh failure during the sudo probe (a key the host did not accept) is
+// reported as that, not as sudo refusing the user.
+func TestAnSSHFailureInTheSudoProbeIsNotARefusal(t *testing.T) {
+	apply.ForgetContacts()
+	t.Cleanup(apply.ForgetContacts)
+	t.Cleanup(apply.FakeSSH(func([]string, string) (string, int) { return "ubuntu@192.0.2.10: Permission denied (publickey).\n", 255 }, nil, func(time.Duration) {}, io.Discard))
+	tr := apply.SSHTransport{Destination: "ubuntu@192.0.2.10", Sudo: true, Auth: apply.NewSudoAuth(nil)}
+	_, err := tr.Run("true")
+	if err == nil || strings.Contains(err.Error(), "sudo") || !strings.Contains(err.Error(), "did not accept your ssh key") {
+		t.Errorf("err = %v", err)
+	}
+}
