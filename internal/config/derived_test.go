@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -161,5 +162,19 @@ func TestListKeysSayWhetherTheyWereDerived(t *testing.T) {
 	cfg.Etcd.MembersDerived, cfg.Cluster.SitesDerived = false, false
 	if cfg.EtcdMembersKey() != "etcd.members" || cfg.ClusterSitesKey() != "cluster.sites" {
 		t.Errorf("written keys named %q and %q", cfg.EtcdMembersKey(), cfg.ClusterSitesKey())
+	}
+}
+
+// The example leaves both lists to the roles, as a new deployment should.
+func TestTheExampleDerivesItsLists(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "examples", "paisans.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Etcd.MembersDerived || !cfg.Cluster.SitesDerived {
+		t.Fatalf("the example writes a list: members derived %t, sites derived %t", cfg.Etcd.MembersDerived, cfg.Cluster.SitesDerived)
+	}
+	if !same(cfg.Etcd.Members, []string{"vm", "home-a", "home-b"}) || !same(cfg.Cluster.Sites, []string{"home-a", "home-b"}) {
+		t.Errorf("the example derives %v and %v", cfg.Etcd.Members, cfg.Cluster.Sites)
 	}
 }
