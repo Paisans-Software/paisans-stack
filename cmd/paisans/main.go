@@ -342,7 +342,7 @@ func runValidate(args []string) error {
 		r.Result("%s: no problems found", *configPath)
 	}
 	if result.Refused() {
-		return fmt.Errorf("%s cannot be rendered: %d refusal(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "Nothing can be rendered or applied from it until then.")
 	}
 	return nil
 }
@@ -388,7 +388,7 @@ func runInit(args []string) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above. Secrets are not generated for a configuration that cannot be deployed", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "Secrets are not generated for a configuration that cannot be deployed.")
 	}
 	// The mesh subnet next, while nothing is deployed: it is the one value
 	// that has to be checked against every host before the first apply,
@@ -484,7 +484,7 @@ func runRender(args []string) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s cannot be rendered: %d refusal(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "Nothing was rendered.")
 	}
 
 	if *secretsPath == "" {
@@ -572,7 +572,7 @@ func runApply(args []string) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "")
 	}
 	declared, ok := cfg.Sites[*site]
 	if !ok {
@@ -882,7 +882,7 @@ func runStorageInit(args []string) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "")
 	}
 	declared, ok := cfg.Sites[*site]
 	if !ok {
@@ -963,7 +963,7 @@ func runHostPrepare(args []string) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "")
 	}
 	declared, ok := cfg.Sites[*site]
 	if !ok {
@@ -1132,7 +1132,7 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return nil, nil, nil, nil, false, fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return nil, nil, nil, nil, false, refused(*configPath, len(result.Refusals()), "")
 	}
 	wants, err := dns.Desired(cfg)
 	if err != nil {

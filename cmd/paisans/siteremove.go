@@ -83,7 +83,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "")
 	}
 	// Refused before any host is read, so an unattended run with
 	// --delete-data stops with nothing asked of anything.
@@ -177,7 +177,7 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 	result := validate.Check(cfg)
 	reportFindings(r, a.config, result)
 	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above", a.config, len(result.Refusals()))
+		return refused(a.config, len(result.Refusals()), "")
 	}
 	dest, err := chooseHost(cfg, site, a.ssh)
 	if err != nil {

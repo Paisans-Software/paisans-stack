@@ -61,7 +61,7 @@ func loadChecked(r ui.Reporter, path string) (*config.Config, error) {
 	result := validate.Check(cfg)
 	reportFindings(r, path, result)
 	if result.Refused() {
-		return nil, fmt.Errorf("%s was refused: %d problem(s) above", path, len(result.Refusals()))
+		return nil, refused(path, len(result.Refusals()), "")
 	}
 	return cfg, nil
 }

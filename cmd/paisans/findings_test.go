@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -64,5 +66,26 @@ func TestCountsPluralAndWarningOnly(t *testing.T) {
 	reportFindings(ui.NewPlain(&b, false), "paisans.yaml", warns)
 	if !strings.Contains(b.String(), "paisans.yaml: 2 warnings\n") || strings.Contains(b.String(), "refusal") {
 		t.Errorf("bad warning-only count in\n%s", b.String())
+	}
+}
+
+// A refused configuration ends the command with a short hint naming the file
+// and the count, and says what to do.
+func TestRefusedConfigurationIsAProblem(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	err := refused(path, 2, "")
+	var p *ui.Problem
+	if !errors.As(err, &p) {
+		t.Fatalf("not a ui.Problem: %v", err)
+	}
+	if p.Hint != ui.ShortPath(path)+" was refused: 2 refusals above" {
+		t.Errorf("hint: %q", p.Hint)
+	}
+	if !strings.Contains(p.Explain, "Fix each refusal above") {
+		t.Errorf("explanation: %q", p.Explain)
+	}
+	err = refused("paisans.yaml", 1, "Secrets are not generated for a configuration that cannot be deployed.")
+	if !errors.As(err, &p) || p.Hint != "paisans.yaml was refused: 1 refusal above" || !strings.Contains(p.Explain, "Secrets are not generated") {
+		t.Errorf("got %#v", p)
 	}
 }
