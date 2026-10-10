@@ -240,6 +240,41 @@ func TestConvergeRefusesSSH(t *testing.T) {
 	}
 }
 
+// A configuration validate refuses is refused before any host is read: a
+// typo in etcd.members is reported as one, not as a host that did not answer.
+func TestConvergeRefusesBeforeReadingAHost(t *testing.T) {
+	ran := fakeConverge(t, nil)
+	read := false
+	convergeFounded = func(*config.Config, bool) (map[string]render.EtcdInitial, error) {
+		read = true
+		return nil, errors.New("no host should be read")
+	}
+	data, err := os.ReadFile(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	body := strings.Replace(string(data), "members: [", "members: [nowhere, ", 1)
+	if body == string(data) {
+		t.Fatal("the fixture has no etcd.members list to edit")
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	captureStdout(t, func() {
+		err = runApply([]string{"--config", path, "--secrets", fixtureSecretsPath(), "--sudo=false"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "was refused") {
+		t.Errorf("err = %v, want the configuration refused", err)
+	}
+	if read {
+		t.Error("a host was read for a refused configuration")
+	}
+	if len(*ran) != 0 {
+		t.Errorf("ran %v", *ran)
+	}
+}
+
 // noID is the fixture configuration without its deployment id.
 func noID(t *testing.T) string {
 	t.Helper()
