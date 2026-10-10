@@ -1438,7 +1438,7 @@ func TestConvergeStopIsAProblem(t *testing.T) {
 }
 
 // A dry run's failed step says what to do at every verbosity, not only its
-// hint: the explanation is a note after the step's line.
+// hint: the explanation follows the step's line.
 func TestConvergeDryRunShowsAFailedStepsExplanation(t *testing.T) {
 	fakeConverge(t, nil)
 	fakeChecks(t, map[string]any{
@@ -1448,12 +1448,12 @@ func TestConvergeDryRunShowsAFailedStepsExplanation(t *testing.T) {
 	if err := converge(t); err != nil {
 		t.Fatal(err)
 	}
-	i := rec.Index("note", "host prepare --site watch")
-	if i < 0 || rec.Events[i].Extra != "Run paisans site add for the site being added, then apply." {
-		t.Errorf("no note with the explanation:\n%s", rec.Lines())
+	i := rec.Index("explain", "Run paisans site add for the site being added, then apply.")
+	if i < 0 {
+		t.Errorf("no explanation:\n%s", rec.Lines())
 	}
-	if f := rec.Index("fail", "host prepare --site watch"); f < 0 || f > i {
-		t.Errorf("the note is not after the step's line:\n%s", rec.Lines())
+	if f := rec.Index("fail", "host prepare --site watch"); f < 0 || f+1 != i {
+		t.Errorf("the explanation does not follow the step's line:\n%s", rec.Lines())
 	}
 }
 
@@ -1713,5 +1713,30 @@ func TestConvergeAdminCheckSaysWhyItFailedOnOneLine(t *testing.T) {
 	}
 	if msg := err.Error(); strings.Contains(msg, "\n") || strings.Contains(msg, "sudo") || !strings.Contains(msg, "curl: (7) Failed to connect") {
 		t.Errorf("reason %q", msg)
+	}
+}
+
+// A failed check's advice follows its ✗ line directly, at every verbosity,
+// with no heading of its own.
+func TestAFailedChecksAdviceFollowsItsLine(t *testing.T) {
+	fakeConverge(t, nil)
+	saved := convergeCheck
+	convergeCheck = func(_ ui.Reporter, args []string) (string, []checkReport, error) {
+		if strings.Join(args[:4], " ") == "host prepare --site home-a" {
+			return "", nil, &ui.Problem{Hint: "mesh subnet 10.44.0.0/24 is in use", Explain: "Remove it if not in use or run paisans init to pick a free subnet."}
+		}
+		return "", nil, nil
+	}
+	t.Cleanup(func() { convergeCheck = saved })
+	rec := withRecorder(t, false)
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	fail := slices.IndexFunc(rec.Events, func(e ui.Event) bool { return e.Kind == "fail" && e.Text == "host prepare --site home-a" })
+	if fail < 0 || fail+1 >= len(rec.Events) || rec.Events[fail+1] != (ui.Event{Kind: "explain", Text: "Remove it if not in use or run paisans init to pick a free subnet."}) {
+		t.Errorf("after the ✗ line:\n%s", rec.Lines())
+	}
+	if rec.Has("note", "can run") {
+		t.Errorf("a heading before the advice:\n%s", rec.Lines())
 	}
 }

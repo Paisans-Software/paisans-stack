@@ -75,7 +75,7 @@ does.
 | `✓` green | up to date: its own dry run finds nothing to do | the title |
 | `○` yellow | pending: `--execute` would change something | the title and what, Eg: `3 changes`, `2 records to create` |
 | `·` dim | waiting: it cannot be planned until an earlier step has run | the title and that step, Eg: `after host prepare --site home-a` |
-| `✗` red | the check failed, Eg: a host did not answer | the title and the error, on one line; the dry run carries on with the rest |
+| `✗` red | the check failed, Eg: a host did not answer | the title and the error, on one line, then what to do, indented under it at every verbosity; the dry run carries on with the rest |
 
 Each status comes from the step's own dry run, run in this process with
 nothing it prints shown, which says how much it would change. That dry run is

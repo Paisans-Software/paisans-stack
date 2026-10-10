@@ -206,7 +206,7 @@ func TestLinkUp(t *testing.T) {
 }
 
 func TestChooseKeepsAClearSubnet(t *testing.T) {
-	c, err := mesh.Choose("10.44.0.0/24", []mesh.Taken{{prefix(t, "172.17.0.0/16"), "docker0"}}, bytes.NewReader(nil))
+	c, err := mesh.Choose("10.44.0.0/24", []mesh.Taken{{Prefix: prefix(t, "172.17.0.0/16"), What: "docker0"}}, bytes.NewReader(nil))
 	if err != nil || c.Rolled || c.Subnet.String() != "10.44.0.0/24" {
 		t.Fatalf("Choose = %+v, %v", c, err)
 	}
@@ -214,8 +214,8 @@ func TestChooseKeepsAClearSubnet(t *testing.T) {
 
 func TestChooseRollsAgainOnACollision(t *testing.T) {
 	taken := []mesh.Taken{
-		{prefix(t, "10.44.0.0/24"), "deployment x's mesh on home-a"},
-		{prefix(t, "10.1.0.0/16"), "route 10.1.0.0/16 dev eth1 on vm"},
+		{Prefix: prefix(t, "10.44.0.0/24"), What: "deployment x's mesh on home-a"},
+		{Prefix: prefix(t, "10.1.0.0/16"), What: "route 10.1.0.0/16 dev eth1 on vm"},
 	}
 	// The first roll is 10.1.2.0/24, inside the route; the second is clear.
 	random := bytes.NewReader([]byte{1, 2, 212, 37})
@@ -243,8 +243,8 @@ func TestChooseRollsAgainOnACollision(t *testing.T) {
 
 func TestChooseGivesUpNamingWhatBlockedIt(t *testing.T) {
 	taken := []mesh.Taken{
-		{prefix(t, "10.0.0.0/9"), "route 10.0.0.0/9 dev tun0 on home-a"},
-		{prefix(t, "10.128.0.0/9"), "Docker's address pool 10.128.0.0/9 on vm"},
+		{Prefix: prefix(t, "10.0.0.0/9"), What: "route 10.0.0.0/9 dev tun0 on home-a"},
+		{Prefix: prefix(t, "10.128.0.0/9"), What: "Docker's address pool 10.128.0.0/9 on vm"},
 	}
 	random := bytes.NewReader(bytes.Repeat([]byte{0x7f, 1, 0x80, 1}, mesh.MaxRolls))
 	_, err := mesh.Choose("", taken, random)

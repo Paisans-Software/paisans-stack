@@ -243,7 +243,7 @@ func TestConvergeDryRunSecretsWriteFailure(t *testing.T) {
 	if !strings.HasPrefix(got, "✗ ") || !strings.Contains(got, "secrets.enc.yaml") {
 		t.Errorf("init's line: %s", got)
 	}
-	if rec.Index("note", "before init can run") < 0 {
+	if rec.Index("explain", "") < 0 {
 		t.Errorf("the failure does not say what to do:\n%s", rec.Lines())
 	}
 	lines := statuses(rec)

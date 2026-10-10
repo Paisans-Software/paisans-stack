@@ -476,7 +476,7 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 		case err != nil:
 			hint, explain := ui.Describe(err)
 			line.End(ui.Failed, hint)
-			r.Note("before init can run", explain)
+			r.Explain(explain)
 		case len(generated) > 0:
 			line.Done(generatedSecrets(generated, path))
 			if len(recipients) == 0 {
@@ -601,6 +601,7 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 		line := r.Step(s.Title)
 		line.Detail("%s", s.Why)
 		var notes []checkReport
+		var advice string
 		var st status
 		after := ""
 		for _, w := range convergeWaits(cfg, steps, i) {
@@ -636,9 +637,7 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 				// every verbosity, as a failure always says.
 				hint, explain := ui.Describe(err)
 				st = status{ui.Failed, hint}
-				if explain != "" {
-					notes = append(notes, checkReport{Note: true, Text: "before " + s.Title + " can run", Detail: explain})
-				}
+				advice = explain
 			case summary == "":
 				st = status{ui.OK, ""}
 			default:
@@ -647,6 +646,9 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 		}
 		done[s.Title] = st
 		line.End(st.mark, st.result)
+		if advice != "" {
+			r.Explain(advice)
+		}
 		for _, n := range notes {
 			r.Note(n.Text, n.Detail)
 		}

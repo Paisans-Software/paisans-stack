@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/mesh"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/ui"
@@ -49,7 +50,34 @@ func checkMeshLive(cfg *config.Config, site string, h mesh.Host) error {
 	for i, c := range clash {
 		what[i] = c.What
 	}
-	return fmt.Errorf("%s: the mesh subnet %s overlaps %s, so nothing was changed. Whichever route the kernel prefers would take the other network's traffic. A deployed mesh subnet never changes, so the other network has to move; if this deployment has never been applied anywhere, `paisans init` picks a subnet clear of every host", h.Describe(), cfg.Mesh.Subnet, strings.Join(what, ", "))
+	return &ui.Problem{
+		Hint:    "mesh subnet " + cfg.Mesh.Subnet + " is in use" + holder(h, clash),
+		Explain: "Remove it if not in use or run paisans init to pick a free subnet.",
+		Cause:   fmt.Errorf("%s: the mesh subnet %s overlaps %s, so nothing was changed", h.Describe(), cfg.Mesh.Subnet, strings.Join(what, ", ")),
+	}
+}
+
+// holder names what holds a clashing subnet, for the refusal's hint: the
+// paisans deployment whose interface it is, with its domain and site when
+// the host's registry lists it, or else the first clash itself.
+func holder(h mesh.Host, clash []mesh.Taken) string {
+	for _, c := range clash {
+		token, ok := strings.CutPrefix(c.Dev, deployment.InterfacePrefix)
+		if !ok || token == "" {
+			continue
+		}
+		out := " by paisans deployment " + token
+		if reg, err := registry.Read(h); err == nil {
+			for _, e := range reg.Deployments {
+				if e.Token == token {
+					out += " (" + e.Domain + ", site " + e.Site + ")"
+					break
+				}
+			}
+		}
+		return out
+	}
+	return " (" + clash[0].What + ")"
 }
 
 // settleMesh is init's subnet decision. It reads every site's registry
