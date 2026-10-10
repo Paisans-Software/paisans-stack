@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"io"
@@ -274,16 +273,8 @@ func confirmSite(stdin io.Reader, stdout io.Writer, site string) error {
 // confirmSiteFor says what is about to happen, asks for the site's name at
 // the terminal, and refuses anything else. There is no flag to answer it.
 func confirmSiteFor(stdin io.Reader, stdout io.Writer, site, what string) error {
-	if !stdinIsTerminal(stdin) {
-		return fmt.Errorf("site remove: it asks for the site's name at a terminal, and stdin is not one. Nothing was changed")
-	}
-	fmt.Fprintf(stdout, "\n%s Type %s to go on: ", what, site)
-	answer, err := bufio.NewReader(stdin).ReadString('\n')
-	if err != nil && answer == "" {
-		return fmt.Errorf("site remove: no answer read. Nothing was changed")
-	}
-	if strings.TrimSpace(answer) != site {
-		return fmt.Errorf("site remove: %q is not %s. Nothing was changed", strings.TrimSpace(answer), site)
+	if err := confirmWord(stdin, stdout, site, what); err != nil {
+		return fmt.Errorf("site remove: %w", err)
 	}
 	return nil
 }

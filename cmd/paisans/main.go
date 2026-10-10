@@ -361,7 +361,8 @@ func runInit(args []string) error {
 	// The mesh subnet next, while nothing is deployed: it is the one value
 	// that has to be checked against every host before the first apply,
 	// and cannot change after it.
-	wrote, err := settleMesh(r, cfg, *configPath, initHosts(cfg, *sudo), meshRandom)
+	hosts := initHosts(cfg, *sudo)
+	wrote, err := settleMesh(r, cfg, *configPath, hosts, meshRandom)
 	if err != nil {
 		return err
 	}
@@ -381,7 +382,7 @@ func runInit(args []string) error {
 	case err != nil:
 		return err
 	}
-	warnOrphans(r, cfg, secrets)
+	warnSecrets(r, cfg, secrets, recordForWarnings(r, cfg, func(gw string) registry.Runner { return hosts[gw] }))
 
 	filled, err := secretsgen.Fill(cfg, secrets)
 	if err != nil {
@@ -548,7 +549,6 @@ func runApply(args []string) error {
 	if !secrets.Encrypted {
 		warnUnencrypted(r, *secretsPath)
 	}
-	warnOrphans(r, cfg, secrets)
 	// apply does not call secretsgen.Fill either, and this is the path that
 	// actually reaches a host: a malformed key has to stop here, not just
 	// print a confusing failure partway through provisioning on the machine.
@@ -560,6 +560,12 @@ func runApply(args []string) error {
 	}
 
 	transport := siteTransport(*site, declared, *destination, *sudo)
+	warnSecrets(r, cfg, secrets, recordForWarnings(r, cfg, func(gw string) registry.Runner {
+		if gw == *site {
+			return transport
+		}
+		return registryHost(gw, cfg.Sites[gw], "", *sudo)
+	}))
 	r.Section(fmt.Sprintf("%s (%s)", *site, transport.Describe()))
 	done := r.Step("check mesh subnet")
 	err = checkMeshLive(cfg, *site, transport)

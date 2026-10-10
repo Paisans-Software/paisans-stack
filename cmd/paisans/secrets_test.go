@@ -1,14 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"filippo.io/age"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/deployrecord"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 )
 
 // secretsDir is a deployment directory with the fixture configuration and a
@@ -220,8 +226,9 @@ func TestSecretsPruneListsThenRemovesOnlyOrphans(t *testing.T) {
 		}
 		s.OIDCClients["uptime"] = config.OIDCClient{ClientID: "abc", ClientSecret: "do-not-print"}
 	})
+	withRecords(t, map[string]string{"vm": fixtureRecord()})
 	out := captureStdout(t, func() {
-		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath}); err != nil {
+		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -237,7 +244,7 @@ func TestSecretsPruneListsThenRemovesOnlyOrphans(t *testing.T) {
 		t.Fatal("the dry run changed the file")
 	}
 	captureStdout(t, func() {
-		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"}); err != nil {
+		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -269,13 +276,14 @@ func TestSecretsPruneNeverDecryptsTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+	withRecords(t, map[string]string{"vm": fixtureRecord()})
 	secrets := &config.Secrets{Version: 1, Sites: map[string]config.SiteSecrets{"monitor-a": {WireGuardPrivateKey: "x"}}}
 	if err := config.WriteSecrets(secretsPath, secrets, []string{identity.Recipient().String()}); err != nil {
 		t.Fatal(err)
 	}
 	var runErr error
 	captureStdout(t, func() {
-		runErr = runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"})
+		runErr = runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"}, strings.NewReader(""), &bytes.Buffer{})
 	})
 	if runErr == nil || !strings.Contains(runErr.Error(), "plaintext") {
 		t.Fatalf("err = %v", runErr)
@@ -283,4 +291,77 @@ func TestSecretsPruneNeverDecryptsTheFile(t *testing.T) {
 	if s, _ := config.LoadSecrets(secretsPath); !s.Encrypted || s.Sites["monitor-a"].WireGuardPrivateKey == "" {
 		t.Error("the file was changed")
 	}
+}
+
+// withRecords makes every gateway answer with the record given for it; a
+// gateway absent from records has none, and one named in down does not
+// answer.
+func withRecords(t *testing.T, records map[string]string, down ...string) {
+	t.Helper()
+	saved := registryHost
+	registryHost = func(name string, site config.Site, destination string, sudo bool) registry.Runner {
+		return &initFake{name: name, down: slices.Contains(down, name), files: map[string]string{deployrecord.Path(fixtureDeployment()): records[name]}}
+	}
+	t.Cleanup(func() { registryHost = saved })
+}
+
+func fixtureDeployment() deployment.Deployment {
+	cfg, _ := config.Load(fixtureConfig())
+	return cfg.Deployment()
+}
+
+func TestPruneRefusesWithoutARecord(t *testing.T) {
+	configPath, secretsPath := writeFixtureSecrets(t, func(s *config.Secrets) { s.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "x"} })
+	withRecords(t, map[string]string{})
+	var err error
+	captureStdout(t, func() {
+		err = runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath}, strings.NewReader(""), &bytes.Buffer{})
+	})
+	if err == nil || !strings.Contains(err.Error(), "--without-record") || !strings.Contains(err.Error(), "vm") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestPruneKeepsWhatTheRecordLists(t *testing.T) {
+	configPath, secretsPath := writeFixtureSecrets(t, func(s *config.Secrets) {
+		s.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "x"}
+		s.Sites["monitor-b"] = config.SiteSecrets{WireGuardPrivateKey: "y"}
+	})
+	withRecords(t, map[string]string{"vm": `{"version":1,"sites":["home-a","home-b","vm","watch","monitor-a"],"apps":[],"pocket_id_groups":[]}`})
+	out := captureStdout(t, func() {
+		if err := runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--execute"}, strings.NewReader(""), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	s, _ := config.LoadSecrets(secretsPath)
+	if _, ok := s.Sites["monitor-a"]; !ok {
+		t.Error("a site the record lists lost its secrets")
+	}
+	if _, ok := s.Sites["monitor-b"]; ok {
+		t.Error("sites.monitor-b, in no record, was kept")
+	}
+	if !strings.Contains(out, "sites.monitor-a is deployed") {
+		t.Errorf("prune does not say why it kept monitor-a:\n%s", out)
+	}
+}
+
+func TestPruneWithoutRecordAsksAtATerminal(t *testing.T) {
+	configPath, secretsPath := writeFixtureSecrets(t, func(s *config.Secrets) { s.Sites["monitor-a"] = config.SiteSecrets{WireGuardPrivateKey: "x"} })
+	withRecords(t, map[string]string{}, "vm")
+	var err error
+	captureStdout(t, func() {
+		err = runSecretsPrune([]string{"--config", configPath, "--secrets", secretsPath, "--without-record", "--execute"}, strings.NewReader("prune\n"), &bytes.Buffer{})
+	})
+	if err == nil || !strings.Contains(err.Error(), "terminal") {
+		t.Errorf("err = %v", err)
+	}
+	if s, _ := config.LoadSecrets(secretsPath); s.Sites["monitor-a"].WireGuardPrivateKey == "" {
+		t.Error("the file was changed")
+	}
+}
+
+func fixtureRecord() string {
+	cfg, _ := config.Load(fixtureConfig())
+	data, _ := json.Marshal(deployrecord.FromConfig(cfg))
+	return string(data)
 }
