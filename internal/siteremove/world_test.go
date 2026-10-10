@@ -250,6 +250,16 @@ func (h *host) deleteBesideKept(command string) {
 	}
 }
 
+func (h *host) hostSites() []string {
+	var out []string
+	for _, p := range h.sortedFiles() {
+		if strings.HasPrefix(p, render.HostSitesDir+"/") && strings.HasSuffix(p, ".caddy") {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func (h *host) ran(sub string) int {
 	n := 0
 	for _, c := range h.commands {
@@ -282,8 +292,42 @@ func (h *host) Run(command string) (string, error) {
 		w.failOnce = ""
 		return "failed by the test", errors.New("exit status 1")
 	}
+	quoted := func(s string) []string {
+		var out []string
+		for _, m := range regexp.MustCompile(`'([^']*)'`).FindAllStringSubmatch(s, -1) {
+			out = append(out, m[1])
+		}
+		return out
+	}
 	switch {
 	case command == "true":
+		return "", nil
+
+	// copies on the host, for a kept Caddy's Caddyfile
+	case strings.HasPrefix(command, "cp -p -- '"):
+		q := quoted(command)
+		c, ok := h.files[q[0]]
+		if !ok {
+			return "cp: cannot stat", errors.New("exit status 1")
+		}
+		h.files[q[1]] = c
+		return "", nil
+	case strings.HasPrefix(command, "cat -- '"):
+		q := quoted(command)
+		h.files[q[1]] = h.files[q[0]]
+		return "", nil
+	case strings.HasPrefix(command, "if [ -f '") && strings.Contains(command, "then cat -- '"):
+		q := quoted(command)
+		c, ok := h.files[q[0]]
+		if !ok {
+			return "", errors.New("exit status 4")
+		}
+		h.files[q[2]] = c
+		return "", nil
+	case strings.HasPrefix(command, "rm -f -- '") && strings.Count(command, "'") > 2:
+		for _, f := range quoted(command) {
+			delete(h.files, f)
+		}
 		return "", nil
 
 	// apply's plumbing around a stack action, for the monitor's reseed
@@ -584,6 +628,13 @@ func (h *host) Run(command string) (string, error) {
 		}
 		return "", nil
 	case strings.Contains(command, "docker ps -aq --no-trunc --filter 'label=community.paisans.deployment="+ourID+"'"):
+		if strings.Contains(command, "if ls "+render.HostSitesDir+"/*.caddy") && len(h.hostSites()) > 0 {
+			for _, c := range h.containers {
+				if c.Deployment == ourID && c.Service == "caddy" {
+					return "a site of the host owner's is in " + render.HostSitesDir + " now", errors.New("exit status 3")
+				}
+			}
+		}
 		keep := ""
 		if m := regexp.MustCompile(`grep -vxF '([^']+)'`).FindStringSubmatch(command); m != nil {
 			keep = m[1]
@@ -675,11 +726,18 @@ func (h *host) Run(command string) (string, error) {
 		if err != nil {
 			return "paisans-registry-unreadable", errors.New("exit status 4")
 		}
-		want, err := registry.ClaimCommand(ourID, registry.KeepCaddy(r.Deployments[ourID]))
-		if err != nil || command != want {
-			return "", fmt.Errorf("not the entry marked kept: %s", command)
+		m := regexp.MustCompile(`'entry="` + ourID + `":(\{[^']*\})'`).FindStringSubmatch(command)
+		var e registry.Entry
+		if m == nil || json.Unmarshal([]byte(m[1]), &e) != nil || e.Kept != registry.KeptCaddy {
+			return "", fmt.Errorf("not this deployment's entry marked kept: %s", command)
 		}
-		r.Deployments[ourID] = registry.KeepCaddy(r.Deployments[ourID])
+		if old, ok := r.Deployments[ourID]; ok && registry.KeepCaddy(old) != e {
+			return "", fmt.Errorf("the entry marked kept is not the one there: %+v", e)
+		}
+		if want, _ := registry.ClaimCommand(ourID, e); command != want {
+			return "", fmt.Errorf("not a claim's merge: %s", command)
+		}
+		r.Deployments[ourID] = e
 		data, _ := registry.Encode(r)
 		h.files[registry.Path] = string(data)
 		return "", nil

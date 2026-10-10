@@ -53,12 +53,13 @@ start again after a reboot, all under `/srv/paisans/<token>/infra/`:
 | `caddy/caddy.env` | the DNS provider's token, which renews the owner's certificates |
 | `caddy/data`, `caddy/config` | the certificates and Caddy's own state |
 | `caddy/snippets/` | a bind mount of the container: the directory stays, emptied of the deployment's files, so the container starts again |
+| the ufw allows for 80 and 443 `host prepare` added (comments `paisans-<token>: the gateway, HTTP` and `HTTPS`) | ufw denies incoming by default, so without them nothing from outside reaches the owner's sites |
 
 These are kept with `--delete-data` too, and the plan says so. Everything else
 of the deployment goes as before: every other container, network, image and,
 with `--delete-data`, named volume; every other rendered file; the rest of
-`/srv/paisans/<token>`; the units, ufw rules, mesh interface, keys and the
-deployment record. Caddy's image stays, because the kept container runs from
+`/srv/paisans/<token>`; the units, every other ufw rule, the mesh interface,
+the keys and the deployment record. Caddy's image stays, because the kept container runs from
 it.
 
 The manifest stays too, rewritten to list exactly the kept files with their
@@ -90,14 +91,16 @@ Caddy is reduced first, before anything else of the deployment is touched:
    container mounts, and validated inside the container (`caddy validate`).
 2. The running Caddy is reloaded from that file (`caddy reload`), which is
    atomic: a reload that fails leaves the running configuration as it was.
-3. Only then is the reduced content written over `Caddyfile`, in place, since
-   it is a single file bind mount and a renamed file would not reach the
-   container. It is read back and compared.
-4. The staged file is deleted.
+3. Only then, on the host, the original `Caddyfile` is copied aside and the
+   staged file copied over it in place, since it is a single file bind mount
+   and a renamed file would not reach the container. It is read back and
+   compared.
+4. The staged file and the copy are deleted.
 
 A failure in 1 or 2 deletes the staged file, reloads the original
 `Caddyfile` after a failed reload, and stops with the error. A failure in 3
-writes the original back and reloads it. Either way the command stops before
+copies the original back from the copy on the host, reads it back, and
+reloads it; if that fails too, the error says where the copy is. Either way the command stops before
 removing anything else, so the deployment is exactly as it was and the owner's
 sites never stopped being served. Once Caddy is reduced, the rest is the
 cleaning it always was, and a run that stops part way resumes it.
@@ -105,9 +108,15 @@ cleaning it always was, and a run that stops part way resumes it.
 Caddy must be running to be reduced; one that is not is refused, with nothing
 changed: start it and run again.
 
+A plan that removes a gateway's Caddy, because `/srv/caddy.d` held no site
+file when it was made, checks again when it runs: if a site file is there now
+and the Caddy still runs, it stops before removing anything, and the next run
+keeps the Caddy.
+
 ## The registry entry
 
-The entry stays, with one field more, `"kept": "caddy"`. It still holds what
+The entry stays, with one field more, `"kept": "caddy"`. A host whose entry
+is gone gets one written, as a claim would write it, marked kept. It still holds what
 the kept Caddy holds on the host: the gateway role, so no other deployment
 takes ports 80 and 443 from under it, and the token and root, whose directory
 still exists. The value names what is kept, so the entry says why it is still

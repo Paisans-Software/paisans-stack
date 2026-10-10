@@ -105,17 +105,24 @@ func (p *Plan) wireguardCommand() string {
 // label filter so that nothing without the label is ever selected. A kept
 // Caddy, by its full ID, is left out.
 func (p *Plan) containersCommand() string {
-	filter := "--filter " + quote(p.dep().LabelFilter())
+	d := p.dep()
+	filter := "--filter " + quote(d.LabelFilter())
 	rm := "docker rm"
 	if p.DeleteData {
 		rm += " -v"
 	}
-	keep := ""
-	if cp := p.host.caddy; cp != nil {
+	guard, keep := "", ""
+	switch cp := p.host.caddy; {
+	case cp != nil:
 		// A separate step, so a docker ps that fails still stops the command.
 		keep = `ids=$(printf '%s\n' $ids | grep -vxF ` + quote(cp.container.ID) + ` || true); `
+	case p.cfg.Sites[p.Site].Has(config.RoleGateway):
+		// The plan removes the Caddy. A site of the host owner's that
+		// appeared since would lose it, so the run stops before anything.
+		guard = fmt.Sprintf(`if ls %[1]s/*.caddy >/dev/null 2>&1 && [ -n "$(docker ps -aq %[2]s --filter %[3]s --filter %[4]s)" ]; then echo "a site of the host owner's is in %[1]s now, served by this deployment's Caddy, which this plan removes. Nothing was removed; run again, and the Caddy is kept for it"; exit 3; fi; `,
+			render.HostSitesDir, filter, quote("label=com.docker.compose.project="+d.Project("infra")), quote("label=com.docker.compose.service=caddy"))
 	}
-	return fmt.Sprintf(`set -e; ids=$(docker ps -aq --no-trunc %[1]s); %[3]sif [ -n "$ids" ]; then docker stop $ids >/dev/null; %[2]s $ids >/dev/null; fi; nets=$(docker network ls -q --no-trunc %[1]s); if [ -n "$nets" ]; then docker network rm $nets >/dev/null; fi`, filter, rm, keep)
+	return fmt.Sprintf(`set -e; %[4]sids=$(docker ps -aq --no-trunc %[1]s); %[3]sif [ -n "$ids" ]; then docker stop $ids >/dev/null; %[2]s $ids >/dev/null; fi; nets=$(docker network ls -q --no-trunc %[1]s); if [ -n "$nets" ]; then docker network rm $nets >/dev/null; fi`, filter, rm, keep, guard)
 }
 
 // planImages finds the images only this deployment ran: those its containers
@@ -379,6 +386,8 @@ func (p *Plan) buildHost() (*Stage, error) {
 	rules, _ := hostprep.ParseAddedRules(d, out)
 	for _, r := range rules {
 		switch {
+		case r.Owned && r.Web && cp != nil:
+			// The kept Caddy's way in: ufw denies incoming by default.
 		case r.Owned && r.SSH:
 			p.Kept = append(p.Kept, sshAllowKept(p.Site, r.Line))
 		case r.Owned:
@@ -402,7 +411,12 @@ func (p *Plan) buildHost() (*Stage, error) {
 		// The entry stays, marked kept: the Caddy still holds the gateway
 		// role and the root.
 		hp.registry = false
-		cp.entry, cp.mark = entry, registered && entry.Kept != registry.KeptCaddy
+		cp.entry, cp.mark = entry, entry.Kept != registry.KeptCaddy
+		if !registered {
+			// A host whose entry is gone gets one: the kept Caddy holds the
+			// gateway role and the root.
+			_, cp.entry = registry.For(p.cfg, p.Site, now())
+		}
 		err = p.planKeptRoot(t, hp, edited)
 	} else {
 		err = p.planRoot(t, hp, inv, edited)
@@ -765,7 +779,7 @@ func (p *Plan) runHost() error {
 		}
 		rules, _ := hostprep.ParseAddedRules(d, out)
 		for _, r := range rules {
-			if r.Owned && !r.SSH {
+			if r.Owned && !r.SSH && !(r.Web && cp != nil) {
 				if err := run("deleting a ufw rule", "ufw delete "+r.Line); err != nil {
 					return err
 				}
@@ -870,7 +884,7 @@ func (p *Plan) verifyHost(t apply.Transport) error {
 	}
 	rules, _ := hostprep.ParseAddedRules(d, out)
 	for _, r := range rules {
-		if r.Owned && !r.SSH {
+		if r.Owned && !r.SSH && !(r.Web && cp != nil) {
 			left = append(left, "ufw rule "+r.Line)
 		}
 	}

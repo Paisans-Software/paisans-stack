@@ -165,7 +165,7 @@ func TestAGatewaysCaddyIsKeptForTheOwnersSites(t *testing.T) {
 	if len(vm.caddyLoads) != 1 || vm.caddyLoads[0] != reduced {
 		t.Errorf("Caddy loaded %d configuration(s), want the reduced one once", len(vm.caddyLoads))
 	}
-	validate, reload, write, removal := index(vm.commands, "caddy validate"), index(vm.commands, "caddy reload"), index(vm.commands, "cat > '"+caddyfile+"'"), index(vm.commands, "docker ps -aq --no-trunc")
+	validate, reload, write, removal := index(vm.commands, "caddy validate"), index(vm.commands, "caddy reload"), index(vm.commands, "> '"+caddyfile+"'"), index(vm.commands, "docker ps -aq --no-trunc")
 	if !(validate >= 0 && validate < reload && reload < write && write < removal) {
 		t.Errorf("validate %d, reload %d, write %d, first removal %d: want them in that order", validate, reload, write, removal)
 	}
@@ -403,5 +403,110 @@ func TestByIDConfirmationNamesTheKeptCaddy(t *testing.T) {
 	q = byID(t, w, "watch", "f2a9", siteremove.Options{}).Confirmation(vmDest())
 	if strings.Contains(q, "Caddy") || strings.Contains(q, "data") {
 		t.Errorf("a monitor without --delete-data: %q", q)
+	}
+}
+
+// The rules host prepare opened 80 and 443 with stay while Caddy is kept:
+// ufw denies incoming by default, so without them nothing from outside
+// reaches the owner's sites. The run that removes Caddy deletes them.
+func TestAKeptCaddyKeepsItsWebRules(t *testing.T) {
+	w := gatewayWorld(t, true)
+	vm := w.hosts["vm"]
+	web := []string{
+		"allow 80/tcp comment 'paisans-f2a9: the gateway, HTTP'",
+		"allow 443/tcp comment 'paisans-f2a9: the gateway, HTTPS'",
+	}
+	mesh := "allow in on psns-f2a9 comment 'paisans-f2a9: the mesh: etcd, Patroni, Garage, HAProxy'"
+	vm.rules = append([]string{"allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'", mesh}, web...)
+	if err := siteremove.Execute(forced(t, w, w.cfg, "vm", vmDest(), siteremove.Options{})); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range web {
+		if !contains(vm.rules, r) {
+			t.Errorf("%s was deleted with Caddy kept", r)
+		}
+	}
+	if contains(vm.rules, mesh) {
+		t.Error("the mesh rule is left")
+	}
+	again := forced(t, w, w.cfg, "vm", vmDest(), siteremove.Options{})
+	if again.Pending() {
+		t.Errorf("the kept rules make a second run plan something:\n%s", printed(again))
+	}
+	delete(vm.files, blog)
+	if err := siteremove.Execute(forced(t, w, w.cfg, "vm", vmDest(), siteremove.Options{})); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range web {
+		if contains(vm.rules, r) {
+			t.Errorf("%s is left once Caddy has gone", r)
+		}
+	}
+}
+
+// A failure writing the reduced file over the Caddyfile puts the original
+// back from a copy on the host, reloads it, and removes nothing else.
+func TestAFailedWriteBackPutsTheOriginalBack(t *testing.T) {
+	w := gatewayWorld(t, true)
+	vm := w.hosts["vm"]
+	original := vm.files[caddyfile]
+	containers := len(vm.containers)
+	p := forced(t, w, w.cfg, "vm", vmDest(), siteremove.Options{DeleteData: true})
+	w.failOnce = "cat -- '" + root + "/infra/caddy/snippets/.paisans-kept-Caddyfile' > "
+	err := siteremove.Execute(p)
+	if err == nil || !strings.Contains(err.Error(), "nothing else was removed") {
+		t.Fatalf("err = %v", err)
+	}
+	if vm.files[caddyfile] != original {
+		t.Error("the original Caddyfile is not back")
+	}
+	if n := len(vm.caddyLoads); n == 0 || vm.caddyLoads[n-1] != original {
+		t.Error("Caddy was not left on the original")
+	}
+	if len(vm.containers) != containers {
+		t.Error("a container was removed")
+	}
+	for f := range vm.files {
+		if strings.Contains(f, ".paisans-") && strings.HasPrefix(f, root+"/infra/caddy") {
+			t.Errorf("%s is left", f)
+		}
+	}
+}
+
+// A kept Caddy on a host whose registry has no entry for the deployment
+// gets one, marked kept, so the gate can pass.
+func TestAKeptCaddyWithNoEntryGetsOne(t *testing.T) {
+	w := gatewayWorld(t, true)
+	vm := w.hosts["vm"]
+	r := vmRegistry(t, w)
+	delete(r.Deployments, ourID)
+	vm.files[registry.Path] = encode(t, r)
+	if err := siteremove.Execute(forced(t, w, w.cfg, "vm", vmDest(), siteremove.Options{})); err != nil {
+		t.Fatal(err)
+	}
+	if e, ok := vmRegistry(t, w).Deployments[ourID]; !ok || e.Kept != registry.KeptCaddy || e.Site != "vm" {
+		t.Errorf("the entry: %+v, %v", e, ok)
+	}
+}
+
+// A site of the owner's that appears after the plan, which removes Caddy,
+// stops the run before Caddy goes.
+func TestASiteThatAppearsAfterThePlanStopsCaddysRemoval(t *testing.T) {
+	w := gatewayWorld(t, false)
+	vm := w.hosts["vm"]
+	p := forced(t, w, w.cfg, "vm", vmDest(), siteremove.Options{DeleteData: true})
+	vm.files[blog] = "blog.example.net {\n}\n"
+	if err := siteremove.Execute(p); err == nil || !strings.Contains(err.Error(), render.HostSitesDir) {
+		t.Fatalf("err = %v", err)
+	}
+	found := false
+	for _, c := range vm.containers {
+		found = found || c.ID == caddyID
+	}
+	if !found {
+		t.Error("Caddy was removed")
+	}
+	if !vm.under(root + "/infra/caddy/data") {
+		t.Error("Caddy's certificates were deleted")
 	}
 }

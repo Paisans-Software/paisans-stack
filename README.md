@@ -4716,7 +4716,7 @@ approved specification.
   `/srv/paisans/<token>/infra/` its `compose.yaml`, `caddy/Caddyfile`,
   `caddy/caddy.env` (the DNS token, for renewals), `caddy/data` and
   `caddy/config` (the certificates) and the `caddy/snippets` directory it
-  mounts, emptied. These stay with `--delete-data` too, and the plan says so.
+  mounts, emptied; and the ufw allows for 80 and 443 `host prepare` added. These stay with `--delete-data` too, and the plan says so.
   The manifest stays, listing exactly those files. Everything else goes as in
   the table above.
 * **The registry entry stays**, marked `"kept": "caddy"`, still holding the

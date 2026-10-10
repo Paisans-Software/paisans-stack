@@ -335,52 +335,72 @@ func caddyCommand(container hostcheck.Container, verb, config string) string {
 // moment in which they are not served: the reduced file is staged where the
 // container sees it, validated in it, and loaded with caddy reload, which
 // leaves the running configuration as it was if it fails. Only then is it
-// written over the Caddyfile, in place, since that is a single file bind
-// mount and a new file renamed over it would not reach the container, and
-// read back. A failure at any point leaves the original Caddyfile, loaded,
-// and nothing else of the deployment's touched.
+// copied over the Caddyfile on the host, in place, since that is a single
+// file bind mount and a new file renamed over it would not reach the
+// container, with the original copied aside first, and read back. A failure
+// at any point puts the original back, loaded, and touches nothing else of
+// the deployment's.
 func (p *Plan) reduceCaddy(t apply.Transport, cp *caddyPlan) error {
 	p.work("reduce Caddy to the host's sites").Detail("Caddy %s, for %s", cp.container.Name, strings.Join(cp.sites, ", "))
-	staged := containerSnippets + "/" + stagedName
-	unstage := func() { _, _ = t.Run("rm -f -- " + quote(p.staged())) }
+	staged, backup := p.staged(), p.caddyfile()+".paisans-original"
+	tidy := func() { _, _ = t.Run("rm -f -- " + quote(staged) + " " + quote(backup)) }
 	stop := func(what string, err error, out string) error {
-		unstage()
+		tidy()
 		return fmt.Errorf("%s: Caddy, kept for the host owner's sites: %s: %w: %s. Its Caddyfile is the original, it still serves every site it did, and nothing else was removed", p.Site, what, err, lastLines(out, 3))
 	}
-	if err := t.WriteFile(p.staged(), cp.reduced, 0o644); err != nil {
+	if err := t.WriteFile(staged, cp.reduced, 0o644); err != nil {
 		return stop("staging the reduced Caddyfile", err, "")
 	}
-	if out, err := t.Run(caddyCommand(cp.container, "validate", staged)); err != nil {
+	inContainer := containerSnippets + "/" + stagedName
+	if out, err := t.Run(caddyCommand(cp.container, "validate", inContainer)); err != nil {
 		return stop("the reduced Caddyfile does not validate", err, out)
 	}
-	if out, err := t.Run(caddyCommand(cp.container, "reload", staged)); err != nil {
-		back, berr := t.Run(caddyCommand(cp.container, "reload", containerConfig))
-		if berr != nil {
-			out += " / reloading the original failed too: " + lastLines(back, 2)
+	if out, err := t.Run(caddyCommand(cp.container, "reload", inContainer)); err != nil {
+		if back, berr := t.Run(caddyCommand(cp.container, "reload", containerConfig)); berr != nil {
+			tidy()
+			return fmt.Errorf("%s: Caddy, kept for the host owner's sites: loading the reduced Caddyfile: %v: %s. Reloading the original failed too: %v: %s. Nothing else was removed. Check the container", p.Site, err, lastLines(out, 2), berr, lastLines(back, 2))
 		}
 		return stop("loading the reduced Caddyfile", err, out)
 	}
-	restore := func(what string, err error) error {
-		_, _ = t.RunInput("cat > "+quote(p.caddyfile()), cp.original)
-		out, rerr := t.Run(caddyCommand(cp.container, "reload", containerConfig))
-		if rerr != nil {
-			unstage()
-			return fmt.Errorf("%s: Caddy, kept for the host owner's sites: %s: %v. Putting the original back and reloading it failed too: %v: %s. Nothing else was removed. Check %s and the container", p.Site, what, err, rerr, lastLines(out, 2), p.caddyfile())
-		}
-		return stop(what, err, "")
+	if out, err := t.Run("cp -p -- " + quote(p.caddyfile()) + " " + quote(backup)); err != nil {
+		return p.restoreCaddy(t, cp, tidy, "copying the original Caddyfile aside", err, out)
 	}
-	if _, err := t.RunInput("cat > "+quote(p.caddyfile()), cp.reduced); err != nil {
-		return restore("writing the reduced Caddyfile in place", err)
+	if out, err := t.Run("cat -- " + quote(staged) + " > " + quote(p.caddyfile())); err != nil {
+		return p.restoreCaddy(t, cp, tidy, "writing the reduced Caddyfile in place", err, out)
 	}
 	back, _, err := t.ReadFile(p.caddyfile())
 	if err == nil && back != cp.reduced {
 		err = fmt.Errorf("it reads back otherwise")
 	}
 	if err != nil {
-		return restore("reading the reduced Caddyfile back", err)
+		return p.restoreCaddy(t, cp, tidy, "reading the reduced Caddyfile back", err, "")
 	}
-	unstage()
+	tidy()
 	return nil
+}
+
+// restoreCaddy puts the original Caddyfile back after a failure once the
+// reduced one is loaded: from the copy on the host when there is one, in
+// place, and reloads it.
+func (p *Plan) restoreCaddy(t apply.Transport, cp *caddyPlan, tidy func(), what string, cause error, out string) error {
+	backup := p.caddyfile() + ".paisans-original"
+	fail := func(how string, err error, o string) error {
+		return fmt.Errorf("%s: Caddy, kept for the host owner's sites: %s: %v: %s. Putting the original back failed: %s: %v: %s. Nothing else was removed. The original Caddyfile is in %s if it was copied there; check %s and the container before anything restarts it", p.Site, what, cause, lastLines(out, 2), how, err, lastLines(o, 2), backup, p.caddyfile())
+	}
+	put := "if [ -f " + quote(backup) + " ]; then cat -- " + quote(backup) + " > " + quote(p.caddyfile()) + "; else exit 4; fi"
+	if o, err := t.Run(put); err != nil {
+		if _, ierr := t.RunInput("cat > "+quote(p.caddyfile()), cp.original); ierr != nil {
+			return fail("writing it back", err, o)
+		}
+	}
+	if back, _, err := t.ReadFile(p.caddyfile()); err != nil || back != cp.original {
+		return fail("reading it back", fmt.Errorf("it is not the original"), "")
+	}
+	if o, err := t.Run(caddyCommand(cp.container, "reload", containerConfig)); err != nil {
+		return fail("reloading it", err, o)
+	}
+	tidy()
+	return fmt.Errorf("%s: Caddy, kept for the host owner's sites: %s: %w: %s. The original Caddyfile is back and loaded, it still serves every site it did, and nothing else was removed", p.Site, what, cause, lastLines(out, 3))
 }
 
 // verifyCaddy is what the gate checks of a kept Caddy: its Caddyfile is the
