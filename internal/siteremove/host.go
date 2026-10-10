@@ -119,7 +119,7 @@ func (p *Plan) containersCommand() string {
 	case p.cfg.Sites[p.Site].Has(config.RoleGateway):
 		// The plan removes the Caddy. A site of the host owner's that
 		// appeared since would lose it, so the run stops before anything.
-		guard = fmt.Sprintf(`if ls %[1]s/*.caddy >/dev/null 2>&1 && [ -n "$(docker ps -aq %[2]s --filter %[3]s --filter %[4]s)" ]; then echo "a site of the host owner's is in %[1]s now, served by this deployment's Caddy, which this plan removes. Nothing was removed; run again, and the Caddy is kept for it"; exit 3; fi; `,
+		guard = fmt.Sprintf(`if { { [ -d %[1]s ] && ! { [ -r %[1]s ] && [ -x %[1]s ]; }; } || ls -d %[1]s/*.caddy >/dev/null 2>&1; } && [ -n "$(docker ps -aq %[2]s --filter %[3]s --filter %[4]s)" ]; then echo "a site of the host owner's is in %[1]s now, served by this deployment's Caddy, which this plan removes. Nothing was removed; run again, and the Caddy is kept for it"; exit 3; fi; `,
 			render.HostSitesDir, filter, quote("label=com.docker.compose.project="+d.Project("infra")), quote("label=com.docker.compose.service=caddy"))
 	}
 	return fmt.Sprintf(`set -e; %[4]sids=$(docker ps -aq --no-trunc %[1]s); %[3]sif [ -n "$ids" ]; then docker stop $ids >/dev/null; %[2]s $ids >/dev/null; fi; nets=$(docker network ls -q --no-trunc %[1]s); if [ -n "$nets" ]; then docker network rm $nets >/dev/null; fi`, filter, rm, keep, guard)

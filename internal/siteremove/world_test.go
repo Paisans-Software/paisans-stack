@@ -628,7 +628,7 @@ func (h *host) Run(command string) (string, error) {
 		}
 		return "", nil
 	case strings.Contains(command, "docker ps -aq --no-trunc --filter 'label=community.paisans.deployment="+ourID+"'"):
-		if strings.Contains(command, "if ls "+render.HostSitesDir+"/*.caddy") && len(h.hostSites()) > 0 {
+		if strings.Contains(command, "ls -d "+render.HostSitesDir+"/*.caddy") && len(h.hostSites()) > 0 {
 			for _, c := range h.containers {
 				if c.Deployment == ourID && c.Service == "caddy" {
 					return "a site of the host owner's is in " + render.HostSitesDir + " now", errors.New("exit status 3")

@@ -92,7 +92,10 @@ const (
 	firewalldProbe = "systemctl is-active firewalld || true"
 	// Each file is printed only when it is one, since an unmatched glob is
 	// left as the literal pattern.
-	hostSitesProbe = `for f in ` + render.HostSitesDir + `/*.caddy; do [ -f "$f" ] && echo "$f"; done; true`
+	// An unreadable directory fails rather than listing nothing, and a link
+	// whose target is gone is still a site file: either read as no sites
+	// would let a Caddy that serves the owner's sites be removed.
+	hostSitesProbe = `if [ -d ` + render.HostSitesDir + ` ] && ! { [ -r ` + render.HostSitesDir + ` ] && [ -x ` + render.HostSitesDir + ` ]; }; then echo "cannot read ` + render.HostSitesDir + `" >&2; exit 3; fi; for f in ` + render.HostSitesDir + `/*.caddy; do if [ -e "$f" ] || [ -L "$f" ]; then echo "$f"; fi; done; true`
 
 	cLocale = "export LC_ALL=C; "
 )
