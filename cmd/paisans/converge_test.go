@@ -1140,3 +1140,78 @@ func TestConvergeDryRunWaitsFollowTheDeployment(t *testing.T) {
 		})
 	}
 }
+
+// editedFixture is the fixture configuration with each old replaced by its
+// new, written where the secrets fixture is still named by path.
+func editedFixture(t *testing.T, pairs ...string) string {
+	t.Helper()
+	data, err := os.ReadFile(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for i := 0; i < len(pairs); i += 2 {
+		edited := strings.Replace(text, pairs[i], pairs[i+1], 1)
+		if edited == text {
+			t.Fatalf("the fixture has no %q", pairs[i])
+		}
+		text = edited
+	}
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// storage init says what it would change, through its own dry run against
+// a Garage behind the fake ssh with no layout, key or bucket yet.
+func TestStorageInitDryRunSaysWhatItWouldChange(t *testing.T) {
+	recordConverge(t)
+	garage := strings.Replace(quietHost, `*"getent passwd"*)`, `*" layout show"*) echo "Current cluster layout version: 0";;
+*" node id -q"*) echo "0123456789abcdef0123@10.44.0.1:3901";;
+*" key info "*) echo "0 matching keys";;
+*" bucket info "*) echo "Bucket not found";;
+*"getent passwd"*)`, 1)
+	sshAnswering(t, garage)
+	one := editedFixture(t, "sites: [home-a, home-b]\n    replication: 2", "sites: [home-a]\n    replication: 1")
+	o := convergeOptions{Config: one, Secrets: fixtureSecretsPath()}
+	summary, err := checkStep(ui.Discard, convergeFlags([]string{"storage", "init", "--site", "home-a"}, o), runStep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^[1-9][0-9]* changes?$`).MatchString(summary) {
+		t.Errorf("summary %q", summary)
+	}
+}
+
+// init, run as a step, points the holds at its own reporter. The etcd reads
+// after it hold the run's spinner again.
+func TestHoldsReturnToTheRunAfterInit(t *testing.T) {
+	fakeConverge(t, nil)
+	h := recordHolds(t)
+	saved, savedRun := convergeRead, convergeRun
+	reads := 0
+	convergeRead = func(path, secrets string) (*config.Config, convergeState, error) {
+		reads++
+		cfg, err := config.Load(fixtureConfig())
+		return cfg, convergeState{NeedsInit: reads == 1}, err
+	}
+	convergeRun = func(args []string) error {
+		if args[0] == "init" {
+			routeHolds(ui.Discard)
+		}
+		return nil
+	}
+	t.Cleanup(func() { convergeRead, convergeRun = saved, savedRun })
+	convergeReadInitial = func(*config.Config, string, bool) (render.EtcdInitial, bool, error) {
+		holdOutput()()
+		return render.EtcdInitial{}, false, nil
+	}
+	if err := converge(t, "--execute"); err != nil {
+		t.Fatal(err)
+	}
+	if !h.Has("hold", "") {
+		t.Errorf("a prompt during an etcd read after init did not hold the run's spinner:\n%s", h.Lines())
+	}
+}

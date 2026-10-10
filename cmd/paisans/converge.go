@@ -348,6 +348,10 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 		if err := convergeRun(convergeFlags([]string{"init"}, o)); err != nil {
 			return fmt.Errorf("apply: stopped at init: %w\nRun paisans apply --execute again to resume.", err)
 		}
+		// init reported through its own reporter, and pointed the retries
+		// and holds at it; the reads below draw on r.
+		routeRetries(r)
+		routeHolds(r)
 		if cfg, st, err = convergeRead(configPath, secretsPath); err != nil {
 			return err
 		}
