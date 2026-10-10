@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paisans-software/paisans-stack/internal/appadmin"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/dns"
@@ -1581,5 +1582,56 @@ func TestConvergeAdminCheckFailsWithoutAKey(t *testing.T) {
 	}
 	if len(fake.commands) != 0 {
 		t.Error("Pocket ID was asked without a key")
+	}
+}
+
+// In a run, each step points the prompt holds at its own reporter; the
+// check after the run holds the run's, which draws its spinner.
+func TestConvergeRunAdminCheckHoldsTheRunsReporter(t *testing.T) {
+	fakeConverge(t, nil)
+	saved := convergeRun
+	convergeRun = func(args []string) error {
+		routeHolds(&ui.Recorder{})
+		return saved(args)
+	}
+	run := recordHolds(t)
+	t.Cleanup(func() { convergeRun = saved; routeHolds(ui.Discard) })
+	savedCheck := convergeAdminCheck
+	convergeAdminCheck = func(*config.Config, string, convergeOptions) (bool, error) {
+		holdOutput()()
+		return true, nil
+	}
+	t.Cleanup(func() { convergeAdminCheck = savedCheck })
+	if err := converge(t, "--execute"); err != nil {
+		t.Fatal(err)
+	}
+	if !run.Has("hold", "") {
+		t.Errorf("the check did not hold the run's reporter:\n%s", run.Lines())
+	}
+}
+
+// failingTransport is a host whose curl does not connect, failing as an ssh
+// transport does: the command on the first line, curl's own message after.
+type failingTransport struct{}
+
+func (failingTransport) Describe() string           { return "deploy@home-a" }
+func (failingTransport) Run(string) (string, error) { return "", errors.New("unexpected Run") }
+func (failingTransport) RunInput(string, string) (string, error) {
+	return "curl: (7) Failed to connect to 10.44.0.1 port 1411", errors.New("deploy@home-a: sudo -k -S -p '' sh -c 'curl --config -': exit status 7\ncurl: (7) Failed to connect to 10.44.0.1 port 1411")
+}
+
+// A check that fails says why on one line: curl's own message, not the
+// command that ran it.
+func TestConvergeAdminCheckSaysWhyItFailedOnOneLine(t *testing.T) {
+	saved := adminTransport
+	adminTransport = func(apply.SSHTransport) appadmin.Transport { return failingTransport{} }
+	t.Cleanup(func() { adminTransport = saved })
+	o := convergeOptions{Config: fixtureConfig(), Secrets: fixtureSecretsPath()}
+	_, err := convergeAdminCheck(fixture(t), "auth", o)
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if msg := err.Error(); strings.Contains(msg, "\n") || strings.Contains(msg, "sudo") || !strings.Contains(msg, "curl: (7) Failed to connect") {
+		t.Errorf("reason %q", msg)
 	}
 }

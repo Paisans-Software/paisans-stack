@@ -416,6 +416,10 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 			return convergeStop("apply stopped at "+s.Title, err, "Run paisans apply --execute again to resume.")
 		}
 	}
+	// Each step pointed the retries and holds at its own reporter; the
+	// check draws on r.
+	routeRetries(r)
+	routeHolds(r)
 	convergeAdmins(r, cfg, o, func(string) bool { return true })
 	convergeLeft(r, cfg, secretsPath, configPath)
 	r.Result("%s is converged: every step ran.", configPath)
@@ -539,8 +543,11 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 // marked up to date: init, and each step about a site the app runs on.
 func convergeUp(cfg *config.Config, steps []convergeStep, marks map[string]ui.Mark, app string) bool {
 	sites := render.AppSites(cfg)[app]
+	// A title's mark is its latest step's: an apply's in pass two, which is
+	// checked only once its earlier apply or site add is up to date.
 	for _, s := range steps {
-		if (s.Title == "init" || slices.Contains(sites, stepSite(s))) && marks[s.Title] != ui.OK {
+		about := s.Args[0] != "storage" && slices.Contains(sites, stepSite(s))
+		if (s.Title == "init" || about) && marks[s.Title] != ui.OK {
 			return false
 		}
 	}
@@ -770,7 +777,7 @@ func convergeAdmins(r ui.Reporter, cfg *config.Config, o convergeOptions, up fun
 		switch {
 		case err != nil:
 			s.End(ui.Failed, "could not check")
-			r.Note("Pocket ID "+app+": could not check for an admin ("+firstLine(err)+")", command)
+			r.Note("Pocket ID "+app+": could not check for an admin ("+errLine(err)+")", command)
 		case has:
 			s.Done("has one")
 		default:
@@ -782,19 +789,21 @@ func convergeAdmins(r ui.Reporter, cfg *config.Config, o convergeOptions, up fun
 
 func adminCheckTitle(app string) string { return "check " + app + " for an admin" }
 
-// firstLine is err's first line, without the colon or full stop it ends on.
-func firstLine(err error) string {
+// errLine is err's first line, without the colon or full stop it ends on.
+func errLine(err error) string {
 	line, _, _ := strings.Cut(err.Error(), "\n")
 	return strings.TrimRight(strings.TrimSpace(line), ":.")
 }
 
 // convergeAdminCheck asks a Pocket ID app whether any user is an admin, read
-// only, through the API key, site and transport `app admin create` uses, with
-// the run's sudo. Tests replace it.
+// only, with the API key, the site and the API address `app admin create`
+// uses, reaching the host as every step of the run does, with its sudo. Why
+// it fails is one line. Tests replace it.
 var convergeAdminCheck = func(cfg *config.Config, app string, o convergeOptions) (bool, error) {
 	where, err := pocketIDSite(cfg, app, "", "apply")
 	if err != nil {
-		return false, err
+		line, _, _ := strings.Cut(err.Error(), "\n")
+		return false, &adminCheckFailure{strings.TrimPrefix(line, "apply: "), err}
 	}
 	key, err := pocketIDKey(cfg, o.Config, o.Secrets, app)
 	if err != nil {
@@ -802,5 +811,22 @@ var convergeAdminCheck = func(cfg *config.Config, app string, o convergeOptions)
 	}
 	c := &pocketid.Client{Transport: adminTransport(siteTransport(where, cfg.Sites[where], "", o.Sudo)),
 		BaseURL: pocketIDBase(cfg, where), APIKey: key}
-	return c.HasAdmin()
+	has, err := c.HasAdmin()
+	if err != nil {
+		// A host that ran curl and failed says so on the first line, the
+		// command and its exit status, and why after it, as curl put it.
+		lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
+		return false, &adminCheckFailure{strings.TrimSpace(lines[len(lines)-1]), err}
+	}
+	return has, nil
 }
+
+// adminCheckFailure is why convergeAdminCheck failed, on one line, with the
+// error in full as its cause.
+type adminCheckFailure struct {
+	reason string
+	cause  error
+}
+
+func (f *adminCheckFailure) Error() string { return f.reason }
+func (f *adminCheckFailure) Unwrap() error { return f.cause }
