@@ -69,14 +69,13 @@ func runDefault(t *testing.T, name string, fn func() error) string {
 
 // quietSSH puts an ssh on PATH that connects and answers as a clean, empty
 // host, so a command that reaches one reports what it would do there.
-func quietSSH(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	// The remote command travels base64 encoded (apply.RemoteCommand), so the
-	// script decodes it to answer the few probes whose silence would be read
-	// as a failure: who it runs as, which OS, what volumes there are, and
-	// that a file is absent.
-	script := `#!/bin/sh
+func quietSSH(t *testing.T) { sshAnswering(t, quietHost) }
+
+// The remote command travels base64 encoded (apply.RemoteCommand), so the
+// script decodes it to answer the few probes whose silence would be read
+// as a failure: who it runs as, which OS, what volumes there are, and
+// that a file is absent.
+const quietHost = `#!/bin/sh
 for last; do :; done
 b=${last#*printf %s }
 b=${b%% |*}
@@ -98,6 +97,11 @@ case "$cmd" in
 esac
 exit 0
 `
+
+// sshAnswering puts an ssh on PATH that runs script for each connection.
+func sshAnswering(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

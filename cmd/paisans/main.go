@@ -691,7 +691,9 @@ func runApply(args []string) error {
 		if clients != nil {
 			changes += clients.steps
 		}
-		dryRunFound(count(changes, "change"), nil)
+		// A plan --execute would refuse, Eg: a file edited on the host, is
+		// where the run would stop, not work it would do.
+		dryRunFound(count(changes, "change"), apply.Refusal(plan))
 		if changes == 0 {
 			r.Result("%s is up to date. Nothing to apply.", *site)
 			return err

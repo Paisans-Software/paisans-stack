@@ -978,3 +978,26 @@ func TestHostPrepareDryRunSaysWhatItWouldChange(t *testing.T) {
 		}
 	}
 }
+
+// apply's dry run says what it would change, and a plan --execute would
+// refuse, here for an image volume its service does not mount, is the
+// check's failure rather than pending work.
+func TestApplyDryRunSaysWhatItWouldChangeOrRefuse(t *testing.T) {
+	recordConverge(t)
+	quietSSH(t)
+	o := convergeOptions{Config: fixtureConfig(), Secrets: fixtureSecretsPath()}
+	args := []string{"apply", "--site", "watch"}
+	summary, err := checkStep(ui.Discard, convergeFlags(args, o), runStep)
+	if err != nil || !regexp.MustCompile(`^[1-9][0-9]* changes?$`).MatchString(summary) {
+		t.Errorf("summary %q, err %v", summary, err)
+	}
+	unmounted := strings.Replace(quietHost, `echo "volumes $r null"`, `echo "volumes $r {\"/unmounted\":{}}"`, 1)
+	if unmounted == quietHost {
+		t.Fatal("the fake host no longer answers the volumes probe")
+	}
+	sshAnswering(t, unmounted)
+	summary, err = checkStep(ui.Discard, convergeFlags(args, o), runStep)
+	if err == nil || summary != "" {
+		t.Errorf("a plan --execute refuses was %q, err %v", summary, err)
+	}
+}
