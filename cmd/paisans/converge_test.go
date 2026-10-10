@@ -15,6 +15,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 	"github.com/paisans-software/paisans-stack/internal/validate"
 )
 
@@ -156,7 +157,7 @@ func TestConvergeStorageFollowsTheGarageSites(t *testing.T) {
 	samePlan(t, convergePlan(cfg, convergeState{}), slices.Concat(before, passTwoAndDNS)...)
 }
 
-// fakeConverge replaces the founded probe and the step runner; fail maps a
+// fakeConverge replaces each etcd record's read and the step runner; fail maps a
 // step's title to the error it returns the first time it runs.
 func fakeConverge(t *testing.T, fail map[string]error) *[]string {
 	t.Helper()
@@ -169,7 +170,7 @@ func fakeConvergeArgs(t *testing.T, fail map[string]error) (*[]string, *[][]stri
 	t.Helper()
 	var ran []string
 	var full [][]string
-	savedRun, savedFounded := convergeRun, convergeFounded
+	savedRun, savedRead := convergeRun, convergeReadInitial
 	convergeRun = func(args []string) error {
 		full = append(full, args)
 		title := strings.Join(args, " ")
@@ -183,10 +184,10 @@ func fakeConvergeArgs(t *testing.T, fail map[string]error) (*[]string, *[][]stri
 		delete(fail, title)
 		return err
 	}
-	convergeFounded = func(*config.Config, bool) (map[string]render.EtcdInitial, error) {
-		return map[string]render.EtcdInitial{}, nil
+	convergeReadInitial = func(*config.Config, string, bool) (render.EtcdInitial, bool, error) {
+		return render.EtcdInitial{}, false, nil
 	}
-	t.Cleanup(func() { convergeRun, convergeFounded = savedRun, savedFounded })
+	t.Cleanup(func() { convergeRun, convergeReadInitial = savedRun, savedRead })
 	return &ran, &full
 }
 
@@ -246,9 +247,9 @@ func TestConvergeRefusesSSH(t *testing.T) {
 func TestConvergeRefusesBeforeReadingAHost(t *testing.T) {
 	ran := fakeConverge(t, nil)
 	read := false
-	convergeFounded = func(*config.Config, bool) (map[string]render.EtcdInitial, error) {
+	convergeReadInitial = func(*config.Config, string, bool) (render.EtcdInitial, bool, error) {
 		read = true
-		return nil, errors.New("no host should be read")
+		return render.EtcdInitial{}, false, errors.New("no host should be read")
 	}
 	data, err := os.ReadFile(fixtureConfig())
 	if err != nil {
@@ -316,15 +317,19 @@ func TestConvergeReplansAfterInit(t *testing.T) {
 	ran := fakeConverge(t, nil)
 	saved := convergeRead
 	reads := 0
-	convergeRead = func(path, secrets string, sudo bool) (*config.Config, convergeState, error) {
+	convergeRead = func(path, secrets string) (*config.Config, convergeState, error) {
 		reads++
 		cfg, err := config.Load(fixtureConfig())
-		if reads == 1 {
-			return cfg, convergeState{NeedsInit: true}, err
-		}
-		return cfg, convergeState{Initial: map[string]render.EtcdInitial{"home-a": initial("home-a", "vm"), "vm": initial("home-a", "vm")}}, err
+		return cfg, convergeState{NeedsInit: reads == 1}, err
 	}
 	t.Cleanup(func() { convergeRead = saved })
+	founded := initial("home-a", "vm")
+	convergeReadInitial = func(_ *config.Config, m string, _ bool) (render.EtcdInitial, bool, error) {
+		if reads == 1 {
+			t.Errorf("%s's record read before init ran", m)
+		}
+		return founded, m == "home-a" || m == "vm", nil
+	}
 	if err := converge(t, "--execute"); err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +562,7 @@ func TestConvergeJoinsADerivedMember(t *testing.T) {
 // or which generated secrets are missing.
 func TestConvergeSaysWhatInitIsFor(t *testing.T) {
 	fakeConverge(t, nil)
-	_, st, err := readConvergeState(fixtureConfig(), filepath.Join(t.TempDir(), "secrets.enc.yaml"), false)
+	_, st, err := readConvergeState(fixtureConfig(), filepath.Join(t.TempDir(), "secrets.enc.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,5 +610,106 @@ func TestSiteRemoveUsageNamesForceAndSSH(t *testing.T) {
 		if !strings.Contains(entry, flag) {
 			t.Errorf("site remove's usage leaves out %s:\n%s", flag, entry)
 		}
+	}
+}
+
+// recordConverge sends the commands' reports to a Recorder for the test.
+func recordConverge(t *testing.T) *ui.Recorder {
+	t.Helper()
+	rec := &ui.Recorder{}
+	saved := reporterOverride
+	reporterOverride = rec
+	t.Cleanup(func() { reporterOverride = saved })
+	return rec
+}
+
+// Each etcd member's record is read inside a step of its own, so a spinner
+// shows while ssh works; the validation findings come first and the plan
+// after.
+func TestConvergeReadsEachEtcdRecordInAStep(t *testing.T) {
+	fakeConverge(t, nil)
+	rec := recordConverge(t)
+	var read []string
+	convergeReadInitial = func(_ *config.Config, m string, _ bool) (render.EtcdInitial, bool, error) {
+		last := rec.Events[len(rec.Events)-1]
+		if last.Kind != "step" || last.Text != "read "+m+"'s etcd record" {
+			t.Errorf("%s read outside its step; last event %+v", m, last)
+		}
+		read = append(read, m)
+		return render.EtcdInitial{}, false, nil
+	}
+	for _, args := range [][]string{nil, {"--execute"}} {
+		rec.Events = nil
+		read = nil
+		if err := converge(t, args...); err != nil {
+			t.Fatal(err)
+		}
+		sameLines(t, read, fixture(t).Etcd.Members)
+		findings, first := rec.Index("warn", ""), rec.Index("step", "etcd record")
+		plan := rec.Index("section", "hosts")
+		if findings < 0 || !(findings < first && first < plan) {
+			t.Errorf("%v: findings at %d, first read at %d, plan at %d:\n%s", args, findings, first, plan, rec.Lines())
+		}
+		for _, m := range read {
+			if !rec.Has("done", "read "+m+"'s etcd record") {
+				t.Errorf("%v: %s's read step did not end:\n%s", args, m, rec.Lines())
+			}
+		}
+	}
+}
+
+// holdRecorder is a Recorder that also records each hold and its resume, as
+// a reporter that draws a spinner would pause it.
+type holdRecorder struct{ *ui.Recorder }
+
+func (h holdRecorder) Hold() func() {
+	h.Events = append(h.Events, ui.Event{Kind: "hold"})
+	return func() { h.Events = append(h.Events, ui.Event{Kind: "resume"}) }
+}
+
+// recordHolds is recordConverge, with holds recorded.
+func recordHolds(t *testing.T) holdRecorder {
+	t.Helper()
+	h := holdRecorder{&ui.Recorder{}}
+	saved := reporterOverride
+	reporterOverride = h
+	t.Cleanup(func() { reporterOverride = saved })
+	return h
+}
+
+// A sudo prompt or an ssh host key question during a read pauses the
+// spinner of the step that reads.
+func TestAHoldDuringAnEtcdReadPausesItsSpinner(t *testing.T) {
+	fakeConverge(t, nil)
+	h := recordHolds(t)
+	convergeReadInitial = func(_ *config.Config, m string, _ bool) (render.EtcdInitial, bool, error) {
+		holdOutput()()
+		return render.EtcdInitial{}, false, nil
+	}
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range fixture(t).Etcd.Members {
+		i := h.Index("step", "read "+m+"'s etcd record")
+		if i < 0 || i+2 >= len(h.Events) || h.Events[i+1].Kind != "hold" || h.Events[i+2].Kind != "resume" {
+			t.Errorf("%s's read was not held around its prompt:\n%s", m, h.Lines())
+		}
+	}
+}
+
+// A member that does not answer stops the plan: founding or joining cannot
+// be decided. Its step is marked failed.
+func TestAnEtcdMemberThatDoesNotAnswerStopsThePlan(t *testing.T) {
+	ran := fakeConverge(t, nil)
+	rec := recordConverge(t)
+	convergeReadInitial = func(_ *config.Config, m string, _ bool) (render.EtcdInitial, bool, error) {
+		return render.EtcdInitial{}, false, errors.New("ssh: connect timed out")
+	}
+	err := converge(t, "--execute")
+	if err == nil || !strings.Contains(err.Error(), "connect timed out") {
+		t.Fatalf("err = %v", err)
+	}
+	if !rec.Has("fail", "etcd record") || len(*ran) != 0 {
+		t.Errorf("ran %v:\n%s", *ran, rec.Lines())
 	}
 }

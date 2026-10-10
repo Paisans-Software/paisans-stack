@@ -181,19 +181,33 @@ func runStep(args []string) error {
 	return fmt.Errorf("apply: no command %q", strings.Join(args, " "))
 }
 
-// convergeFounded reads which etcd members hold infra/etcd-initial, each
-// through its ssh section. A member that does not answer is an error: whether
-// the cluster is founded decides between founding and joining. Tests replace
-// it.
-var convergeFounded = func(cfg *config.Config, sudo bool) (map[string]render.EtcdInitial, error) {
+// convergeReadInitial reads one etcd member's infra/etcd-initial record
+// through its ssh section. Tests replace it.
+var convergeReadInitial = func(cfg *config.Config, member string, sudo bool) (render.EtcdInitial, bool, error) {
+	return apply.ReadEtcdInitial(siteTransport(member, cfg.Sites[member], "", sudo), cfg.Deployment())
+}
+
+// convergeFounded reads which etcd members hold infra/etcd-initial, each in
+// a step of its own so a spinner shows while ssh works. A member that does
+// not answer is an error: whether the cluster is founded decides between
+// founding and joining.
+func convergeFounded(r ui.Reporter, cfg *config.Config, sudo bool) (map[string]render.EtcdInitial, error) {
 	records := map[string]render.EtcdInitial{}
+	if len(cfg.Etcd.Members) > 0 {
+		r.Section("etcd members")
+	}
 	for _, m := range cfg.Etcd.Members {
-		in, recorded, err := apply.ReadEtcdInitial(siteTransport(m, cfg.Sites[m], "", sudo), cfg.Deployment())
+		s := r.Step("read " + m + "'s etcd record")
+		in, recorded, err := convergeReadInitial(cfg, m, sudo)
 		if err != nil {
+			s.Fail(err)
 			return nil, fmt.Errorf("apply: reading whether %s's etcd member has been founded: %w. Every etcd member is read before anything runs", m, err)
 		}
 		if recorded {
 			records[m] = in
+			s.Done("founded")
+		} else {
+			s.Done("not founded yet")
 		}
 	}
 	return records, nil
@@ -244,14 +258,16 @@ func convergeFlags(args []string, o convergeOptions) []string {
 	return out
 }
 
-// convergeRead reads what decides the plan. Tests replace it.
+// convergeRead reads what decides the plan on this machine. Tests replace
+// it.
 var convergeRead = readConvergeState
 
-// readConvergeState reads what decides the plan: whether init has work (no
-// id, no mesh subnet, no secrets file, or a generated secret missing), and,
-// once there is an id, each etcd member's record. With no id there is no
-// deployment to read on a host yet, and the configuration is nil.
-func readConvergeState(configPath, secretsPath string, sudo bool) (*config.Config, convergeState, error) {
+// readConvergeState reads what decides the plan without reaching a host:
+// whether init has work (no id, no mesh subnet, no secrets file, or a
+// generated secret missing). With no id there is no deployment to read on a
+// host yet, and the configuration is nil. Each etcd member's record is read
+// by convergeFounded, once the configuration is validated.
+func readConvergeState(configPath, secretsPath string) (*config.Config, convergeState, error) {
 	var st convergeState
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -280,15 +296,6 @@ func readConvergeState(configPath, secretsPath string, sudo bool) (*config.Confi
 	if len(why) > 0 {
 		st.NeedsInit = true
 		st.InitWhy = strings.Join(why, "; ")
-	}
-	// A configuration validate refuses reaches no host: runConverge refuses
-	// it, and a typo in etcd.members would otherwise read as a host that did
-	// not answer.
-	if validate.Check(cfg).Refused() {
-		return cfg, st, nil
-	}
-	if st.Initial, err = convergeFounded(cfg, sudo); err != nil {
-		return nil, st, err
 	}
 	return cfg, st, nil
 }
@@ -328,7 +335,7 @@ func missingID(path string) bool {
 // again and carries on. See docs/specs/2026-10-09-apply-converge.md.
 func runConverge(r ui.Reporter, o convergeOptions) error {
 	configPath, secretsPath, execute, sudo := o.Config, o.Secrets, o.Execute, o.Sudo
-	cfg, st, err := convergeRead(configPath, secretsPath, sudo)
+	cfg, st, err := convergeRead(configPath, secretsPath)
 	if err != nil {
 		return err
 	}
@@ -338,7 +345,7 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 		if err := convergeRun(convergeFlags([]string{"init"}, o)); err != nil {
 			return fmt.Errorf("apply: stopped at init: %w\nRun paisans apply --execute again to resume.", err)
 		}
-		if cfg, st, err = convergeRead(configPath, secretsPath, sudo); err != nil {
+		if cfg, st, err = convergeRead(configPath, secretsPath); err != nil {
 			return err
 		}
 		st.NeedsInit = false
@@ -349,10 +356,15 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 		r.Result("Nothing changed. %s has no deployment id yet, so the rest is planned once init has run: re-run with --execute, or run paisans init.", configPath)
 		return nil
 	}
+	// A configuration validate refuses reaches no host: a typo in
+	// etcd.members would otherwise read as a host that did not answer.
 	result := validate.Check(cfg)
 	reportFindings(r, configPath, result)
 	if result.Refused() {
 		return fmt.Errorf("%s was refused: %d problem(s) above", configPath, len(result.Refusals()))
+	}
+	if st.Initial, err = convergeFounded(r, cfg, sudo); err != nil {
+		return err
 	}
 	steps := convergePlan(cfg, st)
 	phase := ""
