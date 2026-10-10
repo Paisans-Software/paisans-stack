@@ -119,6 +119,11 @@ type host struct {
 	// gone are the image IDs `docker image rm` removed, which the image
 	// probe then answers absent.
 	gone map[string]bool
+	// reads is every path ReadFile was asked for, in order.
+	reads []string
+	// filesAnswer, when set, rewrites the answer to the probe that reads the
+	// manifest's files.
+	filesAnswer func(string) (string, error)
 }
 
 func (h *host) Describe() string { return h.name }
@@ -127,9 +132,14 @@ func (h *host) ReadFile(path string) (string, bool, error) {
 	if h.w.unreachable[h.name] {
 		return "", false, fmt.Errorf("%s: %w", h.name, apply.ErrUnreachable)
 	}
+	h.reads = append(h.reads, path)
 	c, ok := h.files[path]
 	return c, ok, nil
 }
+
+// calls is how many times anything reached the host: every command and every
+// file read, each of which is an ssh connection on a real one.
+func (h *host) calls() int { return len(h.commands) + len(h.reads) }
 
 func (h *host) WriteFile(path, content string, mode uint32) error {
 	h.files[path] = content
@@ -275,6 +285,7 @@ var (
 	memberDel    = regexp.MustCompile(`del /service/paisans/members/(\S+)`)
 	serverRe     = regexp.MustCompile(`(?m)^\s+server (\S+) `)
 	peerRe       = regexp.MustCompile(`(?m)^PublicKey = (\S+)`)
+	manifestLine = regexp.MustCompile(`^m='([^']+)'; if \[ -f "\$m" \]; then (h=\$\(sha256sum|c=\$\(base64) `)
 	fileLine     = regexp.MustCompile(`^f='([^']+)'; .* = '([0-9a-f]+)' \]`)
 	layoutRemove = regexp.MustCompile(`^layout remove ([0-9a-f]+)$`)
 	layoutApply  = regexp.MustCompile(`^layout apply --version (\d+)$`)
@@ -305,6 +316,34 @@ func (h *host) Run(command string) (string, error) {
 	switch {
 	case command == "true":
 		return "", nil
+
+	// the manifest's files: a sum or the content of each, or gone
+	case strings.HasPrefix(command, "m='"):
+		lines := strings.Split(strings.TrimSpace(command), "\n")
+		if lines[len(lines)-1] != "echo end" {
+			return "", fmt.Errorf("the manifest read has no end: %q", command)
+		}
+		var out strings.Builder
+		for _, line := range lines[:len(lines)-1] {
+			m := manifestLine.FindStringSubmatch(line)
+			if m == nil {
+				return "", fmt.Errorf("unreadable manifest read line %q", line)
+			}
+			content, ok := h.files[m[1]]
+			switch {
+			case !ok:
+				out.WriteString("gone\n")
+			case strings.HasPrefix(m[2], "c="):
+				fmt.Fprintf(&out, "file %s\n", base64.StdEncoding.EncodeToString([]byte(content)))
+			default:
+				fmt.Fprintf(&out, "sum %s\n", sum(content))
+			}
+		}
+		out.WriteString("end\n")
+		if h.filesAnswer != nil {
+			return h.filesAnswer(out.String())
+		}
+		return out.String(), nil
 
 	// copies on the host, for a kept Caddy's Caddyfile
 	case strings.HasPrefix(command, "cp -p -- '"):
