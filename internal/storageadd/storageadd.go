@@ -531,13 +531,17 @@ func (p *Plan) Show(r ui.Reporter) {
 }
 
 // Pending reports whether any stage after the read has steps to run.
-func (p *Plan) Pending() bool {
+func (p *Plan) Pending() bool { return p.PendingStages() > 0 }
+
+// PendingStages counts the stages after the read that have steps to run.
+func (p *Plan) PendingStages() int {
+	n := 0
 	for _, st := range p.Stages {
 		if st.Number > 1 && !st.Verifies && len(st.Steps) > 0 {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 func (p *Plan) consistency() string {

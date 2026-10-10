@@ -570,13 +570,17 @@ func (p *Plan) Show(r ui.Reporter) {
 }
 
 // Pending reports whether any stage has steps to run.
-func (p *Plan) Pending() bool {
+func (p *Plan) Pending() bool { return p.PendingStages() > 0 }
+
+// PendingStages counts the stages after the first that have steps to run.
+func (p *Plan) PendingStages() int {
+	n := 0
 	for _, st := range p.Stages {
 		if st.Number > 1 && len(st.Steps) > 0 {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 // acmeModule is what a whole apply of the new site is handed. It runs no

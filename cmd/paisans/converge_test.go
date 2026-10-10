@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -170,7 +171,10 @@ func fakeConvergeArgs(t *testing.T, fail map[string]error) (*[]string, *[][]stri
 	t.Helper()
 	var ran []string
 	var full [][]string
-	savedRun, savedRead := convergeRun, convergeReadInitial
+	savedRun, savedRead, savedCheck := convergeRun, convergeReadInitial, convergeCheck
+	// A dry run's checks are each step's own dry run, which reaches a host;
+	// here every step is up to date. fakeChecks says otherwise.
+	convergeCheck = func(ui.Reporter, []string) (string, error) { return "", nil }
 	convergeRun = func(args []string) error {
 		full = append(full, args)
 		title := strings.Join(args, " ")
@@ -187,7 +191,7 @@ func fakeConvergeArgs(t *testing.T, fail map[string]error) (*[]string, *[][]stri
 	convergeReadInitial = func(*config.Config, string, bool) (render.EtcdInitial, bool, error) {
 		return render.EtcdInitial{}, false, nil
 	}
-	t.Cleanup(func() { convergeRun, convergeReadInitial = savedRun, savedRead })
+	t.Cleanup(func() { convergeRun, convergeReadInitial, convergeCheck = savedRun, savedRead, savedCheck })
 	return &ran, &full
 }
 
@@ -336,9 +340,8 @@ func TestConvergeReplansAfterInit(t *testing.T) {
 	sameLines(t, *ran, append([]string{"init"}, commands(slices.Concat(hostsPhase, []string{"joining: site add home-b", "other sites: apply --site watch", "storage: storage add"}, passTwoAndDNS))...))
 }
 
-// The dry run says why each step is there, and names what only the operator
-// can do.
-func TestConvergeSaysWhyAndWhatIsLeft(t *testing.T) {
+// The dry run names what only the operator can do.
+func TestConvergeSaysWhatIsLeft(t *testing.T) {
 	fakeConverge(t, nil)
 	out := ""
 	captureStdout(t, func() {})
@@ -347,7 +350,7 @@ func TestConvergeSaysWhyAndWhatIsLeft(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	for _, want := range []string{"a witness is founded first", "app admin create"} {
+	for _, want := range []string{"app admin create"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("does not say %q:\n%s", want, out)
 		}
@@ -711,5 +714,267 @@ func TestAnEtcdMemberThatDoesNotAnswerStopsThePlan(t *testing.T) {
 	}
 	if !rec.Has("fail", "etcd record") || len(*ran) != 0 {
 		t.Errorf("ran %v:\n%s", *ran, rec.Lines())
+	}
+}
+
+// fakeChecks replaces each step's check with found, by title: a summary, or
+// an error. A title found lacks is up to date. It returns the titles checked,
+// in order.
+func fakeChecks(t *testing.T, found map[string]any) *[]string {
+	t.Helper()
+	var checked []string
+	saved := convergeCheck
+	convergeCheck = func(_ ui.Reporter, args []string) (string, error) {
+		title := strings.Join(args, " ")
+		if i := strings.Index(title, " --config"); i >= 0 {
+			title = title[:i]
+		}
+		if slices.Contains(args, "--execute") {
+			t.Errorf("%s checked with --execute", title)
+		}
+		checked = append(checked, title)
+		switch f := found[title].(type) {
+		case error:
+			return "", f
+		case string:
+			return f, nil
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { convergeCheck = saved })
+	return &checked
+}
+
+// statuses is each plan step's status as "mark title: result", in order,
+// from the events of the dry run's steps after the etcd reads.
+func statuses(rec *ui.Recorder) []string {
+	var out []string
+	for _, e := range rec.Events {
+		if e.Kind == "section" && e.Text == "etcd members" {
+			out = nil
+		}
+		mark := map[string]string{"done": "✓", "pending": "○", "waiting": "·", "fail": "✗"}[e.Kind]
+		if mark == "" || strings.Contains(e.Text, "etcd record") {
+			continue
+		}
+		line := mark + " " + e.Text
+		if e.Extra != "" {
+			line += ": " + e.Extra
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// A deployment that is up to date checks every command once, each line ✓,
+// and an apply in pass two takes its earlier apply's status.
+func TestConvergeDryRunMarksAnUpToDateDeploymentDone(t *testing.T) {
+	fakeConverge(t, nil)
+	checked := fakeChecks(t, nil)
+	rec := recordConverge(t)
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, l := range blankPlan() {
+		_, title, _ := strings.Cut(l, ": ")
+		want = append(want, "✓ "+title)
+	}
+	sameLines(t, statuses(rec), want)
+	seen := map[string]bool{}
+	for _, c := range *checked {
+		if seen[c] {
+			t.Errorf("%s checked twice", c)
+		}
+		seen[c] = true
+	}
+	if rec.Has("item", "") {
+		t.Errorf("a dry run listed items:\n%s", rec.Lines())
+	}
+}
+
+// A pending step says what it would change, and what waits on it says so,
+// unchecked. A check that fails is marked with its error and the rest are
+// still checked.
+func TestConvergeDryRunMarksPendingWaitingAndFailed(t *testing.T) {
+	fakeConverge(t, nil)
+	checked := fakeChecks(t, map[string]any{
+		"host prepare --site home-b": "3 changes",
+		"apply --site vm":            "5 changes",
+		"host prepare --site watch":  errors.New("ssh: connect to host watch.local: timed out\nmore detail"),
+		"dns init":                   "2 records to create",
+	})
+	rec := recordConverge(t)
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	sameLines(t, statuses(rec), []string{
+		"✓ host prepare --site home-a",
+		"○ host prepare --site home-b: 3 changes",
+		"✓ host prepare --site vm",
+		"✗ host prepare --site watch: ssh: connect to host watch.local: timed out",
+		"○ apply --site vm: 5 changes",
+		"· apply --site home-a: after apply --site vm",
+		"· apply --site home-b: after host prepare --site home-b",
+		"· apply --site watch: after host prepare --site watch",
+		"· storage add: after apply --site home-a",
+		"· apply --site home-a: after apply --site home-a",
+		"· apply --site home-b: after host prepare --site home-b",
+		"· apply --site vm: after apply --site vm",
+		"· apply --site watch: after host prepare --site watch",
+		"○ dns init: 2 records to create",
+	})
+	for _, never := range []string{"apply --site home-a", "apply --site home-b", "apply --site watch", "storage add"} {
+		if slices.Contains(*checked, never) {
+			t.Errorf("%s was checked while it waits", never)
+		}
+	}
+}
+
+// With init to run, every other step waits on it: it writes the subnet and
+// the secrets they read.
+func TestConvergeDryRunWaitsOnInit(t *testing.T) {
+	fakeConverge(t, nil)
+	checked := fakeChecks(t, nil)
+	rec := recordConverge(t)
+	saved := convergeRead
+	convergeRead = func(path, secrets string) (*config.Config, convergeState, error) {
+		cfg, err := config.Load(fixtureConfig())
+		return cfg, convergeState{NeedsInit: true, InitWhy: "no secrets file yet"}, err
+	}
+	t.Cleanup(func() { convergeRead = saved })
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	got := statuses(rec)
+	if len(got) == 0 || got[0] != "○ init: no secrets file yet" {
+		t.Fatalf("init's line: %v", got)
+	}
+	for _, l := range got[1:] {
+		if !strings.HasPrefix(l, "· ") || !strings.HasSuffix(l, ": after init") {
+			t.Errorf("does not wait on init: %s", l)
+		}
+	}
+	if len(*checked) != 0 {
+		t.Errorf("checked %v", *checked)
+	}
+}
+
+// A founded cluster's members are applied first in pass two, so that apply
+// is checked there, after storage.
+func TestConvergeDryRunChecksAFoundedMemberInPassTwo(t *testing.T) {
+	ran := fakeConverge(t, nil)
+	_ = ran
+	founded := initial("home-a", "home-b", "vm")
+	convergeReadInitial = func(*config.Config, string, bool) (render.EtcdInitial, bool, error) { return founded, true, nil }
+	checked := fakeChecks(t, map[string]any{"storage add": "1 stage"})
+	rec := recordConverge(t)
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	sameLines(t, statuses(rec), []string{
+		"✓ host prepare --site home-a",
+		"✓ host prepare --site home-b",
+		"✓ host prepare --site vm",
+		"✓ host prepare --site watch",
+		"✓ apply --site watch",
+		"○ storage add: 1 stage",
+		"· apply --site home-a: after storage add",
+		"· apply --site home-b: after storage add",
+		"· apply --site vm: after storage add",
+		"· apply --site watch: after storage add",
+		"✓ dns init",
+	})
+	if !slices.Contains(*checked, "storage add") {
+		t.Errorf("storage add not checked: %v", *checked)
+	}
+}
+
+// -v says why each step is in the plan, under its line.
+func TestConvergeDryRunSaysWhyWhenVerbose(t *testing.T) {
+	fakeConverge(t, nil)
+	fakeChecks(t, nil)
+	rec := recordConverge(t)
+	if err := converge(t, "-v"); err != nil {
+		t.Fatal(err)
+	}
+	if i := rec.Index("detail", "a witness is founded first"); i < 0 || rec.Events[i].Extra != "apply --site vm" {
+		t.Errorf("no why under the witness's line:\n%s", rec.Lines())
+	}
+}
+
+// A step is checked through its own dry run, quietly: nothing it reports
+// reaches the run's reporter, a hold for a prompt pauses the run's spinner,
+// and once it returns the run's reporter is the commands' again.
+func TestCheckStepIsQuietAndHoldsTheRunsSpinner(t *testing.T) {
+	h := recordHolds(t)
+	routeHolds(h)
+	run := func(args []string) error {
+		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
+		reporter := commonFlags(fs)
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		r := reporter()
+		r.Section("its own plan")
+		r.Item("write 8 files")
+		holdOutput()()
+		dryRunFound("8 changes", nil)
+		r.Result("Nothing changed.")
+		return nil
+	}
+	summary, err := checkStep(h, []string{"apply"}, run)
+	if err != nil || summary != "8 changes" {
+		t.Fatalf("summary %q, err %v", summary, err)
+	}
+	var kinds []string
+	for _, e := range h.Events {
+		kinds = append(kinds, e.Kind)
+	}
+	sameLines(t, kinds, []string{"hold", "resume"})
+	if reporterOverride != ui.Reporter(h) {
+		t.Errorf("the reporter was not given back: %T", reporterOverride)
+	}
+	holdOutput()()
+	if n := len(h.Events); n != 4 {
+		t.Errorf("a hold after the check did not reach the run's reporter:\n%s", h.Lines())
+	}
+}
+
+// A check fails with the command's error, with what its dry run found
+// --execute would stop at, or when the command never said what it would
+// change.
+func TestCheckStepFails(t *testing.T) {
+	recordConverge(t)
+	conflict := fmt.Errorf("1 record conflicts with the provider's: %w", dns.ErrConflict)
+	for name, run := range map[string]func([]string) error{
+		"error":   func([]string) error { return errors.New("ssh: timed out") },
+		"stop":    func([]string) error { dryRunFound("", conflict); return nil },
+		"silence": func([]string) error { return nil },
+	} {
+		summary, err := checkStep(ui.Discard, []string{"dns", "init"}, run)
+		if err == nil || summary != "" {
+			t.Errorf("%s: summary %q, err %v", name, summary, err)
+		}
+	}
+	if _, err := checkStep(ui.Discard, []string{"dns", "init"}, func([]string) error { dryRunFound("", conflict); return nil }); !errors.Is(err, dns.ErrConflict) {
+		t.Errorf("the stop is not the error: %v", err)
+	}
+}
+
+// Each command's dry run says what it would change: host prepare on an
+// empty host, through the fake ssh, has steps to run.
+func TestHostPrepareDryRunSaysWhatItWouldChange(t *testing.T) {
+	recordConverge(t)
+	quietSSH(t)
+	o := convergeOptions{Config: fixtureConfig(), Secrets: fixtureSecretsPath()}
+	for _, args := range [][]string{{"host", "prepare", "--site", "home-a"}, {"storage", "add"}} {
+		summary, err := checkStep(ui.Discard, convergeFlags(args, o), runStep)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if !regexp.MustCompile(`^[1-9][0-9]* [a-z]+s?$`).MatchString(summary) {
+			t.Errorf("%v: summary %q", args, summary)
+		}
 	}
 }

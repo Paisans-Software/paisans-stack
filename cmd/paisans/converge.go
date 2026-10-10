@@ -157,9 +157,12 @@ func convergePlan(cfg *config.Config, st convergeState) []convergeStep {
 // each host asked for is asked once for the whole run. Tests replace it.
 var convergeRun func(args []string) error
 
-// The step runner is set here rather than where it is declared: it reaches
-// runApply, which reaches it back.
-func init() { convergeRun = runStep }
+// The step runner and the check are set here rather than where they are
+// declared: each reaches runApply, which reaches it back.
+func init() {
+	convergeRun = runStep
+	convergeCheck = func(r ui.Reporter, args []string) (string, error) { return checkStep(r, args, runStep) }
+}
 
 func runStep(args []string) error {
 	switch {
@@ -352,7 +355,7 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 	}
 	if cfg == nil {
 		r.Section("configuration")
-		r.Item("init: the deployment id, the mesh subnet and every generated secret")
+		r.Step("init").End(ui.Pending, "the deployment id, the mesh subnet and every generated secret")
 		r.Result("Nothing changed. %s has no deployment id yet, so the rest is planned once init has run: re-run with --execute, or run paisans init.", configPath)
 		return nil
 	}
@@ -367,6 +370,12 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 		return err
 	}
 	steps := convergePlan(cfg, st)
+	if !execute {
+		convergeStatus(r, cfg, steps, o)
+		convergeLeft(r, cfg, secretsPath, configPath)
+		r.Result("Nothing changed. Re-run with --execute to apply. Each step's own dry run, Eg: paisans apply --site <name>, shows its detail.")
+		return nil
+	}
 	phase := ""
 	for _, s := range steps {
 		if s.Phase != phase {
@@ -374,11 +383,6 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 			r.Section(phase)
 		}
 		r.Item(s.Title + ": " + s.Why)
-	}
-	if !execute {
-		convergeLeft(r, cfg, secretsPath, configPath)
-		r.Result("Nothing changed. Re-run with --execute to apply. Each step's own dry run, Eg: paisans apply --site <name>, shows its detail.")
-		return nil
 	}
 	for _, s := range steps {
 		if s.Title == "init" {
@@ -401,6 +405,183 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 	convergeLeft(r, cfg, secretsPath, configPath)
 	r.Result("%s is converged: every step ran.", configPath)
 	return nil
+}
+
+// convergeStatus is the dry run's plan: each step under its phase, marked
+// with its status. A step is checked by its own dry run once every step it
+// waits on is up to date, and is otherwise marked as waiting on the first
+// that is not; until that one runs, its dry run would describe a host about
+// to change. A check that fails is marked with its error, and the rest are
+// still checked. Each command is checked once.
+func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o convergeOptions) {
+	type status struct {
+		mark   ui.Mark
+		result string
+	}
+	// done is the status of each command, by title, as its latest step was
+	// marked.
+	done := map[string]status{}
+	phase := ""
+	for i, s := range steps {
+		if s.Phase != phase {
+			phase = s.Phase
+			r.Section(phase)
+		}
+		line := r.Step(s.Title)
+		line.Detail("%s", s.Why)
+		var st status
+		after := ""
+		for _, w := range convergeWaits(cfg, steps, i) {
+			if done[w].mark != ui.OK {
+				after = w
+				break
+			}
+		}
+		prior, checked := done[s.Title]
+		switch {
+		case s.Title == "init":
+			st = status{ui.Pending, s.Why}
+		case after != "":
+			st = status{ui.Waiting, "after " + after}
+		case checked:
+			st = prior
+		default:
+			summary, err := convergeCheck(r, convergeFlags(s.Args, o))
+			switch {
+			case err != nil:
+				first, _, _ := strings.Cut(err.Error(), "\n")
+				st = status{ui.Failed, first}
+			case summary == "":
+				st = status{ui.OK, ""}
+			default:
+				st = status{ui.Pending, summary}
+			}
+		}
+		done[s.Title] = st
+		line.End(st.mark, st.result)
+	}
+}
+
+// convergeWaits is the titles of the earlier steps that steps[i] waits on,
+// in the order they ran: init, for every step once it has work; the site's
+// host prepare, for every step on a site; each founding witness's apply, for
+// a founding member that is not one, whose gate refuses it until the witness
+// runs; the site's earlier apply or site add and the storage step, for an
+// apply in pass two; and the host prepare and first apply of each Garage
+// site, for storage, since Garage has to be running to be asked.
+func convergeWaits(cfg *config.Config, steps []convergeStep, i int) []string {
+	var waits []string
+	if steps[0].Title == "init" && i > 0 {
+		waits = append(waits, "init")
+	}
+	s := steps[i]
+	earlier := steps[:i]
+	// first is the title of the first earlier apply or site add of site.
+	first := func(site string) []string {
+		for _, e := range earlier {
+			if e.Phase != "pass two" && stepSite(e) == site && e.Args[0] != "host" {
+				return []string{e.Title}
+			}
+		}
+		return nil
+	}
+	prepare := func(site string) string { return "host prepare --site " + site }
+	switch {
+	case s.Args[0] == "apply" || s.Args[0] == "site":
+		site := stepSite(s)
+		waits = append(waits, prepare(site))
+		if s.Phase == "founding" && !cfg.Sites[site].Has(config.RoleWitness) {
+			for _, e := range earlier {
+				if e.Phase == "founding" && cfg.Sites[stepSite(e)].Has(config.RoleWitness) {
+					waits = append(waits, e.Title)
+				}
+			}
+		}
+		if s.Phase == "pass two" {
+			waits = append(waits, first(site)...)
+			for _, e := range earlier {
+				if e.Phase == "storage" {
+					waits = append(waits, e.Title)
+				}
+			}
+		}
+	case s.Args[0] == "storage":
+		for _, g := range cfg.Storage.Garage.Sites {
+			waits = append(waits, prepare(g))
+			waits = append(waits, first(g)...)
+		}
+	}
+	return waits
+}
+
+// stepSite is the site a step is about, or empty for one about none. Each
+// step about a site names it last.
+func stepSite(s convergeStep) string {
+	switch strings.Join(s.Args[:min(2, len(s.Args))], " ") {
+	case "apply --site", "site add", "host prepare", "storage init":
+		return s.Args[len(s.Args)-1]
+	}
+	return ""
+}
+
+// dryRunFound is told by the dry run of each command apply without --site
+// runs as a step what it would change: a summary such as "3 changes", empty
+// when there is nothing to do, and stop when it found something --execute
+// would stop at. checkStep sets it; otherwise it does nothing.
+var dryRunFound = func(summary string, stop error) {}
+
+// count is n of unit, Eg: "3 changes", or empty for none, as dryRunFound
+// takes it.
+func count(n int, unit string) string {
+	if n == 0 {
+		return ""
+	}
+	return plural(n, unit)
+}
+
+// convergeCheck is one step's status in a dry run: what its own dry run
+// would change, empty for nothing. Tests replace it.
+var convergeCheck func(r ui.Reporter, args []string) (string, error)
+
+// checkReporter is what a step's own dry run reports through while it is
+// checked: nothing it says is shown, since the step's line says what it
+// found, and a hold for a prompt reaches r, which draws that line's spinner.
+type checkReporter struct {
+	ui.Reporter
+	r ui.Reporter
+}
+
+func (c checkReporter) Hold() (resume func()) { return ui.Hold(c.r) }
+
+// checkStep runs args, a step's command without --execute, through run, in
+// this process and quietly, and returns what its dry run told dryRunFound.
+// Its reports, retries and holds are routed back to r once it returns.
+func checkStep(r ui.Reporter, args []string, run func([]string) error) (string, error) {
+	found := false
+	var summary string
+	var stop error
+	savedFound, savedOverride := dryRunFound, reporterOverride
+	dryRunFound = func(s string, err error) { found, summary, stop = true, s, err }
+	reporterOverride = checkReporter{ui.Discard, r}
+	defer func() {
+		dryRunFound, reporterOverride = savedFound, savedOverride
+		routeRetries(r)
+		routeHolds(r)
+	}()
+	if err := run(args); err != nil {
+		return "", err
+	}
+	if stop != nil {
+		return "", stop
+	}
+	if !found {
+		name := args[0]
+		if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+			name += " " + args[1]
+		}
+		return "", fmt.Errorf("%s ended without saying what it would change", name)
+	}
+	return summary, nil
 }
 
 // convergeLeft names what only the operator can do: each credential the
