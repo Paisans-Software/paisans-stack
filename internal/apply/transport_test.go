@@ -294,3 +294,15 @@ func TestAHostKeyQuestionIsFollowedByABlankLine(t *testing.T) {
 		t.Errorf("%d blank lines, want 1: after the new host's first connection only", blanks)
 	}
 }
+
+// A failed command's error ends with ssh's last line, not a newline, so a
+// caller that adds a sentence after it keeps it on the same line.
+func TestARunErrorEndsWithoutANewline(t *testing.T) {
+	apply.ForgetContacts()
+	t.Cleanup(apply.ForgetContacts)
+	t.Cleanup(apply.FakeSSH(func([]string, string) (string, int) { return "Host key verification failed.\n", 1 }, nil, func(time.Duration) {}, io.Discard))
+	_, err := (apply.SSHTransport{Destination: "home-a"}).Run("true")
+	if err == nil || strings.HasSuffix(err.Error(), "\n") {
+		t.Errorf("err = %q", err)
+	}
+}

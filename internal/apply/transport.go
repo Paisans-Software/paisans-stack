@@ -228,7 +228,7 @@ func (t SSHTransport) Run(command string) (string, error) {
 	}
 	out, err := t.run(command, stdin)
 	if err != nil {
-		return out, fmt.Errorf("%s: %s: %w\n%s", t.Describe(), firstLine(command), err, out)
+		return out, fmt.Errorf("%s: %s: %w\n%s", t.Describe(), firstLine(command), err, strings.TrimRight(out, "\n"))
 	}
 	return out, nil
 }
@@ -486,7 +486,7 @@ func (t SSHTransport) WriteFile(path, content string, mode uint32) error {
 		return err
 	}
 	if out, err := t.run(script, stdin); err != nil {
-		return fmt.Errorf("%s: writing %s: %w\n%s", t.Describe(), path, err, out)
+		return fmt.Errorf("%s: writing %s: %w\n%s", t.Describe(), path, err, strings.TrimRight(out, "\n"))
 	}
 	return nil
 }
@@ -501,7 +501,7 @@ func (t SSHTransport) RunInput(command, stdin string) (string, error) {
 	}
 	out, err := t.run(command, in)
 	if err != nil {
-		return out, fmt.Errorf("%s: %s: %w\n%s", t.Describe(), firstLine(command), err, out)
+		return out, fmt.Errorf("%s: %s: %w\n%s", t.Describe(), firstLine(command), err, strings.TrimRight(out, "\n"))
 	}
 	return out, nil
 }
