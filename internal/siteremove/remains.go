@@ -33,10 +33,6 @@ func editedFileKept(site, path string) string {
 	return fmt.Sprintf("%s: an edited file kept; delete it by hand once nothing needs it. It is /%s, edited on the host since apply wrote it", site, path)
 }
 
-func sshAllowKept(site, rule string) string {
-	return fmt.Sprintf("%s: SSH allow rule kept; delete it yourself once nothing logs in through it. With incoming denied, deleting `%s` cuts the next connection", site, rule)
-}
-
 func rootEditedKept(site, root string) string {
 	return fmt.Sprintf("%s: the deployment directory kept, because a file in it was edited on the host. It is %s, with everything in it", site, root)
 }

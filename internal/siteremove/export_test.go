@@ -52,10 +52,10 @@ func SetNow(at time.Time) func() {
 // with the longest inputs a real deployment gives it: 20-character site
 // names, 36-character IDs, and 60-character paths.
 func WorstCaseRemains() []string {
-	site, name, path, rule := strings.Repeat("s", 20), strings.Repeat("n", 60), "/"+strings.Repeat("p", 59), strings.Repeat("r", 60)
+	site, name, path := strings.Repeat("s", 20), strings.Repeat("n", 60), "/"+strings.Repeat("p", 59)
 	out := []string{
 		containerKept(site, name), networkKept(site, name), volumeKept(site, name), editedFileKept(site, path),
-		sshAllowKept(site, rule), rootEditedKept(site, path), dataLeft(site, path, 99999),
+		rootEditedKept(site, path), dataLeft(site, path, 99999),
 		secretsLeft(site), DNSNotModified(deployment.Deployment{ID: strings.Repeat("i", 36)}, config.Destination{Host: "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"}), ownedNote(site, name),
 		apply.LeaderPatroniEnvNote(site),
 		imageKept(site, "sha256:"+strings.Repeat("f", 64), strings.Repeat("w", 80)),

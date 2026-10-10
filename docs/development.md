@@ -686,6 +686,12 @@ undo:
   by `hostprep.ParseAddedRules` read again before deleting, the registry by
   `registry.RemoveCommand` under the claim's lock. A re-run therefore does
   only what is left. `verifyHost`, the stage's gate, runs last.
+* **The SSH allow is never removed, and not reported.** It is how the host
+  is reached, so it is always kept: `buildHost` leaves it out of the plan and
+  `runHost` skips it when it reads the rules again. The full removal,
+  `--force` and `--id` all go through those two, and
+  `TestNoRemovalDeletesTheSSHAllow` runs each, with and without
+  `--delete-data`.
 * **Authorized keys are never removed.** A key may be the only way into the
   host, and nothing on it says whether another exists. The deployment's
   records of the keys `host prepare` added are its own bookkeeping, so they
