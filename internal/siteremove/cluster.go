@@ -10,6 +10,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/deployrecord"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -175,6 +176,19 @@ func (p *Plan) buildCluster() (*Stage, error) {
 			changes = append(changes, c)
 		}
 	}
+	// The site leaves every remaining gateway's deployment record, so
+	// secrets prune may remove its secrets.
+	var forgets []string
+	for _, gw := range p.end.GatewaySites() {
+		rec, found, err := deployrecord.Read(p.transports[gw], p.dep())
+		if err != nil {
+			return nil, fmt.Errorf("site remove %s: %w", p.Site, err)
+		}
+		if found && rec.Lists("sites", p.Site) {
+			forgets = append(forgets, gw)
+			st.Steps = append(st.Steps, Step{Site: gw, Verb: "forget", Title: "forget " + p.Site + " in the deployment record on " + gw, Text: fmt.Sprintf("%s out of %s, so secrets prune may remove its secrets", p.Site, deployrecord.Path(p.dep()))})
+		}
+	}
 	replicas, err := p.replicaEnvs(st)
 	if err != nil {
 		return nil, err
@@ -219,6 +233,12 @@ func (p *Plan) buildCluster() (*Stage, error) {
 				return err
 			}
 			p.open.Detail("%s streams again", r.Site)
+		}
+		for _, gw := range forgets {
+			p.work("forget " + p.Site + " in the deployment record on " + gw)
+			if _, err := deployrecord.Forget(p.transports[gw], p.dep(), deployrecord.Record{Sites: []string{p.Site}}); err != nil {
+				return err
+			}
 		}
 		return nil
 	}

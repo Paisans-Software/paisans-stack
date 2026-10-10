@@ -11,6 +11,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/appremove"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployrecord"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/hostprep"
 	"github.com/paisans-software/paisans-stack/internal/ownership"
@@ -43,6 +44,8 @@ type hostPlan struct {
 	keys      keyPlan
 	registry  bool
 	root      dirState
+	// record is whether the host holds this deployment's record, a gateway's.
+	record bool
 	// deleteRoot is --delete-data with no edited file under the root.
 	deleteRoot bool
 	handover   *handover
@@ -304,6 +307,9 @@ func (p *Plan) buildHost() (*Stage, error) {
 		return nil, err
 	}
 	hp.wireguard = inv.ManifestWireGuard || contains(inv.Links, d.Interface())
+	if _, hp.record, err = t.ReadFile(deployrecord.Path(d)); err != nil {
+		return nil, fmt.Errorf("site remove %s: reading %s: %w", p.Site, deployrecord.Path(d), err)
+	}
 
 	out, err := t.Run(p.unitsCommand())
 	if err != nil {
@@ -533,6 +539,9 @@ func (p *Plan) hostSteps(st *Stage) {
 	if hp.manifest {
 		add("delete", "delete the manifest", "%s, the manifest", d.Manifest())
 	}
+	if hp.record {
+		add("delete", "delete the deployment record", "%s, this deployment's record of what it deployed", deployrecord.Path(d))
+	}
 	for _, u := range hp.units {
 		add("remove", "remove units", "unit %s, disabled and stopped first", u)
 	}
@@ -628,6 +637,12 @@ func (p *Plan) runHost() error {
 	if hp.manifest {
 		p.work("delete the manifest")
 		if err := run("deleting the manifest", "rm -f -- "+quote(d.Manifest())); err != nil {
+			return err
+		}
+	}
+	if hp.record {
+		p.work("delete the deployment record")
+		if err := run("deleting the deployment record", deployrecord.RemoveCommand(d)); err != nil {
 			return err
 		}
 	}

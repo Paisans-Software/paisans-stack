@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -508,6 +509,14 @@ func (h *host) Run(command string) (string, error) {
 			}
 		}
 		h.volumes = kept
+		return "", nil
+	case strings.Contains(command, "/.deployed."):
+		path := regexp.MustCompile(`f='([^']+)'`).FindStringSubmatch(command)[1]
+		data, _ := base64.StdEncoding.DecodeString(regexp.MustCompile(`printf %s '([^']*)' \| base64 -d`).FindStringSubmatch(command)[1])
+		h.files[path] = string(data)
+		return "", nil
+	case strings.HasPrefix(command, "rm -f -- '/var/lib/paisans/deployed."):
+		delete(h.files, strings.TrimSuffix(strings.TrimPrefix(command, "rm -f -- '"), "'"))
 		return "", nil
 	case strings.HasPrefix(command, "for i in ") && strings.Contains(command, "docker image rm"):
 		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for i in "), "; do")
