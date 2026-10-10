@@ -308,9 +308,11 @@ func TestInitReportsStepsAndWhatIsOwed(t *testing.T) {
 func TestInitWarnsAboutOrphanedSecrets(t *testing.T) {
 	sites := fakeSites()
 	path, out := initWorld(t, nil, sites, nil)
-	if cfg, err := config.Load(path); err == nil {
-		sites["vm"].files = map[string]string{deployrecord.Path(cfg.Deployment()): fixtureRecord()}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
 	}
+	sites["vm"].files = map[string]string{deployrecord.Path(cfg.Deployment()): fixtureRecord()}
 	secrets, err := config.LoadSecrets(fixtureSecretsPath())
 	if err != nil {
 		t.Fatal(err)
@@ -346,5 +348,16 @@ func TestInitWarnsAboutADroppedSite(t *testing.T) {
 	}
 	if !strings.Contains(out.Lines(), "sites.monitor-a is deployed but paisans.yaml no longer declares it") {
 		t.Errorf("no warning:\n%s", out.Lines())
+	}
+	secrets, err := config.LoadSecrets(filepath.Join(filepath.Dir(path), "secrets.enc.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, s := range secrets.Sites {
+		for _, value := range []string{s.WireGuardPrivateKey, s.HeartbeatToken} {
+			if value != "" && strings.Contains(out.Lines(), value) {
+				t.Errorf("a secret of sites.%s was printed", name)
+			}
+		}
 	}
 }

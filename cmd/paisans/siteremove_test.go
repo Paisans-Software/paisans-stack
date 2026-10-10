@@ -8,6 +8,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/siteremove"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
@@ -135,5 +136,25 @@ func TestForcedOnAnEmptyHostSaysNothingToDo(t *testing.T) {
 	plan.Stages[0].Steps = []siteremove.Step{{Site: "home-b", Verb: "remove"}}
 	if forcedNothingToDo(&ui.Recorder{}, plan, config.Destination{}, false) {
 		t.Error("a plan with steps was ended")
+	}
+}
+
+// A forced run on a site no longer declared reports a gateway whose record
+// it could not reach, and still finishes: the host is clean.
+func TestForcedRunReportsAGatewayItCouldNotReach(t *testing.T) {
+	savedSite, savedReg := removeSiteHost, registryHost
+	t.Cleanup(func() { removeSiteHost, registryHost = savedSite, savedReg })
+	quiet := runningHost{failingHost{match: "\x00"}}
+	removeSiteHost = func(string, config.Site, bool) apply.Transport { return quiet }
+	registryHost = func(string, config.Site, string, bool) registry.Runner { return &recordFake{down: true} }
+	var err error
+	out := captureStdout(t, func() {
+		err = runSiteRemove([]string{"monitor-a", "--force", "--ssh", "admin@192.0.2.1", "--config", fixtureConfig(), "--secrets", fixtureSecretsPath(), "--execute", "--sudo=false"}, strings.NewReader(""), &bytes.Buffer{})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "the deployment record on vm still lists monitor-a") {
+		t.Errorf("no warning:\n%s", out)
 	}
 }
