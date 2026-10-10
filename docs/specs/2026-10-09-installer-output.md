@@ -34,8 +34,9 @@ Out:
 * **What a command does.** Gates, ordering, refusals and the plan itself are
   unchanged. This is a change to what is said, not to what is done.
 * **Machine-readable output** (Eg: `--json`). Nothing needs it yet.
-* **Errors.** A failure always prints in full, at every verbosity: an operator
-  must not have to re-run a failed apply to learn why it failed.
+* **What a failure says.** A failure always says what went wrong and what to
+  do, at every verbosity: an operator must not have to re-run a failed apply
+  to learn why it failed. How it says it is in scope; see *Errors*.
 
 ## The two levels
 
@@ -43,7 +44,7 @@ Out:
 and at most a short result (`13.6 GiB free`, `4.1s`, `created`). No
 rationale, no configuration values, no request bodies, no digests, no
 sub-steps. Warnings print their hint; refusals print their hint and their
-explanation; errors print everything.
+explanation; an error prints its hint and explanation (see *Errors*).
 
 **`--verbose` (`-v`).** Everything printed today, attached under the step it
 belongs to, plus the raw output of the commands and API calls behind each step
@@ -149,6 +150,89 @@ type Step interface {
 * Writes are serialised by a mutex; the spinner runs on its own goroutine and
   is stopped by `Done`, `Fail` or `End`.
 
+## Errors
+
+The error that ends a command is its last word, and it prints in the same
+visual language as a refusal, on stderr:
+
+```
+✗ secrets.enc.yaml cannot be decrypted: no usable age key was found
+  Set SOPS_AGE_KEY_CMD to a command that prints your key, Eg: a Keychain
+  lookup, or SOPS_AGE_KEY_FILE to the key's path. Your public key must be a
+  recipient in .sops.yaml; if it was added recently, run sops updatekeys on
+  the file.
+```
+
+* The first line is the mark and a hint: `✗` red on a terminal, `FAIL` off
+  one, decided for stderr as the report's are for stdout. The mark is what a
+  script recognises; there is no `paisans: ` prefix.
+* The explanation follows, indented two spaces and word-wrapped.
+* With `-v` the cause follows the explanation, one indented line per link of
+  the chain: the context each caller added, then the underlying error's own
+  text (sops', ssh's, the API's), with full paths.
+* Exit codes are unchanged: 1 for a failure, 2 for usage, 75 for a wait on
+  Garage. Each is decided with `errors.Is` on the error, so wrapping one in a
+  `ui.Problem` changes nothing about it.
+
+### `ui.Problem`
+
+An error a user is likely to meet is a `ui.Problem`:
+
+```go
+type Problem struct {
+    Hint    string // one line, at most 80 characters: what is wrong
+    Explain string // what to do, and the reason when the hint is not enough
+    Cause   error  // the underlying error, shown only with -v
+}
+```
+
+* `Hint` follows the findings' hint rules: one line, at most about 80
+  characters, naming the problem in an operator's words rather than the
+  mechanism that found it (`no usable age key was found`, not `0 successful
+  groups required`).
+* `Explain` is what to do. Everything an operator needs to act is here or in
+  the hint, never only in the cause, since the cause is hidden by default.
+  A list (each conflict a host check found, each problem in a file) is one
+  line per item, each starting `- `.
+* `Cause` is what the problem was found from. `Unwrap` returns it, so
+  `errors.Is` and `errors.As` see through a `Problem` to a sentinel such as
+  `apply.ErrUnreachable` or `storageadd.ErrWaiting`.
+* `Error()` is the hint, the cause's text and the explanation, so a caller
+  that logs or embeds an error loses nothing.
+* A typed error that has its own wording (`storageadd.Waiting`,
+  `config.LoadError`) unwraps to a `Problem`, so the printer finds it and the
+  type stays for callers that ask for it with `errors.As`.
+* The printer uses the outermost `Problem` in the chain. Context a caller
+  added around it (`apply: `) shows with `-v`. A step that stops a staged
+  command (`apply stopped at <step>`) makes its own `Problem` whose
+  explanation carries the inner problem's hint and explanation, then how to
+  resume.
+
+**Any other error** prints in full, in the same form: its first line is the
+hint, or, when the first line is longer than 80 characters, the text up to its
+first `. `. The rest is the explanation, wrapped. This is the fallback; an
+error an operator meets often earns a `Problem`.
+
+### Wrapping
+
+Prose wraps at the terminal's width when it is known, at most 80 columns, and
+at 80 when it is not: the final error's explanation, a refusal's explanation,
+a note's detail, and a warning's detail under `-v`. Lines break only at spaces,
+so a path, a command or a URL is never split; a token longer than the width
+gets a line of its own. A line keeps its indentation when wrapped, and a list
+item's continuation lines align under its text after `- `. Step lines, details
+and traces are not wrapped: a trace is a command's own output, and a step line
+is short by design.
+
+### Paths
+
+In default output a path is shown relative to the current directory when it is
+under it, and otherwise as given; `$HOME` shortens to `~` in text a human
+reads. `ui.ShortPath` does both. A command meant to be copied never gets `~`,
+and gets the path as given. With `-v` the full path appears: a `Problem`'s
+hint names the short form, and its cause, shown with `-v`, carries the path as
+the toolkit used it.
+
 ## The flag
 
 `-v` and `--verbose` on every command, registered by one helper,
@@ -225,6 +309,10 @@ does, keeps that data alone on stdout and sends its report to stderr.
   explanation, not on padding.
 * A test per command checks that default output contains no line longer than
   about 100 characters on a fixture run, so the noise does not creep back.
+* The error printer is tested in both renderings, with and without `-v`, for
+  a `Problem` and for the fallback; wrapping is tested never to split a path
+  or a command; and the common errors are tested end to end through the
+  printer, with the exit code each gets.
 * `go vet ./...` and `go test ./...` pass.
 
 ## Documentation
