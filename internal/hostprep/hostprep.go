@@ -66,9 +66,10 @@ type Step struct {
 	File *File
 	// Command, when set, runs after File is written.
 	Command string
-	// Label is the word the plan prints before Describe. Empty is "change";
-	// the firewall also uses "adopt" and "remove", so a step that deletes
-	// something never reads like one that adds it.
+	// Label is the kind of change, so one can be told apart without reading
+	// Describe: empty for an ordinary one, or "adopt", "add", "rename",
+	// "share", "release" or "remove". It is not printed; Title already says
+	// what the step does.
 	Label string
 }
 
@@ -85,7 +86,8 @@ type Section struct {
 	Warnings []Warning
 }
 
-// Warning is a problem that leaves the host working but not as declared.
+// Warning is a problem that leaves the host working but not as declared, or
+// something left for the operator to do, such as deleting an old SSH allow.
 // Hint is the line an operator sees by default; Detail says why and what to
 // do, under --verbose.
 type Warning struct {
@@ -290,22 +292,26 @@ func Build(site string, cfg *config.Config, t Transport, opts ...Option) (*Plan,
 }
 
 // Show reports the plan under the section the caller has opened for the
-// site, the way every host reaching command here does: the
-// steps still to run as items, then what was already there as details, then
-// any warning. A plan with no steps still reports what it found under
-// --verbose, so an operator can see what was checked rather than a blank
-// that might mean nothing was.
+// site, marked the way apply's dry run marks its steps: each step still to
+// run as pending under its title, with its sentence as a detail, then any
+// warning. Under --verbose it first names the host profile and, after the
+// steps, marks what was already there as done, what another hand put there
+// as done and not paisans, so a plan with no steps still shows what was
+// checked rather than a blank that might mean nothing was.
 func (p *Plan) Show(r ui.Reporter) {
 	r.Detail("host profile %s", p.Profile)
 	for _, step := range p.Steps {
-		r.Item(step.Title)
-		r.Detail("%-9s %s", step.label(), step.Describe)
+		s := r.Step(step.Title)
+		s.Detail("%s", step.Describe)
+		s.End(ui.Pending, "")
 	}
-	for _, present := range p.Present {
-		r.Detail("%-9s %s", "present", present)
-	}
-	for _, foreign := range p.Foreign {
-		r.Detail("%-9s %s", "present (not paisans)", foreign)
+	if r.Verbose() {
+		for _, present := range p.Present {
+			r.Step(present).End(ui.OK, "")
+		}
+		for _, foreign := range p.Foreign {
+			r.Step(foreign).End(ui.OK, "not paisans")
+		}
 	}
 	p.Warn(r)
 }
@@ -317,13 +323,6 @@ func (p *Plan) Warn(r ui.Reporter) {
 	for _, w := range p.Warnings {
 		r.Warn(w.Hint, w.Detail)
 	}
-}
-
-func (s Step) label() string {
-	if s.Label == "" {
-		return "change"
-	}
-	return s.Label
 }
 
 // Execute runs each step in order and stops at the first failure, naming the
