@@ -296,6 +296,34 @@ func TestAHostKeyQuestionIsFollowedByABlankLine(t *testing.T) {
 	}
 }
 
+// The blank line after a host key question is written while the display is
+// still held: resumed first, the spinner would redraw on the answer's row and
+// the blank line would leave that frame behind.
+func TestTheHostKeyBlankLineComesBeforeTheDisplayResumes(t *testing.T) {
+	apply.ForgetContacts()
+	t.Cleanup(apply.ForgetContacts)
+	held := false
+	apply.SetPromptHold(func() func() {
+		held = true
+		return func() { held = false }
+	})
+	t.Cleanup(func() { apply.SetPromptHold(nil) })
+	blanks := 0
+	t.Cleanup(apply.FakeHostKeys(func(apply.SSHTransport) bool { return false }, &blanks))
+	var heldAtBlank []bool
+	t.Cleanup(apply.OnBlankLine(func() { heldAtBlank = append(heldAtBlank, held) }))
+	t.Cleanup(apply.FakeSSH(func([]string, string) (string, int) { return "ok\n", 0 }, nil, func(time.Duration) {}, io.Discard))
+	if _, err := (apply.SSHTransport{Destination: "new"}).Run("true"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(heldAtBlank, []bool{true}) {
+		t.Errorf("held at each blank line: %v, want [true]", heldAtBlank)
+	}
+	if held {
+		t.Error("the display was left held")
+	}
+}
+
 // A failed command's error ends with ssh's last line, not a newline, so a
 // caller that adds a sentence after it keeps it on the same line.
 func TestARunErrorEndsWithoutANewline(t *testing.T) {

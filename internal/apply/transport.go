@@ -496,12 +496,14 @@ func (t SSHTransport) run(command string, stdin *string) (string, error) {
 			asks = !hostKeyKnown(t)
 		}
 		err = runSSH(cmd)
-		resume()
-		cleanup()
 		if asks && (err == nil || !connectionFailed(err, out.String())) {
-			// ssh asked about the host's key and was answered.
+			// ssh asked about the host's key and was answered. The blank
+			// line goes before the display resumes, so the spinner redraws
+			// below it rather than leaving a frame above it.
 			blankLineOnTerminal()
 		}
+		resume()
+		cleanup()
 		if err == nil {
 			markContacted(t.Describe())
 			return out.String(), nil

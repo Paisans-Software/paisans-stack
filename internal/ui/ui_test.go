@@ -163,6 +163,26 @@ func TestAHintWrapsOnlyOnANarrowTerminal(t *testing.T) {
 	}
 }
 
+// A hold clears the spinner's row and its resume redraws the spinner on
+// the row the cursor is on, with no newline: a prompt erased during the hold
+// leaves no empty line between the section header and the step.
+func TestAResumedHoldRedrawsWithoutANewline(t *testing.T) {
+	var b strings.Builder
+	r := ui.NewForTest(&b, false, true, clock())
+	r.Section("etcd members")
+	s := r.Step("read home-a's etcd record")
+	b.Reset()
+	resume := ui.Hold(r)
+	resume()
+	if out := b.String(); strings.Contains(out, "\n") || !strings.Contains(out, "read home-a's etcd record") {
+		t.Errorf("hold and resume wrote %q", out)
+	}
+	s.End(ui.Pending, "not founded yet")
+	if out := b.String(); strings.Count(out, "\n") != 1 {
+		t.Errorf("the step's line is not the only line: %q", out)
+	}
+}
+
 func TestRefuseAlwaysShowsExplanation(t *testing.T) {
 	var b strings.Builder
 	ui.NewForTest(&b, false, false, clock()).Refuse("witness shares a failure domain", "Put the witness elsewhere.")
