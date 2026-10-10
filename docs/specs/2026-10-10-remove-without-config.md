@@ -63,6 +63,14 @@ A host with no registry and nothing else of paisans on it says so. `--sudo`
 defaults to true, as for every command that reads root's files: the registry
 is root's and 0600.
 
+It never lists partly. When the registry cannot be read or does not parse,
+when `/var/lib/paisans` or `/srv/paisans` exists and cannot be read (without
+sudo, the registry's directory would otherwise read as holding no registry),
+when `docker ps` fails, or when the probe's answer is cut short or has a line
+it does not know, it fails with an error naming what failed and prints
+nothing. The probe's last line is `end`, which is how a cut short answer is
+told from a host holding nothing.
+
 ## `site remove --force --id`
 
 ```
@@ -181,4 +189,6 @@ In `internal/siteremove`, against the existing fake world:
 
 In `cmd/paisans`: the refusals that need no host, reaching none; `--id` with
 `--config` refused; no match and an ambiguous match through a fake host;
-`host deployments` listing entries and leftovers.
+`host deployments` listing entries and leftovers, and failing, with nothing
+listed, for an unreadable or malformed registry, an unreadable directory,
+`docker ps` failing, an answer cut short and a line it does not know.

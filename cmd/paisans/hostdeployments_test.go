@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -24,12 +25,15 @@ type listedHost struct {
 	registry string
 	probe    string
 	commands []string
+	// readErr fails the registry's read, and probeErr the probe, which
+	// then answers probe as its output.
+	readErr, probeErr error
 }
 
 func (h *listedHost) Describe() string { return "admin@192.0.2.30" }
 func (h *listedHost) ReadFile(path string) (string, bool, error) {
 	if path == registry.Path {
-		return h.registry, h.registry != "", nil
+		return h.registry, h.registry != "", h.readErr
 	}
 	return "", false, nil
 }
@@ -44,7 +48,7 @@ func (h *listedHost) Run(command string) (string, error) {
 	case command == "true":
 		return "", nil
 	case command == deploymentsProbe:
-		return h.probe, nil
+		return h.probe, h.probeErr
 	}
 	h.t.Errorf("unexpected command %q", command)
 	return "", nil
@@ -83,9 +87,10 @@ func plainOutput(t *testing.T) *bytes.Buffer {
 func TestHostDeploymentsListsEntriesAndLeftovers(t *testing.T) {
 	h := &listedHost{t: t, registry: twoDeployments(t), probe: strings.Join([]string{
 		"root f2a9", "root 0c1d", "root dead",
-		"container " + monitorID + " paisans-f2a9-status",
-		"container " + strayID + " paisans-dead-talk",
-		"container " + strayID + " paisans-dead-talk",
+		"container\t" + monitorID + "\tpaisans-f2a9-status",
+		"container\t" + strayID + "\tpaisans-dead-talk",
+		"container\t" + strayID + "\tpaisans-dead-talk",
+		"end",
 	}, "\n") + "\n"}
 	withHost(t, h)
 	out := plainOutput(t)
@@ -113,7 +118,7 @@ func TestHostDeploymentsListsEntriesAndLeftovers(t *testing.T) {
 }
 
 func TestHostDeploymentsOnAnEmptyHost(t *testing.T) {
-	withHost(t, &listedHost{t: t})
+	withHost(t, &listedHost{t: t, probe: "end\n"})
 	out := plainOutput(t)
 	if err := runHostDeployments([]string{"--ssh", "admin@192.0.2.30", "--sudo=false"}); err != nil {
 		t.Fatal(err)
@@ -182,6 +187,39 @@ func TestSiteRemoveByIDRefusesNoMatchAndSeveral(t *testing.T) {
 	for _, c := range h.commands {
 		if c != "true" {
 			t.Errorf("ran %q", c)
+		}
+	}
+}
+
+// A host whose registry or probe cannot be read is an error naming what
+// failed, and nothing is listed: an empty or partial listing would read as a
+// host holding nothing.
+func TestHostDeploymentsFailsRatherThanListingPartly(t *testing.T) {
+	good := "root f2a9\nend\n"
+	for name, tc := range map[string]struct {
+		h    *listedHost
+		want string
+	}{
+		"registry unreadable":    {&listedHost{readErr: errors.New("exit status 1: Permission denied"), probe: good}, registry.Path},
+		"registry malformed":     {&listedHost{registry: "not json", probe: good}, registry.Path},
+		"registry dir hidden":    {&listedHost{probe: "cannot read /var/lib/paisans\n", probeErr: errors.New("exit status 3")}, "cannot read /var/lib/paisans"},
+		"deployments dir hidden": {&listedHost{probe: "cannot read /srv/paisans\n", probeErr: errors.New("exit status 3")}, "cannot read /srv/paisans"},
+		"docker ps failed":       {&listedHost{probe: "root f2a9\ndocker ps failed: Cannot connect to the Docker daemon\n", probeErr: errors.New("exit status 4")}, "docker ps failed"},
+		"cut short":              {&listedHost{probe: "root f2a9\n"}, "cut short"},
+		"unreadable line":        {&listedHost{probe: "root f2a9\nsomething else\nend\n"}, "something else"},
+	} {
+		tc.h.t = t
+		if tc.h.registry == "" && tc.h.readErr == nil {
+			tc.h.registry = twoDeployments(t)
+		}
+		withHost(t, tc.h)
+		out := plainOutput(t)
+		err := runHostDeployments([]string{"--ssh", "admin@192.0.2.30"})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+		if out.Len() > 0 {
+			t.Errorf("%s: printed a listing:\n%s", name, out.String())
 		}
 	}
 }

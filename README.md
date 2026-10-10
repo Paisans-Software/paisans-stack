@@ -4822,7 +4822,9 @@ paisans site remove --force --ssh admin@203.0.113.9 --id f2a9 --execute --delete
 and root. Under *not in the registry* it lists any `/srv/paisans/<token>`
 directory and any labelled compose project whose deployment has no entry.
 Those are left over from something no command can name, and are removed by
-hand. It changes nothing.
+hand. It changes nothing. It never lists partly: when the registry, either
+directory or `docker ps` cannot be read, it fails, naming what failed, and
+prints nothing, rather than show a host that seems to hold less than it does.
 
 `--id` is the full id or its token, and exactly one entry must match; no match
 and several are refused, listing what the host holds. The entry must be one a

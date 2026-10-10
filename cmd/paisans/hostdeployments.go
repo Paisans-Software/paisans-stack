@@ -22,8 +22,42 @@ var reachDestination = func(dest config.Destination, sudo bool) apply.Transport 
 
 // deploymentsProbe lists, read only, each directory under the deployments'
 // base and, where Docker is installed, the deployment label and compose
-// project of every container carrying the label.
-var deploymentsProbe = fmt.Sprintf(`set -e; if [ -d %[1]s ]; then for d in %[1]s/*; do if [ -d "$d" ]; then echo "root ${d##*/}"; fi; done; fi; if command -v docker >/dev/null 2>&1; then docker ps -a --filter label=%[2]s --format 'container {{.Label "%[2]s"}} {{.Label "com.docker.compose.project"}}'; fi`, deployment.Base, deployment.Label)
+// project of every container carrying the label, tab separated. It fails,
+// saying what, rather than answer partly: a directory it may not read (the
+// registry's, which a read without sudo would take for an empty registry,
+// or the deployments' base), and docker ps failing. Its last line is "end",
+// so an answer cut short is told from a host holding nothing.
+var deploymentsProbe = fmt.Sprintf(`set -e; for d in %[1]s %[2]s; do if [ -e "$d" ] && ! { [ -r "$d" ] && [ -x "$d" ]; }; then echo "cannot read $d"; exit 3; fi; done; if [ -d %[2]s ]; then for d in %[2]s/*; do if [ -d "$d" ]; then echo "root ${d##*/}"; fi; done; fi; if command -v docker >/dev/null 2>&1; then if ! out=$(docker ps -a --filter label=%[3]s --format '{{printf "container\t%%s\t%%s" (.Label "%[3]s") (.Label "com.docker.compose.project")}}' 2>&1); then echo "docker ps failed: $out"; exit 4; fi; if [ -n "$out" ]; then printf '%%s\n' "$out"; fi; fi; echo end`, registry.Dir, deployment.Base, deployment.Label)
+
+// leftoverProbe is what deploymentsProbe found: the directories under the
+// base, by name, and each labelled container's deployment and project.
+type leftoverProbe struct {
+	roots      []string
+	containers [][2]string
+}
+
+func parseDeploymentsProbe(out string) (leftoverProbe, error) {
+	var p leftoverProbe
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) == 0 || lines[len(lines)-1] != "end" {
+		return p, fmt.Errorf("its answer was cut short: %s", strings.TrimSpace(out))
+	}
+	for _, line := range lines[:len(lines)-1] {
+		switch {
+		case strings.HasPrefix(line, "root "):
+			p.roots = append(p.roots, strings.TrimPrefix(line, "root "))
+		case strings.HasPrefix(line, "container\t"):
+			fields := strings.SplitN(strings.TrimPrefix(line, "container\t"), "\t", 2)
+			if len(fields) != 2 {
+				return p, fmt.Errorf("an unreadable line: %q", line)
+			}
+			p.containers = append(p.containers, [2]string{fields[0], fields[1]})
+		default:
+			return p, fmt.Errorf("an unreadable line: %q", line)
+		}
+	}
+	return p, nil
+}
 
 // runHostDeployments is `paisans host deployments`: what the registry of the
 // host --ssh names holds, and what of a deployment is on it with no registry
@@ -49,13 +83,19 @@ func runHostDeployments(args []string) error {
 	}
 	r := reporter()
 	t := reachDestination(dest, *sudo)
-	reg, err := registry.Read(t)
-	if err != nil {
-		return err
-	}
+	// The probe first, since it fails on a registry directory it may not
+	// read, which reading the registry would take for an empty one.
 	out, err := t.Run(deploymentsProbe)
 	if err != nil {
-		return fmt.Errorf("%s: listing %s and the labelled containers: %w: %s", dest, deployment.Base, err, strings.TrimSpace(out))
+		return fmt.Errorf("host deployments: %s: listing %s and the labelled containers failed, so nothing is listed: %w: %s", dest, deployment.Base, err, strings.TrimSpace(out))
+	}
+	found, err := parseDeploymentsProbe(out)
+	if err != nil {
+		return fmt.Errorf("host deployments: %s: listing %s and the labelled containers: %w. Nothing is listed", dest, deployment.Base, err)
+	}
+	reg, err := registry.Read(t)
+	if err != nil {
+		return fmt.Errorf("host deployments: %w. Nothing is listed", err)
 	}
 
 	r.Section(fmt.Sprintf("deployments on %s", dest))
@@ -80,27 +120,24 @@ func runHostDeployments(args []string) error {
 
 	var left []string
 	seen := map[string]bool{}
-	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Fields(line)
-		switch {
-		case len(fields) == 2 && fields[0] == "root":
-			dir := deployment.Base + "/" + fields[1]
-			if !tokens[fields[1]] && !roots[dir] {
-				left = append(left, dir+": no registry entry names this deployment directory")
-			}
-		case len(fields) >= 2 && fields[0] == "container":
-			id := fields[1]
-			if _, ok := reg.Deployments[id]; ok {
-				continue
-			}
-			what := "containers"
-			if len(fields) > 2 {
-				what = "compose project " + fields[2]
-			}
-			if !seen[what+" "+id] {
-				seen[what+" "+id] = true
-				left = append(left, fmt.Sprintf("%s: no registry entry for deployment %s, which its containers' label names", what, id))
-			}
+	for _, name := range found.roots {
+		dir := deployment.Base + "/" + name
+		if !tokens[name] && !roots[dir] {
+			left = append(left, dir+": no registry entry names this deployment directory")
+		}
+	}
+	for _, c := range found.containers {
+		id, project := c[0], c[1]
+		if _, ok := reg.Deployments[id]; ok {
+			continue
+		}
+		what := "containers"
+		if project != "" {
+			what = "compose project " + project
+		}
+		if !seen[what+" "+id] {
+			seen[what+" "+id] = true
+			left = append(left, fmt.Sprintf("%s: no registry entry for deployment %q, which its containers' label names", what, id))
 		}
 	}
 	if len(left) > 0 {
