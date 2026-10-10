@@ -195,7 +195,7 @@ func (t SSHTransport) ssh(command string) (*exec.Cmd, func(), error) {
 		return exec.Command("ssh", t.SSHArgs(nil, command)...), func() {}, nil
 	}
 	if len(t.PublicKeys) == 0 {
-		return nil, nil, fmt.Errorf("%s: no public key to offer. List one under the site's ssh.public_key, or pass --ssh", t.Describe())
+		return nil, nil, fmt.Errorf("%s: no public key to offer. List one under the site's ssh.keys, or pass --ssh", t.Describe())
 	}
 	dir, err := os.MkdirTemp("", "paisans-ssh-")
 	if err != nil {
@@ -422,7 +422,7 @@ func (t SSHTransport) authProblem(err error, out string) error {
 	case strings.Contains(last, "Permission denied (") || strings.Contains(last, "Too many authentication failures"):
 		return &ui.Problem{
 			Hint:    t.Describe() + " did not accept your ssh key",
-			Explain: "Check that your key is loaded in your ssh agent (ssh-add -l), that its public half is in the site's ssh.public_key, and that the host's authorized_keys for that user holds it.",
+			Explain: "Check that your key is loaded in your ssh agent (ssh-add -l), that its public half is in the site's ssh.keys, and that the host's authorized_keys for that user holds it.",
 			Cause:   err,
 		}
 	}

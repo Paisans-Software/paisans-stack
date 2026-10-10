@@ -537,8 +537,8 @@ func derivedWithNewDataSite(t *testing.T) *config.Config {
     ssh:
       host: home-c.local
       user: ubuntu
-      public_key: |
-        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+      keys:
+        alice: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
   vm:
 `, 1)
 	path := filepath.Join(t.TempDir(), "paisans.yaml")

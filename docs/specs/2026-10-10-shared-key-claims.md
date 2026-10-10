@@ -50,7 +50,7 @@ ssh:
 | names are unique | a mapping cannot hold one twice; yaml refuses the file |
 | one key under two names is refused | a key's identity is its fingerprint, and the sidecar holds one name for it |
 | a line is a plain OpenSSH public key, with no options | unchanged from `public_key`: a restricted key is added by hand |
-| `ssh.public_key` is refused, and the refusal prints the `keys` section to write, each name taken from the part of the key's comment before `@` | there is one way to write a site's access |
+| `ssh.public_key` is refused, and the refusal prints the `keys` section to write, each name taken from the part of the key's comment before `@` and each key's base64 shortened so the section fits a terminal | there is one way to write a site's access |
 
 The name is the deployment's own label for the key. Two deployments may call
 the same key by different names; each sidecar keeps its own.

@@ -21,8 +21,8 @@ sites:
     endpoint: 203.0.113.10:51820
     ssh:
       user: ubuntu
-      public_key: |
-        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+      keys:
+        alice: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
   home-b:
     roles: [data]
     address: 10.44.0.2
@@ -30,8 +30,8 @@ sites:
     endpoint: 203.0.113.20:51820
     ssh:
       user: ubuntu
-      public_key: |
-        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+      keys:
+        alice: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
   vm:
     roles: [gateway, witness]
     address: 10.44.0.3
@@ -40,8 +40,8 @@ sites:
     ssh:
       user: ubuntu
       port: 2222
-      public_key: |
-        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
+      keys:
+        alice: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA alice@example.org
 
 cluster:
   sites: [home-a, home-b]
