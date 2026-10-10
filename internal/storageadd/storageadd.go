@@ -148,10 +148,22 @@ type Waiting struct {
 }
 
 func (w *Waiting) Error() string {
-	return fmt.Sprintf("storage add is waiting at stage %d (%s): %s. Nothing failed. Run `paisans storage add` to look again, or with --execute to carry on; --wait <duration> polls instead of exiting", w.Stage.Number, w.Stage.Name, w.Detail)
+	return fmt.Sprintf("storage add is waiting at stage %d (%s): %s. Nothing failed. Run paisans storage add to look again, or with --execute to carry on; --wait <duration> polls instead of exiting", w.Stage.Number, w.Stage.Name, w.Detail)
 }
 
-func (w *Waiting) Unwrap() error { return ErrWaiting }
+// Unwrap is the wait as an operator reads it, which in turn is ErrWaiting.
+func (w *Waiting) Unwrap() error {
+	return &ui.Problem{
+		Hint:    w.Hint(),
+		Explain: strings.TrimSuffix(w.Detail, ".") + ".\nNothing failed. Run paisans storage add to look again, or with --execute to carry on; --wait <duration> polls instead of exiting.",
+		Cause:   ErrWaiting,
+	}
+}
+
+// Hint names the stage the wait is at.
+func (w *Waiting) Hint() string {
+	return fmt.Sprintf("storage add is waiting on Garage at stage %d (%s)", w.Stage.Number, w.Stage.Name)
+}
 
 // Timing is every wait the gates make, as polls of an interval, so a test
 // that replaces sleep with nothing still ends.

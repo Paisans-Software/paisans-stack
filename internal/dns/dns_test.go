@@ -305,6 +305,10 @@ func TestConflictRefusesBeforeAnyWrite(t *testing.T) {
 			if !errors.Is(err, ErrConflict) || err.Error() != "dns: 1 conflicting record(s), listed above. Nothing was created: a partial set of records is a deployment some names reach and others do not" {
 				t.Errorf("err = %v, want ErrConflict with its message unchanged", err)
 			}
+			var q *ui.Problem
+			if !errors.As(err, &q) || q.Hint != "1 DNS record conflicts with the configuration" || !strings.Contains(q.Explain, "Change each at your DNS provider") {
+				t.Errorf("not the Problem main prints: %#v", q)
+			}
 			if len(fake.posts) != 0 {
 				t.Fatalf("a conflict on one record must stop every write, got %d POST(s)", len(fake.posts))
 			}

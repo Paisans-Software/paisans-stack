@@ -8,12 +8,13 @@ package storageadd_test
 
 import (
 	"errors"
-	"github.com/paisans-software/paisans-stack/internal/ui"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/storageadd"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // growing is the shape storage add was built for, a deployment growing from
@@ -515,5 +516,27 @@ func TestTheLeftForYouHintsStayShort(t *testing.T) {
 		if hint, _, _ := strings.Cut(line, ". "); len(hint) > 100 {
 			t.Errorf("%d characters: %s", len(hint), hint)
 		}
+	}
+}
+
+// A wait is a Problem for main's printer, and still a *Waiting and
+// ErrWaiting to a caller that asks.
+func TestWaitingIsAProblem(t *testing.T) {
+	var err error = fmt.Errorf("storage add: %w", &storageadd.Waiting{Stage: &storageadd.Stage{Number: 3, Name: "sync"}, Detail: "home-b is still resyncing 120 items"})
+	var p *ui.Problem
+	if !errors.As(err, &p) {
+		t.Fatalf("not a ui.Problem: %v", err)
+	}
+	if p.Hint != "storage add is waiting on Garage at stage 3 (sync)" {
+		t.Errorf("hint: %q", p.Hint)
+	}
+	for _, want := range []string{"home-b is still resyncing 120 items.", "Nothing failed.", "--wait <duration>"} {
+		if !strings.Contains(p.Explain, want) {
+			t.Errorf("the explanation lacks %q: %q", want, p.Explain)
+		}
+	}
+	var w *storageadd.Waiting
+	if !errors.As(err, &w) || !errors.Is(err, storageadd.ErrWaiting) {
+		t.Errorf("no longer a *Waiting and ErrWaiting: %v", err)
 	}
 }
