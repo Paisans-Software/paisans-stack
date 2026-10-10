@@ -223,7 +223,11 @@ gets a line of its own. A line that fits is left as written, so aligned
 columns keep their spacing. A line keeps its indentation when wrapped, and a list
 item's continuation lines align under its text after `- `. Step lines, details
 and traces are not wrapped: a trace is a command's own output, and a step line
-is short by design.
+is short by design. A warning's or a refusal's hint is one line,
+whole, unless the terminal is known to be narrower than that line: then it
+wraps at spaces, its continuation lines aligned under the hint's text, rather
+than being broken mid-word by the terminal. Output whose width is not known,
+a log for one, keeps it whole.
 
 ### Paths
 

@@ -30,7 +30,10 @@ type writer struct {
 	width int
 	// cols is how wide prose is wrapped: the terminal's width when it is
 	// known, never more than maxWidth.
-	cols     int
+	cols int
+	// termCols is the terminal's own width, 0 when it is not known. A hint
+	// wraps only when it is narrower than the hint's line.
+	termCols int
 	w        io.Writer
 	verbose  bool
 	terminal bool
@@ -241,11 +244,7 @@ func (r *writer) Warn(hint, detail string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.interruptLocked()
-	if r.terminal {
-		fmt.Fprintf(r.w, "  %s!%s %s\n", yellow, reset, hint)
-	} else {
-		fmt.Fprintf(r.w, "  WARN %s\n", hint)
-	}
+	r.hintLocked(false, hint)
 	if r.verbose && detail != "" {
 		r.detailLocked(strings.Join(Wrap(detail, r.cols-len(detailIndent)), "\n"))
 	}
@@ -255,11 +254,7 @@ func (r *writer) Note(hint, detail string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.interruptLocked()
-	if r.terminal {
-		fmt.Fprintf(r.w, "  %s!%s %s\n", yellow, reset, hint)
-	} else {
-		fmt.Fprintf(r.w, "  WARN %s\n", hint)
-	}
+	r.hintLocked(false, hint)
 	r.explainLocked(detail)
 }
 
@@ -267,12 +262,33 @@ func (r *writer) Refuse(hint, explanation string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.interruptLocked()
-	if r.terminal {
-		fmt.Fprintf(r.w, "  %s✗%s %s\n", red, reset, hint)
-	} else {
-		fmt.Fprintf(r.w, "  FAIL %s\n", hint)
-	}
+	r.hintLocked(true, hint)
 	r.explainLocked(explanation)
+}
+
+// hintLocked prints a warning's or a refusal's hint behind its mark. It is
+// one line, unless the terminal is known to be narrower than that line: then
+// it wraps at spaces, each continuation under the hint's text, rather than
+// letting the terminal break it mid-word.
+func (r *writer) hintLocked(refusal bool, hint string) {
+	mark, plain := yellow+"!"+reset, "WARN"
+	if refusal {
+		mark, plain = red+"✗"+reset, "FAIL"
+	}
+	lead, width := "  "+plain+" ", len(plain)+3
+	if r.terminal {
+		lead, width = "  "+mark+" ", 4
+	}
+	lines := []string{hint}
+	if r.termCols > 0 && width+len(hint) > r.termCols {
+		lines = Wrap(hint, r.termCols-width)
+	}
+	for i, line := range lines {
+		if i > 0 {
+			lead = strings.Repeat(" ", width)
+		}
+		fmt.Fprintf(r.w, "%s%s\n", lead, line)
+	}
 }
 
 // explainIndent aligns the lines that belong to a hint under the hint's text

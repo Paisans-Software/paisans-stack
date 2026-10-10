@@ -80,7 +80,9 @@ const (
 // that allows it.
 func New(w io.Writer, verbose bool) Reporter {
 	r := newWriter(w, verbose, isTerminal(w))
-	if cols := terminalWidth(w); cols > 0 && cols < maxWidth {
+	cols := terminalWidth(w)
+	r.termCols = cols
+	if cols > 0 && cols < maxWidth {
 		r.cols = cols
 	}
 	return r

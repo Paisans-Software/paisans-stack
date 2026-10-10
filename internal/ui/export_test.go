@@ -31,3 +31,14 @@ func PrintErrorForTest(w io.Writer, err error, verbose, terminal bool, width int
 
 // ShortPathFrom is ShortPath from a given directory and home.
 var ShortPathFrom = shortPath
+
+// NewForTestWidth is NewForTest on a terminal of cols columns, as New would
+// find it; 0 is a width that is not known.
+func NewForTestWidth(w io.Writer, terminal bool, cols int, clock func() time.Time) Reporter {
+	r := NewForTest(w, false, terminal, clock).(*writer)
+	r.termCols = cols
+	if cols > 0 && cols < maxWidth {
+		r.cols = cols
+	}
+	return r
+}

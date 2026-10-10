@@ -120,6 +120,49 @@ func TestWarnHidesDetailUnlessVerbose(t *testing.T) {
 	}
 }
 
+// A hint is one line, up to 100 characters. A terminal narrower than that
+// line gets it wrapped at spaces, its continuation under the hint's text;
+// a wider one, or output whose width is not known, gets it whole.
+func TestAHintWrapsOnlyOnANarrowTerminal(t *testing.T) {
+	hint := "garage consistency is dangerous: an upload is confirmed even if only 1 of 2 copies is written"
+	for _, c := range []struct {
+		terminal bool
+		cols     int
+		mark     string
+	}{{true, 0, "!"}, {true, 120, "!"}, {false, 0, "WARN"}} {
+		var b strings.Builder
+		ui.NewForTestWidth(&b, c.terminal, c.cols, clock()).Warn(hint, "")
+		if lines := strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n"); len(lines) != 1 || !strings.HasSuffix(lines[0], " "+hint) {
+			t.Errorf("terminal %v, %d columns: not one whole line:\n%s", c.terminal, c.cols, b.String())
+		}
+	}
+	for _, c := range []struct {
+		terminal bool
+		indent   string
+	}{{true, "    "}, {false, "       "}} {
+		var b strings.Builder
+		ui.NewForTestWidth(&b, c.terminal, 60, clock()).Warn(hint, "")
+		lines := strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n")
+		if len(lines) < 2 {
+			t.Fatalf("terminal %v: not wrapped at 60 columns:\n%s", c.terminal, b.String())
+		}
+		var words []string
+		for i, l := range lines {
+			visible := strings.NewReplacer("\x1b[33m", "", "\x1b[0m", "").Replace(l)
+			if n := len([]rune(visible)); n > 60 {
+				t.Errorf("terminal %v: line %d is %d columns: %q", c.terminal, i, n, visible)
+			}
+			if i > 0 && (!strings.HasPrefix(l, c.indent) || strings.HasPrefix(l, c.indent+" ")) {
+				t.Errorf("terminal %v: continuation not under the hint's text: %q", c.terminal, l)
+			}
+			words = append(words, strings.Fields(visible)...)
+		}
+		if got := strings.Join(words[1:], " "); got != hint {
+			t.Errorf("terminal %v: words changed: %q", c.terminal, got)
+		}
+	}
+}
+
 func TestRefuseAlwaysShowsExplanation(t *testing.T) {
 	var b strings.Builder
 	ui.NewForTest(&b, false, false, clock()).Refuse("witness shares a failure domain", "Put the witness elsewhere.")
