@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployrecord"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
@@ -72,5 +74,33 @@ func TestApplyRecordsTheDeploymentOnAGateway(t *testing.T) {
 	other := &recordFake{files: map[string]string{}}
 	if err := recordApplied(&ui.Recorder{}, cfg, "home-b", other); err != nil || len(other.files) != 0 || len(other.ran) != 0 {
 		t.Errorf("a non gateway was written: %v %v", err, other.files)
+	}
+}
+
+func TestForgetInRecordsReachesEveryGatewayAndWarnsForOneDown(t *testing.T) {
+	cfg, _ := config.Load(fixtureConfig())
+	vm := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): `{"version":1,"sites":["vm","monitor-a"],"apps":[],"pocket_id_groups":[]}`}}
+	saved := registryHost
+	registryHost = func(name string, _ config.Site, _ string, _ bool) registry.Runner { return vm }
+	t.Cleanup(func() { registryHost = saved })
+	rec := &ui.Recorder{}
+	forgetInRecords(rec, cfg, deployrecord.Record{Sites: []string{"monitor-a"}}, "monitor-a", true, true)
+	if strings.Contains(vm.files[deployrecord.Path(cfg.Deployment())], "monitor-a") {
+		t.Error("vm still lists monitor-a")
+	}
+	vm.down = true
+	rec = &ui.Recorder{}
+	forgetInRecords(rec, cfg, deployrecord.Record{Sites: []string{"monitor-b"}}, "monitor-b", true, true)
+	if !strings.Contains(rec.Lines(), "still lists monitor-b") {
+		t.Errorf("no warning:\n%s", rec.Lines())
+	}
+}
+
+func TestForgetAppCleansTheRecordWhenNothingElseIsLeft(t *testing.T) {
+	cfg, _ := config.Load(fixtureConfig())
+	deployed := deployrecord.Record{Apps: []string{"talk", "uptime"}, PocketIDGroups: []string{"members", "retired"}}
+	names := appRecordNames(cfg, "uptime", deployed)
+	if strings.Join(names.Apps, ",") != "uptime" || strings.Join(names.PocketIDGroups, ",") != "retired" {
+		t.Errorf("%+v", names)
 	}
 }

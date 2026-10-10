@@ -101,3 +101,58 @@ func recordApplied(r ui.Reporter, cfg *config.Config, site string, t registry.Ru
 	s.Done(map[bool]string{true: "updated", false: "up to date"}[changed])
 	return nil
 }
+
+// forgetInRecords takes names out of the deployment record on every gateway
+// paisans.yaml declares. The removal they follow is done whether or not this
+// reaches every gateway, so a gateway it cannot reach is a warning: its
+// record keeps the secrets, which a later run of the same removal frees.
+func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Record, what string, execute, sudo bool) {
+	d := cfg.Deployment()
+	for _, gw := range cfg.GatewaySites() {
+		t := registryHost(gw, cfg.Sites[gw], "", sudo)
+		rec, found, err := deployrecord.Read(t, d)
+		if err != nil {
+			r.Warn("the deployment record on "+gw+" still lists "+what, err.Error())
+			continue
+		}
+		if !found || !listsAny(rec, names) {
+			continue
+		}
+		title := "forget " + what + " in the deployment record on " + gw
+		if !execute {
+			r.Item(title)
+			continue
+		}
+		s := r.Step(title)
+		if _, err := deployrecord.Forget(t, d, names); err != nil {
+			s.Fail(err)
+			r.Warn("the deployment record on "+gw+" still lists "+what, err.Error()+". Run the same command again to take it out")
+			continue
+		}
+		s.Done("")
+	}
+}
+
+func listsAny(rec, names deployrecord.Record) bool {
+	for _, kind := range []string{"sites", "apps", "pocket_id_groups"} {
+		for _, n := range names.List(kind) {
+			if rec.Lists(kind, n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// appRecordNames is what app remove takes out of a record: the app, and each
+// group the record lists that no Pocket ID app paisans.yaml declares names.
+func appRecordNames(cfg *config.Config, app string, deployed deployrecord.Record) deployrecord.Record {
+	declared := deployrecord.FromConfig(cfg)
+	names := deployrecord.Record{Apps: []string{app}}
+	for _, g := range deployed.PocketIDGroups {
+		if !declared.Lists("pocket_id_groups", g) {
+			names.PocketIDGroups = append(names.PocketIDGroups, g)
+		}
+	}
+	return names
+}

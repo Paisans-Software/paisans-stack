@@ -9,6 +9,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployrecord"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/siteremove"
@@ -205,6 +206,16 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 	if err != nil {
 		return err
 	}
+	// A site no longer declared leaves every gateway's deployment record,
+	// whatever its host held, so secrets prune may remove its secrets.
+	forget := func(execute bool) {
+		if !isDeclared {
+			forgetInRecords(r, cfg, deployrecord.Record{Sites: []string{site}}, site, execute, a.sudo)
+		}
+	}
+	if !plan.Pending() {
+		forget(a.execute)
+	}
 	if forcedNothingToDo(r, plan, dest) {
 		return nil
 	}
@@ -212,6 +223,7 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 		plan.Show(r)
 	}
 	if !a.execute {
+		forget(false)
 		reportRemains(r, plan.Remains())
 		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil
@@ -232,6 +244,7 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 	if err := siteremove.Execute(plan); err != nil {
 		return err
 	}
+	forget(true)
 	reportRemains(r, plan.Remains())
 	r.Result("%s is cleaned of this deployment. %s and the secrets file are unchanged.", dest, a.config)
 	return nil
