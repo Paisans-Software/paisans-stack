@@ -2994,7 +2994,9 @@ Run again, it reads live state again and carries on, so the same command is
 the first install, the resume after a failure, and every later change. Each
 step is the command an operator would type, so it plans, gates, claims and
 refuses as that command does, and the sudo password each host asks for is
-asked once for the run. A data site's founding stop is expected, not a
+asked once for the run. `-v` reaches every step, and `--keep-images` and
+`--min-free` each `apply`; `--ssh`, `--overwrite`, `--only` and `--recreate`
+are about one site, and are refused without `--site`. A data site's founding stop is expected, not a
 failure: pass two applies it again. It never takes anything out: a site or an
 app the yaml no longer declares is reported by the deployment record's warning,
 with the command that removes it. What only the operator can decide is left to

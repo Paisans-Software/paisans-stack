@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -128,9 +129,18 @@ func TestConvergeStorageFollowsTheGarageSites(t *testing.T) {
 // step's title to the error it returns.
 func fakeConverge(t *testing.T, fail map[string]error) *[]string {
 	t.Helper()
+	ran, _ := fakeConvergeArgs(t, fail)
+	return ran
+}
+
+// fakeConvergeArgs is fakeConverge, and each step's arguments in full.
+func fakeConvergeArgs(t *testing.T, fail map[string]error) (*[]string, *[][]string) {
+	t.Helper()
 	var ran []string
+	var full [][]string
 	savedRun, savedFounded := convergeRun, convergeFounded
 	convergeRun = func(args []string) error {
+		full = append(full, args)
 		title := strings.Join(args, " ")
 		for _, f := range []string{" --config", " --secrets", " --execute", " --sudo"} {
 			if i := strings.Index(title, f); i >= 0 {
@@ -144,7 +154,7 @@ func fakeConverge(t *testing.T, fail map[string]error) *[]string {
 		return map[string]render.EtcdInitial{}, nil
 	}
 	t.Cleanup(func() { convergeRun, convergeFounded = savedRun, savedFounded })
-	return &ran
+	return &ran, &full
 }
 
 func converge(t *testing.T, extra ...string) error {
@@ -282,5 +292,30 @@ func TestConvergeSaysWhyAndWhatIsLeft(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("does not say %q:\n%s", want, out)
 		}
+	}
+}
+
+// -v, --keep-images and --min-free reach every step whose command takes
+// them: -v every step, the other two each apply.
+func TestConvergePassesItsFlagsToEachStep(t *testing.T) {
+	_, full := fakeConvergeArgs(t, nil)
+	if err := converge(t, "--execute", "-v", "--keep-images", "--min-free", "2G"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range *full {
+		got := strings.Join(args, " ")
+		if !slices.Contains(args, "-v") {
+			t.Errorf("no -v: %s", got)
+		}
+		isApply := args[0] == "apply"
+		if slices.Contains(args, "--keep-images") != isApply {
+			t.Errorf("--keep-images where apply's flags are not, or missing where they are: %s", got)
+		}
+		if strings.Contains(got, "--min-free 2G") != isApply {
+			t.Errorf("--min-free where apply's flags are not, or missing where they are: %s", got)
+		}
+	}
+	if len(*full) == 0 {
+		t.Fatal("ran nothing")
 	}
 }

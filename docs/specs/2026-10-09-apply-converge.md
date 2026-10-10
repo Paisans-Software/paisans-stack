@@ -52,7 +52,8 @@ applies it again. Any other failure stops the run, naming the step and the
 command, with `Run paisans apply --execute again to resume.`
 
 Each step runs the existing command in the same process, with the flags the
-plan sets, so it plans, gates, claims, reports and refuses exactly as typed by
+plan sets and those of apply's that reach it (`-v` every step, `--keep-images`
+and `--min-free` each `apply`), so it plans, gates, claims, reports and refuses exactly as typed by
 hand would, and asks each host's sudo password once for the whole run.
 
 ## Dry run

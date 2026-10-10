@@ -527,7 +527,8 @@ func runApply(args []string) error {
 		if *destination != "" || len(overwrite) > 0 || len(only) > 0 || len(recreate) > 0 {
 			return fmt.Errorf("apply: --ssh, --overwrite, --only and --recreate are about one site, and apply without --site converges every site. Name it with --site")
 		}
-		return runConverge(r, *configPath, *secretsPath, *execute, *sudo)
+		verbose := fs.Lookup("verbose").Value.(flag.Getter).Get().(bool)
+		return runConverge(r, convergeOptions{Config: *configPath, Secrets: *secretsPath, Execute: *execute, Sudo: *sudo, Verbose: verbose, KeepImages: *keepImages, MinFree: *minFree})
 	}
 
 	cfg, err := config.Load(*configPath)
