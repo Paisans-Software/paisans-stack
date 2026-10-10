@@ -82,9 +82,18 @@ var readPassword = func(host string) (string, error) {
 
 // promptErasable reports whether the terminal may be drawn on to erase the
 // prompt: not when TERM=dumb or NO_COLOR asks for plain output, as the
-// reporter draws nothing then either.
+// reporter draws nothing then either, and not when the output is piped.
 func promptErasable() bool {
-	return os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+	return os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" && outputsAreTerminals()
+}
+
+// outputsAreTerminals reports whether stdout and stderr both write straight
+// to a terminal. Piped (paisans apply | tee log), they reach it through
+// another process at its own pace, so what is on the rows above the cursor
+// when the prompt is answered is not known, and erasing could take a line of
+// the report. Tests replace it.
+var outputsAreTerminals = func() bool {
+	return term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
 }
 
 func sudoPrompt(host string) string { return "sudo password for " + host + ": " }
@@ -98,10 +107,10 @@ func sudoPrompt(host string) string { return "sudo password for " + host + ": " 
 // the prompt's first row, which is empty, where the held spinner redraws.
 // Without erase the prompt stays, and a blank line sets what follows apart.
 //
-// The erase counts rows from where the cursor is, so it assumes nothing else
-// reached the terminal while the prompt waited. The hold keeps the reporter
-// quiet; output piped elsewhere and echoed back to the terminal, by tee for
-// one, is not held.
+// The erase counts rows from where the cursor is, so it relies on nothing
+// else reaching the terminal while the prompt waited: the hold keeps the
+// reporter quiet, and promptErasable asks for no erase when the output is
+// piped, where it would reach the terminal unheld.
 func askPassword(tty io.Writer, prompt string, cols int, erase bool, read func() ([]byte, error)) (string, error) {
 	fmt.Fprint(tty, prompt)
 	password, err := read()

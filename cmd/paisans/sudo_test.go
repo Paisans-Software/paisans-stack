@@ -110,14 +110,26 @@ func TestASudoPromptIsNotErasedWithoutDrawing(t *testing.T) {
 	if want := "sudo password for home-a: \n\n"; b.String() != want {
 		t.Errorf("wrote %q, want %q", b.String(), want)
 	}
+	saved := outputsAreTerminals
+	t.Cleanup(func() { outputsAreTerminals = saved })
 	for _, c := range []struct {
 		term, noColor string
+		terminals     bool
 		erase         bool
-	}{{"xterm-256color", "", true}, {"dumb", "", false}, {"xterm-256color", "1", false}} {
+	}{
+		{"xterm-256color", "", true, true},
+		{"dumb", "", true, false},
+		{"xterm-256color", "1", true, false},
+		// Output piped (paisans apply | tee log) reaches the terminal
+		// through another process, at its own pace, so the row the prompt
+		// took is not known.
+		{"xterm-256color", "", false, false},
+	} {
 		t.Setenv("TERM", c.term)
 		t.Setenv("NO_COLOR", c.noColor)
+		outputsAreTerminals = func() bool { return c.terminals }
 		if got := promptErasable(); got != c.erase {
-			t.Errorf("TERM=%s NO_COLOR=%q: erasable %v, want %v", c.term, c.noColor, got, c.erase)
+			t.Errorf("TERM=%s NO_COLOR=%q terminals %v: erasable %v, want %v", c.term, c.noColor, c.terminals, got, c.erase)
 		}
 	}
 }
