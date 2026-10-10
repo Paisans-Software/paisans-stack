@@ -385,3 +385,33 @@ func TestInitFailsItsWriteStep(t *testing.T) {
 		t.Error("the secrets file changed")
 	}
 }
+
+// A clash with another paisans deployment's interface names that
+// deployment, from the host's registry when it lists it; a clash with
+// anything else names what holds the subnet. Either way the advice is one
+// line.
+func TestCheckMeshLiveSaysWhoHoldsTheSubnet(t *testing.T) {
+	cfg, err := config.Load(fixtureConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	advice := "Remove it if not in use or run paisans init to pick a free subnet."
+	for _, c := range []struct {
+		name string
+		host *initFake
+		hint string
+	}{
+		{"paisans, registered", &initFake{name: "home-a.local", routes: `[{"dst":"10.44.0.0/23","dev":"psns-0c1d"}]`, registry: registryHolding(t, otherID, "0c1d", "10.44.0.0/23")},
+			"mesh subnet 10.44.0.0/24 is in use by paisans deployment 0c1d (example.net, site home-a)"},
+		{"paisans, unregistered", &initFake{name: "home-a.local", routes: `[{"dst":"10.44.0.0/23","dev":"psns-0c1d"}]`},
+			"mesh subnet 10.44.0.0/24 is in use by paisans deployment 0c1d"},
+		{"something else", &initFake{name: "home-a.local", routes: `[{"dst":"10.44.0.0/23","dev":"tun0"}]`},
+			"mesh subnet 10.44.0.0/24 is in use (route 10.44.0.0/23 dev tun0 on home-a)"},
+	} {
+		err := checkMeshLive(cfg, "home-a", c.host)
+		var p *ui.Problem
+		if !errors.As(err, &p) || p.Hint != c.hint || p.Explain != advice {
+			t.Errorf("%s: %#v", c.name, err)
+		}
+	}
+}

@@ -31,6 +31,7 @@ func (r *Recorder) Section(title string)       { r.add("section", title, "") }
 func (r *Recorder) Item(title string)          { r.add("item", title, "") }
 func (r *Recorder) Warn(hint, detail string)   { r.add("warn", hint, detail) }
 func (r *Recorder) Note(hint, detail string)   { r.add("note", hint, detail) }
+func (r *Recorder) Explain(text string)        { r.add("explain", text, "") }
 func (r *Recorder) Refuse(hint, expl string)   { r.add("refuse", hint, expl) }
 func (r *Recorder) Detail(f string, a ...any)  { r.add("detail", fmt.Sprintf(f, a...), "") }
 func (r *Recorder) Trace(label, output string) { r.add("trace", label, output) }

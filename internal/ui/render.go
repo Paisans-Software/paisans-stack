@@ -272,6 +272,16 @@ func (r *writer) Note(hint, detail string) {
 	r.explainLocked(detail)
 }
 
+func (r *writer) Explain(text string) {
+	if text == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.interruptLocked()
+	r.explainLocked(text)
+}
+
 func (r *writer) Refuse(hint, explanation string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

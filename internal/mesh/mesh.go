@@ -31,6 +31,9 @@ import (
 type Taken struct {
 	Prefix netip.Prefix
 	What   string
+	// Dev is the interface a route or an address is on, empty for anything
+	// else.
+	Dev string
 }
 
 func (t Taken) String() string { return t.What }
@@ -114,7 +117,7 @@ func ParseRoutes(out, own string) ([]Taken, error) {
 		if err != nil || !p.Addr().Is4() {
 			continue
 		}
-		taken = append(taken, Taken{p, fmt.Sprintf("route %s dev %s", r.Dst, r.Dev)})
+		taken = append(taken, Taken{Prefix: p, What: fmt.Sprintf("route %s dev %s", r.Dst, r.Dev), Dev: r.Dev})
 	}
 	return taken, nil
 }
@@ -150,7 +153,7 @@ func ParseAddrs(out, own string) ([]Taken, error) {
 			if err != nil {
 				continue
 			}
-			taken = append(taken, Taken{p, fmt.Sprintf("address %s/%d on %s", a.Local, a.PrefixLen, l.IfName)})
+			taken = append(taken, Taken{Prefix: p, What: fmt.Sprintf("address %s/%d on %s", a.Local, a.PrefixLen, l.IfName), Dev: l.IfName})
 		}
 	}
 	return taken, nil
@@ -177,7 +180,7 @@ func ParseNetworks(out string) ([]Taken, error) {
 			if err != nil || !p.Addr().Is4() {
 				continue
 			}
-			taken = append(taken, Taken{p, fmt.Sprintf("Docker network %s (%s)", n.Name, c.Subnet)})
+			taken = append(taken, Taken{Prefix: p, What: fmt.Sprintf("Docker network %s (%s)", n.Name, c.Subnet)})
 		}
 	}
 	return taken, nil
@@ -228,7 +231,7 @@ func Pools(daemonJSON string, found bool) ([]Taken, error) {
 			return nil, fmt.Errorf("%s: pool %q is not a network", DaemonConfig, b)
 		}
 		if p.Addr().Is4() {
-			taken = append(taken, Taken{p, fmt.Sprintf(what, b)})
+			taken = append(taken, Taken{Prefix: p, What: fmt.Sprintf(what, b)})
 		}
 	}
 	return taken, nil

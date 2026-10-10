@@ -407,7 +407,9 @@ func TestASudoProbeThatNeverRanIsNotARefusal(t *testing.T) {
 func TestAnSSHFailureInTheSudoProbeIsNotARefusal(t *testing.T) {
 	apply.ForgetContacts()
 	t.Cleanup(apply.ForgetContacts)
-	t.Cleanup(apply.FakeSSH(func([]string, string) (string, int) { return "ubuntu@192.0.2.10: Permission denied (publickey).\n", 255 }, nil, func(time.Duration) {}, io.Discard))
+	t.Cleanup(apply.FakeSSH(func([]string, string) (string, int) {
+		return "ubuntu@192.0.2.10: Permission denied (publickey).\n", 255
+	}, nil, func(time.Duration) {}, io.Discard))
 	tr := apply.SSHTransport{Destination: "ubuntu@192.0.2.10", Sudo: true, Auth: apply.NewSudoAuth(nil)}
 	_, err := tr.Run("true")
 	if err == nil || strings.Contains(err.Error(), "sudo") || !strings.Contains(err.Error(), "did not accept your ssh key") {
