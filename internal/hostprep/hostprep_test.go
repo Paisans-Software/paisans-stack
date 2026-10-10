@@ -949,8 +949,24 @@ func TestMovingTheSSHPortKeepsTheOldAllow(t *testing.T) {
 	if got := commands(plan); len(got) != 1 || got[0] != "ufw allow 2222/tcp comment 'paisans-f2a9: ssh, the bootstrap route'" {
 		t.Fatalf("want only the new allow, got %q", got)
 	}
-	if !strings.Contains(out, "present   firewall: `ufw allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow. Delete it yourself once SSH on 2222 works") {
+	if !strings.Contains(out, "present   firewall: old SSH allow on 22 kept; delete it yourself once SSH on 2222 works") {
 		t.Errorf("the old allow is not noted:\n%s", out)
+	}
+}
+
+// An old SSH allow whose port is not a single number is named by its rule.
+func TestAnOldSSHAllowWithoutOnePortIsNamedByItsRule(t *testing.T) {
+	host := preparedHost(false)
+	host.responses[probeFirewall] = "ufw present\nstatus active\n" +
+		"rule allow 22,2200/tcp comment 'paisans-f2a9: ssh, the bootstrap route'\n" +
+		owned("allow in on psns-f2a9", "allow in on br-+ to 10.44.0.1 port 5000 proto tcp", "allow in on br-+ to 10.44.0.1 port 3900 proto tcp")
+	plan, err := hostprep.Build("home-a", withSSHPort(t, "home-a", 2222), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := printed(plan)
+	if !strings.Contains(out, "present   firewall: old SSH allow `ufw allow 22,2200/tcp comment 'paisans-f2a9: ssh, the bootstrap route'` kept; delete it yourself once SSH on 2222 works") {
+		t.Errorf("the old allow is not named by its rule:\n%s", out)
 	}
 }
 

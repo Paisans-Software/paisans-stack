@@ -2868,7 +2868,7 @@ bootstrap route`) and the plan says so:
 
 ```
   change    firewall: allow 2222/tcp (ssh, the bootstrap route)
-  present   firewall: `ufw allow 22/tcp comment 'paisans-f2a9: ssh, the bootstrap route'` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow. Delete it yourself once SSH on 2222 works
+  present   firewall: old SSH allow on 22 kept; delete it yourself once SSH on 2222 works
 ```
 
 Removals run after every addition, the default policy and enabling, so a rule

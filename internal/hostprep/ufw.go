@@ -235,16 +235,19 @@ func planRules(tag string, rules []Rule, added []addedRule) (out Section, remova
 			continue
 		}
 		// The same holds for the allow an earlier ssh.port was given, which
-		// is recognised by its comment. Moving the port adds the new allow
-		// and leaves the old one: host prepare cannot know that sshd already
-		// listens on the new port, and if it does not, the old allow is the
-		// only way back in. The operator deletes it once the new port works.
+		// is recognised by its comment. host prepare cannot know that sshd
+		// already listens on the new port, and if it does not, the old allow
+		// is the only way back in.
 		if a.comment == tag+" "+sshWhy {
-			note := fmt.Sprintf("firewall: `ufw %s` kept; it is the SSH allow for an earlier ssh.port, and host prepare never removes an SSH allow", a.line)
-			if ssh != nil {
-				note += fmt.Sprintf(". Delete it yourself once SSH on %d works", ssh.Port)
+			old := "`ufw " + a.line + "`"
+			if port, _, _ := strings.Cut(a.key, "/"); isPort(port) {
+				old = "on " + port
 			}
-			out.Present = append(out.Present, note)
+			to := "the new port"
+			if ssh != nil {
+				to = strconv.Itoa(ssh.Port)
+			}
+			out.Present = append(out.Present, fmt.Sprintf("firewall: old SSH allow %s kept; delete it yourself once SSH on %s works", old, to))
 			continue
 		}
 		removals = append(removals, Step{
@@ -255,4 +258,10 @@ func planRules(tag string, rules []Rule, added []addedRule) (out Section, remova
 		})
 	}
 	return out, removals, nil
+}
+
+// isPort reports whether s is a single port number, as ufw prints one.
+func isPort(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n > 0 && n < 65536 && s == strconv.Itoa(n)
 }
