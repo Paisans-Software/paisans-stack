@@ -116,8 +116,8 @@ Commands:
              replica's patroni.env, one replica restart at a time. Reads
              every site and plans only what differs, so a re-run resumes.
              Writes nothing without --execute.
-             remove: take a site out of the running deployment in four
-             gated stages: its data out (the Patroni leader switched to
+             remove: take a site out of the running deployment in gated
+             stages: its data out (the Patroni leader switched to
              the Sync Standby, its Garage node out of the layout and the
              objects moved), out of the cluster (its etcd member, and the
              mesh, HAProxy and gateway routes on every remaining site, and
@@ -125,8 +125,9 @@ Commands:
              of two and a witness takes the witness out of etcd too),
              its host cleaned of everything provably this deployment's
              (a gateway's Caddy kept, reduced to the host owner's sites in
-             /srv/caddy.d, while there are any), and its entry out of
-             paisans.yaml.
+             /srv/caddy.d, while there are any), the A and AAAA records
+             dns init made for its public address deleted at the DNS
+             provider, and its entry out of paisans.yaml.
              Refuses the only gateway, data or apps site, a site an app
              is pinned to, and an unhealthy cluster. --host-gone skips
              the host; --delete-data deletes its data after the site's
@@ -135,7 +136,8 @@ Commands:
              remove --force --ssh <host> --id <id or token>, with no
              paisans.yaml: clean that host of the deployment its registry
              names, as --force does, from the registry entry alone.
-             --execute asks for the site's name at a terminal.
+             DNS is not modified. --execute asks for the site's name at
+             a terminal.
   storage    init: provision object storage on a site: each app's key and
              bucket, and the layout when it is the only Garage site.
              add: join every site in storage.garage.sites into one Garage
@@ -221,7 +223,7 @@ another deployment there holds this one's token, WireGuard interface or listen
 port, or a mesh subnet overlapping this one's. apply and host prepare also
 refuse when anything else on the host overlaps the mesh subnet. dns init and dns
 prune reach no host, only the DNS provider's API, and change it only with
---execute. ingress check reaches no host over ssh and changes nothing: it
+--execute; site remove also deletes the removed site's records there. ingress check reaches no host over ssh and changes nothing: it
 looks at a monitor's public hostname as any visitor could.
 Everything else writes files locally and stops.
 
