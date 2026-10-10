@@ -110,11 +110,12 @@ func (p *Plan) containersCommand() string {
 	if p.DeleteData {
 		rm += " -v"
 	}
-	list := "docker ps -aq --no-trunc " + filter
+	keep := ""
 	if cp := p.host.caddy; cp != nil {
-		list += " | grep -vxF " + quote(cp.container.ID) + " || true"
+		// A separate step, so a docker ps that fails still stops the command.
+		keep = `ids=$(printf '%s\n' $ids | grep -vxF ` + quote(cp.container.ID) + ` || true); `
 	}
-	return fmt.Sprintf(`set -e; ids=$(%[3]s); if [ -n "$ids" ]; then docker stop $ids >/dev/null; %[2]s $ids >/dev/null; fi; nets=$(docker network ls -q --no-trunc %[1]s); if [ -n "$nets" ]; then docker network rm $nets >/dev/null; fi`, filter, rm, list)
+	return fmt.Sprintf(`set -e; ids=$(docker ps -aq --no-trunc %[1]s); %[3]sif [ -n "$ids" ]; then docker stop $ids >/dev/null; %[2]s $ids >/dev/null; fi; nets=$(docker network ls -q --no-trunc %[1]s); if [ -n "$nets" ]; then docker network rm $nets >/dev/null; fi`, filter, rm, keep)
 }
 
 // planImages finds the images only this deployment ran: those its containers
