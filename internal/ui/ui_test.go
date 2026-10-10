@@ -517,3 +517,18 @@ func TestRefuseNoteAndWarnWrapTheirProse(t *testing.T) {
 		}
 	}
 }
+
+// A section after earlier output is set apart by a blank line; the first
+// line of a run is not preceded by one.
+func TestSectionsAreSetApartByABlankLine(t *testing.T) {
+	var b strings.Builder
+	r := ui.NewForTest(&b, false, false, clock())
+	r.Section("etcd members")
+	r.Step("read a's etcd record").End(ui.Pending, "not founded yet")
+	r.Section("hosts")
+	r.Step("host prepare --site a").End(ui.OK, "")
+	want := "etcd members\n  todo read a's etcd record: not founded yet\n\nhosts\n  ok   host prepare --site a\n"
+	if b.String() != want {
+		t.Errorf("got:\n%q\nwant:\n%q", b.String(), want)
+	}
+}

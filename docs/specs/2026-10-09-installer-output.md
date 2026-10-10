@@ -110,6 +110,9 @@ no cursor movement, no spinner, and words instead of glyphs (`ok`, `FAIL`,
 `WARN`, `todo` for pending, `wait` for waiting). A step prints one line when it ends. Logs from cron or CI then read
 cleanly.
 
+A section after earlier output is preceded by a blank line, so each block
+stands apart; the first line of a run is not.
+
 A step's result follows its title after a colon, `✓ disk space: 13.6 GiB free`,
 with no column to pad to, so a short title is not followed by a run of spaces
 sized to a long one.
