@@ -98,20 +98,33 @@ func printError(w io.Writer, err error, verbose, terminal bool, width int) {
 
 // causeChain is what --verbose adds under a Problem: the context each caller
 // wrapped around it, outermost first, then its cause, one link at a time.
-// A link's own text is what it adds to the error it wraps; one that does not
-// end with the error it wraps is shown whole and ends the chain. Without a
-// Problem the error has already printed in full, and there is nothing to add.
+// A link's own text is what it says beyond the error it wraps, before and
+// after it; one whose text does not hold the error it wraps is shown whole.
+// Without a Problem the error has already printed in full, and there is
+// nothing to add.
 func causeChain(err error) []string {
 	var p *Problem
 	if !errors.As(err, &p) {
 		return nil
 	}
 	var links []string
-	for e := err; e != nil && e != error(p); e = errors.Unwrap(e) {
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		// The walk stops at the first Problem reached, which is the one
+		// printed: a typed error may build a new one on every Unwrap, so it
+		// is found by type rather than by identity.
+		if q, ok := e.(*Problem); ok {
+			p = q
+			break
+		}
+		next := errors.Unwrap(e)
+		if own, ok := ownText(e, next); ok {
+			links = append(links, own...)
+			continue
+		}
 		// A typed error that unwraps to a Problem in place of wrapping it
 		// in text (storageadd.Waiting, config.LoadError) adds no context.
-		if own, ok := ownText(e, errors.Unwrap(e)); ok && own != "" {
-			links = append(links, own)
+		if _, ok := next.(*Problem); !ok && next != nil {
+			links = append(links, strings.TrimSpace(e.Error()))
 		}
 	}
 	for e := p.Cause; e != nil; {
@@ -126,25 +139,30 @@ func causeChain(err error) []string {
 			links = append(links, strings.TrimSpace(e.Error()))
 			break
 		}
-		if own != "" {
-			links = append(links, own)
-		}
+		links = append(links, own...)
 		e = next
 	}
 	return links
 }
 
-// ownText is what e says beyond next, the error it wraps, when e's text ends
-// with next's.
-func ownText(e, next error) (string, bool) {
+// ownText is what e says beyond next, the error it wraps: the text before
+// next's and the text after it, each trimmed, when e's text holds next's.
+func ownText(e, next error) ([]string, bool) {
 	if next == nil {
-		return "", false
+		return nil, false
 	}
 	s, n := e.Error(), next.Error()
-	if !strings.HasSuffix(s, n) {
-		return "", false
+	i := strings.Index(s, n)
+	if i < 0 {
+		return nil, false
 	}
-	return strings.TrimRight(strings.TrimSuffix(s, n), ": \n"), true
+	var out []string
+	for _, part := range []string{strings.TrimRight(s[:i], ": \n"), strings.TrimSpace(s[i+len(n):])} {
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out, true
 }
 
 // Wrap breaks text into lines of at most width characters, at spaces only,

@@ -216,3 +216,39 @@ func TestShortPath(t *testing.T) {
 		}
 	}
 }
+
+// A caller that wraps a Problem with text on both sides (ssh's output after
+// it) keeps both under -v.
+func TestErrorVerboseKeepsTextAroundAProblem(t *testing.T) {
+	p := &ui.Problem{Hint: "u@h did not accept your ssh key", Explain: "Check the key.", Cause: errors.New("exit status 255")}
+	err := fmt.Errorf("%s: %s: %w\n%s", "u@h", "docker ps", p, "u@h: Permission denied (publickey).")
+	var b strings.Builder
+	ui.PrintErrorForTest(&b, err, true, false, 80)
+	for _, want := range []string{"\n    u@h: docker ps\n", "\n    u@h: Permission denied (publickey).\n", "\n    exit status 255\n"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("missing %q in\n%s", want, b.String())
+		}
+	}
+}
+
+// fresh unwraps to a new Problem on every call, as a typed error with its
+// own wording may.
+type fresh struct{}
+
+func (fresh) Error() string { return "fresh" }
+func (fresh) Unwrap() error {
+	return &ui.Problem{Hint: "h", Explain: "e", Cause: fmt.Errorf("ctx-inner: %w", errors.New("leaf"))}
+}
+
+// The chain stops at the Problem however it is reached, so its cause is
+// shown once.
+func TestErrorVerboseShowsACauseOnce(t *testing.T) {
+	var b strings.Builder
+	ui.PrintErrorForTest(&b, fmt.Errorf("outer: %w", fresh{}), true, false, 80)
+	if n := strings.Count(b.String(), "ctx-inner"); n != 1 {
+		t.Errorf("the cause shows %d times:\n%s", n, b.String())
+	}
+	if !strings.Contains(b.String(), "\n    outer\n") || !strings.Contains(b.String(), "\n    leaf\n") {
+		t.Errorf("chain:\n%s", b.String())
+	}
+}
