@@ -57,7 +57,7 @@ func runSecretsPrune(args []string) error {
 	if err != nil {
 		return err
 	}
-	orphans := secretsgen.Orphans(cfg, secrets)
+	orphans := secretsgen.Orphans(cfg, secrets, nil)
 	if len(orphans) == 0 {
 		r.Result("%s names nothing paisans.yaml does not declare. Nothing to prune.", *secretsPath)
 		return nil
@@ -97,7 +97,7 @@ func runSecretsPrune(args []string) error {
 // warnOrphans warns, once per orphaned secret, that it names something
 // paisans.yaml does not declare. Never a refusal: nothing reads it.
 func warnOrphans(r ui.Reporter, cfg *config.Config, secrets *config.Secrets) {
-	for _, o := range secretsgen.Orphans(cfg, secrets) {
+	for _, o := range secretsgen.Orphans(cfg, secrets, nil) {
 		r.Warn("secrets: "+o.Key+" "+o.Why, "`paisans secrets prune` removes it.")
 	}
 }
