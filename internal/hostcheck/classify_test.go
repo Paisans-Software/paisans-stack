@@ -437,3 +437,24 @@ func TestAnotherDeploymentsOtherContainersKeepThePlainWording(t *testing.T) {
 		t.Errorf("a Caddy serving nothing of the owner's is named kept:\n%s", printed(r))
 	}
 }
+
+// Another deployment's Caddy whose entry is not marked kept is a live
+// gateway, and a registry that does not parse says nothing about entries:
+// both keep the plain wording, and the check still runs.
+func TestALiveOrUnknownCaddyKeepsThePlainWording(t *testing.T) {
+	plain := "held by container paisans-566c-infra-caddy-1 (compose project paisans-566c-infra, paisans deployment " + keptDeployment + ")"
+	live := keptCaddyHost(t, true)
+	live.files[registry.Path] = strings.Replace(live.files[registry.Path], `,"kept":"caddy"`, "", 1)
+	broken := keptCaddyHost(t, false)
+	broken.files[registry.Path] = "not a registry"
+	for name, h := range map[string]*fakeHost{"live": live, "unreadable": broken} {
+		r, err := hostcheck.Run(fixture(t), "edge", h)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		wantLine(t, r, "*:443/tcp (Caddy): claimed by sites.edge.roles (gateway), "+plain)
+		if strings.Contains(printed(r), "kept because") {
+			t.Errorf("%s: named kept:\n%s", name, printed(r))
+		}
+	}
+}

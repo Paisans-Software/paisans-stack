@@ -157,7 +157,10 @@ line says so and what to do, in one line:
   remove this container by hand once those sites have moved`.
 
 The host check reads the registry for this, and a host without one has no
-entry. Any other container of another deployment keeps the plain wording.
+entry. A Caddy whose entry is there and not marked kept is a live gateway, and
+a registry that cannot be read says nothing about any entry: both keep the
+plain wording, as does any other container of another deployment. The host
+check never fails on the registry.
 
 **`host deployments`.** A container like that, whose deployment has no
 registry entry, while `/srv/caddy.d` holds site files, is listed under *not in

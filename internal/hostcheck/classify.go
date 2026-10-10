@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -133,10 +134,16 @@ func (o owners) container(c Container) holder {
 
 // keptCaddy describes another deployment's Caddy kept for the host owner's
 // sites (docs/specs/2026-10-10-gateway-caddy-kept.md): its infrastructure
-// project's caddy service, while render.HostSitesDir holds a site file. What
-// to do depends on whether its registry entry is still there.
+// project's caddy service, while render.HostSitesDir holds a site file, and
+// either its registry entry marked kept or no entry at all. An entry not
+// marked kept is a live gateway, and a registry that cannot be read says
+// nothing either way: both keep the plain wording.
 func (o owners) keptCaddy(c Container) (string, bool) {
-	if c.Deployment == "" || o.ours(c.Deployment) || c.Service != "caddy" || len(o.inv.HostSites) == 0 {
+	if c.Deployment == "" || o.ours(c.Deployment) || c.Service != "caddy" || len(o.inv.HostSites) == 0 || o.inv.Registered == nil {
+		return "", false
+	}
+	kept, registered := o.inv.Registered[c.Deployment]
+	if registered && kept != registry.KeptCaddy {
 		return "", false
 	}
 	d := deployment.Deployment{ID: c.Deployment}
@@ -144,7 +151,7 @@ func (o owners) keptCaddy(c Container) (string, bool) {
 		return "", false
 	}
 	desc := fmt.Sprintf("container %s: paisans deployment %s's Caddy, kept because it serves %s sites", c.Name, d.Token(), render.HostSitesDir)
-	if o.inv.Registered[c.Deployment] {
+	if registered {
 		return desc + fmt.Sprintf(". Move those sites to a Caddy of your own and remove this container, or run paisans site remove --force --ssh %s --id %s once they are gone", sshArg(o.inv.Host), d.Token()), true
 	}
 	return desc + "; its registry entry was removed, so remove this container by hand once those sites have moved", true

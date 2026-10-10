@@ -54,9 +54,11 @@ type Inventory struct {
 	// by full path and sorted: site blocks somebody added to the gateway's
 	// Caddy, which no deployment owns.
 	HostSites []string
-	// Registered are the deployment ids the host's registry has an entry
-	// for, none when it has no registry.
-	Registered map[string]bool
+	// Registered maps each deployment id the host's registry has an entry
+	// for to what that entry says is kept, "" for nothing. It is nil when
+	// the registry cannot be read or parsed, which says nothing about any
+	// entry: the host check reads it only to word a conflict.
+	Registered map[string]string
 }
 
 // Docker is the engine, if there is one.
@@ -224,17 +226,13 @@ func Inspect(t Transport, d deployment.Deployment) (*Inventory, error) {
 	}
 	sort.Strings(inv.HostSites)
 
-	reg, _, err := t.ReadFile(registry.Path)
-	if err != nil {
-		return nil, fail("reading "+registry.Path, err)
-	}
-	r, err := registry.Parse([]byte(reg))
-	if err != nil {
-		return nil, fail("reading "+registry.Path, err)
-	}
-	inv.Registered = map[string]bool{}
-	for id := range r.Deployments {
-		inv.Registered[id] = true
+	if reg, _, err := t.ReadFile(registry.Path); err == nil {
+		if r, err := registry.Parse([]byte(reg)); err == nil {
+			inv.Registered = map[string]string{}
+			for id, e := range r.Deployments {
+				inv.Registered[id] = e.Kept
+			}
+		}
 	}
 
 	content, found, err := t.ReadFile(inv.ManifestPath)
