@@ -659,11 +659,40 @@ func TestConvergeReadsEachEtcdRecordInAStep(t *testing.T) {
 			t.Errorf("%v: findings at %d, first read at %d, plan at %d:\n%s", args, findings, first, plan, rec.Lines())
 		}
 		for _, m := range read {
-			if !rec.Has("done", "read "+m+"'s etcd record") {
+			if !rec.Has("pending", "read "+m+"'s etcd record") {
 				t.Errorf("%v: %s's read step did not end:\n%s", args, m, rec.Lines())
 			}
 		}
 	}
+}
+
+// A member with a founding record reads as founded; one without is not a
+// success but work the plan will do, so it is marked pending.
+func TestEtcdReadsMarkAnUnfoundedMemberPending(t *testing.T) {
+	fakeConverge(t, nil)
+	rec := recordConverge(t)
+	founded := initial("home-a", "vm")
+	convergeReadInitial = func(_ *config.Config, m string, _ bool) (render.EtcdInitial, bool, error) {
+		return founded, m == "home-a", nil
+	}
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range rec.Events {
+		if strings.HasSuffix(e.Text, "etcd record") && e.Kind != "step" {
+			got = append(got, e.Kind+" "+e.Text+": "+e.Extra)
+		}
+	}
+	var want []string
+	for _, m := range fixture(t).Etcd.Members {
+		if m == "home-a" {
+			want = append(want, "done read home-a's etcd record: founded")
+		} else {
+			want = append(want, "pending read "+m+"'s etcd record: not founded yet")
+		}
+	}
+	sameLines(t, got, want)
 }
 
 // holdRecorder is a Recorder that also records each hold and its resume, as

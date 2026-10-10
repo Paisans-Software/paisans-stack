@@ -214,7 +214,8 @@ func convergeFounded(r ui.Reporter, cfg *config.Config, sudo bool) (map[string]r
 			records[m] = in
 			s.Done("founded")
 		} else {
-			s.Done("not founded yet")
+			// Not a success: founding the member is work the plan does.
+			s.End(ui.Pending, "not founded yet")
 		}
 	}
 	return records, nil
