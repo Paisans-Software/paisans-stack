@@ -399,7 +399,19 @@ func (e conflictError) Error() string {
 	return fmt.Sprintf("dns: %d conflicting record(s), listed above. Nothing was created: a partial set of records is a deployment some names reach and others do not", e.n)
 }
 
-func (e conflictError) Unwrap() error { return ErrConflict }
+// Unwrap is the refusal as an operator reads it, which in turn is
+// ErrConflict.
+func (e conflictError) Unwrap() error {
+	hint := fmt.Sprintf("%d DNS records conflict with the configuration", e.n)
+	if e.n == 1 {
+		hint = "1 DNS record conflicts with the configuration"
+	}
+	return &ui.Problem{
+		Hint:    hint,
+		Explain: "Each is listed above. Nothing was created: a partial set of records is a deployment some names reach and others do not. Change each at your DNS provider, then run again.",
+		Cause:   ErrConflict,
+	}
+}
 
 // Execute creates every missing record, then reads each back. It refuses to
 // write anything if the plan has a conflict.

@@ -1162,6 +1162,9 @@ func TestAFoundingApplyStopsWhileAMemberHasNotStarted(t *testing.T) {
 			t.Errorf("the error does not say %q:\n%v", want, err)
 		}
 	}
+	if q := problemOf(t, err); q.Hint != "home-a is waiting on home-b to start etcd" || !strings.Contains(q.Explain, "Apply home-b, then apply this site again") {
+		t.Errorf("the founding stop: %q\n%q", q.Hint, q.Explain)
+	}
 	if host.ran(":8008/cluster") {
 		t.Error("polled for a primary that cannot appear yet")
 	}

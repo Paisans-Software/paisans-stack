@@ -42,7 +42,7 @@ func TestSiteRemoveDeleteDataNeedsATerminal(t *testing.T) {
 	w.Close()
 	defer r.Close()
 	err = runSiteRemove([]string{"home-b", "--config", fixtureConfig(), "--delete-data", "--execute"}, r, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "stdin is not one") {
+	if err == nil || !strings.Contains(err.Error(), "stdin is not a terminal") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -92,7 +92,7 @@ func TestChooseHost(t *testing.T) {
 		{site: "home-b", want: declared},
 		{site: "home-b", ssh: "admin@198.51.100.4", want: "admin@198.51.100.4:22"},
 		{site: "never", ssh: "admin@192.0.2.1:2222", want: "admin@192.0.2.1:2222"},
-		{site: "never", err: "name its host with --ssh"},
+		{site: "never", err: "Name its host with --ssh"},
 		{site: "home-b", ssh: "myalias", err: "not user@host"},
 	} {
 		got, err := chooseHost(cfg, tc.site, tc.ssh)
@@ -111,7 +111,7 @@ func TestSiteRemoveForceRefusesBeforeReachingAHost(t *testing.T) {
 	for args, want := range map[string]string{
 		"home-b --ssh admin@192.0.2.1":                                "only --force takes",
 		"home-b --force --host-gone":                                  "Drop one of them",
-		"never --force":                                               "name its host with --ssh",
+		"never --force":                                               "Name its host with --ssh",
 		"home-b --force --ssh myalias":                                "not user@host",
 		"home-b --force --execute":                                    "terminal",
 		"never --force --ssh admin@192.0.2.1 --execute --delete-data": "terminal",

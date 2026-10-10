@@ -204,7 +204,9 @@ func TestSignupGroupsWhenPocketIDCannotBeAsked(t *testing.T) {
 	if len(fake.commands) != 0 {
 		t.Errorf("Pocket ID was called %d time(s)", len(fake.commands))
 	}
-	if !strings.Contains(stdout, "signup group members: Pocket ID not asked, recorded ID used") || !strings.Contains(stdout, "Its recorded ID fixture-group-members-id is rendered as it is") {
+	// The detail is prose, wrapped to the width: compare it as words.
+	flat := strings.Join(strings.Fields(stdout), " ")
+	if !strings.Contains(stdout, "signup group members: Pocket ID not asked, recorded ID used") || !strings.Contains(flat, "Its recorded ID fixture-group-members-id is rendered as it is") {
 		t.Errorf("output:\n%s", stdout)
 	}
 	if err := c.result(); err != nil {

@@ -210,9 +210,11 @@ empty. `init` lists it as owed, but rendering without it produced a Caddy that
 starts and then fails every DNS-01 challenge, which a visitor finds rather than
 the operator.
 
-A decryption failure names both `SOPS_AGE_KEY_FILE` and `SOPS_AGE_KEY_CMD`; the
-embedded sops (v3.13.3, `age/keysource.go`) reads either, and the second lets
-the age key live in a keychain rather than a file.
+A decryption failure names every place the embedded sops (v3.13.3,
+`age/keysource.go`) reads an age key from: `SOPS_AGE_KEY_CMD` first, since it
+lets the key live in a keychain rather than in a file or the environment, then
+`SOPS_AGE_KEY_FILE`, `SOPS_AGE_KEY` and `sops/age/keys.txt` under the user's
+config directory.
 
 `ingress show --app <name>` and `ingress check --app <name>` are for an app
 pinned to a monitor site (`render.ServedBy`); every other app is the
@@ -312,7 +314,7 @@ two commands whose output explains a step: what each site's Pocket ID said
 while `apply` waits for one active instance, and the `patronictl switchover`
 of `failover test`. Compose and
 pull output is not streamed at either level; a command that fails carries its
-output in the error, which prints in full.
+output in the error.
 
 A step is reported before its command runs. A pull or a health wait takes
 minutes on a real site, and a step reported only once finished looked hung for
@@ -337,10 +339,26 @@ plan for `apply.Execute`, so planning and executing speak in one voice.
 A note said while a step is open is that step's detail (`Detail`), and raw
 command output is a `Trace`; both show only with `--verbose`. A warning shows
 its one-line hint and a refusal its hint and explanation, because an operator
-must see that there is something to fix. An error is never a detail: it prints
-in full at every verbosity, since having to re-run a failed apply to learn why
-it failed is worse than a long line. A dry run ends with `Nothing changed.
+must see that there is something to fix. A dry run ends with `Nothing changed.
 Re-run with --execute to apply.`, and `--execute` shows progress only.
+
+**The error that ends a command reads like a refusal.** `main` prints it
+through `ui.PrintError`: `✗` (`FAIL` off a terminal) and a hint, then the
+explanation indented and wrapped, and with `-v` the cause chain under it. An
+error an operator is likely to meet is a `ui.Problem`, a hint of at most 80
+characters, an explanation that says what to do, and the underlying error as
+its cause. Everything needed to act goes in the hint or the explanation, never
+only in the cause, since having to re-run a failed apply with `-v` to learn
+why it failed is the thing this avoids. `Unwrap` returns the cause, so
+`errors.Is` sees through a `Problem` to `apply.ErrUnreachable` or
+`storageadd.ErrWaiting`, and exit 75 is decided that way. A typed error with
+its own wording (`storageadd.Waiting`, `config.LoadError`) unwraps to its
+`Problem`. Any other error prints whole in the same form, its first line as
+the hint. Name a file in a hint with `ui.ShortPath`, never in a command meant
+to be copied. Refusal explanations, notes and the final error's explanation
+are wrapped by the reporter at the terminal's width, at most 80 columns,
+breaking only at spaces, so write them as prose and a list as lines starting
+`- `, without wrapping them by hand.
 
 Tests assert on `ui.Recorder` events, not on rendered text, so a change to the
 wording of a line or to the plain rendering does not break a test about what a

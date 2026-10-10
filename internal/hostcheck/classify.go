@@ -8,6 +8,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Class is what a host is to the toolkit.
@@ -416,16 +417,26 @@ func (r *Report) Refusal() error {
 		// to move at any verbosity.
 		lines := make([]string, len(r.Conflicts))
 		for i, c := range r.Conflicts {
-			lines[i] = c.String()
+			lines[i] = "- " + c.String()
 		}
-		return fmt.Errorf("host check: %s holds %d thing(s) %s claims, so nothing was changed:\n  %s\nMove what holds each one, or change the paisans.yaml key it names, and run again", r.Host, len(r.Conflicts), r.Site, strings.Join(lines, "\n  "))
+		things := fmt.Sprintf("%d things", len(r.Conflicts))
+		if len(r.Conflicts) == 1 {
+			things = "1 thing"
+		}
+		return &ui.Problem{
+			Hint:    fmt.Sprintf("%s holds %s %s claims, so nothing was changed", r.Host, things, r.Site),
+			Explain: strings.Join(lines, "\n") + "\nMove what holds each one, or change the paisans.yaml key it names, and run again.",
+		}
 	case Shared:
 		if why := firewallGap(r.Inventory.Firewall); why != "" {
 			port := r.SSHPort
 			if port == 0 {
 				port = 22
 			}
-			return fmt.Errorf("host check: %s runs services this deployment does not own, and on a shared host the toolkit never sets ufw's default policy or enables it, so both must already be in place, and %s. In this order: allow SSH so the session you are in survives (ufw allow %d/tcp), allow what those services need, deny incoming by default (ufw default deny incoming), enable ufw (ufw enable), and run again", r.Host, why, port)
+			return &ui.Problem{
+				Hint:    r.Host + " is shared, and its firewall is not up and denying",
+				Explain: fmt.Sprintf("It runs services this deployment does not own, and on a shared host the toolkit never sets ufw's default policy or enables it, so both must already be in place, and %s. In this order: allow SSH so the session you are in survives (ufw allow %d/tcp), allow what those services need, deny incoming by default (ufw default deny incoming), enable ufw (ufw enable), and run again.", why, port),
+			}
 		}
 	}
 	return nil

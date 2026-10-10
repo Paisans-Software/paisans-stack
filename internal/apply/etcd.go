@@ -10,6 +10,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // ReadEtcdInitial returns the flags this host's etcd member was first started
@@ -307,9 +308,12 @@ func EtcdRefusal(cfg *config.Config, plan *Plan, members []EtcdMember) error {
 	if !differs {
 		return nil
 	}
-	return fmt.Errorf(
-		"%s: the running etcd cluster's members are %s, and %s says %s, so this site's infrastructure stack was not touched. Applying it now would start an etcd the cluster has not admitted. Growing the cluster is `paisans site add <site>`, which adds each member as a learner and promotes it once it has caught up; run it for the site being added, then apply",
-		plan.Site, strings.Join(live, ", "), cfg.EtcdMembersKey(), strings.Join(want, ", "))
+	return &ui.Problem{
+		Hint: plan.Site + "'s etcd members differ from the running cluster's",
+		Explain: fmt.Sprintf(
+			"The running cluster's members are %s, and %s says %s, so this site's infrastructure stack was not touched: applying it now would start an etcd the cluster has not admitted. Growing the cluster is paisans site add <site>, which adds each member as a learner and promotes it once it has caught up. Run it for the site being added, then apply.",
+			strings.Join(live, ", "), cfg.EtcdMembersKey(), strings.Join(want, ", ")),
+	}
 }
 
 // touchesInfra reports whether a plan writes a file in, or acts on, the
@@ -389,9 +393,12 @@ func WitnessFirstRefusal(cfg *config.Config, plan *Plan, founding bool, running 
 	}
 	var commands []string
 	for _, name := range waiting {
-		commands = append(commands, "`paisans apply --site "+name+"`")
+		commands = append(commands, "paisans apply --site "+name)
 	}
-	return fmt.Errorf(
-		"%s: this site's etcd member would be founded while the witness %s runs no etcd, so this site's infrastructure stack was not touched. A new etcd cluster settles its version only once every founding member answers, and until then Patroni cannot take the leader key on any data site. Apply the witness first with %s, then apply this site again",
-		plan.Site, strings.Join(waiting, ", "), strings.Join(commands, ", then "))
+	return &ui.Problem{
+		Hint: fmt.Sprintf("%s would found etcd while the witness %s runs none", plan.Site, strings.Join(waiting, ", ")),
+		Explain: fmt.Sprintf(
+			"This site's infrastructure stack was not touched. A new etcd cluster settles its version only once every founding member answers, and until then Patroni cannot take the leader key on any data site. Apply the witness first with %s, then apply this site again.",
+			strings.Join(commands, ", then ")),
+	}
 }

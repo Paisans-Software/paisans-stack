@@ -14,6 +14,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -221,7 +223,8 @@ Everything else writes files locally and stops.
 
 Every command takes -v or --verbose. By default each step is one line; with it,
 the reasons, values, request bodies and command output behind each step show
-too. A failure always prints in full, with or without it.
+too. A failure always says what went wrong and what to do; with -v, the
+underlying error shows under it too.
 `
 
 func main() {
@@ -246,8 +249,7 @@ func main() {
 		case len(os.Args) >= 3 && os.Args[2] == "deployments":
 			err = runHostDeployments(os.Args[3:])
 		default:
-			fmt.Fprintf(os.Stderr, "paisans: host takes one subcommand, prepare or deployments\n\n%s", usage)
-			os.Exit(2)
+			os.Exit(usageError(os.Stderr, "host takes one subcommand, prepare or deployments"))
 		}
 	case "site":
 		switch {
@@ -256,8 +258,7 @@ func main() {
 		case len(os.Args) >= 3 && os.Args[2] == "remove":
 			err = runSiteRemove(os.Args[3:], os.Stdin, os.Stdout)
 		default:
-			fmt.Fprintf(os.Stderr, "paisans: site takes one subcommand, add or remove\n\n%s", usage)
-			os.Exit(2)
+			os.Exit(usageError(os.Stderr, "site takes one subcommand, add or remove"))
 		}
 	case "secrets":
 		err = runSecrets(os.Args[2:])
@@ -276,8 +277,7 @@ func main() {
 		case len(os.Args) >= 3 && os.Args[2] == "rotate-key":
 			err = runStorageRotateKey(os.Args[3:])
 		default:
-			fmt.Fprintf(os.Stderr, "paisans: storage takes one subcommand, init, add or rotate-key\n\n%s", usage)
-			os.Exit(2)
+			os.Exit(usageError(os.Stderr, "storage takes one subcommand, init, add or rotate-key"))
 		}
 	case "prune":
 		err = runPrune(os.Args[2:])
@@ -294,26 +294,38 @@ func main() {
 		case len(os.Args) >= 3 && os.Args[2] == "prune":
 			err = runDNSPrune(os.Args[3:])
 		default:
-			fmt.Fprintf(os.Stderr, "paisans: dns takes one subcommand, init or prune\n\n%s", usage)
-			os.Exit(2)
+			os.Exit(usageError(os.Stderr, "dns takes one subcommand, init or prune"))
 		}
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "paisans: unknown command %q\n\n%s", os.Args[1], usage)
-		os.Exit(2)
+		os.Exit(usageError(os.Stderr, fmt.Sprintf("unknown command %q", os.Args[1])))
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "paisans: %v\n", err)
-		// Not a failure: a gate is waiting on Garage, and the next run
-		// resumes there. EX_TEMPFAIL (sysexits.h), "try again later", so a
-		// script can tell it from one.
-		if errors.Is(err, storageadd.ErrWaiting) {
-			os.Exit(75)
-		}
-		os.Exit(1)
+		os.Exit(reportError(os.Stderr, err, verboseRun))
 	}
+}
+
+// usageError prints msg in the error form, then the usage, and returns the
+// status for a command line paisans cannot run.
+func usageError(w io.Writer, msg string) int {
+	ui.PrintError(w, errors.New(msg), false)
+	fmt.Fprintf(w, "\n%s", usage)
+	return 2
+}
+
+// reportError prints the error that ends a command, in the refusal's form
+// (see ui.PrintError), and returns the status to exit with.
+func reportError(w io.Writer, err error, verbose bool) int {
+	ui.PrintError(w, err, verbose)
+	// Not a failure: a gate is waiting on Garage, and the next run resumes
+	// there. EX_TEMPFAIL (sysexits.h), "try again later", so a script can
+	// tell it from one.
+	if errors.Is(err, storageadd.ErrWaiting) {
+		return 75
+	}
+	return 1
 }
 
 func runValidate(args []string) error {
@@ -334,7 +346,7 @@ func runValidate(args []string) error {
 		r.Result("%s: no problems found", *configPath)
 	}
 	if result.Refused() {
-		return fmt.Errorf("%s cannot be rendered: %d refusal(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "Nothing can be rendered or applied from it until then.")
 	}
 	return nil
 }
@@ -380,7 +392,7 @@ func runInit(args []string) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above. Secrets are not generated for a configuration that cannot be deployed", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "Secrets are not generated for a configuration that cannot be deployed.")
 	}
 	// The mesh subnet next, while nothing is deployed: it is the one value
 	// that has to be checked against every host before the first apply,
@@ -401,7 +413,7 @@ func runInit(args []string) error {
 	}
 	secrets, err := config.LoadSecrets(*secretsPath)
 	switch {
-	case os.IsNotExist(errors.Unwrap(err)), os.IsNotExist(err):
+	case errors.Is(err, iofs.ErrNotExist):
 		secrets = &config.Secrets{Version: 1}
 	case err != nil:
 		return err
@@ -476,7 +488,7 @@ func runRender(args []string) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s cannot be rendered: %d refusal(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "Nothing was rendered.")
 	}
 
 	if *secretsPath == "" {
@@ -564,7 +576,7 @@ func runApply(args []string) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "")
 	}
 	declared, ok := cfg.Sites[*site]
 	if !ok {
@@ -874,7 +886,7 @@ func runStorageInit(args []string) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "")
 	}
 	declared, ok := cfg.Sites[*site]
 	if !ok {
@@ -955,7 +967,7 @@ func runHostPrepare(args []string) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "")
 	}
 	declared, ok := cfg.Sites[*site]
 	if !ok {
@@ -1124,7 +1136,7 @@ func dnsSetup(name, executeHelp string, args []string, extra ...func(*flag.FlagS
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return nil, nil, nil, nil, false, fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return nil, nil, nil, nil, false, refused(*configPath, len(result.Refusals()), "")
 	}
 	wants, err := dns.Desired(cfg)
 	if err != nil {

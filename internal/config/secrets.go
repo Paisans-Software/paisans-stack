@@ -10,6 +10,8 @@ import (
 	"github.com/getsops/sops/v3/aes"
 	sopsyaml "github.com/getsops/sops/v3/stores/yaml"
 	"gopkg.in/yaml.v3"
+
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Secrets is the decrypted content of secrets.enc.yaml. Nothing here is ever
@@ -86,26 +88,64 @@ type OIDCClient struct {
 func LoadSecrets(path string) (*Secrets, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, readProblem(path, "Run paisans init to create it, or name the file with --secrets.", err)
 	}
 	plain := data
 	encrypted := looksEncrypted(data)
 	if encrypted {
 		plain, err = decryptSOPS(data)
 		if err != nil {
-			return nil, fmt.Errorf("decrypting %s: %w", path, err)
+			return nil, decryptProblem(path, err)
 		}
 	}
 	var s Secrets
 	if err := yaml.Unmarshal(plain, &s); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+		return nil, parseProblem(path, "a secrets file", err)
 	}
 	s.Path = path
 	s.Encrypted = encrypted
 	if s.Version != 1 {
-		return nil, fmt.Errorf("%s: version: expected 1, got %d", path, s.Version)
+		return nil, &ui.Problem{
+			Hint:    fmt.Sprintf("%s is a version %d secrets file", ui.ShortPath(path), s.Version),
+			Explain: "This toolkit reads version 1. Use the toolkit release that wrote it.",
+			Cause:   fmt.Errorf("%s: version: expected 1, got %d", path, s.Version),
+		}
 	}
 	return &s, nil
+}
+
+// errNoKey and errTampered are what decryptSOPS found, for decryptProblem to
+// say in an operator's words.
+var (
+	errNoKey    = errors.New("no age identity could decrypt the data key")
+	errTampered = errors.New("authentication code mismatch")
+)
+
+// decryptProblem says why path could not be decrypted and what to do. sops'
+// own wording is the cause, for --verbose: failing to find a key is the
+// ordinary case for a new admin, and "0 successful groups required, got 0"
+// tells them nothing they can act on. The embedded sops (v3.13.3,
+// age/keysource.go) reads a key from SOPS_AGE_KEY_CMD, SOPS_AGE_KEY_FILE,
+// SOPS_AGE_KEY and sops/age/keys.txt under the user's config directory; the
+// command comes first, since it lets the key live in a keychain.
+func decryptProblem(path string, err error) error {
+	cause := fmt.Errorf("decrypting %s: %w", path, err)
+	name := ui.ShortPath(path)
+	switch {
+	case errors.Is(err, errNoKey):
+		return &ui.Problem{
+			Hint:    name + " cannot be decrypted: no usable age key was found",
+			Explain: "Set SOPS_AGE_KEY_CMD to a command that prints your key, Eg: a Keychain lookup, so the key is never stored in a file or the environment. SOPS_AGE_KEY_FILE (its path), SOPS_AGE_KEY (the key itself) and sops/age/keys.txt in your config directory are read too. Your public key must be a recipient in .sops.yaml; if it was added recently, run sops updatekeys on the file.",
+			Cause:   cause,
+		}
+	case errors.Is(err, errTampered):
+		return &ui.Problem{
+			Hint:    name + " was changed after it was encrypted",
+			Explain: "Its authentication code does not match its content, so it is not read. Restore it from git rather than editing it by hand.",
+			Cause:   cause,
+		}
+	}
+	return &ui.Problem{Hint: name + " cannot be decrypted", Explain: "sops said: " + err.Error() + ".", Cause: cause}
 }
 
 // looksEncrypted reports whether a file carries sops metadata. It is a cheap
@@ -129,7 +169,7 @@ func decryptSOPS(data []byte) ([]byte, error) {
 	}
 	key, err := tree.Metadata.GetDataKey()
 	if err != nil {
-		return nil, decorateKeyError(err)
+		return nil, fmt.Errorf("%w: %w", errNoKey, err)
 	}
 	cipher := aes.NewCipher()
 	mac, err := tree.Decrypt(key, cipher)
@@ -155,14 +195,7 @@ func verifyMAC(tree *sops.Tree, key []byte, cipher sops.Cipher, computed string)
 		return fmt.Errorf("cannot read the file's authentication code: %w", err)
 	}
 	if stored != computed {
-		return errors.New("authentication code mismatch: the file was modified after it was encrypted. Restore it from git rather than editing it by hand")
+		return fmt.Errorf("%w: the file was modified after it was encrypted", errTampered)
 	}
 	return nil
-}
-
-// decorateKeyError turns sops's internal wording into an instruction. Failing
-// to find a key is the ordinary case for a new admin, and "0 successful groups
-// required, got 0" tells them nothing they can act on.
-func decorateKeyError(err error) error {
-	return fmt.Errorf("%w\nNo age identity could decrypt this file. Point SOPS_AGE_KEY_FILE at your private key, or set SOPS_AGE_KEY_CMD to a command that prints it (a keychain lookup, say, so the key is never a file), and check that your public key is a recipient in .sops.yaml. If it was added recently, someone has to run `sops updatekeys` on the file", err)
 }

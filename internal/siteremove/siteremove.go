@@ -200,7 +200,6 @@ var (
 	// HAProxy marks a server UP after two good checks three seconds apart.
 	haproxyWait = 60 * time.Second
 	haproxyPoll = 3 * time.Second
-
 )
 
 func attempts(wait, poll time.Duration) int {
@@ -235,15 +234,20 @@ func poll(wait, every time.Duration, check func() error) error {
 // Refusal is why site cannot be removed from this configuration, or nil. It
 // reads no host, so it runs before any is reached.
 func Refusal(cfg *config.Config, site string, o Options) error {
+	refuse := func(hint, explain string) error { return &ui.Problem{Hint: hint, Explain: explain} }
 	s, ok := cfg.Sites[site]
 	if !ok {
-		return fmt.Errorf("site remove: the configuration declares no site %q. Declared sites are %s", site, strings.Join(cfg.SiteNames(), ", "))
+		name := "the configuration"
+		if cfg.Path != "" {
+			name = ui.ShortPath(cfg.Path)
+		}
+		return refuse(fmt.Sprintf("%s declares no site %s", name, site), "Declared sites are "+strings.Join(cfg.SiteNames(), ", ")+".")
 	}
 	if o.HostGone && o.DeleteData {
-		return fmt.Errorf("site remove %s: --delete-data deletes data on the host, and --host-gone does not reach it. Drop one of them", site)
+		return refuse("--host-gone and --delete-data cannot be used together", "--delete-data deletes data on the host, and --host-gone does not reach it. Drop one of them.")
 	}
 	if s.Has(config.RoleGateway) && len(cfg.GatewaySites()) == 1 {
-		return fmt.Errorf("site remove %s: it is the only gateway, so nothing would answer for the community's hostnames. Give another site the gateway role and apply it first (README, \"Moving the gateway\")", site)
+		return refuse(site+" is the only gateway", "Nothing would answer for the community's hostnames. Give another site the gateway role and apply it first (README, \"Moving the gateway\").")
 	}
 	if s.Has(config.RoleApps) && len(cfg.AppsSites()) == 1 {
 		var placed []string
@@ -253,22 +257,22 @@ func Refusal(cfg *config.Config, site string, o Options) error {
 			}
 		}
 		if len(placed) > 0 {
-			return fmt.Errorf("site remove %s: it is the only apps site, and %s placed cluster would run nowhere. Give another site the apps role and apply it first", site, strings.Join(placed, ", "))
+			return refuse(site+" is the only apps site", fmt.Sprintf("%s placed cluster would run nowhere. Give another site the apps role and apply it first.", strings.Join(placed, ", ")))
 		}
 	}
 	if pinned := cfg.PinnedTo(site); len(pinned) > 0 {
-		return fmt.Errorf("site remove %s: %s pinned to it, and would run nowhere. Move each first (README, \"Moving a pinned app\")", site, strings.Join(pinned, ", "))
+		return refuse("apps are pinned to "+site, fmt.Sprintf("%s pinned to it, and would run nowhere. Move each first (README, \"Moving a pinned app\").", strings.Join(pinned, ", ")))
 	}
 	if contains(cfg.Cluster.Sites, site) && len(cfg.Cluster.Sites) == 1 || s.Has(config.RoleData) && len(cfg.DataSites()) == 1 {
-		return fmt.Errorf("site remove %s: it is the only data site, so the database would have nowhere to live. Add another data site first (`paisans site add`)", site)
+		return refuse(site+" is the only data site", "The database would have nowhere to live. Add another data site first (paisans site add).")
 	}
 	if len(cfg.Storage.Garage.Sites) > 0 && cfg.Storage.Garage.Sites[0] == site && len(cfg.AppNames()) > 0 {
-		return fmt.Errorf("site remove %s: it is first in storage.garage.sites, the Garage node every app writes its objects through, and the apps would lose it the moment its node stops. Move another Garage site to the front of the list and apply every site running an app first, then run this again", site)
+		return refuse(site+" is first in storage.garage.sites", "It is the Garage node every app writes its objects through, and the apps would lose it the moment its node stops. Move another Garage site to the front of the list and apply every site running an app first, then run this again.")
 	}
 	if contains(cfg.Storage.Garage.Sites, site) {
 		left := len(cfg.Storage.Garage.Sites) - 1
 		if left < cfg.Storage.Garage.Replication {
-			return fmt.Errorf("site remove %s: it is a Garage site, and without it %d node(s) would hold objects at storage.garage.replication %d, so the data on it would have nowhere to go. Add a Garage site, or lower the replication factor, with `paisans storage add` first", site, left, cfg.Storage.Garage.Replication)
+			return refuse("too few Garage nodes would be left without "+site, fmt.Sprintf("Without it %d node(s) would hold objects at storage.garage.replication %d, so the data on it would have nowhere to go. Add a Garage site, or lower the replication factor, with paisans storage add first.", left, cfg.Storage.Garage.Replication))
 		}
 	}
 	end, _, err := EndState(cfg, site)
@@ -279,17 +283,17 @@ func Refusal(cfg *config.Config, site string, o Options) error {
 		var lines []string
 		twoVoters := false
 		for _, f := range result.Refusals() {
-			lines = append(lines, f.Key+": "+f.Message)
+			lines = append(lines, "- "+f.Key+": "+f.Message)
 			twoVoters = twoVoters || f.Rule == "two-etcd-voters"
 		}
-		advice := "site remove takes one site out and changes nothing else, so the end state has to validate as it is"
+		advice := "site remove takes one site out and changes nothing else, so the end state has to validate as it is."
 		if twoVoters {
-			advice = "Two data sites would stay as etcd voters, and neither can leave etcd while it holds data. Add a witness first, a site that holds no data with the witness role, as an etcd member, so that three voters remain without " + site
+			advice = "Two data sites would stay as etcd voters, and neither can leave etcd while it holds data. Add a witness first, a site that holds no data with the witness role, as an etcd member, so that three voters remain without " + site + "."
 			if cfg.Etcd.MembersDerived {
-				advice = "Two data sites would stay as etcd voters, and neither can leave etcd while it holds data. Give a site in a third location, one that fails independently, the witness role first, and join it, so that three voters remain without " + site
+				advice = "Two data sites would stay as etcd voters, and neither can leave etcd while it holds data. Give a site in a third location, one that fails independently, the witness role first, and join it, so that three voters remain without " + site + "."
 			}
 		}
-		return fmt.Errorf("site remove %s: the configuration without it is refused:\n  %s\n%s", site, strings.Join(lines, "\n  "), advice)
+		return refuse("the configuration without "+site+" would be refused", strings.Join(lines, "\n")+"\n"+advice)
 	}
 	return nil
 }

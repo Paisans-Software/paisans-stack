@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Transport is the one place this package talks to a machine. Everything else
@@ -393,6 +395,67 @@ func connectionFailed(err error, out string) bool {
 	return false
 }
 
+// authProblem is the Problem for a connection ssh opened and then would not
+// use: the host's key is not the one known, or is not known and ssh could
+// not ask, or the host accepted none of the operator's keys. ssh says each
+// on its own last line and exits 255, as for connectionFailed. Nil for
+// anything else.
+func (t SSHTransport) authProblem(err error, out string) error {
+	var exit interface{ ExitCode() int }
+	if !errors.As(err, &exit) || exit.ExitCode() != 255 {
+		return nil
+	}
+	last := lastLine(out)
+	switch {
+	case strings.Contains(last, "Host key verification failed") && strings.Contains(out, "REMOTE HOST IDENTIFICATION HAS CHANGED"):
+		return &ui.Problem{
+			Hint:    t.Describe() + " offered a host key other than the one known",
+			Explain: fmt.Sprintf("Either the host was reinstalled, or something is answering in its place. Find out which before going on. Once you know it is the same host, remove the old key with ssh-keygen -R %s, connect once with %s to accept the new one, and run again.", shellQuote(t.knownHostsName()), t.connectCommand()),
+			Cause:   err,
+		}
+	case strings.Contains(last, "Host key verification failed"):
+		return &ui.Problem{
+			Hint:    t.Describe() + "'s host key is not known",
+			Explain: fmt.Sprintf("ssh could not ask whether to trust it. Connect once with %s, check the fingerprint it shows, accept it, and run again.", t.connectCommand()),
+			Cause:   err,
+		}
+	case strings.Contains(last, "Permission denied (") || strings.Contains(last, "Too many authentication failures"):
+		return &ui.Problem{
+			Hint:    t.Describe() + " did not accept your ssh key",
+			Explain: "Check that your key is loaded in your ssh agent (ssh-add -l), that its public half is in the site's ssh.public_key, and that the host's authorized_keys for that user holds it.",
+			Cause:   err,
+		}
+	}
+	return nil
+}
+
+// connectCommand is the ssh command an operator runs to reach the host by
+// hand.
+func (t SSHTransport) connectCommand() string {
+	if t.Destination != "" {
+		return "ssh " + t.Destination
+	}
+	if p := t.port(); p != 22 {
+		return fmt.Sprintf("ssh -p %d %s@%s", p, t.User, t.Host)
+	}
+	return "ssh " + t.User + "@" + t.Host
+}
+
+// knownHostsName is the host as known_hosts names it.
+func (t SSHTransport) knownHostsName() string {
+	if t.Destination != "" {
+		_, host, found := strings.Cut(t.Destination, "@")
+		if !found {
+			return t.Destination
+		}
+		return host
+	}
+	if p := t.port(); p != 22 {
+		return fmt.Sprintf("[%s]:%d", t.Host, p)
+	}
+	return t.Host
+}
+
 func lastLine(out string) string {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	return strings.TrimSpace(lines[len(lines)-1])
@@ -446,10 +509,17 @@ func (t SSHTransport) run(command string, stdin *string) (string, error) {
 		if !connectionFailed(err, out.String()) {
 			// The host answered, so any question about its key is settled.
 			markContacted(t.Describe())
+			if p := t.authProblem(err, out.String()); p != nil {
+				return out.String(), p
+			}
 			return out.String(), err
 		}
 		if attempt > len(sshRetryDelays) {
-			return out.String(), fmt.Errorf("%w after %d attempts: %w", ErrUnreachable, attempt, err)
+			return out.String(), &ui.Problem{
+				Hint:    t.Describe() + " cannot be reached over ssh",
+				Explain: fmt.Sprintf("ssh could not connect in %d attempts: %s. Check that the host is up, and that %s from this machine reaches it.", attempt, strings.TrimSuffix(lastLine(out.String()), "."), t.connectCommand()),
+				Cause:   fmt.Errorf("%w after %d attempts: %w", ErrUnreachable, attempt, err),
+			}
 		}
 		delay := sshRetryDelays[attempt-1]
 		fmt.Fprintf(retryLog, "%s: ssh could not connect (%s), retrying in %s (attempt %d of %d)\n",

@@ -1,6 +1,7 @@
 package hostcheck_test
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -456,5 +457,47 @@ func TestALiveOrUnknownCaddyKeepsThePlainWording(t *testing.T) {
 		if strings.Contains(printed(r), "kept because") {
 			t.Errorf("%s: named kept:\n%s", name, printed(r))
 		}
+	}
+}
+
+// A conflict refuses with a short hint, one line per conflict, and what to
+// do; printed, each conflict is its own indented line.
+func TestAConflictRefusalIsAProblem(t *testing.T) {
+	r := check(t, "edge", caddyHost())
+	err := r.Refusal()
+	var p *ui.Problem
+	if !errors.As(err, &p) {
+		t.Fatalf("not a ui.Problem: %v", err)
+	}
+	if p.Hint != r.Host+" holds 2 things edge claims, so nothing was changed" {
+		t.Errorf("hint: %q", p.Hint)
+	}
+	lines := strings.Split(p.Explain, "\n")
+	if len(lines) != 3 || lines[0] != "- "+r.Conflicts[0].String() || lines[1] != "- "+r.Conflicts[1].String() || !strings.HasPrefix(lines[2], "Move what holds each one") {
+		t.Errorf("explanation:\n%s", p.Explain)
+	}
+	var b strings.Builder
+	ui.PrintError(&b, err, false)
+	out := b.String()
+	if !strings.HasPrefix(out, "FAIL "+p.Hint+"\n  - *:80/tcp (Caddy): claimed by sites.edge.roles (gateway), held by container\n    web-caddy-1 (compose project web)\n  - *:443/tcp") {
+		t.Errorf("printed:\n%s", out)
+	}
+}
+
+// A shared host whose firewall is not ready refuses with a short hint, and
+// the steps in the explanation.
+func TestAFirewallRefusalIsAProblem(t *testing.T) {
+	h := caddyHost()
+	h.answers["ufw status verbose"] = ufwInactive
+	err := check(t, "home-a", h).Refusal()
+	var p *ui.Problem
+	if !errors.As(err, &p) {
+		t.Fatalf("not a ui.Problem: %v", err)
+	}
+	if !strings.HasSuffix(p.Hint, " is shared, and its firewall is not up and denying") || len(p.Hint) > 80 {
+		t.Errorf("hint: %q", p.Hint)
+	}
+	if !strings.Contains(p.Explain, "ufw is inactive") || !strings.Contains(p.Explain, "ufw enable") {
+		t.Errorf("explanation: %q", p.Explain)
 	}
 }

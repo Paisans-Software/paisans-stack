@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,8 +30,11 @@ func TestRefusalShowsHintAndExplanation(t *testing.T) {
 	}
 	b.Reset()
 	reportFindings(ui.NewPlain(&b, true), "paisans.yaml", res)
+	// A verbose warning's detail is prose, wrapped to the width: compare it
+	// as words.
+	flat := strings.Join(strings.Fields(b.String()), " ")
 	for _, want := range []string{"storage.garage.consistency: Reads can miss a recent upload. (garage-consistency-dangerous)"} {
-		if !strings.Contains(b.String(), want) {
+		if !strings.Contains(flat, want) {
 			t.Errorf("verbose output lacks %q:\n%s", want, b.String())
 		}
 	}
@@ -61,5 +66,45 @@ func TestCountsPluralAndWarningOnly(t *testing.T) {
 	reportFindings(ui.NewPlain(&b, false), "paisans.yaml", warns)
 	if !strings.Contains(b.String(), "paisans.yaml: 2 warnings\n") || strings.Contains(b.String(), "refusal") {
 		t.Errorf("bad warning-only count in\n%s", b.String())
+	}
+}
+
+// A refused configuration ends the command with a short hint naming the file
+// and the count, and says what to do.
+func TestRefusedConfigurationIsAProblem(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "paisans.yaml")
+	err := refused(path, 2, "")
+	var p *ui.Problem
+	if !errors.As(err, &p) {
+		t.Fatalf("not a ui.Problem: %v", err)
+	}
+	if p.Hint != ui.ShortPath(path)+" was refused: 2 refusals above" {
+		t.Errorf("hint: %q", p.Hint)
+	}
+	if !strings.Contains(p.Explain, "Fix each refusal above") {
+		t.Errorf("explanation: %q", p.Explain)
+	}
+	err = refused("paisans.yaml", 1, "Secrets are not generated for a configuration that cannot be deployed.")
+	if !errors.As(err, &p) || p.Hint != "paisans.yaml was refused: 1 refusal above" || !strings.Contains(p.Explain, "Secrets are not generated") {
+		t.Errorf("got %#v", p)
+	}
+}
+
+// A configuration under the current directory is named relative to it by
+// default, and in full with -v.
+func TestFindingsNameTheFileShortByDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	path := filepath.Join(dir, "staging", "paisans.yaml")
+	res := validate.Result{Findings: []validate.Finding{{Level: validate.Warn, Rule: "r", Key: "k", Hint: "h", Message: "m"}}}
+	var b strings.Builder
+	reportFindings(ui.NewPlain(&b, false), path, res)
+	if strings.Contains(b.String(), dir) || !strings.HasPrefix(b.String(), "staging/paisans.yaml\n") || !strings.Contains(b.String(), "\nstaging/paisans.yaml: 1 warning") {
+		t.Errorf("default:\n%s", b.String())
+	}
+	b.Reset()
+	reportFindings(ui.NewPlain(&b, true), path, res)
+	if !strings.HasPrefix(b.String(), path+"\n") {
+		t.Errorf("verbose:\n%s", b.String())
 	}
 }

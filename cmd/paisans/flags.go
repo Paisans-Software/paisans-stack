@@ -43,7 +43,8 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 // --verbose show the detail behind each step: reasons, configuration values,
 // requests and retries. Without them a command prints one line per step.
 func commonFlags(fs *flag.FlagSet) func() ui.Reporter {
-	verbose := fs.Bool("verbose", false, "show the detail behind each step: reasons, values, requests and retries")
+	verbose := &verboseRun
+	fs.BoolVar(verbose, "verbose", false, "show the detail behind each step: reasons, values, requests and retries")
 	fs.BoolVar(verbose, "v", false, "short for --verbose")
 	return func() ui.Reporter {
 		r := reporterOverride
@@ -55,6 +56,10 @@ func commonFlags(fs *flag.FlagSet) func() ui.Reporter {
 		return r
 	}
 }
+
+// verboseRun is whether the command being run was given -v or --verbose, for
+// the error that ends it, which main prints once the command has returned.
+var verboseRun bool
 
 // routeRetries sends an ssh retry to r as a detail of the open step: the
 // error that ends the command says in full if the retries ran out. A command

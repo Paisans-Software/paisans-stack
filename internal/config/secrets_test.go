@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"github.com/getsops/sops/v3/version"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 const plaintextSecrets = `version: 1
@@ -128,13 +131,59 @@ func TestMissingKeyIsExplained(t *testing.T) {
 	if err == nil {
 		t.Fatal("a file we hold no key for was decrypted")
 	}
-	if !strings.Contains(err.Error(), "SOPS_AGE_KEY_FILE") {
-		t.Fatalf("the error does not say what to do:\n%v", err)
+	var p *ui.Problem
+	if !errors.As(err, &p) {
+		t.Fatalf("not a ui.Problem: %v", err)
+	}
+	if p.Hint != "secrets.enc.yaml cannot be decrypted: no usable age key was found" && !strings.HasSuffix(p.Hint, "/secrets.enc.yaml cannot be decrypted: no usable age key was found") {
+		t.Errorf("hint: %q", p.Hint)
+	}
+	if !strings.Contains(p.Explain, "SOPS_AGE_KEY_FILE") {
+		t.Fatalf("the explanation does not say what to do:\n%v", p.Explain)
 	}
 	// The embedded sops (v3.13.3, age/keysource.go) also reads a key from a
 	// command, which is how a key kept in a keychain is used.
-	if !strings.Contains(err.Error(), "set SOPS_AGE_KEY_CMD") {
-		t.Errorf("the error does not mention SOPS_AGE_KEY_CMD:\n%v", err)
+	// SOPS_AGE_KEY_CMD first, then every other place sops reads a key from.
+	cmd, file, env, def := strings.Index(p.Explain, "SOPS_AGE_KEY_CMD"), strings.Index(p.Explain, "SOPS_AGE_KEY_FILE"), strings.Index(p.Explain, "SOPS_AGE_KEY "), strings.Index(p.Explain, "sops/age/keys.txt")
+	if cmd < 0 || file < cmd || env < cmd || def < cmd {
+		t.Errorf("the explanation does not name every way a key is found, SOPS_AGE_KEY_CMD first:\n%v", p.Explain)
+	}
+	if !strings.Contains(p.Explain, "Set SOPS_AGE_KEY_CMD") {
+		t.Errorf("the explanation does not mention SOPS_AGE_KEY_CMD:\n%v", p.Explain)
+	}
+	// sops' own words and the full path are the cause, for -v.
+	if p.Cause == nil || !strings.Contains(p.Cause.Error(), "Error getting data key") || !strings.Contains(p.Cause.Error(), path) {
+		t.Errorf("the cause lacks sops' error or the path: %v", p.Cause)
+	}
+	if len(p.Hint) > 80 && !strings.Contains(p.Hint, "/") {
+		t.Errorf("hint longer than 80: %q", p.Hint)
+	}
+}
+
+// A secrets file that is not there is said plainly, and is still
+// fs.ErrNotExist to a caller that starts from nothing in that case.
+func TestMissingSecretsFileIsAProblem(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.enc.yaml")
+	_, err := config.LoadSecrets(path)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("not fs.ErrNotExist: %v", err)
+	}
+	var p *ui.Problem
+	if !errors.As(err, &p) || !strings.HasSuffix(p.Hint, "secrets.enc.yaml does not exist") || !strings.Contains(p.Explain, "paisans init") {
+		t.Errorf("got %#v", p)
+	}
+}
+
+// A secrets file at a version this toolkit does not read says so.
+func TestSecretsVersionIsAProblem(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.enc.yaml")
+	if err := os.WriteFile(path, []byte("version: 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.LoadSecrets(path)
+	var p *ui.Problem
+	if !errors.As(err, &p) || !strings.Contains(p.Hint, "version 2") {
+		t.Errorf("got %v", err)
 	}
 }
 

@@ -64,7 +64,7 @@ func runOIDCClientCreate(args []string) error {
 	result := validate.Check(cfg)
 	reportFindings(r, *configPath, result)
 	if result.Refused() {
-		return fmt.Errorf("%s was refused: %d problem(s) above", *configPath, len(result.Refusals()))
+		return refused(*configPath, len(result.Refusals()), "")
 	}
 	app, ok := cfg.Apps[*appName]
 	if !ok {

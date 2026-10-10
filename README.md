@@ -1564,6 +1564,12 @@ age key           ─┘   │
                                                        docker compose up -d
 ```
 
+The age key is found where sops looks for it. Prefer `SOPS_AGE_KEY_CMD`, a
+command that prints the key, Eg: a Keychain lookup, so the key is never stored
+in a file or the shell's environment. `SOPS_AGE_KEY_FILE` (the key's path),
+`SOPS_AGE_KEY` (the key itself) and `sops/age/keys.txt` in your config
+directory are read too.
+
 `sops` and `age` are installed on the workstation only. Hosts do not have them.
 Containers never know they exist, and nothing is written *into* a container —
 Compose passes env at start. Changing a secret in an `.env` therefore means

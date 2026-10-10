@@ -428,3 +428,31 @@ func TestAlignWidensTheTitleColumn(t *testing.T) {
 		t.Errorf("results not aligned:\n%s", b.String())
 	}
 }
+
+// Prose under a refusal, a note and a verbose warning wraps to 80 columns,
+// aligned under the hint, and never splits a path.
+func TestRefuseNoteAndWarnWrapTheirProse(t *testing.T) {
+	long := "Move what holds each one, or change the paisans.yaml key it names, and run again; the file is /var/lib/paisans/registry.json on the host, read with sudo."
+	for _, terminal := range []bool{false, true} {
+		var b strings.Builder
+		r := ui.NewForTest(&b, true, terminal, clock())
+		r.Refuse("refused", long)
+		r.Note("noted", long)
+		r.Warn("warned", long)
+		lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+		if len(lines) < 9 {
+			t.Fatalf("terminal %v: not wrapped:\n%s", terminal, b.String())
+		}
+		for _, l := range lines {
+			if len(l) > 80 {
+				t.Errorf("terminal %v: a line is wider than 80: %q", terminal, l)
+			}
+		}
+		if !strings.Contains(b.String(), " /var/lib/paisans/registry.json ") && !strings.Contains(b.String(), " /var/lib/paisans/registry.json\n") && !strings.Contains(b.String(), "\n       /var/lib/paisans/registry.json") {
+			t.Errorf("terminal %v: the path was split:\n%s", terminal, b.String())
+		}
+		if !strings.Contains(b.String(), "\n       Move what holds") || !strings.Contains(b.String(), "\n      Move what holds") {
+			t.Errorf("terminal %v: the prose is not aligned as before:\n%s", terminal, b.String())
+		}
+	}
+}

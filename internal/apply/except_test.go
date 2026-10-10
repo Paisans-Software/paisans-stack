@@ -504,3 +504,23 @@ func TestAFailedReloadIsOwedToTheNextApply(t *testing.T) {
 		t.Error("the reload is still owed after it was made")
 	}
 }
+
+// Files edited on the host refuse the apply with one line per file.
+func TestEditedFilesAreAProblem(t *testing.T) {
+	host := applied(t, "home-a")
+	host.files["/srv/paisans/f2a9/infra/compose.yaml"] += "# edited on the host\n"
+	host.files["/srv/paisans/f2a9/talk/.env"] += "# edited on the host\n"
+	p, err := apply.Build("home-a", plan(t), acmeModule(t), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := problemOf(t, apply.Refusal(p))
+	if q.Hint != "2 files on home-a were edited on the host" {
+		t.Errorf("hint: %q", q.Hint)
+	}
+	for _, want := range []string{"\n- /srv/paisans/f2a9/infra/compose.yaml\n", "\n- /srv/paisans/f2a9/talk/.env\n", "--overwrite <path>"} {
+		if !strings.Contains("\n"+q.Explain, want) {
+			t.Errorf("the explanation lacks %q:\n%s", want, q.Explain)
+		}
+	}
+}

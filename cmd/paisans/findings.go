@@ -17,6 +17,9 @@ func reportFindings(r ui.Reporter, path string, result validate.Result) {
 	if len(result.Findings) == 0 {
 		return
 	}
+	if !r.Verbose() {
+		path = ui.ShortPath(path)
+	}
 	r.Section(path)
 	for _, f := range result.Findings {
 		// The key goes first because many explanations are written to follow
@@ -33,6 +36,21 @@ func reportFindings(r ui.Reporter, path string, result validate.Result) {
 		}
 	}
 	r.Result("%s: %s", path, counts(len(result.Refusals()), len(result.Warnings())))
+}
+
+// refused is the error that ends a command whose configuration validate
+// refused. The refusals are above it, each with its own explanation, so it
+// names the file and the count, and then says what the refusal stopped.
+func refused(path string, n int, consequence string) error {
+	explain := "Fix each refusal above, then run the command again."
+	if consequence != "" {
+		explain += " " + consequence
+	}
+	return &ui.Problem{
+		Hint:    fmt.Sprintf("%s was refused: %s above", ui.ShortPath(path), plural(n, "refusal")),
+		Explain: explain,
+		Cause:   fmt.Errorf("%s: %d refusal(s)", path, n),
+	}
 }
 
 func counts(refusals, warnings int) string {

@@ -315,3 +315,33 @@ func TestThePromptLeavesOutAHostnameItCannotTrust(t *testing.T) {
 		}
 	}
 }
+
+// Each way sudo cannot be used is a Problem that names the host and what to
+// do, and is still ErrSudo to a caller that asks.
+func TestSudoRefusalsAreProblems(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		host    *sudoHost
+		prompt  func(string) (string, error)
+		hint    string
+		explain string
+	}{
+		{"no terminal", &sudoHost{password: "hunter2"}, nil, "sudo on box needs a password and there is no terminal", "NOPASSWD"},
+		{"wrong password", &sudoHost{password: "hunter2"}, (&prompter{answer: "wrong"}).prompt, "sudo on box did not accept the password", "not tried again"},
+		{"no password", &sudoHost{password: "hunter2"}, (&prompter{answer: ""}).prompt, "no sudo password was given for box", "Run again"},
+		{"not a sudoer", &sudoHost{refuse: "ubuntu is not in the sudoers file.\n"}, (&prompter{answer: "x"}).prompt, "sudo on box refused the ssh user", "not in the sudoers file"},
+	} {
+		c.host.install(t)
+		_, err := sudoTransport(apply.NewSudoAuth(c.prompt)).Run("true")
+		if !errors.Is(err, apply.ErrSudo) {
+			t.Errorf("%s: not ErrSudo: %v", c.name, err)
+		}
+		p := problemOf(t, err)
+		if p.Hint != c.hint || !strings.Contains(p.Explain, c.explain) {
+			t.Errorf("%s: got %q\n%q", c.name, p.Hint, p.Explain)
+		}
+		if strings.Contains(err.Error(), "hunter2") || c.name == "wrong password" && strings.Contains(err.Error(), "wrong") {
+			t.Errorf("%s: the error carries a password: %v", c.name, err)
+		}
+	}
+}
