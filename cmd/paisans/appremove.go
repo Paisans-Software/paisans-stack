@@ -158,16 +158,20 @@ func runAppRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	// The app, and each group only it named, leave every gateway's
 	// deployment record, so secrets prune may remove their secrets.
 	deployed, _ := deploymentRecord(cfg, func(gw string) registry.Runner { return registryHost(gw, cfg.Sites[gw], "", *sudo) })
-	forget := func(execute bool) {
-		forgetInRecords(r, cfg, appRecordNames(cfg, app, deployed), app, execute, *sudo)
+	forget := func(execute bool) bool {
+		return forgetInRecords(r, cfg, appRecordNames(cfg, app, deployed), app, execute, *sudo)
 	}
 	if plan.Empty() {
-		forget(*execute)
+		recordLeft := forget(*execute)
 		where := "on any site or at Pocket ID"
 		if *deleteData {
 			where = "on any site, at Pocket ID, in Postgres or in Garage"
 		}
 		reportRemains(r, appremove.Remains(plan, secrets, nil))
+		if recordLeft {
+			r.Result("Nothing of %s was found %s. Re-run with --execute to take it out of the deployment record.", app, where)
+			return nil
+		}
 		r.Result("Nothing of %s was found %s. Nothing to do.", app, where)
 		return nil
 	}

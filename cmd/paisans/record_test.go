@@ -104,3 +104,22 @@ func TestForgetAppCleansTheRecordWhenNothingElseIsLeft(t *testing.T) {
 		t.Errorf("%+v", names)
 	}
 }
+
+// A dry run that would take a name out of a record says so, so a removal
+// with nothing else left still points at --execute.
+func TestForgetInRecordsDryRunSaysWhetherARecordListsIt(t *testing.T) {
+	cfg, _ := config.Load(fixtureConfig())
+	vm := &recordFake{files: map[string]string{deployrecord.Path(cfg.Deployment()): `{"version":1,"sites":["vm","monitor-a"],"apps":[],"pocket_id_groups":[]}`}}
+	saved := registryHost
+	registryHost = func(string, config.Site, string, bool) registry.Runner { return vm }
+	t.Cleanup(func() { registryHost = saved })
+	if !forgetInRecords(&ui.Recorder{}, cfg, deployrecord.Record{Sites: []string{"monitor-a"}}, "monitor-a", false, true) {
+		t.Error("a listed name is not reported as left")
+	}
+	if forgetInRecords(&ui.Recorder{}, cfg, deployrecord.Record{Sites: []string{"monitor-b"}}, "monitor-b", false, true) {
+		t.Error("an unlisted name is reported as left")
+	}
+	if len(vm.ran) != 0 {
+		t.Error("a dry run wrote")
+	}
+}

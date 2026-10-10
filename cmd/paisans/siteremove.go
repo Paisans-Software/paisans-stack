@@ -208,15 +208,14 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 	}
 	// A site no longer declared leaves every gateway's deployment record,
 	// whatever its host held, so secrets prune may remove its secrets.
-	forget := func(execute bool) {
-		if !isDeclared {
-			forgetInRecords(r, cfg, deployrecord.Record{Sites: []string{site}}, site, execute, a.sudo)
-		}
+	forget := func(execute bool) bool {
+		return !isDeclared && forgetInRecords(r, cfg, deployrecord.Record{Sites: []string{site}}, site, execute, a.sudo)
 	}
+	recordLeft := false
 	if !plan.Pending() {
-		forget(a.execute)
+		recordLeft = forget(a.execute)
 	}
-	if forcedNothingToDo(r, plan, dest) {
+	if forcedNothingToDo(r, plan, dest, recordLeft) {
 		return nil
 	}
 	if !a.execute || r.Verbose() {
@@ -253,9 +252,13 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 // forcedNothingToDo ends a forced run on a host that holds nothing of this
 // deployment, dry run or not: there is nothing to run again, and what the
 // host's owner keeps there is not this command's to list.
-func forcedNothingToDo(r ui.Reporter, plan *siteremove.Plan, dest config.Destination) bool {
+func forcedNothingToDo(r ui.Reporter, plan *siteremove.Plan, dest config.Destination, recordLeft bool) bool {
 	if plan.Pending() {
 		return false
+	}
+	if recordLeft {
+		r.Result("%s holds nothing of this deployment. Re-run with --execute to take it out of the deployment record.", dest)
+		return true
 	}
 	r.Result("%s holds nothing of this deployment. Nothing to do.", dest)
 	return true

@@ -103,11 +103,13 @@ func recordApplied(r ui.Reporter, cfg *config.Config, site string, t registry.Ru
 }
 
 // forgetInRecords takes names out of the deployment record on every gateway
-// paisans.yaml declares. The removal they follow is done whether or not this
+// paisans.yaml declares. Without execute it lists them, and reports whether
+// any record still lists one. The removal they follow is done whether or not this
 // reaches every gateway, so a gateway it cannot reach is a warning: its
 // record keeps the secrets, which a later run of the same removal frees.
-func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Record, what string, execute, sudo bool) {
+func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Record, what string, execute, sudo bool) bool {
 	d := cfg.Deployment()
+	left := false
 	for _, gw := range cfg.GatewaySites() {
 		t := registryHost(gw, cfg.Sites[gw], "", sudo)
 		rec, found, err := deployrecord.Read(t, d)
@@ -121,6 +123,7 @@ func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Recor
 		title := "forget " + what + " in the deployment record on " + gw
 		if !execute {
 			r.Item(title)
+			left = true
 			continue
 		}
 		s := r.Step(title)
@@ -131,6 +134,7 @@ func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Recor
 		}
 		s.Done("")
 	}
+	return left
 }
 
 func listsAny(rec, names deployrecord.Record) bool {

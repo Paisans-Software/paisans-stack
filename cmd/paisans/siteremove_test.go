@@ -121,14 +121,19 @@ func TestSiteRemoveForceRefusesBeforeReachingAHost(t *testing.T) {
 func TestForcedOnAnEmptyHostSaysNothingToDo(t *testing.T) {
 	plan := &siteremove.Plan{Site: "home-b", Stages: []*siteremove.Stage{{Number: 3, Name: "clean the host"}}}
 	rec := &ui.Recorder{}
-	if !forcedNothingToDo(rec, plan, config.Destination{User: "admin", Host: "192.0.2.1", Port: 22}) {
+	if !forcedNothingToDo(rec, plan, config.Destination{User: "admin", Host: "192.0.2.1", Port: 22}, false) {
 		t.Fatal("an empty plan was not ended")
 	}
 	if out := rec.Lines(); strings.Contains(out, "--execute") || !strings.Contains(out, "holds nothing of this deployment") {
 		t.Errorf("printed:\n%s", out)
 	}
+	rec = &ui.Recorder{}
+	forcedNothingToDo(rec, plan, config.Destination{User: "admin", Host: "192.0.2.1", Port: 22}, true)
+	if out := rec.Lines(); !strings.Contains(out, "--execute") || !strings.Contains(out, "deployment record") {
+		t.Errorf("a dry run with a record left to clean printed:\n%s", out)
+	}
 	plan.Stages[0].Steps = []siteremove.Step{{Site: "home-b", Verb: "remove"}}
-	if forcedNothingToDo(&ui.Recorder{}, plan, config.Destination{}) {
+	if forcedNothingToDo(&ui.Recorder{}, plan, config.Destination{}, false) {
 		t.Error("a plan with steps was ended")
 	}
 }
