@@ -98,15 +98,12 @@ type Plan struct {
 	// own, which its cluster still counts on: the command asks for the
 	// site's name before cleaning it.
 	Current bool
+	// CaddyKept are the host owner's site files in /srv/caddy.d that the
+	// gateway's Caddy is kept for, empty when it is not kept.
+	CaddyKept []string
 	// forced is a plan BuildForced made, and declared whether paisans.yaml
 	// still declares its site.
 	forced, declared bool
-	// noConfig is a plan BuildForcedByID made from a registry entry alone:
-	// what needs the rest of paisans.yaml is not planned.
-	noConfig bool
-	// unserved are the owner's site blocks a gateway's Caddy served, which
-	// a plan with no configuration removes without handing it over.
-	unserved []string
 	// Report receives each stage as a section, the work in it as steps and
 	// each gate as a step of its own. Nil discards it.
 	Report ui.Reporter
@@ -167,6 +164,10 @@ func (p *Plan) stop(err error) {
 // dep is the deployment every name and path here belongs to.
 func (p *Plan) dep() deployment.Deployment { return p.cfg.Deployment() }
 
+// now is the clock the deployment record's updates are stamped with. Tests
+// replace it.
+var now = time.Now
+
 // Timing is every wait the gates make, as a count of polls, so a test that
 // replaces sleep with nothing still ends.
 var (
@@ -200,10 +201,6 @@ var (
 	haproxyWait = 60 * time.Second
 	haproxyPoll = 3 * time.Second
 
-	// The handed over Caddy has started once its container runs and its
-	// configuration validates inside it.
-	handoverWait = 60 * time.Second
-	handoverPoll = 3 * time.Second
 )
 
 func attempts(wait, poll time.Duration) int {

@@ -68,13 +68,6 @@ func BuildForced(cfg *config.Config, secrets *config.Secrets, site string, dest 
 	}
 	forcedCfg.Sites[site] = s
 	p.cfg = &forcedCfg
-	if s.Has(config.RoleGateway) {
-		// Handing Caddy over reads the snippets of the Caddyfile the
-		// gateway was rendered with.
-		if p.full, err = p.render(p.cfg); err != nil {
-			return nil, fmt.Errorf("site remove %s: rendering the gateway's Caddyfile, which handing Caddy over reads: %w", site, err)
-		}
-	}
 
 	host, err := p.buildHost()
 	if err != nil {
@@ -109,9 +102,10 @@ func answers(what string, dest config.Destination, t apply.Transport) error {
 // The host stage reads the configuration for the id, the site's ssh user and
 // destination, and the site's roles, which the registry entry and dest hold.
 // So the plan runs against a configuration of just those, and is the forced
-// removal's own host stage. It is marked as having no configuration, which
-// leaves out what needs the rest: a gateway's Caddy hand over, which renders
-// its Caddyfile, and the Pocket ID note. The remains say what was not read.
+// removal's own host stage, without the Pocket ID note, which reads the
+// configuration's apps. A gateway's kept Caddy is reduced from the
+// Caddyfile on the host, as with a configuration. The remains say what was
+// not read.
 func BuildForcedByID(dest config.Destination, t apply.Transport, ref string, o Options) (*Plan, error) {
 	what := "--id " + ref
 	if o.HostGone {
@@ -166,7 +160,7 @@ func BuildForcedByID(dest config.Destination, t apply.Transport, ref string, o O
 		}
 	}
 	cfg := &config.Config{ID: id, Community: config.Community{Domain: e.Domain}, Sites: map[string]config.Site{e.Site: s}}
-	p := &Plan{Site: e.Site, Options: o, transports: map[string]apply.Transport{e.Site: t}, forced: true, noConfig: true, cfg: cfg}
+	p := &Plan{Site: e.Site, Options: o, transports: map[string]apply.Transport{e.Site: t}, forced: true, cfg: cfg}
 	host, err := p.buildHost()
 	if err != nil {
 		return nil, err
@@ -183,8 +177,8 @@ func BuildForcedByID(dest config.Destination, t apply.Transport, ref string, o O
 // what is cleaned off dest, and what goes with it that the plan alone shows.
 func (p *Plan) Confirmation(dest config.Destination) string {
 	out := fmt.Sprintf("This cleans deployment %s (%s), site %s, off %s, and nothing says whether it still runs.", p.cfg.ID, p.cfg.Community.Domain, p.Site, dest)
-	if len(p.unserved) > 0 {
-		out += fmt.Sprintf(" Its Caddy is removed without a hand over, so the owner's sites in %s stop being served: %s.", render.HostSitesDir, strings.Join(p.unserved, ", "))
+	if len(p.CaddyKept) > 0 {
+		out += fmt.Sprintf(" Its Caddy is kept, reduced to the host owner's sites in %s: %s.", render.HostSitesDir, strings.Join(p.CaddyKept, ", "))
 	}
 	if p.DeleteData {
 		out += fmt.Sprintf(" It deletes this deployment's data on %s for good.", dest)

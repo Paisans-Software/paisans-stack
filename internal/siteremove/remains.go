@@ -88,19 +88,8 @@ func ownedNote(site, owed string) string {
 	return fmt.Sprintf("%s: run `paisans apply --site %s` when that is acceptable. %s", site, site, owed)
 }
 
-func handoverKept(site, dir string, env bool) []string {
-	lines := []string{fmt.Sprintf("%s: Caddy handed over to the host's owner; paisans never touches it again. It is in %s for %s, and its data directory holds the certificates and keys of every hostname this deployment's Caddy served", site, dir, render.HostSitesDir)}
-	if env {
-		lines = append(lines, fmt.Sprintf("%s: DNS token left on the host; rotate it once the owner has their own. %s/caddy.env holds a copy of secrets external.acme_dns_token, a credential this deployment no longer controls, left for the owner. Rotate it at the DNS provider that issued it", site, dir))
-	}
-	return lines
-}
-
-func handoverNotRendered(site string, hostSites []string) string {
-	if len(hostSites) == 0 {
-		return fmt.Sprintf("%s: Caddy not handed over, and nothing relied on it. %s held no *.caddy file, so this deployment's Caddy is removed with its other containers", site, render.HostSitesDir)
-	}
-	return fmt.Sprintf("%s: Caddy not handed over; the owner's sites in %s stop being served. Without paisans.yaml its Caddyfile cannot be rendered, so this deployment's Caddy is removed with its other containers. Each of %s needs a Caddy of the owner's own", site, render.HostSitesDir, strings.Join(hostSites, ", "))
+func caddyKept(site, container string, sites []string, dir string) string {
+	return fmt.Sprintf("%s: Caddy kept; it serves the host owner's sites in %s. It is %s, serving %s; its compose file, Caddyfile, caddy.env, certificates and state stay in %s, with --delete-data too. Run this again once those sites have moved, and it goes", site, render.HostSitesDir, container, strings.Join(sites, ", "), dir)
 }
 
 func secretsNotRead(site string) string {

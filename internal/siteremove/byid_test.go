@@ -6,7 +6,6 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/registry"
-	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/siteremove"
 )
 
@@ -121,45 +120,6 @@ func TestByIDLeavesAnotherDeploymentAlone(t *testing.T) {
 	}
 }
 
-// A gateway is not handed over without its configuration. Its Caddy goes
-// with its other containers, nothing under /srv/caddy is written, and the
-// remains name the owner's site blocks the removed Caddy served.
-func TestByIDGatewayIsNotHandedOver(t *testing.T) {
-	w := setup(t)
-	vm := w.hosts["vm"]
-	vm.files[render.HostSitesDir+"/blog.caddy"] = "blog.example.org { respond 200 }\n"
-	p := byID(t, w, "vm", "f2a9", siteremove.Options{})
-	if hasStepIn(stageNamed(p, "clean the host"), "vm", "hand over", "Caddy") {
-		t.Fatalf("a hand over is planned:\n%s", printed(p))
-	}
-	remains := strings.Join(p.Remains(), "\n")
-	if !strings.Contains(remains, "Caddy not handed over") || !strings.Contains(remains, render.HostSitesDir+"/blog.caddy") {
-		t.Errorf("the remains do not name the owner's sites:\n%s", remains)
-	}
-	if err := siteremove.Execute(p); err != nil {
-		t.Fatal(err)
-	}
-	for path := range vm.files {
-		if strings.HasPrefix(path, "/srv/caddy/") {
-			t.Errorf("%s was written", path)
-		}
-	}
-	for _, c := range vm.commands {
-		if strings.Contains(c, "/srv/caddy") {
-			t.Errorf("a command reaches /srv/caddy: %s", c)
-		}
-	}
-	if _, ok := vm.files[render.HostSitesDir+"/blog.caddy"]; !ok {
-		t.Error("the owner's site block is gone")
-	}
-
-	w = setup(t)
-	remains = strings.Join(byID(t, w, "vm", "f2a9", siteremove.Options{}).Remains(), "\n")
-	if !strings.Contains(remains, "Caddy not handed over") || !strings.Contains(remains, "nothing") {
-		t.Errorf("a gateway with no site blocks:\n%s", remains)
-	}
-}
-
 // An entry that does not agree with its id is refused before anything is
 // planned: every name removed is made from the id.
 func TestByIDRefusesAnEntryThatDisagreesWithItsID(t *testing.T) {
@@ -247,20 +207,3 @@ func TestByIDRefusesAFullIDWhoseTokenAnotherEntryHolds(t *testing.T) {
 	}
 }
 
-// The question --execute asks says what is lost before anything is: the
-// owner's sites a gateway's removed Caddy served, and the data.
-func TestByIDConfirmationNamesTheOwnersSites(t *testing.T) {
-	w := setup(t)
-	w.hosts["vm"].files[render.HostSitesDir+"/blog.caddy"] = "blog.example.org { respond 200 }\n"
-	dest, _ := config.ParseDestination("ubuntu@192.0.2.30")
-	q := byID(t, w, "vm", "f2a9", siteremove.Options{DeleteData: true}).Confirmation(dest)
-	for _, want := range []string{ourID, "vm", render.HostSitesDir + "/blog.caddy", "stop being served", "data"} {
-		if !strings.Contains(q, want) {
-			t.Errorf("no %q in %q", want, q)
-		}
-	}
-	q = byID(t, w, "watch", "f2a9", siteremove.Options{}).Confirmation(dest)
-	if strings.Contains(q, "Caddy") || strings.Contains(q, "data") {
-		t.Errorf("a monitor without --delete-data: %q", q)
-	}
-}
