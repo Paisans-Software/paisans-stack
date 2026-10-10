@@ -61,7 +61,13 @@ func commonFlags(fs *flag.FlagSet) func() ui.Reporter {
 // that moves its report to stderr (errReporter) moves the retries with it,
 // because stdout there carries data a script reads and a retry line beside
 // it would corrupt it.
-func routeRetries(r ui.Reporter) { apply.SetRetryLog(detailWriter{r}) }
+func routeRetries(r ui.Reporter) {
+	if c, ok := r.(interface{ RetryLog() io.Writer }); ok {
+		apply.SetRetryLog(c.RetryLog())
+		return
+	}
+	apply.SetRetryLog(detailWriter{r})
+}
 
 // holdOutput pauses the drawing of the reporter a command reports through,
 // for as long as something else asks on the terminal. routeHolds points it at

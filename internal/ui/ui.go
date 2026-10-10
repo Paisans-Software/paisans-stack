@@ -54,9 +54,27 @@ type Step interface {
 	// Fail ends the step as failed. The error itself is the caller's to
 	// return and print; Fail marks the line.
 	Fail(err error)
+	// End ends the step with m and result in the second column: a dry
+	// run's status, where a failure is shown rather than returned.
+	End(m Mark, result string)
 	// Detail attaches a verbose line to this step.
 	Detail(format string, args ...any)
 }
+
+// Mark is how a step ended.
+type Mark int
+
+const (
+	// OK is a finished step, or one a dry run found up to date: ✓.
+	OK Mark = iota
+	// Failed is a step that failed: ✗.
+	Failed
+	// Pending is a step a dry run found work for: ○.
+	Pending
+	// Waiting is a step a dry run cannot plan until an earlier one has run:
+	// a dim ·.
+	Waiting
+)
 
 // New reports to w, drawing with colour and a spinner when w is a terminal
 // that allows it.
@@ -87,6 +105,22 @@ func Hold(r Reporter) (resume func()) {
 		return h.Hold()
 	}
 	return func() {}
+}
+
+// Aligner is a reporter whose title column can be sized to titles known in
+// advance. Steps stream, so the column is a fixed width unless a caller that
+// knows every title says so.
+type Aligner interface {
+	// Align sizes the title column to the longest of titles, or back to the
+	// default for none.
+	Align(titles ...string)
+}
+
+// Align sizes r's title column to titles, when r draws one.
+func Align(r Reporter, titles ...string) {
+	if a, ok := r.(Aligner); ok {
+		a.Align(titles...)
+	}
 }
 
 // Discard reports nothing.
@@ -120,4 +154,5 @@ type discardStep struct{}
 
 func (discardStep) Done(string)           {}
 func (discardStep) Fail(error)            {}
+func (discardStep) End(Mark, string)      {}
 func (discardStep) Detail(string, ...any) {}

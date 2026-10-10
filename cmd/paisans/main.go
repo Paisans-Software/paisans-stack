@@ -684,7 +684,17 @@ func runApply(args []string) error {
 
 	if !*execute {
 		err := clients.result()
-		if len(plan.Writes()) == 0 && len(plan.Actions) == 0 && plan.WireGuard == apply.WireGuardNone && (clients == nil || clients.steps == 0) {
+		changes := len(plan.Writes()) + len(plan.Actions)
+		if plan.WireGuard != apply.WireGuardNone {
+			changes++
+		}
+		if clients != nil {
+			changes += clients.steps
+		}
+		// A plan --execute would refuse, Eg: a file edited on the host, is
+		// where the run would stop, not work it would do.
+		dryRunFound(count(changes, "change"), apply.Refusal(plan))
+		if changes == 0 {
 			r.Result("%s is up to date. Nothing to apply.", *site)
 			return err
 		}
@@ -887,6 +897,7 @@ func runStorageInit(args []string) error {
 	}
 
 	if !*execute {
+		dryRunFound(count(len(plan.Steps), "change"), nil)
 		if len(plan.Steps) == 0 {
 			r.Result("%s is provisioned. Nothing to do.", *site)
 			return nil
@@ -969,6 +980,7 @@ func runHostPrepare(args []string) error {
 	}
 
 	if !*execute {
+		dryRunFound(count(len(plan.Steps), "change"), nil)
 		if len(plan.Steps) == 0 {
 			r.Result("%s is prepared. Nothing to do.", *site)
 			return nil
@@ -1010,9 +1022,15 @@ func runDNSInit(args []string) error {
 
 	if !execute {
 		if n := len(plan.Conflicts()); n > 0 {
+			dryRunFound("", fmt.Errorf("%s with the provider's: %w", plural(n, "record conflict"), dns.ErrConflict))
 			r.Result("%s conflict with the provider's. Resolve %s before --execute, which creates nothing while one stands.", plural(n, "record"), map[bool]string{true: "it", false: "them"}[n == 1])
 			return nil
 		}
+		creates := ""
+		if n := len(plan.Creates()); n > 0 {
+			creates = plural(n, "record") + " to create"
+		}
+		dryRunFound(creates, nil)
 		if len(plan.Creates()) == 0 {
 			r.Result("Every record is present. Nothing to create.")
 			return nil

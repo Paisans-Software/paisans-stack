@@ -93,6 +93,7 @@ func runStorageAdd(args []string) error {
 	}
 
 	if !*execute {
+		dryRunFound(count(plan.PendingStages(), "stage"), nil)
 		reportRemains(r, plan.Notes)
 		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil

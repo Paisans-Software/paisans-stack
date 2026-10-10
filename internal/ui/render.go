@@ -19,12 +19,15 @@ const (
 	green  = "\x1b[32m"
 	red    = "\x1b[31m"
 	yellow = "\x1b[33m"
+	dim    = "\x1b[2m"
 	reset  = "\x1b[0m"
 	clear  = "\r\x1b[K"
 )
 
 type writer struct {
-	mu       sync.Mutex
+	mu sync.Mutex
+	// width is the title column Align set, 0 for titleWidth.
+	width    int
 	w        io.Writer
 	verbose  bool
 	terminal bool
@@ -130,7 +133,7 @@ func (r *writer) drawLocked() {
 		return
 	}
 	elapsed := r.now().Sub(s.started)
-	fmt.Fprintf(r.w, "%s  %s %s", clear, frames[r.frame_%len(frames)], pad(s.title))
+	fmt.Fprintf(r.w, "%s  %s %s", clear, frames[r.frame_%len(frames)], r.pad(s.title))
 	if elapsed >= time.Second {
 		fmt.Fprintf(r.w, "%ds", int(elapsed.Seconds()))
 	}
@@ -144,11 +147,26 @@ func (s *step) Detail(format string, args ...any) {
 	}
 }
 
-func (s *step) Done(result string) { s.end(true, result) }
+func (s *step) Done(result string) { s.End(OK, s.timed(result)) }
 
-func (s *step) Fail(err error) { s.end(false, "") }
+func (s *step) Fail(err error) { s.End(Failed, s.timed("")) }
 
-func (s *step) end(ok bool, result string) {
+// timed is result, or for none the elapsed time when the step took a second
+// or more. Only a step that did work is timed: End is also a dry run's
+// status line, where the time it took to check says nothing.
+func (s *step) timed(result string) string {
+	if result != "" {
+		return result
+	}
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	if d := s.r.now().Sub(s.started); d >= time.Second {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	return ""
+}
+
+func (s *step) End(m Mark, result string) {
 	r := s.r
 	r.mu.Lock()
 	if s.ended {
@@ -161,13 +179,12 @@ func (s *step) end(ok bool, result string) {
 	if r.open == s {
 		r.open = nil
 	}
-	if result == "" {
-		if d := r.now().Sub(s.started); d >= time.Second {
-			result = fmt.Sprintf("%.1fs", d.Seconds())
-		}
+	text := strings.TrimRight(r.pad(s.title)+result, " ")
+	line := "  " + r.mark(m) + " " + text
+	if r.terminal && m == Waiting {
+		// A step that waits is dimmed whole: it is not this run's to plan.
+		line = "  " + dim + "· " + text + reset
 	}
-	mark := r.mark(ok)
-	line := "  " + mark + " " + strings.TrimRight(pad(s.title)+result, " ")
 	if r.terminal {
 		line = clear + line
 	}
@@ -181,14 +198,26 @@ func (s *step) end(ok bool, result string) {
 	}
 }
 
-func (r *writer) mark(ok bool) string {
-	switch {
-	case r.terminal && ok:
-		return green + "✓" + reset
-	case r.terminal:
-		return red + "✗" + reset
-	case ok:
+func (r *writer) mark(m Mark) string {
+	if r.terminal {
+		switch m {
+		case OK:
+			return green + "✓" + reset
+		case Pending:
+			return yellow + "○" + reset
+		case Waiting:
+			return dim + "·" + reset
+		default:
+			return red + "✗" + reset
+		}
+	}
+	switch m {
+	case OK:
 		return "ok  "
+	case Pending:
+		return "todo"
+	case Waiting:
+		return "wait"
 	default:
 		return "FAIL"
 	}
@@ -331,9 +360,24 @@ func (r *writer) interruptLocked() {
 	}
 }
 
-func pad(title string) string {
-	if len(title) >= titleWidth {
+func (r *writer) pad(title string) string {
+	width := titleWidth
+	if r.width > width {
+		width = r.width
+	}
+	if len(title) >= width {
 		return title + " "
 	}
-	return title + strings.Repeat(" ", titleWidth-len(title))
+	return title + strings.Repeat(" ", width-len(title))
+}
+
+func (r *writer) Align(titles ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.width = 0
+	for _, t := range titles {
+		if len(t)+1 > r.width {
+			r.width = len(t) + 1
+		}
+	}
 }
