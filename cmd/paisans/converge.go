@@ -352,7 +352,7 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 		// init writes the id, the subnet and the secrets the rest is
 		// planned from, so the state is read again once it has run.
 		if err := convergeRun(convergeFlags([]string{"init"}, o)); err != nil {
-			return fmt.Errorf("apply: stopped at init: %w\nRun paisans apply --execute again to resume.", err)
+			return convergeStop("apply stopped at init", err, "Run paisans apply --execute again to resume.")
 		}
 		// init reported through its own reporter, and pointed the retries
 		// and holds at it; the reads below draw on r.
@@ -404,19 +404,39 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 		switch {
 		case err == nil:
 		case s.Founding && errors.Is(err, apply.ErrFoundingWait):
-			r.Note(s.Title+" stopped at the founding stop; pass two applies it again", err.Error())
+			hint, explain := ui.Describe(err)
+			r.Note(s.Title+" stopped at the founding stop; pass two applies it again", hint+".\n"+explain)
 		case errors.Is(err, dns.ErrConflict):
-			return fmt.Errorf("apply: stopped at %s: %w\nChange each conflicting record above at your DNS provider, then run paisans apply --execute again.", s.Title, err)
+			return convergeStop("apply stopped at "+s.Title, err, "Change each conflicting record above at your DNS provider, then run paisans apply --execute again.")
 		case errors.Is(err, storageadd.ErrWaiting):
 			// Not a failure, and main exits 75 for it as storage add does.
-			return fmt.Errorf("apply: waiting at %s: %w\nNothing failed: Garage is still moving data. Run paisans apply --execute again later.", s.Title, err)
+			return convergeStop("apply is waiting at "+s.Title, err, "Nothing failed: Garage is still moving data. Run paisans apply --execute again later.")
 		default:
-			return fmt.Errorf("apply: stopped at %s: %w\nRun paisans apply --execute again to resume.", s.Title, err)
+			return convergeStop("apply stopped at "+s.Title, err, "Run paisans apply --execute again to resume.")
 		}
 	}
 	convergeLeft(r, cfg, secretsPath, configPath)
 	r.Result("%s is converged: every step ran.", configPath)
 	return nil
+}
+
+// convergeStop is the error a run stops with at a step: the step named in
+// the hint, and the step's own problem, its hint and explanation, ahead of
+// next, how to go on. The step's error is the cause, so -v shows it whole and
+// errors.Is still finds what it wraps.
+func convergeStop(hint string, err error, next string) error {
+	inner, explain := ui.Describe(err)
+	// A wait's own advice is storage add's, which a run of apply replaces
+	// with next: only what it waits on is kept.
+	var w *storageadd.Waiting
+	if errors.As(err, &w) {
+		inner, explain = w.Hint()+": "+w.Detail, ""
+	}
+	lines := []string{strings.TrimSuffix(inner, ".") + "."}
+	if explain != "" {
+		lines = append(lines, explain)
+	}
+	return &ui.Problem{Hint: hint, Explain: strings.Join(append(lines, next), "\n"), Cause: err}
 }
 
 // convergeStatus is the dry run's plan: each step under its phase, marked
@@ -475,8 +495,11 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 			}
 			switch {
 			case err != nil:
-				first, _, _ := strings.Cut(err.Error(), "\n")
-				st = status{ui.Failed, first}
+				hint, explain := ui.Describe(err)
+				st = status{ui.Failed, hint}
+				if explain != "" {
+					line.Detail("%s", explain)
+				}
 			case summary == "":
 				st = status{ui.OK, ""}
 			default:

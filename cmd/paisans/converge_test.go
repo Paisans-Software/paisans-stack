@@ -1316,3 +1316,39 @@ func TestConvergeStopsOnASecretsFileThatDoesNotRead(t *testing.T) {
 		t.Error("a host was read with secrets that do not read")
 	}
 }
+
+// A stop ends the run with a Problem naming the step. Its explanation is the
+// step's own problem, hint and explanation, and then how to resume, so the
+// reason shows without -v.
+func TestConvergeStopIsAProblem(t *testing.T) {
+	unreachable := &ui.Problem{Hint: "ubuntu@203.0.113.10 cannot be reached over ssh", Explain: "Check that the host is up.", Cause: apply.ErrUnreachable}
+	waiting := &storageadd.Waiting{Stage: &storageadd.Stage{Number: 3, Name: "sync"}, Detail: "blocks are still moving"}
+	for _, tc := range []struct {
+		step    string
+		err     error
+		hint    string
+		explain []string
+		code    int
+	}{
+		{"apply --site vm", unreachable, "apply stopped at apply --site vm", []string{"ubuntu@203.0.113.10 cannot be reached over ssh.", "Check that the host is up.", "Run paisans apply --execute again to resume."}, 1},
+		{"apply --site vm", errors.New("vm: boom"), "apply stopped at apply --site vm", []string{"vm: boom.", "Run paisans apply --execute again to resume."}, 1},
+		{"storage add", waiting, "apply is waiting at storage add", []string{"storage add is waiting on Garage at stage 3 (sync): blocks are still moving.", "Nothing failed: Garage is still moving data. Run paisans apply --execute again later."}, 75},
+	} {
+		fakeConverge(t, map[string]error{tc.step: tc.err})
+		err := converge(t, "--execute")
+		var p *ui.Problem
+		if !errors.As(err, &p) {
+			t.Fatalf("%s: not a ui.Problem: %v", tc.step, err)
+		}
+		if p.Hint != tc.hint || p.Explain != strings.Join(tc.explain, "\n") {
+			t.Errorf("%s: got %q\n%q", tc.step, p.Hint, p.Explain)
+		}
+		if !errors.Is(err, tc.err) {
+			t.Errorf("%s: the step's error is not wrapped", tc.step)
+		}
+		var b strings.Builder
+		if code := reportError(&b, err, false); code != tc.code {
+			t.Errorf("%s: exit %d, want %d", tc.step, code, tc.code)
+		}
+	}
+}
