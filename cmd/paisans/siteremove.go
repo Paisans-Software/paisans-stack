@@ -59,7 +59,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		}
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("site remove takes one site: paisans site remove <site> [--execute] [--host-gone] [--delete-data] [--force [--ssh user@host[:port]]]. Got extra argument(s): %s", strings.Join(fs.Args(), " "))
+		return &ui.Problem{Hint: "site remove takes one site", Explain: "Got extra argument(s): " + strings.Join(fs.Args(), " ") + ". Usage: paisans site remove <site> [--execute] [--host-gone] [--delete-data] [--force [--ssh user@host[:port]]]"}
 	}
 	if *idFlag != "" {
 		set := map[string]bool{}
@@ -67,10 +67,10 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 		return runSiteRemoveByID(r, site, byIDArgs{id: *idFlag, ssh: *sshFlag, force: *force, config: set["config"], secrets: set["secrets"], execute: *execute, hostGone: *hostGone, deleteData: *deleteData, sudo: *sudo}, stdin, stdout)
 	}
 	if site == "" {
-		return fmt.Errorf("site remove: name the site, Eg: paisans site remove home-b")
+		return &ui.Problem{Hint: "site remove needs a site", Explain: "Name the site to remove, Eg: paisans site remove home-b"}
 	}
 	if *sshFlag != "" && !*force {
-		return fmt.Errorf("site remove: --ssh names the host to clean, which only --force takes. A full removal reaches the site through its ssh section")
+		return &ui.Problem{Hint: "--ssh is only for --force", Explain: "--ssh names the host to clean, which only --force takes. A full removal reaches the site through its ssh section."}
 	}
 	if *force {
 		return runSiteRemoveForced(r, site, forcedArgs{config: *configPath, secrets: *secretsPath, ssh: *sshFlag, execute: *execute, hostGone: *hostGone, deleteData: *deleteData, sudo: *sudo}, stdin, stdout)
@@ -88,7 +88,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	// Refused before any host is read, so an unattended run with
 	// --delete-data stops with nothing asked of anything.
 	if *execute && *deleteData && !stdinIsTerminal(stdin) {
-		return fmt.Errorf("site remove: --delete-data deletes member data, which nothing brings back, so it asks for the site's name at a terminal and stdin is not one. Run it from an interactive shell. Nothing was changed")
+		return noTerminal("--delete-data deletes member data, which nothing brings back")
 	}
 	opts := siteremove.Options{HostGone: *hostGone, DeleteData: *deleteData, ConfigPath: *configPath}
 	if err := siteremove.Refusal(cfg, site, opts); err != nil {
@@ -168,7 +168,7 @@ type forcedArgs struct {
 // a host do: cleaning it removes this deployment's entry there.
 func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Reader, stdout io.Writer) error {
 	if a.hostGone {
-		return fmt.Errorf("site remove %s: --force cleans one host, and --host-gone reaches none. Drop one of them", site)
+		return forceAndHostGone()
 	}
 	cfg, err := config.Load(a.config)
 	if err != nil {
@@ -192,7 +192,7 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 		if own {
 			why = "it cleans the host " + site + " runs on, out from under its cluster"
 		}
-		return fmt.Errorf("site remove %s --force: %s, so it asks for the site's name at a terminal and stdin is not one. Run it from an interactive shell. Nothing was changed", site, why)
+		return noTerminal(strings.ToUpper(why[:1]) + why[1:])
 	}
 	if a.secrets == "" {
 		a.secrets = filepath.Join(filepath.Dir(a.config), "secrets.enc.yaml")
@@ -277,28 +277,28 @@ var tokenShape = regexp.MustCompile(fmt.Sprintf("^[0-9a-f]{%d}$", deployment.Tok
 func runSiteRemoveByID(r ui.Reporter, site string, a byIDArgs, stdin io.Reader, stdout io.Writer) error {
 	switch {
 	case !a.force:
-		return fmt.Errorf("site remove --id: --id names a deployment for --force to clean off one host, so add --force")
+		return &ui.Problem{Hint: "--id needs --force", Explain: "--id names a deployment for --force to clean off one host, so add --force."}
 	case site != "":
-		return fmt.Errorf("site remove --id: the host's registry entry names the site, so drop %s", site)
+		return &ui.Problem{Hint: "--id takes no site", Explain: "The host's registry entry names the site, so drop " + site + "."}
 	case a.config:
-		return fmt.Errorf("site remove --id: --id reads no paisans.yaml, and a configuration names its own id. Drop --config, or --id")
+		return &ui.Problem{Hint: "--id takes no --config", Explain: "--id reads no paisans.yaml, and a configuration names its own id. Drop --config, or --id."}
 	case a.secrets:
-		return fmt.Errorf("site remove --id: --id reads no secrets file. Drop --secrets")
+		return &ui.Problem{Hint: "--id takes no --secrets", Explain: "--id reads no secrets file. Drop --secrets."}
 	case a.hostGone:
-		return fmt.Errorf("site remove --id %s: --force cleans one host, and --host-gone reaches none. Drop one of them", a.id)
+		return forceAndHostGone()
 	case a.ssh == "":
-		return fmt.Errorf("site remove --id %s: with no configuration there is no ssh section to reach the host through, so name it with --ssh user@host[:port]", a.id)
+		return &ui.Problem{Hint: "--id needs --ssh", Explain: "With no configuration there is no ssh section to reach the host through, so name it with --ssh user@host[:port]."}
 	case !deployment.ValidID(a.id) && !tokenShape.MatchString(a.id):
-		return fmt.Errorf("site remove --id %q: it is neither a deployment id nor its %d hex digit token, as paisans host deployments lists them. Eg: --id f2a9", a.id, deployment.TokenLength)
+		return &ui.Problem{Hint: fmt.Sprintf("--id %q is not a deployment id or token", a.id), Explain: fmt.Sprintf("Give the full id or its %d hex digit token, as paisans host deployments lists them, Eg: --id f2a9", deployment.TokenLength)}
 	}
 	dest, err := config.ParseDestination(a.ssh)
 	if err != nil {
-		return fmt.Errorf("site remove --id %s: --ssh: %w", a.id, err)
+		return sshFlagProblem(a.ssh, err)
 	}
 	// Refused before any host is read, so an unattended run stops with
 	// nothing asked of anything.
 	if a.execute && !stdinIsTerminal(stdin) {
-		return fmt.Errorf("site remove --id %s --force: nothing says whether this deployment still runs, so it asks for the site's name at a terminal and stdin is not one. Run it from an interactive shell. Nothing was changed", a.id)
+		return noTerminal("Nothing says whether this deployment still runs")
 	}
 	t := reachDestination(dest, a.sudo)
 	plan, err := siteremove.BuildForcedByID(dest, t, a.id, siteremove.Options{DeleteData: a.deleteData})
@@ -354,14 +354,33 @@ func chooseHost(cfg *config.Config, site, ssh string) (config.Destination, error
 	if ssh != "" {
 		d, err := config.ParseDestination(ssh)
 		if err != nil {
-			return config.Destination{}, fmt.Errorf("site remove %s: --ssh: %w", site, err)
+			return config.Destination{}, sshFlagProblem(ssh, err)
 		}
 		return d, nil
 	}
 	if s, ok := cfg.Sites[site]; ok {
 		return s.Destination(), nil
 	}
-	return config.Destination{}, fmt.Errorf("site remove %s: it is not declared, so name its host with --ssh user@host[:port]", site)
+	return config.Destination{}, &ui.Problem{Hint: site + " is not declared", Explain: "Name its host with --ssh user@host[:port]."}
+}
+
+// noTerminal refuses a removal that must ask for the site's name, for why,
+// when stdin is not a terminal to ask at.
+func noTerminal(why string) error {
+	return &ui.Problem{
+		Hint:    "the site's name must be typed, and stdin is not a terminal",
+		Explain: why + ", so it asks for the site's name at a terminal. Run it from an interactive shell. Nothing was changed.",
+	}
+}
+
+func forceAndHostGone() error {
+	return &ui.Problem{Hint: "--force and --host-gone cannot be used together", Explain: "--force cleans one host, and --host-gone reaches none. Drop one of them."}
+}
+
+// sshFlagProblem is the Problem for an --ssh value that is not a
+// destination.
+func sshFlagProblem(value string, err error) error {
+	return &ui.Problem{Hint: fmt.Sprintf("--ssh %q is not a destination", value), Explain: err.Error() + ".", Cause: err}
 }
 
 // confirmSite asks for the site's name before --delete-data deletes its data.

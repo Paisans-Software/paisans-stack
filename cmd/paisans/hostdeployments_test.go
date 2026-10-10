@@ -163,6 +163,11 @@ func TestSiteRemoveByIDRefusesBeforeReachingAHost(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: err = %v, want %q", args, err, want)
 		}
+		// Each is a short hint and an explanation, as main prints it.
+		var p *ui.Problem
+		if !errors.As(err, &p) || len(p.Hint) > 80 || p.Explain == "" || strings.HasPrefix(p.Hint, "site remove") {
+			t.Errorf("%s: not the Problem main prints: %#v", args, p)
+		}
 	}
 }
 
