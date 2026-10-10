@@ -10,6 +10,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/registry"
+	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
 // reachDestination is how a command with no configuration reaches the host
@@ -21,19 +22,21 @@ var reachDestination = func(dest config.Destination, sudo bool) apply.Transport 
 }
 
 // deploymentsProbe lists, read only, each directory under the deployments'
-// base and, where Docker is installed, the deployment label and compose
-// project of every container carrying the label, tab separated. It fails,
+// base, each site file in render.HostSitesDir and, where Docker is
+// installed, the deployment label, compose project and compose service of
+// every container carrying the label, tab separated. It fails,
 // saying what, rather than answer partly: a directory it may not read (the
 // registry's, which a read without sudo would take for an empty registry,
 // or the deployments' base), and docker ps failing. Its last line is "end",
 // so an answer cut short is told from a host holding nothing.
-var deploymentsProbe = fmt.Sprintf(`set -e; for d in %[1]s %[2]s; do if [ -e "$d" ] && ! { [ -r "$d" ] && [ -x "$d" ]; }; then echo "cannot read $d"; exit 3; fi; done; if [ -d %[2]s ]; then for d in %[2]s/*; do if [ -d "$d" ]; then echo "root ${d##*/}"; fi; done; fi; if command -v docker >/dev/null 2>&1; then if ! out=$(docker ps -a --filter label=%[3]s --format '{{printf "container\t%%s\t%%s" (.Label "%[3]s") (.Label "com.docker.compose.project")}}' 2>&1); then echo "docker ps failed: $out"; exit 4; fi; if [ -n "$out" ]; then printf '%%s\n' "$out"; fi; fi; echo end`, registry.Dir, deployment.Base, deployment.Label)
+var deploymentsProbe = fmt.Sprintf(`set -e; for d in %[1]s %[2]s %[4]s; do if [ -e "$d" ] && ! { [ -r "$d" ] && [ -x "$d" ]; }; then echo "cannot read $d"; exit 3; fi; done; if [ -d %[2]s ]; then for d in %[2]s/*; do if [ -d "$d" ]; then echo "root ${d##*/}"; fi; done; fi; if [ -d %[4]s ]; then for f in %[4]s/*.caddy; do if [ -f "$f" ]; then echo "site ${f##*/}"; fi; done; fi; if command -v docker >/dev/null 2>&1; then if ! out=$(docker ps -a --filter label=%[3]s --format '{{printf "container\t%%s\t%%s\t%%s" (.Label "%[3]s") (.Label "com.docker.compose.project") (.Label "com.docker.compose.service")}}' 2>&1); then echo "docker ps failed: $out"; exit 4; fi; if [ -n "$out" ]; then printf '%%s\n' "$out"; fi; fi; echo end`, registry.Dir, deployment.Base, deployment.Label, render.HostSitesDir)
 
 // leftoverProbe is what deploymentsProbe found: the directories under the
-// base, by name, and each labelled container's deployment and project.
+// base and the site files in render.HostSitesDir, by name, and each labelled
+// container's deployment, project and service.
 type leftoverProbe struct {
-	roots      []string
-	containers [][2]string
+	roots, sites []string
+	containers   [][3]string
 }
 
 func parseDeploymentsProbe(out string) (leftoverProbe, error) {
@@ -46,12 +49,14 @@ func parseDeploymentsProbe(out string) (leftoverProbe, error) {
 		switch {
 		case strings.HasPrefix(line, "root "):
 			p.roots = append(p.roots, strings.TrimPrefix(line, "root "))
+		case strings.HasPrefix(line, "site "):
+			p.sites = append(p.sites, strings.TrimPrefix(line, "site "))
 		case strings.HasPrefix(line, "container\t"):
-			fields := strings.SplitN(strings.TrimPrefix(line, "container\t"), "\t", 2)
-			if len(fields) != 2 {
+			fields := strings.Split(strings.TrimPrefix(line, "container\t"), "\t")
+			if len(fields) != 3 {
 				return p, fmt.Errorf("an unreadable line: %q", line)
 			}
-			p.containers = append(p.containers, [2]string{fields[0], fields[1]})
+			p.containers = append(p.containers, [3]string{fields[0], fields[1], fields[2]})
 		default:
 			return p, fmt.Errorf("an unreadable line: %q", line)
 		}
@@ -112,7 +117,11 @@ func runHostDeployments(args []string) error {
 		if roles == "" {
 			roles = "none"
 		}
-		r.Item(fmt.Sprintf("%s: token %s, %s, site %s, roles %s, root %s", id, e.Token, e.Domain, e.Site, roles, e.Root))
+		line := fmt.Sprintf("%s: token %s, %s, site %s, roles %s, root %s", id, e.Token, e.Domain, e.Site, roles, e.Root)
+		if e.Kept == registry.KeptCaddy {
+			line += fmt.Sprintf("; caddy kept: serves %s sites (%s)", render.HostSitesDir, strings.Join(found.sites, ", "))
+		}
+		r.Item(line)
 	}
 	if len(ids) == 0 {
 		r.Item("none in " + registry.Path)

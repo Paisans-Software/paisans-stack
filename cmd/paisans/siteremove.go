@@ -335,6 +335,10 @@ func forcedNothingToDo(r ui.Reporter, plan *siteremove.Plan, dest config.Destina
 	if plan.Pending() {
 		return false
 	}
+	if len(plan.CaddyKept) > 0 {
+		r.Result("%s holds nothing of this deployment but its Caddy, kept because it serves %s. Run this again once they have moved, and it goes.", dest, strings.Join(plan.CaddyKept, ", "))
+		return true
+	}
 	if recordLeft {
 		r.Result("%s holds nothing of this deployment. Re-run with --execute to take it out of the deployment record.", dest)
 		return true

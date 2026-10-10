@@ -94,9 +94,10 @@ Commands:
              the WireGuard tools, a firewall, and a watchdog on a data site.
              Installs only what is missing. Writes nothing without --execute.
              deployments: list every deployment in the registry of the host
-             --ssh names (id, token, domain, site, roles and root), and any
-             deployment directory or labelled compose project no registry
-             entry names. Needs no paisans.yaml; changes nothing.
+             --ssh names (id, token, domain, site, roles and root, and a
+             Caddy kept for /srv/caddy.d), and any deployment directory or
+             labelled compose project no registry entry names. Needs no
+             paisans.yaml; changes nothing.
   apply      Without --site: take every site from paisans.yaml to a running
              stack, running init, host prepare, apply, site add, storage
              and dns init in the order the deployment needs. With --site:
@@ -117,8 +118,9 @@ Commands:
              each replica's patroni.env, one at a time; one data site out
              of two and a witness takes the witness out of etcd too),
              its host cleaned of everything provably this deployment's
-             (a gateway's Caddy handed over to the host's owner when
-             their sites rely on it), and its entry out of paisans.yaml.
+             (a gateway's Caddy kept, reduced to the host owner's sites in
+             /srv/caddy.d, while there are any), and its entry out of
+             paisans.yaml.
              Refuses the only gateway, data or apps site, a site an app
              is pinned to, and an unhealthy cluster. --host-gone skips
              the host; --delete-data deletes its data after the site's
@@ -126,9 +128,8 @@ Commands:
              --execute.
              remove --force --ssh <host> --id <id or token>, with no
              paisans.yaml: clean that host of the deployment its registry
-             names, as --force does, from the registry entry alone. A
-             gateway's Caddy is not handed over. --execute asks for the
-             site's name at a terminal.
+             names, as --force does, from the registry entry alone.
+             --execute asks for the site's name at a terminal.
   storage    init: provision object storage on a site: each app's key and
              bucket, and the layout when it is the only Garage site.
              add: join every site in storage.garage.sites into one Garage

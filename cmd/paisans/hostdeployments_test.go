@@ -87,9 +87,9 @@ func plainOutput(t *testing.T) *bytes.Buffer {
 func TestHostDeploymentsListsEntriesAndLeftovers(t *testing.T) {
 	h := &listedHost{t: t, registry: twoDeployments(t), probe: strings.Join([]string{
 		"root f2a9", "root 0c1d", "root dead",
-		"container\t" + monitorID + "\tpaisans-f2a9-status",
-		"container\t" + strayID + "\tpaisans-dead-talk",
-		"container\t" + strayID + "\tpaisans-dead-talk",
+		"container\t" + monitorID + "\tpaisans-f2a9-status\tapp",
+		"container\t" + strayID + "\tpaisans-dead-talk\tapp",
+		"container\t" + strayID + "\tpaisans-dead-talk\tapp",
 		"end",
 	}, "\n") + "\n"}
 	withHost(t, h)
@@ -221,5 +221,24 @@ func TestHostDeploymentsFailsRatherThanListingPartly(t *testing.T) {
 		if out.Len() > 0 {
 			t.Errorf("%s: printed a listing:\n%s", name, out.String())
 		}
+	}
+}
+
+// An entry whose Caddy is kept shows it, and the owner's files it serves.
+func TestHostDeploymentsShowsAKeptCaddy(t *testing.T) {
+	r, _ := registry.Parse([]byte(twoDeployments(t)))
+	r.Deployments[neighbour] = registry.KeepCaddy(r.Deployments[neighbour])
+	data, _ := registry.Encode(r)
+	withHost(t, &listedHost{t: t, registry: string(data), probe: "root 0c1d\nsite a.caddy\nsite b.caddy\ncontainer\t" + neighbour + "\tpaisans-0c1d-infra\tcaddy\nend\n"})
+	out := plainOutput(t)
+	if err := runHostDeployments([]string{"--ssh", "admin@192.0.2.30"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "caddy kept: serves /srv/caddy.d sites (a.caddy, b.caddy)") {
+		t.Errorf("no kept Caddy in:\n%s", got)
+	}
+	if strings.Count(got, "caddy kept") != 1 {
+		t.Errorf("the kept Caddy is shown for another entry too:\n%s", got)
 	}
 }

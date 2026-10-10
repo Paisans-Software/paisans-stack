@@ -164,3 +164,17 @@ func TestForcedRunReportsAGatewayItCouldNotReach(t *testing.T) {
 		t.Errorf("no warning:\n%s", out)
 	}
 }
+
+// A host whose only part of the deployment is its kept Caddy says so, and
+// names the sites it is kept for, rather than that it holds nothing.
+func TestForcedOnAHostWithOnlyAKeptCaddySaysSo(t *testing.T) {
+	plan := &siteremove.Plan{Site: "vm", Stages: []*siteremove.Stage{{Number: 3, Name: "clean the host"}}, CaddyKept: []string{"/srv/caddy.d/blog.caddy"}}
+	rec := &ui.Recorder{}
+	if !forcedNothingToDo(rec, plan, config.Destination{User: "admin", Host: "192.0.2.1", Port: 22}, false) {
+		t.Fatal("a plan with nothing to do was not ended")
+	}
+	out := rec.Lines()
+	if !strings.Contains(out, "Caddy") || !strings.Contains(out, "/srv/caddy.d/blog.caddy") || strings.Contains(out, "holds nothing of this deployment.") {
+		t.Errorf("printed:\n%s", out)
+	}
+}
