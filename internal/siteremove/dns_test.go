@@ -260,7 +260,7 @@ func TestForcedRemovalsDNSStage(t *testing.T) {
 	}
 	dest, _ := config.ParseDestination("ubuntu@192.0.2.10")
 	p = forced(t, w, w.cfg.WithoutSite("vm"), "vm", dest, o)
-	if !shown(p, false).Has("item", "skip dns: vm has no public address") {
+	if !shown(p, false).Has("item", "skip dns: vm is not declared; delete its records by hand") {
 		t.Errorf("printed:\n%s", shown(p, false).Lines())
 	}
 	for _, p := range []*siteremove.Plan{p, forced(t, w, w.cfg, "home-b", w.cfg.Sites["home-b"].Destination(), o)} {
@@ -295,5 +295,31 @@ func TestByIDWarnsThatDNSWasNotModified(t *testing.T) {
 	}
 	if siteremove.DNSNotModified(w.cfg.Deployment(), config.Destination{User: "u", Host: "box.example.org", Port: 22}) != `DNS records for this deployment, if any exist, were not modified. They carry the comment "paisans-f2a9: created by paisans dns init"` {
 		t.Error("a host named by name should add no address")
+	}
+}
+
+// A provider that cannot be read skips the stage, naming why, so it neither
+// blocks a removal nor strands one a re-run must finish.
+func TestTheDNSStageSkipsWhenTheProviderCannotBeRead(t *testing.T) {
+	w, zone := dnsWorld(t, ownAddress)
+	zone.FailList = true
+	p := w.mustBuild("home-b", dnsOptions(zone))
+	st := stageNamed(p, "dns")
+	if st == nil || !strings.HasPrefix(st.SkipLine, "the DNS provider could not be read") {
+		t.Fatalf("want a skip naming the provider: %+v", st)
+	}
+	if err := siteremove.Execute(p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An undeclared site's records are not this command's to find; the line
+// says so, and that they are deleted by hand.
+func TestForcedUndeclaredSaysDeleteByHand(t *testing.T) {
+	w, zone := dnsWorld(t, ownAddress)
+	dest, _ := config.ParseDestination("ubuntu@192.0.2.10")
+	p := forced(t, w, w.cfg.WithoutSite("vm"), "vm", dest, dnsOptions(zone))
+	if out := shown(p, false); !out.Has("item", "skip dns: vm is not declared; delete its records by hand") {
+		t.Errorf("printed:\n%s", out.Lines())
 	}
 }

@@ -50,9 +50,15 @@ func (p *Plan) buildDNS(before, after *config.Config) (*Stage, error) {
 	if name == "" {
 		return skip("no DNS provider declared")
 	}
-	site := before.Sites[p.Site]
-	if strings.TrimSpace(site.PublicAddress) == "" && strings.TrimSpace(site.PublicAddress6) == "" {
+	site, declared := before.Sites[p.Site]
+	if !declared {
+		return skip(p.Site + " is not declared; delete its records by hand")
+	}
+	if net.ParseIP(strings.TrimSpace(site.PublicAddress)) == nil && net.ParseIP(strings.TrimSpace(site.PublicAddress6)) == nil {
 		return skip(p.Site + " has no public address")
+	}
+	if strings.TrimSpace(before.Community.Domain) == "" {
+		return skip("community.domain is not set")
 	}
 	if !contains(dns.Implemented(), name) {
 		return skip(name + " record management is not implemented")
@@ -80,9 +86,12 @@ func (p *Plan) buildDNS(before, after *config.Config) (*Stage, error) {
 		defer cancel()
 		return dns.BuildSiteRemoval(ctx, provider, before, p.Site, after)
 	}
+	// A provider that cannot be read skips the stage rather than refusing
+	// the removal: a refusal here would also stop a re-run from finishing a
+	// removal whose cluster stages have run. The line names the error.
 	planned, err := plan()
 	if err != nil {
-		return nil, fmt.Errorf("site remove %s: planning its DNS records: %w", p.Site, err)
+		return skip("the DNS provider could not be read; delete the records by hand or run again: " + err.Error())
 	}
 	for _, e := range planned.Entries {
 		title := fmt.Sprintf("%s %s → %s", e.Type, e.Name, e.Content)

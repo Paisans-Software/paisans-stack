@@ -309,7 +309,19 @@ func planPrune(ctx context.Context, provider Provider, cfg *config.Config, rules
 				}
 				reasons = append(reasons, reason)
 			}
-			ip := net.ParseIP(strings.TrimSpace(r.Content))
+			content := strings.TrimSpace(r.Content)
+			ip := net.ParseIP(content)
+			// An address only matches after canonicalising, which turns an
+			// IPv4-mapped IPv6 address into IPv4: so the record's type must
+			// hold the address's own family, as every record dns init made
+			// does.
+			if ip != nil && (typ == "A" || typ == "AAAA") {
+				v4 := ip.To4() != nil && !strings.Contains(content, ":")
+				v6 := ip.To4() == nil
+				if typ == "A" && !v4 || typ == "AAAA" && !v6 {
+					reasons = append(reasons, fmt.Sprintf("%s is not an address of the family a %s record holds", r.Content, typ))
+				}
+			}
 			switch {
 			case ip == nil || rules.addresses[ip.String()] == "":
 				reasons = append(reasons, fmt.Sprintf("%s %s", r.Content, rules.notOurs))

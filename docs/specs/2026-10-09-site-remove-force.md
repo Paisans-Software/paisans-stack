@@ -164,8 +164,8 @@ whenever there is a configuration: a full removal, and `--force` with
 * **`--force` on a site `paisans.yaml` still declares:** no DNS stage. The
   site's records are still wanted.
 * **`--force` on a site `paisans.yaml` does not declare:** the stage follows
-  the host stage, and is skipped, since the configuration names no public
-  address for the site.
+  the host stage, and is skipped, saying the records are deleted by hand,
+  since the configuration names no public address for the site.
 
 ### What it deletes
 
@@ -177,7 +177,7 @@ holds:
 | Rule | Why |
 |------|-----|
 | it carries exactly this deployment's comment, `paisans-<token>: created by paisans dns init` | anything else was never this deployment's `dns init`'s |
-| it is an A or AAAA record | those are the only types `dns init` creates |
+| it is an A or AAAA record, holding an address of that record's family | those are the only types `dns init` creates, and an IPv4-mapped address in an AAAA record would otherwise match an IPv4 `public_address` |
 | its name is `community.domain`, a name under it, or a name `dns.Desired` produces for the configuration before removal | it sits where this deployment's names sit |
 | its address is the removed site's own `public_address` or `public_address6`, from the configuration before removal | it points at the host being removed, and at nothing else |
 | the configuration without the site wants no record of its type at its name | a name still wanted is kept; repointing it is `dns init`'s conflict for a human |
@@ -235,10 +235,16 @@ The stage is skipped, saying why in one line, and the removal goes on:
 | Skipped | Line |
 |---|---|
 | `acme.provider` is not set | `skip dns: no DNS provider declared` |
+| `--force` on a site `paisans.yaml` does not declare | `skip dns: <site> is not declared; delete its records by hand` |
 | the site declares neither `public_address` nor `public_address6` | `skip dns: <site> has no public address` |
 | the provider's record management is not implemented | `skip dns: <provider> record management is not implemented` |
 | `external.acme_dns_token` is not in the secrets | `skip dns: the DNS provider's token is not in the secrets` |
 | the configuration without the site cannot name its records | `skip dns: the configuration without <site> cannot name its records` |
+| the provider cannot be read when the plan is made (an outage, a zone the token cannot see) | `skip dns: the DNS provider could not be read; delete the records by hand or run again: <error>` |
+
+A provider that cannot be read skips rather than refuses, so that it neither
+blocks a removal nor stops a re-run from finishing one whose cluster stages
+have run. A provider error while deleting still stops the stage, as above.
 
 The token is never printed. The stage reads it from the decrypted secrets and
 hands it to the same provider `dns init` and `dns prune` use.

@@ -2221,7 +2221,7 @@ A record is deleted only when every one of these holds:
 | Rule | Why |
 |------|-----|
 | it carries exactly the comment this deployment's `dns init` writes, `paisans-<token>: created by paisans dns init` | a record without it was never this deployment's: one with another token is another deployment's, and one with no token was never the toolkit's |
-| it is an A or AAAA record | those are the only types `dns init` creates |
+| it is an A or AAAA record, holding an address of that record's family | those are the only types `dns init` creates, and an IPv4-mapped address in an AAAA record would otherwise match an IPv4 address |
 | its name is `community.domain`, a name under it, or a name the configuration produces now | every media hostname, derived or declared, is under the domain, and so was the shared one per app hostnames replaced |
 | its address is a site's `public_address` or `public_address6` | it pointed at this deployment's own host |
 | no record of its type is wanted at its name | prune removes names, it does not repoint them |
@@ -4784,7 +4784,7 @@ holds:
 | Rule | Why |
 |------|-----|
 | it carries exactly this deployment's comment, `paisans-<token>: created by paisans dns init` | anything else was never this deployment's |
-| it is an A or AAAA record | the only types `dns init` creates |
+| it is an A or AAAA record, holding an address of that record's family | the only types `dns init` creates |
 | its name is `community.domain`, a name under it, or one the configuration before removal produces | it sits where this deployment's names sit |
 | its address is the site's own `public_address` or `public_address6` | it points at the host being removed |
 | the configuration without the site wants no record of its type at its name | a name still wanted is kept |
@@ -4806,9 +4806,9 @@ stage 4, dns
 and lists each zone again to confirm it is gone. A provider error stops the
 stage, naming what was deleted and what was not; running the same command
 again resumes, since `paisans.yaml` still declares the site until stage 5.
-Without `acme.provider`, without its token in the secrets, or for a site with
-no public address, the stage is skipped with one line saying why, and the
-removal goes on.
+Without `acme.provider`, without its token in the secrets, for a site with
+no public address, or when the provider cannot be read as the plan is made,
+the stage is skipped with one line saying why, and the removal goes on.
 
 **It leaves two things and says so,** as `app remove` does: the site's
 WireGuard key and heartbeat token in the secrets file, which it never edits,
@@ -4823,8 +4823,8 @@ every one of its refusals holds, so nothing cleans the host that is left.
 run, none of their refusals are checked, no other site is reached, and neither
 `paisans.yaml` nor the secrets file is edited. A site `paisans.yaml` still
 declares has no DNS stage, since its records are still wanted; for one it does
-not declare, the DNS stage follows and is skipped, since nothing names its
-public address.
+not declare, the DNS stage follows and is skipped, saying its records are
+deleted by hand, since nothing names its public address.
 `docs/specs/2026-10-09-site-remove-force.md` is the approved specification.
 
 ```sh

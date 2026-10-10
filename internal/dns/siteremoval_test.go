@@ -187,3 +187,24 @@ func TestSiteRemovalStoppedPartwaySaysWhatWasDeleted(t *testing.T) {
 		t.Errorf("a re-run should plan what is left, got %s", got)
 	}
 }
+
+// A record's type must match its address's family: an AAAA holding an
+// IPv4-mapped address canonicalises to the site's IPv4 address, and dns init
+// never made one.
+func TestARecordWhoseFamilyDoesNotMatchItsTypeIsKept(t *testing.T) {
+	fake := newFake()
+	fake.zones["example.org"] = "zone-1"
+	fake.records["zone-1"] = []cfRecord{
+		{ID: "rec-mapped", Type: "AAAA", Name: "gone.example.org", Content: "::ffff:203.0.113.7", Comment: recordComment},
+		{ID: "rec-a6", Type: "A", Name: "gone6.example.org", Content: "2001:db8::7", Comment: recordComment},
+	}
+	p := sitePlan(t, fake.serve(t), withLeaving(), "home-b")
+	if got := removedIDs(p); got != "" {
+		t.Fatalf("removes = %s", got)
+	}
+	for _, id := range []string{"rec-mapped", "rec-a6"} {
+		if e, _ := entry(p, id); !strings.Contains(strings.Join(e.Reasons, "\n"), "is not an address of the family") {
+			t.Errorf("%s: reasons = %v", id, e.Reasons)
+		}
+	}
+}
