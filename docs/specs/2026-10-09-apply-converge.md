@@ -64,8 +64,11 @@ hand would, and asks each host's sudo password once for the whole run.
 
 ## Dry run
 
-Without `--execute` it changes nothing and prints the plan, phase by phase,
-one line per step with the step's status:
+Without `--execute` it changes nothing on the servers and prints the plan,
+phase by phase, one line per step with the step's status. The one file it may
+write is the local secrets file, with the generated secrets it lacks (see
+Generated secrets in a dry run below), and its `init` line says so when it
+does.
 
 | Mark | Status | Line |
 |---|---|---|
@@ -89,7 +92,7 @@ then its own dry run would describe a host that is about to change:
 
 | Step | Waits on |
 |---|---|
-| `init` | nothing; its status is what init has to do |
+| `init` | nothing; its status is what init has to do, or what the dry run generated |
 | every other step | `init`, when init has work: it writes the subnet and the secrets they read |
 | `host prepare --site <s>` | nothing else |
 | `apply --site <s>` | `host prepare --site <s>`; a founding member that is not a witness, each founding witness's apply too, since its gate refuses one founded before the witness; in pass two, the site's earlier `apply` or `site add` and the storage step |
@@ -105,6 +108,56 @@ With no deployment id yet it prints `init` alone as pending, since nothing on
 a host can be read for a deployment that has no id. Both a dry run and a run
 end by naming what only the operator can do, the first Pocket ID admin as the
 next section says.
+
+### Generated secrets in a dry run
+
+When the yaml has its id and its mesh subnet, and the secrets file is there and
+reads (decrypting it, when it is encrypted) but lacks a generated secret, the dry run generates the missing ones
+and writes the file, through the same code `init` fills and writes it with:
+only a missing value is filled, nothing that has one is changed, and the file
+is encrypted to the age recipients in the `.sops.yaml` beside it. The `init`
+line is then done, naming what it wrote by name, the first three and how many
+more, never a value:
+
+```
+configuration
+  ✓ init    generated 4 secrets into secrets.enc.yaml: cluster.admin_password, cluster.standby_password, cluster.superuser_password and 1 more
+```
+
+Since init then has no work, every later step is checked as usual rather than
+waiting `after init`, and each check reads the secrets just written. The
+closing line says nothing changed on the servers, and that the secrets were
+added: `Nothing changed on the servers. Added 4 generated secrets to
+secrets.enc.yaml. Re-run with --execute to apply. ...`. A later `--execute`
+runs init first as always, and init finds nothing left to fill.
+
+A write that fails, Eg: a read only file or an encryption error, marks `init`
+`✗` with the problem's hint, and its explanation as a note; every later step
+waits `after init`, as it does while init has work. The file is written
+through a temporary file beside it, renamed over it once complete, so a write
+that fails leaves it as it was. The dry run still exits 0, as it does for any
+check that fails.
+
+The rest of init's work stays with `init`, and the dry run writes nothing for
+it. A yaml with no mesh subnet does not load, as for every command, and the
+error names `paisans init`: choosing the subnet reads every host and rewrites
+`paisans.yaml`. Otherwise `init` is pending and every later step waits on it,
+as above, when
+
+* the yaml has no id;
+* there is no secrets file yet: creating it is where the deployment's
+  encryption is decided, and init says so when there is no `.sops.yaml`;
+* the file is encrypted and no `.sops.yaml` recipient is found beside it: the
+  file would be written in plaintext;
+* the file holds a key the toolkit does not read: writing it back would drop
+  it.
+
+In the last two the `init` line says why, after what init has to do. A file
+that is plaintext with no `.sops.yaml` beside it is written in plaintext, as
+init writes it, with init's warning.
+
+A secret the toolkit cannot generate stays a note naming `secrets set`, as
+before.
 
 ## The first Pocket ID admin
 
@@ -191,7 +244,14 @@ and a DNS conflict or a wait on Garage with its own hint. The dry run, with
 each step's check replaced by a fake: an up to date step `✓`, a pending one
 `○` with its summary, a step waiting on an earlier one `·` naming it, a check
 that fails `✗` with the rest still checked, and each etcd record read inside an
-open step. The first Pocket ID admin, with the check replaced by a fake: a
+open step. Generated secrets, against a secrets file in a temporary
+directory encrypted to a test age key: a dry run with missing generated secrets
+writes them, keeps every existing value, names them on a done `init` line
+without a value, and checks the later steps; a write that fails marks `init`
+`✗` and the later steps wait; a missing id or secrets file plans `init` as
+pending, and a missing subnet stops at the configuration, each changing no
+file; the closing line says the secrets were
+added; and a `--execute` after it fills nothing more. The first Pocket ID admin, with the check replaced by a fake: a
 dry run whose Pocket ID steps are not all `✓` names nothing and asks nothing;
 one whose steps are all `✓` names it when there is no admin, nothing when
 there is one, and that it could not check when the check fails; a run that

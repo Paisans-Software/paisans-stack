@@ -29,7 +29,10 @@ type convergeState struct {
 	NeedsInit bool
 	// InitWhy is what init has to do, by name, for the plan to say.
 	InitWhy string
-	Initial map[string]render.EtcdInitial
+	// SecretsOnly is init's work being only generated secrets missing from
+	// a secrets file that reads, which a dry run generates itself.
+	SecretsOnly bool
+	Initial     map[string]render.EtcdInitial
 }
 
 // clusterNames is the member names an --initial-cluster lists.
@@ -307,6 +310,7 @@ func readConvergeState(configPath, secretsPath string) (*config.Config, converge
 		return nil, st, fmt.Errorf("apply: generating the secrets %s lacks: %w", secretsPath, err)
 	} else if filled.Changed() {
 		why = append(why, missingSecrets(filled.Generated))
+		st.SecretsOnly = len(why) == 1
 	}
 	if len(why) > 0 {
 		st.NeedsInit = true
@@ -315,17 +319,79 @@ func readConvergeState(configPath, secretsPath string) (*config.Config, converge
 	return cfg, st, nil
 }
 
+// convergeSecretsPath is the secrets file apply without --site reads: the
+// one --secrets names, or secrets.enc.yaml beside the configuration.
+func convergeSecretsPath(configPath, secretsPath string) string {
+	if secretsPath == "" {
+		return filepath.Join(filepath.Dir(configPath), "secrets.enc.yaml")
+	}
+	return secretsPath
+}
+
+// convergeGenerate is the dry run generating the secrets init would: the
+// generated secrets the file at path lacks are filled and the file written,
+// by fillSecrets, as init does. It returns their names and the recipients
+// the file was encrypted to. A file writing would harm is left to init, and
+// left says why: one holding a key this toolkit does not read, which writing
+// would drop, and one encrypted with no .sops.yaml recipient beside it,
+// which writing would leave in plaintext. Why it failed is a ui.Problem.
+func convergeGenerate(cfg *config.Config, path string) (names, recipients []string, left string, err error) {
+	secrets, err := config.LoadSecrets(path)
+	if err != nil {
+		return nil, nil, "", generateProblem(path, err)
+	}
+	if secrets.UnknownKeys {
+		return nil, nil, "it holds keys this toolkit does not read, which writing it would drop", nil
+	}
+	if secrets.Encrypted {
+		if r, err := config.Recipients(filepath.Dir(path)); err == nil && len(r) == 0 {
+			return nil, nil, "no " + config.SOPSConfigName + " recipient beside it, so it would be written in plaintext", nil
+		}
+	}
+	filled, recipients, err := fillSecrets(cfg, path, secrets)
+	if err != nil {
+		return nil, nil, "", generateProblem(path, err)
+	}
+	return filled.Generated, recipients, "", nil
+}
+
+// generateProblem is why the dry run could not generate the secrets the file
+// at path lacks: writing it, or reading what writing it needs.
+func generateProblem(path string, err error) error {
+	hint := "could not generate the secrets " + ui.ShortPath(path) + " lacks"
+	var failed *secretsWriteError
+	if errors.As(err, &failed) {
+		hint = "could not write the generated secrets to " + ui.ShortPath(path)
+	}
+	return &ui.Problem{
+		Hint:    hint,
+		Explain: errLine(err) + ".\nNothing on a server changed. Once that is fixed, run paisans apply again.",
+		Cause:   err,
+	}
+}
+
 // missingSecrets names the generated secrets init would create: the first
 // three, and how many more. Names only; a value never reaches the terminal.
 func missingSecrets(names []string) string {
 	if len(names) == 1 {
 		return "generated secret missing: " + names[0]
 	}
+	return "generated secrets missing: " + fewNames(names)
+}
+
+// generatedSecrets is init's line once the dry run has written names into
+// the file at path. Names only, as missingSecrets.
+func generatedSecrets(names []string, path string) string {
+	return "generated " + plural(len(names), "secret") + " into " + filepath.Base(path) + ": " + fewNames(names)
+}
+
+// fewNames is the first three names, and how many more.
+func fewNames(names []string) string {
 	shown := names
 	if len(names) > 3 {
 		shown = names[:3]
 	}
-	out := "generated secrets missing: " + strings.Join(shown, ", ")
+	out := strings.Join(shown, ", ")
 	if len(names) > 3 {
 		out += fmt.Sprintf(" and %d more", len(names)-3)
 	}
@@ -392,11 +458,38 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 	}
 	ui.Align(r, convergeTitles(cfg)...)
 	defer ui.Align(r)
+	// A dry run generates the secrets init would, when that is all init
+	// has to do, so the steps after it are checked against them. The rest
+	// of init's work is init's.
+	var generated []string
 	if st.NeedsInit && !execute {
 		if !headed {
 			r.Section("configuration")
 		}
-		r.Step("init").End(ui.Pending, initWhy(st))
+		line := r.Step("init")
+		path := convergeSecretsPath(configPath, secretsPath)
+		var recipients []string
+		var left string
+		var err error
+		if st.SecretsOnly {
+			generated, recipients, left, err = convergeGenerate(cfg, path)
+		}
+		switch {
+		case err != nil:
+			hint, explain := ui.Describe(err)
+			line.End(ui.Failed, hint)
+			r.Note("before init can run", explain)
+		case len(generated) > 0:
+			line.Done(generatedSecrets(generated, path))
+			if len(recipients) == 0 {
+				warnPlaintext(r, path)
+			}
+			st.NeedsInit = false
+		case left != "":
+			line.End(ui.Pending, initWhy(st)+"; left to init: "+left)
+		default:
+			line.End(ui.Pending, initWhy(st))
+		}
 	}
 	if st.Initial, err = convergeFounded(r, cfg, sudo); err != nil {
 		return err
@@ -406,7 +499,12 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 		marks := convergeStatus(r, cfg, steps, o)
 		convergeAdmins(r, cfg, o, func(app string) bool { return convergeUp(cfg, steps, marks, app) })
 		convergeLeft(r, cfg, secretsPath, configPath)
-		r.Result("Nothing changed. Re-run with --execute to apply. Each step's own dry run, Eg: paisans apply --site <name>, shows its detail.")
+		next := "Re-run with --execute to apply. Each step's own dry run, Eg: paisans apply --site <name>, shows its detail."
+		if len(generated) > 0 {
+			r.Result("Nothing changed on the servers. Added %s to %s. %s", plural(len(generated), "generated secret"), filepath.Base(convergeSecretsPath(configPath, secretsPath)), next)
+			return nil
+		}
+		r.Result("Nothing changed. %s", next)
 		return nil
 	}
 	phase := ""

@@ -294,7 +294,10 @@ worse than one that failed on one, and the difference between "show me" and "do
 it" should be a flag an operator typed rather than a habit they formed.
 `apply` without `--site` keeps both: it runs `apply --site` for each site in
 turn, as one step among the others it runs (`cmd/paisans/converge.go`), and
-is a dry run unless `--execute` is given.
+is a dry run unless `--execute` is given. That dry run changes nothing on the
+servers; the one file it may write is the local secrets file, with the
+generated secrets it lacks, through `fillSecrets`, the path `init` writes
+them with.
 
 The order inside it is the design, not an implementation detail. Everything is
 compared first, so a conflict is found before a single byte is written; an apply
@@ -341,7 +344,9 @@ A note said while a step is open is that step's detail (`Detail`), and raw
 command output is a `Trace`; both show only with `--verbose`. A warning shows
 its one-line hint and a refusal its hint and explanation, because an operator
 must see that there is something to fix. A dry run ends with `Nothing changed.
-Re-run with --execute to apply.`, and `--execute` shows progress only.
+Re-run with --execute to apply.`, and `--execute` shows progress only. The
+converge dry run that added generated secrets says `Nothing changed on the
+servers.` and names them instead.
 
 **The error that ends a command reads like a refusal.** `main` prints it
 through `ui.PrintError`: `✗` (`FAIL` off a terminal) and a hint, then the

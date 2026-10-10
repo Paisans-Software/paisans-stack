@@ -348,3 +348,71 @@ func TestRecipientsFromSOPSConfig(t *testing.T) {
 		t.Fatalf("a directory with no %s returned %v", config.SOPSConfigName, empty)
 	}
 }
+
+// A write that fails partway leaves the file as it was, and nothing beside
+// it: the new contents go to a temporary file renamed over it once synced.
+func TestWriteSecretsFailureLeavesTheFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.enc.yaml")
+	if err := config.WriteSecrets(path, &config.Secrets{Version: 1, External: map[string]string{"a": "kept-value-0001"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	restore := config.SetSyncFile(func(interface{ Sync() error }) error { return errors.New("disk full") })
+	defer restore()
+	if err := config.WriteSecrets(path, &config.Secrets{Version: 1}, nil); err == nil {
+		t.Fatal("a failed sync was not an error")
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Error("a failed write changed the file")
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Errorf("left beside it: %v", entries)
+	}
+}
+
+// A file that cannot be written is refused and left as it was, as writing it
+// in place would be, although its directory could take a new file.
+func TestWriteSecretsRefusesAReadOnlyFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a read only file")
+	}
+	path := filepath.Join(t.TempDir(), "secrets.enc.yaml")
+	if err := config.WriteSecrets(path, &config.Secrets{Version: 1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	if err := config.WriteSecrets(path, &config.Secrets{Version: 1, External: map[string]string{"a": "b"}}, nil); err == nil {
+		t.Error("a read only file was written")
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Error("a read only file changed")
+	}
+}
+
+// A key the Secrets type does not hold is noted, at any depth, since writing
+// the file back would drop it.
+func TestLoadSecretsNotesUnknownKeys(t *testing.T) {
+	for body, want := range map[string]bool{
+		"version: 1\ncluster:\n  admin_password: x\n":                  false,
+		"version: 1\nextra: x\n":                                       true,
+		"version: 1\ncluster:\n  admin_password: x\n  other: y\n":      true,
+		"version: 1\nsites:\n  a:\n    heartbeat_token: x\n    z: 1\n": true,
+	} {
+		path := filepath.Join(t.TempDir(), "secrets.enc.yaml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := config.LoadSecrets(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.UnknownKeys != want {
+			t.Errorf("%q: UnknownKeys %t", body, s.UnknownKeys)
+		}
+	}
+}

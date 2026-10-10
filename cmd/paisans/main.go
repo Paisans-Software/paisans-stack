@@ -4,7 +4,9 @@
 // validate and render touch nothing outside the working directory. init
 // reads every site to choose a mesh subnet, and writes only local files.
 // `host prepare`, `apply` and `storage init` reach a machine: each reads it to
-// show what it would do, and changes nothing unless told to with --execute.
+// show what it would do, and changes nothing on it unless told to with
+// --execute. apply without --site may, in its dry run, add missing generated
+// secrets to the local secrets file, as init would, and says so when it does.
 // `doctor` reaches every site to report what is stuck and changes nothing.
 package main
 
@@ -104,8 +106,10 @@ Commands:
              stack, running init, host prepare, apply, site add, storage
              and dns init in the order the deployment needs. With --site:
              compare that site's rendered artifacts with what is on its
-             host and show what would change. Writes nothing without
-             --execute.
+             host and show what would change. Changes nothing on a
+             host without --execute; without --site, the dry run may add
+             missing generated secrets to the local secrets file, and
+             says so when it does.
   site       add: join a new data site to the running cluster in seven gated
              stages: preflight, mesh, etcd (learners, then promoted), the
              Patroni replica, synchronous mode, HAProxy, and each existing
@@ -420,13 +424,9 @@ func runInit(args []string) error {
 	}
 	warnSecrets(r, cfg, secrets, recordForWarnings(r, cfg, func(gw string) registry.Runner { return hosts[gw] }))
 
-	filled, err := secretsgen.Fill(cfg, secrets)
-	if err != nil {
-		return err
-	}
-
-	recipients, err := config.Recipients(filepath.Dir(*secretsPath))
-	if err != nil {
+	filled, recipients, err := fillSecrets(cfg, *secretsPath, secrets)
+	var failed *secretsWriteError
+	if err != nil && !errors.As(err, &failed) {
 		return err
 	}
 
@@ -444,9 +444,9 @@ func runInit(args []string) error {
 	for _, name := range filled.Generated {
 		write.Detail("+ %s", name)
 	}
-	if err := config.WriteSecrets(*secretsPath, secrets, recipients); err != nil {
-		write.Fail(err)
-		return err
+	if failed != nil {
+		write.Fail(failed.err)
+		return failed.err
 	}
 	write.Done(fmt.Sprintf("%d generated, %d kept", len(filled.Generated), len(filled.Kept)))
 	if len(recipients) == 0 {
@@ -458,6 +458,37 @@ func runInit(args []string) error {
 	r.Result("Generated %s, kept %d.", plural(len(filled.Generated), "secret"), len(filled.Kept))
 	return nil
 }
+
+// fillSecrets is how init fills the secrets file, and the converge dry run
+// with it: every generated secret secrets lacks for cfg is generated into it,
+// a secret that has a value is never changed, and when anything was
+// generated the file at path is written, encrypted to the age recipients in
+// the .sops.yaml beside it. It returns what was generated and kept, and the
+// recipients. A failure to write is a *secretsWriteError, after which the
+// result still names what was generated.
+func fillSecrets(cfg *config.Config, path string, secrets *config.Secrets) (secretsgen.Result, []string, error) {
+	filled, err := secretsgen.Fill(cfg, secrets)
+	if err != nil {
+		return filled, nil, err
+	}
+	recipients, err := config.Recipients(filepath.Dir(path))
+	if err != nil {
+		return filled, nil, err
+	}
+	if !filled.Changed() {
+		return filled, recipients, nil
+	}
+	if err := config.WriteSecrets(path, secrets, recipients); err != nil {
+		return filled, recipients, &secretsWriteError{err}
+	}
+	return filled, recipients, nil
+}
+
+// secretsWriteError is fillSecrets failing to write the file it filled.
+type secretsWriteError struct{ err error }
+
+func (e *secretsWriteError) Error() string { return e.err.Error() }
+func (e *secretsWriteError) Unwrap() error { return e.err }
 
 // reportOwed warns of what the toolkit will not invent. Leaving these silent
 // would let an operator believe an install is finished when sign in and
