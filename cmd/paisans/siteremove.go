@@ -12,6 +12,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/deployrecord"
+	"github.com/paisans-software/paisans-stack/internal/dns"
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/secretsgen"
 	"github.com/paisans-software/paisans-stack/internal/siteremove"
@@ -23,6 +24,11 @@ import (
 var removeSiteHost = func(name string, site config.Site, sudo bool) apply.Transport {
 	return siteTransport(name, site, "", sudo)
 }
+
+// dnsProviderFor makes the provider site remove's DNS stage deletes
+// through, the one dns init and dns prune use. Tests replace it with a fake:
+// none may reach a real provider.
+var dnsProviderFor = dns.For
 
 // runSiteRemove takes one site out of the running deployment, stage by stage:
 // its data moved off, its cluster memberships removed, its host cleaned and
@@ -90,7 +96,7 @@ func runSiteRemove(args []string, stdin io.Reader, stdout io.Writer) error {
 	if *execute && *deleteData && !stdinIsTerminal(stdin) {
 		return noTerminal("--delete-data deletes member data, which nothing brings back")
 	}
-	opts := siteremove.Options{HostGone: *hostGone, DeleteData: *deleteData, ConfigPath: *configPath}
+	opts := siteremove.Options{HostGone: *hostGone, DeleteData: *deleteData, ConfigPath: *configPath, DNSProvider: dnsProviderFor}
 	if err := siteremove.Refusal(cfg, site, opts); err != nil {
 		return err
 	}
@@ -211,7 +217,7 @@ func runSiteRemoveForced(r ui.Reporter, site string, a forcedArgs, stdin io.Read
 	reach := declared
 	reach.SSH.User, reach.SSH.Host, reach.SSH.Port = dest.User, dest.Host, dest.Port
 	t := removeSiteHost(site, reach, a.sudo)
-	opts := siteremove.Options{DeleteData: a.deleteData, ConfigPath: a.config}
+	opts := siteremove.Options{DeleteData: a.deleteData, ConfigPath: a.config, DNSProvider: dnsProviderFor}
 	plan, err := ui.Get(r, "read "+dest.String(), func() (*siteremove.Plan, error) {
 		return siteremove.BuildForced(cfg, secrets, site, dest, t, opts)
 	})
@@ -310,6 +316,9 @@ func runSiteRemoveByID(r ui.Reporter, site string, a byIDArgs, stdin io.Reader, 
 	})
 	if err != nil {
 		return err
+	}
+	if !plan.Pending() {
+		reportRemains(r, plan.DNSWarning())
 	}
 	if forcedNothingToDo(r, plan, dest, false) {
 		return nil

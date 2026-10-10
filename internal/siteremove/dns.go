@@ -147,3 +147,12 @@ func DNSNotModified(d deployment.Deployment, dest config.Destination) string {
 	}
 	return out
 }
+
+// DNSWarning is the --id plan's DNS line, alone, for a run that ends before
+// its remains are reported; none for a plan with a configuration.
+func (p *Plan) DNSWarning() []string {
+	if !p.byID {
+		return nil
+	}
+	return []string{DNSNotModified(p.dep(), p.dest)}
+}
