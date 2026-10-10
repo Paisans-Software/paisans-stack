@@ -81,7 +81,7 @@ const (
 func keysPrepared(h *fakeHost) *fakeHost {
 	h.responses[probePasswd] = passwdUbuntu
 	h.files[authorizedKeys] = keyAlice + "\n"
-	h.files[ownedKeys] = "# header\n" + fingerprint(keyAlice) + " alice@example.org\n"
+	h.files[ownedKeys] = "# header\nadded " + fingerprint(keyAlice) + " alice@example.org\n"
 	return h
 }
 
@@ -1003,8 +1003,8 @@ func TestAUserWithoutAuthorizedKeysGetsThem(t *testing.T) {
 	if !strings.Contains(last, "printf '%s\\n' '"+keyBob+"' >> '/home/ubuntu/.ssh/authorized_keys'") {
 		t.Errorf("bob's key is not appended verbatim: %s", last)
 	}
-	if !strings.Contains(last, fingerprint(keyAlice)+" alice@example.org\n"+fingerprint(keyBob)+" bob@example.org") &&
-		!strings.Contains(last, fingerprint(keyBob)+" bob@example.org\n"+fingerprint(keyAlice)+" alice@example.org") {
+	if !strings.Contains(last, "added "+fingerprint(keyAlice)+" alice@example.org\nadded "+fingerprint(keyBob)+" bob@example.org") &&
+		!strings.Contains(last, "added "+fingerprint(keyBob)+" bob@example.org\nadded "+fingerprint(keyAlice)+" alice@example.org") {
 		t.Errorf("the sidecar after the last add does not hold both keys: %s", last)
 	}
 	if !strings.Contains(last, "chmod 600 '/etc/paisans/authorized_keys.ubuntu.paisans-f2a9.owned.paisans-tmp' && mv") {
@@ -1012,9 +1012,10 @@ func TestAUserWithoutAuthorizedKeysGetsThem(t *testing.T) {
 	}
 }
 
-// A listed key cloud-init already put there is adopted, not duplicated, and a
-// key nobody listed and host prepare never added is not touched or mentioned.
-func TestAnExistingListedKeyIsAdoptedAndOthersLeftAlone(t *testing.T) {
+// A listed key cloud-init already put there is reported, neither added
+// again nor recorded, and a key nobody listed and host prepare never added is
+// not touched or mentioned.
+func TestAnExistingListedKeyIsLeftUnrecorded(t *testing.T) {
 	host := preparedHost(false)
 	host.files[authorizedKeys] = keyCloud + "\n" + keyAlice
 	delete(host.files, ownedKeys)
@@ -1024,15 +1025,15 @@ func TestAnExistingListedKeyIsAdoptedAndOthersLeftAlone(t *testing.T) {
 	}
 	out := printed(plan)
 	t.Logf("\n%s", out)
-	adopt, add := stepsLabelled(plan, "adopt"), stepsLabelled(plan, "add")
-	if len(adopt) != 1 || len(add) != 1 || len(plan.Steps) != 2 {
-		t.Fatalf("want one adopt and one add:\n%s", out)
+	add := stepsLabelled(plan, "add")
+	if len(add) != 1 || len(plan.Steps) != 1 {
+		t.Fatalf("want one add:\n%s", out)
 	}
-	if !strings.Contains(out, "adopt     ssh: key "+fingerprint(keyAlice)+" (alice@example.org) is already authorized for ubuntu; record it as host prepare's") {
-		t.Errorf("the adoption reads:\n%s", out)
+	if !strings.Contains(out, "present   ssh: key "+fingerprint(keyAlice)+" (alice@example.org) authorized for ubuntu, not by host prepare, which never removes it") {
+		t.Errorf("alice's key reads:\n%s", out)
 	}
-	if strings.Contains(adopt[0].Command, ">> '/home/ubuntu/.ssh/authorized_keys'") {
-		t.Errorf("an adoption appends the key again: %s", adopt[0].Command)
+	if strings.Contains(add[0].Command, fingerprint(keyAlice)) {
+		t.Errorf("the sidecar records a key host prepare did not write: %s", add[0].Command)
 	}
 	// The file's last line has no newline; the add ends it first.
 	if !strings.Contains(add[0].Command, `[ -n "$(tail -c1 '/home/ubuntu/.ssh/authorized_keys')" ]; then echo >>`) {
@@ -1043,13 +1044,29 @@ func TestAnExistingListedKeyIsAdoptedAndOthersLeftAlone(t *testing.T) {
 	}
 }
 
+// A key that was already authorized is never removed once unlisted, and
+// neither is one a sidecar line without the added mark names.
+func TestAKeyHostPrepareDidNotWriteIsNeverRemoved(t *testing.T) {
+	host := preparedHost(false)
+	host.files[authorizedKeys] = keyAlice + "\n" + keyCarol + "\n"
+	host.files[ownedKeys] = "added " + fingerprint(keyAlice) + " alice@example.org\n" + fingerprint(keyCarol) + " carol@example.org\n"
+	plan, err := hostprep.Build("home-a", withKeys(t, "home-a", keyAlice), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := printed(plan)
+	if strings.Contains(out, fingerprint(keyCarol)) || len(stepsLabelled(plan, "remove")) != 0 {
+		t.Errorf("carol's key is planned for:\n%s", out)
+	}
+}
+
 // A key host prepare added and the configuration no longer lists is removed,
 // last, by its exact line; one it never added is not, listed or not.
 func TestAnUnlistedOwnedKeyIsRemovedLast(t *testing.T) {
 	host := preparedHost(false)
 	host.files["/etc/default/ufw"] = "DEFAULT_INPUT_POLICY=\"ACCEPT\"\nDEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n"
 	host.files[authorizedKeys] = keyCloud + "\n" + keyAlice + "\n" + keyCarol + "  \n"
-	host.files[ownedKeys] = fingerprint(keyAlice) + " alice@example.org\n" + fingerprint(keyCarol) + " carol@example.org\n"
+	host.files[ownedKeys] = "added " + fingerprint(keyAlice) + " alice@example.org\nadded " + fingerprint(keyCarol) + " carol@example.org\n"
 	plan, err := hostprep.Build("home-a", withKeys(t, "home-a", keyAlice, keyBob), host)
 	if err != nil {
 		t.Fatal(err)
@@ -1091,7 +1108,7 @@ func TestAnUnlistedOwnedKeyIsRemovedLast(t *testing.T) {
 // later hand-added copy is never taken for host prepare's.
 func TestAnOwnedKeyGoneFromTheFileIsForgotten(t *testing.T) {
 	host := preparedHost(false)
-	host.files[ownedKeys] += fingerprint(keyCarol) + " carol@example.org\n"
+	host.files[ownedKeys] += "added " + fingerprint(keyCarol) + " carol@example.org\n"
 	plan, err := hostprep.Build("home-a", fixture(t), host)
 	if err != nil {
 		t.Fatal(err)
@@ -1139,7 +1156,7 @@ func TestAMissingUserIsRefused(t *testing.T) {
 func TestNoPlanRemovesTheLastListedKey(t *testing.T) {
 	host := preparedHost(false)
 	host.files[authorizedKeys] = keyCarol + "\n"
-	host.files[ownedKeys] = fingerprint(keyCarol) + " carol@example.org\n"
+	host.files[ownedKeys] = "added " + fingerprint(keyCarol) + " carol@example.org\n"
 	_, err := hostprep.Build("home-a", withKeys(t, "home-a"), host)
 	if err == nil || !strings.Contains(err.Error(), "would leave ubuntu with none of the keys ssh.public_key lists") {
 		t.Fatalf("got %v", err)
@@ -1150,7 +1167,7 @@ func TestNoPlanRemovesTheLastListedKey(t *testing.T) {
 func TestPreparedKeysPlanNothing(t *testing.T) {
 	host := preparedHost(false)
 	host.files[authorizedKeys] = keyCloud + "\n" + keyAlice + "\n" + keyBob + "\n"
-	host.files[ownedKeys] = fingerprint(keyBob) + " bob@example.org\n" + fingerprint(keyAlice) + " alice@example.org\n"
+	host.files[ownedKeys] = "added " + fingerprint(keyBob) + " bob@example.org\nadded " + fingerprint(keyAlice) + " alice@example.org\n"
 	plan, err := hostprep.Build("home-a", withKeys(t, "home-a", keyAlice, keyBob), host)
 	if err != nil {
 		t.Fatal(err)

@@ -2888,17 +2888,21 @@ not exist is refused: creating users is out of scope.
 
 `authorized_keys` is shared with whoever else manages the host. cloud-init puts
 the provider's key there, and an operator may add a restricted key by hand. So
-`host prepare` adds only listed keys, and removes only keys **it added
-itself**. What it added is recorded in a sidecar,
-`/etc/paisans/authorized_keys.<user>.paisans-<token>.owned`, root's and 0600, one fingerprint
-and comment per line. Keys are compared by fingerprint, so a key whose comment
-was changed is still the same key.
+`host prepare` adds only listed keys, and removes only keys **it wrote
+itself**. A listed key that was already there is never recorded and so never
+removed: it is often the key the operator logs in with, put there by the
+provider, and nothing on the host says whether another way in exists. What
+`host prepare` wrote is recorded in a sidecar,
+`/etc/paisans/authorized_keys.<user>.paisans-<token>.owned`, root's and 0600,
+one `added <fingerprint> <comment>` line per key; a line without the `added`
+mark is ignored. Keys are compared by fingerprint, so a key whose comment was
+changed is still the same key.
 
 | `authorized_keys` holds | Sidecar | Listed | The plan says | What happens |
 |-------------------------|---------|--------|---------------|--------------|
 | nothing for the key | | yes | `add` | appended verbatim, recorded |
 | the key | yes | yes | `present` | nothing |
-| the key | no | yes | `adopt` | recorded, not added a second time |
+| the key | no | yes | `present` | nothing; not recorded, so never removed |
 | the key, only with options | | yes | `present (not paisans)` | nothing; adding the plain key would undo the restriction |
 | the key | yes | no | `remove` | that exact line deleted, last of all |
 | nothing for the key | yes | no | `change` (forget) | dropped from the sidecar |
@@ -2906,7 +2910,7 @@ was changed is still the same key.
 
 ```
 home-a (ubuntu 24.04)
-  adopt     ssh: key SHA256:kmYcvdi2GkPeWxB6XLjrZB8JHsy2Hm8luHMFp9GMvqk (alice@example.org) is already authorized for ubuntu; record it as host prepare's
+  present   ssh: key SHA256:kmYcvdi2GkPeWxB6XLjrZB8JHsy2Hm8luHMFp9GMvqk (alice@example.org) authorized for ubuntu, not by host prepare, which never removes it
   add       ssh: authorize key SHA256:RXm/ruZ0eTzRXKwi1AQEDynB0VgHQ2ac9KPSFdf/YnA (bob@example.org) for ubuntu
   remove    ssh: remove key SHA256:baqJQcVDEweKmw1OiZxGooCG2MGxYtwsQQzzOstxmiA (carol@example.org) from /home/ubuntu/.ssh/authorized_keys, which host prepare added and ssh.public_key no longer lists
 ```
@@ -2915,7 +2919,7 @@ home-a (ubuntu 24.04)
 how an operator recognises a key (`alice@laptop`), and leaving it alone keeps
 what they see in the one place they look. The sidecar keeps `authorized_keys` exactly as the keys were pasted. Each
 step rewrites the sidecar along with its change, so a stopped run resumes: a
-key in the file and not the sidecar is adopted again, and a sidecar entry whose
+key appended but not yet recorded stays unrecorded, and so is never removed, and a sidecar entry whose
 key someone already deleted is forgotten, so a copy they add by hand later is
 never taken for host prepare's.
 

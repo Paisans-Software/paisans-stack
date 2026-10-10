@@ -15,11 +15,13 @@ import (
 // authorized_keys is shared with whoever else manages the host: cloud-init
 // puts the provider's key there, and an operator may add a restricted key by
 // hand. So host prepare only ever adds a listed key, and only ever removes a
-// key it added itself. What it added is recorded in a sidecar file,
-// /etc/paisans/authorized_keys.<user>.paisans-<token>.owned, one per
-// deployment, one fingerprint per line, root's
-// and 0600. The line in authorized_keys is left exactly as the key was
-// written.
+// key it wrote itself. A listed key that was already there is left as it is
+// and never recorded, so it is never removed: it is often the key the
+// operator logs in with. What host prepare wrote is recorded in a sidecar
+// file, /etc/paisans/authorized_keys.<user>.paisans-<token>.owned, one per
+// deployment, one `added <fingerprint> <comment>` line per key, root's and
+// 0600. Only lines marked `added` count. The line in authorized_keys is left
+// exactly as the key was written.
 //
 // Rejected: marking ownership in the key's comment, Eg: appending
 // "paisans" to it. The comment is how an operator recognises a key
@@ -33,6 +35,9 @@ import (
 
 // ownedDir holds the sidecar files.
 const ownedDir = "/etc/paisans"
+
+// ownedMark starts each sidecar line naming a key host prepare wrote.
+const ownedMark = "added "
 
 // OwnedKeysPath is the sidecar recording which of user's authorized keys host
 // prepare added for deployment d.
@@ -53,7 +58,7 @@ type hostKeyLine struct {
 	options bool
 }
 
-// ownedEntry is one line of the sidecar.
+// ownedEntry is one line of the sidecar: a key host prepare wrote.
 type ownedEntry struct {
 	fingerprint string
 	comment     string
@@ -114,7 +119,11 @@ func planAuthorizedKeys(t Transport, d deployment.Deployment, s config.SSH) (out
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		fp, comment, _ := strings.Cut(line, " ")
+		rest, ok := strings.CutPrefix(line, ownedMark)
+		if !ok {
+			continue
+		}
+		fp, comment, _ := strings.Cut(rest, " ")
 		owned = append(owned, ownedEntry{fingerprint: fp, comment: comment})
 	}
 	isOwned := func(fp string) bool {
@@ -173,16 +182,10 @@ func planAuthorizedKeys(t Transport, d deployment.Deployment, s config.SSH) (out
 			out.Present = append(out.Present, fmt.Sprintf("ssh: key %s authorized for %s", label, user))
 		case len(plain) > 0:
 			// Already there, put there by someone else (cloud-init, most
-			// often). Recorded rather than added again: a second copy of the
-			// line would be one more thing for an operator to wonder about.
+			// often), and often the key this run logs in with. Neither added
+			// again nor recorded, so host prepare never removes it.
 			remaining++
-			setOwned(k.Fingerprint, k.Comment)
-			out.Steps = append(out.Steps, Step{
-				Label:    "adopt",
-				Title:    "adopt ssh key",
-				Describe: fmt.Sprintf("ssh: key %s is already authorized for %s; record it as host prepare's", label, user),
-				Command:  writeOwned(d, user, owned),
-			})
+			out.Present = append(out.Present, fmt.Sprintf("ssh: key %s authorized for %s, not by host prepare, which never removes it", label, user))
 		case len(restricted) > 0:
 			// The key is there with options someone chose. It is theirs:
 			// adding the plain key beside it would undo the restriction.
@@ -282,7 +285,7 @@ func writeOwned(d deployment.Deployment, user string, entries []ownedEntry) stri
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].fingerprint < sorted[j].fingerprint })
 	body := "# Keys paisans host prepare added to " + user + "'s authorized_keys. It removes only these.\n"
 	for _, e := range sorted {
-		body += strings.TrimSpace(e.fingerprint+" "+e.comment) + "\n"
+		body += ownedMark + strings.TrimSpace(e.fingerprint+" "+e.comment) + "\n"
 	}
 	path := OwnedKeysPath(d, user)
 	return fmt.Sprintf("mkdir -p %s && printf '%%s' %s > %s && chmod 600 %s && mv %s %s",
