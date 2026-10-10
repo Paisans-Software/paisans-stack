@@ -22,6 +22,12 @@ func noSiteHosts(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { removeSiteHost = saved })
+	savedDest := reachDestination
+	reachDestination = func(config.Destination, bool) apply.Transport {
+		t.Fatal("a host was reached")
+		return nil
+	}
+	t.Cleanup(func() { reachDestination = savedDest })
 }
 
 // Deleting member data needs a person at a terminal, and there is no flag
@@ -156,5 +162,19 @@ func TestForcedRunReportsAGatewayItCouldNotReach(t *testing.T) {
 	}
 	if !strings.Contains(out, "vm missed this change to the deployment record") {
 		t.Errorf("no warning:\n%s", out)
+	}
+}
+
+// A host whose only part of the deployment is its kept Caddy says so, and
+// names the sites it is kept for, rather than that it holds nothing.
+func TestForcedOnAHostWithOnlyAKeptCaddySaysSo(t *testing.T) {
+	plan := &siteremove.Plan{Site: "vm", Stages: []*siteremove.Stage{{Number: 3, Name: "clean the host"}}, CaddyKept: []string{"/srv/caddy.d/blog.caddy"}}
+	rec := &ui.Recorder{}
+	if !forcedNothingToDo(rec, plan, config.Destination{User: "admin", Host: "192.0.2.1", Port: 22}, false) {
+		t.Fatal("a plan with nothing to do was not ended")
+	}
+	out := rec.Lines()
+	if !strings.Contains(out, "Caddy") || !strings.Contains(out, "/srv/caddy.d/blog.caddy") || strings.Contains(out, "holds nothing of this deployment.") {
+		t.Errorf("printed:\n%s", out)
 	}
 }

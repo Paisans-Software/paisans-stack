@@ -51,6 +51,7 @@ import (
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/mesh"
 )
 
@@ -96,6 +97,40 @@ type Entry struct {
 	// Roles is the site's roles, sorted and joined with commas, one string
 	// because the awk merge matches a role in it with index().
 	Roles string `json:"roles,omitempty"`
+	// Kept names what the deployment left running on the host after a site
+	// remove cleaned it, empty for nothing: KeptCaddy for a gateway's Caddy
+	// still serving the host owner's sites. The entry stays, because what is
+	// kept still holds the role and the root it names. A claim by the same
+	// id writes the entry without it.
+	Kept string `json:"kept,omitempty"`
+}
+
+// KeptCaddy is Kept for a gateway's Caddy kept for the host owner's sites in
+// /srv/caddy.d (docs/specs/2026-10-10-gateway-caddy-kept.md).
+const KeptCaddy = "caddy"
+
+// KeepCaddy is e marked as a deployment whose only part left on the host is
+// its Caddy.
+func KeepCaddy(e Entry) Entry {
+	e.Kept = KeptCaddy
+	return e
+}
+
+// Keep writes e, marked by KeepCaddy, as id's entry, under the claim's lock
+// and through the claim's merge, so every other entry stays as it was.
+func Keep(t Runner, id string, e Entry) error {
+	command, err := ClaimCommand(id, KeepCaddy(e))
+	if err != nil {
+		return err
+	}
+	out, err := t.Run(command)
+	if err == nil {
+		return nil
+	}
+	if refusal := ParseClaim(out); refusal != nil {
+		return fmt.Errorf("%s: marking deployment %s's Caddy kept in %s: %w", t.Describe(), id, Path, refusal)
+	}
+	return fmt.Errorf("%s: marking deployment %s's Caddy kept in %s: %w\n%s", t.Describe(), id, Path, err, strings.TrimSpace(out))
 }
 
 // exclusiveRoles are the roles one host gives to one deployment: the gateway
@@ -183,9 +218,9 @@ func (c Conflict) Error() string {
 
 // clashes is everything theirs holds that ours needs: the same token, root,
 // interface or listen port, a mesh subnet overlapping ours either way, or the
-// gateway or data role when ours claims it too.
-// An empty or zero value holds nothing, so an entry written before a field
-// existed never clashes on it.
+// gateway or data role when ours claims it too. A listen port of zero is a
+// site with no endpoint, which WireGuard gives a port of its own, and holds
+// none.
 func clashes(theirs, ours Entry) []string {
 	var out []string
 	if theirs.Token == ours.Token {
@@ -194,7 +229,7 @@ func clashes(theirs, ours Entry) []string {
 	if theirs.Root == ours.Root {
 		out = append(out, "root "+theirs.Root)
 	}
-	if theirs.Interface != "" && theirs.Interface == ours.Interface {
+	if theirs.Interface == ours.Interface {
 		out = append(out, "WireGuard interface "+theirs.Interface)
 	}
 	if theirs.ListenPort != 0 && theirs.ListenPort == ours.ListenPort {
@@ -252,7 +287,7 @@ func Meshes(r Registry, id, on string) []mesh.Taken {
 	var out []mesh.Taken
 	for _, other := range ids {
 		e := r.Deployments[other]
-		if other == id || e.Subnet == "" {
+		if other == id {
 			continue
 		}
 		p, err := mesh.ParsePrefix(e.Subnet)
@@ -387,7 +422,7 @@ $0 == footer { done = 1; next }
 	key = substr(line, 2, index(line, "\":") - 2)
 	if (key == id) next
 	if (index(line, "\"token\":\"" token "\"") || index(line, "\"root\":\"" root "\"") ||
-		(iface != "" && str(line, "interface") == iface) ||
+		str(line, "interface") == iface ||
 		(port != "" && port != "0" && num(line, "listen_port") == port) ||
 		(subnet != "" && overlaps(subnet, str(line, "subnet"))) ||
 		(hasrole(roles, "gateway") && hasrole(str(line, "roles"), "gateway")) ||
@@ -656,4 +691,56 @@ func Unclaim(t Runner, id string) error {
 		return fmt.Errorf("%s: %w", t.Describe(), refusal)
 	}
 	return fmt.Errorf("%s: removing deployment %s from %s: %w\n%s", t.Describe(), id, Path, err, strings.TrimSpace(out))
+}
+
+// Find is the one entry ref names on this host: by its full id, or by its
+// token, the id's first deployment.TokenLength hex digits. No match and
+// several are refused, and the refusal lists every entry the host holds, so
+// the operator can name one.
+func Find(r Registry, ref string) (string, Entry, error) {
+	var ids []string
+	for id, e := range r.Deployments {
+		if id == ref || (len(ref) == deployment.TokenLength && (e.Token == ref || strings.HasPrefix(id, ref))) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	switch len(ids) {
+	case 1:
+		return ids[0], r.Deployments[ids[0]], nil
+	case 0:
+		return "", Entry{}, fmt.Errorf("no deployment in %s has id or token %s. %s", Path, ref, Holds(r))
+	}
+	return "", Entry{}, fmt.Errorf("token %s names %d deployments in %s, so name one by its full id. %s", ref, len(ids), Path, Holds(r))
+}
+
+// Holds is every entry of the registry in a sentence, sorted by id.
+func Holds(r Registry) string {
+	if len(r.Deployments) == 0 {
+		return "The host holds none"
+	}
+	ids := make([]string, 0, len(r.Deployments))
+	for id := range r.Deployments {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var out []string
+	for _, id := range ids {
+		out = append(out, Describe(id, r.Deployments[id]))
+	}
+	return "The host holds " + strings.Join(out, "; ")
+}
+
+// Describe is one entry in words: Eg: f2a9c4e1-... (token f2a9, example.org,
+// site vm, roles gateway).
+func Describe(id string, e Entry) string {
+	roles := e.Roles
+	if roles == "" {
+		roles = "none"
+	}
+	out := fmt.Sprintf("%s (token %s, %s, site %s, roles %s", id, e.Token, e.Domain, e.Site, roles)
+	if e.Kept != "" {
+		out += ", " + e.Kept + " kept"
+	}
+	return out + ")"
 }

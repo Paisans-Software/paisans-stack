@@ -2,6 +2,7 @@ package siteremove
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
@@ -87,10 +88,18 @@ func ownedNote(site, owed string) string {
 	return fmt.Sprintf("%s: run `paisans apply --site %s` when that is acceptable. %s", site, site, owed)
 }
 
-func handoverKept(site, dir string, env bool) []string {
-	lines := []string{fmt.Sprintf("%s: Caddy handed over to the host's owner; paisans never touches it again. It is in %s for %s, and its data directory holds the certificates and keys of every hostname this deployment's Caddy served", site, dir, render.HostSitesDir)}
-	if env {
-		lines = append(lines, fmt.Sprintf("%s: DNS token left on the host; rotate it once the owner has their own. %s/caddy.env holds a copy of secrets external.acme_dns_token, a credential this deployment no longer controls, left for the owner. Rotate it at the DNS provider that issued it", site, dir))
-	}
-	return lines
+func caddyKept(site, container string, sites []string, dir string) string {
+	return fmt.Sprintf("%s: Caddy kept; it serves the host owner's sites in %s. It is %s, serving %s; its compose file, Caddyfile, caddy.env, certificates and state stay in %s, with --delete-data too, and so do its ufw allows for 80 and 443. Run this again once those sites have moved, and it goes", site, render.HostSitesDir, container, strings.Join(sites, ", "), dir)
+}
+
+func secretsNotRead(site string) string {
+	return fmt.Sprintf("secrets: not read; `paisans secrets prune` removes sites.%s from a surviving copy. This command read no paisans.yaml and no secrets file", site)
+}
+
+func otherHostsLeft(id string) string {
+	return fmt.Sprintf("other hosts: not reached; run this command on each host the deployment used. Each keeps its registry entry and what it ran of deployment %s, and a gateway's deployment record still lists this site", id)
+}
+
+func pocketIDNotChecked(site string) string {
+	return fmt.Sprintf("Pocket ID: not checked; sign in may stop until a standby takes over. Without paisans.yaml it is not known whether %s held the active instance", site)
 }

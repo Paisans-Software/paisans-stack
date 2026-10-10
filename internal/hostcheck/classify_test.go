@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/hostcheck"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
@@ -376,4 +377,84 @@ func TestAStaleToolkitStackOnTheIngressNetworkConflicts(t *testing.T) {
 	own.answers["docker network inspect"] = defaultNetworks + fmt.Sprintf(`{"id":%q,"name":"paisans-f2a9-porch-status_default","labels":{"com.docker.compose.project":"paisans-f2a9-porch-status","community.paisans.deployment":"f2a9c4e1-0b7d-4c3a-9e2f-5a6b7c8d9e01"},"ipam":[{"Subnet":"10.255.255.0/29"}]}
 `, id("8"))
 	wantClass(t, check(t, "porch", own), hostcheck.Clean)
+}
+
+const keptDeployment = "566c1a2b-3c4d-4e5f-8a6b-7c8d9e0f1a2b"
+
+// keptCaddyHost has another deployment's Caddy on 80 and 443, kept for the
+// host owner's site in /srv/caddy.d, with that deployment's registry entry
+// or without, and a container of that deployment's that is not its Caddy.
+func keptCaddyHost(t *testing.T, entry bool) *fakeHost {
+	h := cleanHost()
+	h.answers["ufw status verbose"] = ufwActive
+	h.answers["docker inspect"] = fmt.Sprintf(`{"id":%q,"name":"/paisans-566c-infra-caddy-1","pid":812,"labels":{"com.docker.compose.project":"paisans-566c-infra","com.docker.compose.service":"caddy","community.paisans.deployment":%q},"ports":{}}
+{"id":%q,"name":"/paisans-566c-talk-app-1","pid":913,"labels":{"com.docker.compose.project":"paisans-566c-talk","com.docker.compose.service":"app","community.paisans.deployment":%q},"ports":{"8080/tcp":[{"HostIp":"","HostPort":"5432"}]}}
+`, caddyID, keptDeployment, talkID, keptDeployment)
+	h.answers["ss -Hltnup"] = baseSockets + `tcp LISTEN 0 4096 *:80 *:* users:(("caddy",pid=812,fd=7))
+tcp LISTEN 0 4096 *:443 *:* users:(("caddy",pid=812,fd=8))
+`
+	h.answers["/proc/"] = "812 0::/system.slice/docker-" + caddyID + ".scope \n"
+	h.answers["/srv/caddy.d/"] = "/srv/caddy.d/blog.caddy\n"
+	if entry {
+		data, err := registry.Encode(registry.Registry{Version: registry.Version, Deployments: map[string]registry.Entry{
+			keptDeployment: registry.KeepCaddy(registry.Entry{Token: "566c", Root: "/srv/paisans/566c", Domain: "example.net", Site: "edge", ClaimedAt: "2026-10-01T00:00:00Z", Interface: "psns-566c", Subnet: "10.45.0.0/24", Address: "10.45.0.2", Roles: "gateway"}),
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.files[registry.Path] = string(data)
+	}
+	return h
+}
+
+// Another deployment's Caddy kept for the owner's sites is named as that,
+// with what to do: the --id that removes it while its entry is there, and
+// removing it by hand once its entry is gone.
+func TestAnotherDeploymentsKeptCaddyIsNamed(t *testing.T) {
+	held := "held by container paisans-566c-infra-caddy-1: paisans deployment 566c's Caddy, kept because it serves /srv/caddy.d sites"
+	r := check(t, "edge", keptCaddyHost(t, true))
+	wantClass(t, r, hostcheck.Conflicted)
+	wantLine(t, r, "*:443/tcp (Caddy): claimed by sites.edge.roles (gateway), "+held+". Move those sites to a Caddy of your own and remove this container, or run paisans site remove --force --ssh ubuntu@host.example.org --id 566c once they are gone")
+
+	r = check(t, "edge", keptCaddyHost(t, false))
+	wantLine(t, r, "*:443/tcp (Caddy): claimed by sites.edge.roles (gateway), "+held+"; its registry entry was removed, so remove this container by hand once those sites have moved")
+	if strings.Contains(printed(r), "--id 566c") {
+		t.Errorf("an --id is offered with no registry entry:\n%s", printed(r))
+	}
+}
+
+// That deployment's other containers, and its Caddy with no site of the
+// owner's to serve, keep the plain wording.
+func TestAnotherDeploymentsOtherContainersKeepThePlainWording(t *testing.T) {
+	r := check(t, "home-a", keptCaddyHost(t, true))
+	wantLine(t, r, "held by container paisans-566c-talk-app-1 (compose project paisans-566c-talk, paisans deployment "+keptDeployment+")")
+
+	h := keptCaddyHost(t, true)
+	h.answers["/srv/caddy.d/"] = ""
+	r = check(t, "edge", h)
+	wantLine(t, r, "held by container paisans-566c-infra-caddy-1 (compose project paisans-566c-infra, paisans deployment "+keptDeployment+")")
+	if strings.Contains(printed(r), "kept because") {
+		t.Errorf("a Caddy serving nothing of the owner's is named kept:\n%s", printed(r))
+	}
+}
+
+// Another deployment's Caddy whose entry is not marked kept is a live
+// gateway, and a registry that does not parse says nothing about entries:
+// both keep the plain wording, and the check still runs.
+func TestALiveOrUnknownCaddyKeepsThePlainWording(t *testing.T) {
+	plain := "held by container paisans-566c-infra-caddy-1 (compose project paisans-566c-infra, paisans deployment " + keptDeployment + ")"
+	live := keptCaddyHost(t, true)
+	live.files[registry.Path] = strings.Replace(live.files[registry.Path], `,"kept":"caddy"`, "", 1)
+	broken := keptCaddyHost(t, false)
+	broken.files[registry.Path] = "not a registry"
+	for name, h := range map[string]*fakeHost{"live": live, "unreadable": broken} {
+		r, err := hostcheck.Run(fixture(t), "edge", h)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		wantLine(t, r, "*:443/tcp (Caddy): claimed by sites.edge.roles (gateway), "+plain)
+		if strings.Contains(printed(r), "kept because") {
+			t.Errorf("%s: named kept:\n%s", name, printed(r))
+		}
+	}
 }

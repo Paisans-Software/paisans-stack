@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
 )
 
@@ -53,6 +54,11 @@ type Inventory struct {
 	// by full path and sorted: site blocks somebody added to the gateway's
 	// Caddy, which no deployment owns.
 	HostSites []string
+	// Registered maps each deployment id the host's registry has an entry
+	// for to what that entry says is kept, "" for nothing. It is nil when
+	// the registry cannot be read or parsed, which says nothing about any
+	// entry: the host check reads it only to word a conflict.
+	Registered map[string]string
 }
 
 // Docker is the engine, if there is one.
@@ -86,7 +92,10 @@ const (
 	firewalldProbe = "systemctl is-active firewalld || true"
 	// Each file is printed only when it is one, since an unmatched glob is
 	// left as the literal pattern.
-	hostSitesProbe = `for f in ` + render.HostSitesDir + `/*.caddy; do [ -f "$f" ] && echo "$f"; done; true`
+	// An unreadable directory fails rather than listing nothing, and a link
+	// whose target is gone is still a site file: either read as no sites
+	// would let a Caddy that serves the owner's sites be removed.
+	hostSitesProbe = `if [ -d ` + render.HostSitesDir + ` ] && ! { [ -r ` + render.HostSitesDir + ` ] && [ -x ` + render.HostSitesDir + ` ]; }; then echo "cannot read ` + render.HostSitesDir + `" >&2; exit 3; fi; for f in ` + render.HostSitesDir + `/*.caddy; do if [ -e "$f" ] || [ -L "$f" ]; then echo "$f"; fi; done; true`
 
 	cLocale = "export LC_ALL=C; "
 )
@@ -219,6 +228,15 @@ func Inspect(t Transport, d deployment.Deployment) (*Inventory, error) {
 		}
 	}
 	sort.Strings(inv.HostSites)
+
+	if reg, _, err := t.ReadFile(registry.Path); err == nil {
+		if r, err := registry.Parse([]byte(reg)); err == nil {
+			inv.Registered = map[string]string{}
+			for id, e := range r.Deployments {
+				inv.Registered[id] = e.Kept
+			}
+		}
+	}
 
 	content, found, err := t.ReadFile(inv.ManifestPath)
 	if err != nil {

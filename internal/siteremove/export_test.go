@@ -12,17 +12,17 @@ import (
 // SetFast makes every wait a few polls with no sleep, so a gate that fails
 // fails at once and one that passes passes on the first poll it can.
 func SetFast() func() {
-	durations := []*time.Duration{&switchWait, &switchPoll, &patroniWait, &patroniPoll, &garageWait, &garagePoll, &garageGap, &etcdWait, &etcdPoll, &haproxyWait, &haproxyPoll, &handoverWait, &handoverPoll, &replicaWait, &replicaPoll}
+	durations := []*time.Duration{&switchWait, &switchPoll, &patroniWait, &patroniPoll, &garageWait, &garagePoll, &garageGap, &etcdWait, &etcdPoll, &haproxyWait, &haproxyPoll, &replicaWait, &replicaPoll}
 	saved := make([]time.Duration, len(durations))
 	for i, d := range durations {
 		saved[i] = *d
 	}
 	oldSleep := sleep
 	sleep = func(time.Duration) {}
-	for _, d := range []*time.Duration{&switchWait, &patroniWait, &garageWait, &etcdWait, &haproxyWait, &handoverWait, &replicaWait} {
+	for _, d := range []*time.Duration{&switchWait, &patroniWait, &garageWait, &etcdWait, &haproxyWait, &replicaWait} {
 		*d = 10 * time.Second
 	}
-	for _, d := range []*time.Duration{&switchPoll, &patroniPoll, &garagePoll, &garageGap, &etcdPoll, &haproxyPoll, &handoverPoll, &replicaPoll} {
+	for _, d := range []*time.Duration{&switchPoll, &patroniPoll, &garagePoll, &garageGap, &etcdPoll, &haproxyPoll, &replicaPoll} {
 		*d = time.Second
 	}
 	return func() {
@@ -40,7 +40,7 @@ func SetInspect(f func(t apply.Transport, cfg *config.Config) (*hostcheck.Invent
 	return func() { inspect = saved }
 }
 
-// SetNow fixes the clock the hand over marker records.
+// SetNow fixes the clock the deployment record is stamped with.
 func SetNow(at time.Time) func() {
 	saved := now
 	now = func() time.Time { return at }
@@ -63,7 +63,8 @@ func WorstCaseRemains() []string {
 		keysOtherUserKept(site, path, name),
 		recordMissed(site, strings.Repeat("w", 80)),
 		recordRaced(site, site, strings.Repeat("w", 80)),
+		secretsNotRead(site), otherHostsLeft(strings.Repeat("i", 36)), pocketIDNotChecked(site),
 	}
-	out = append(out, handoverKept(site, "/srv/caddy.d", true)...)
+	out = append(out, caddyKept(site, name, []string{path, path}, path))
 	return out
 }

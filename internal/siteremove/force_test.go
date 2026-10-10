@@ -7,7 +7,6 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/registry"
-	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/siteremove"
 )
 
@@ -75,25 +74,6 @@ func TestForcedHostStageMatchesTheFullRemoval(t *testing.T) {
 		if a[i].Text != b[i].Text {
 			t.Errorf("step %d: %q vs %q", i, a[i].Text, b[i].Text)
 		}
-	}
-}
-
-// A site no longer declared is cleaned through any destination, its roles
-// read from the registry entry on the host.
-func TestForcedUndeclaredGatewayHandsOverCaddy(t *testing.T) {
-	w := setup(t)
-	vm := w.hosts["vm"]
-	vm.files[render.HostSitesDir+"/blog.caddy"] = "blog.example.org { respond 200 }\n"
-	dest, _ := config.ParseDestination("ubuntu@192.0.2.10")
-	p := forced(t, w, w.cfg.WithoutSite("vm"), "vm", dest, siteremove.Options{})
-	if p.Current {
-		t.Error("an undeclared site's host is marked as its own")
-	}
-	if !hasStepIn(stageNamed(p, "clean the host"), "vm", "hand over", "Caddy") {
-		t.Fatalf("no hand over:\n%s", printed(p))
-	}
-	if err := siteremove.Execute(p); err != nil {
-		t.Fatal(err)
 	}
 }
 

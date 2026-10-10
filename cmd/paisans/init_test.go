@@ -66,7 +66,7 @@ const (
 func registryHolding(t *testing.T, id, token, subnet string) string {
 	t.Helper()
 	data, err := registry.Encode(registry.Registry{Version: registry.Version, Deployments: map[string]registry.Entry{
-		id: {Token: token, Root: "/srv/paisans/" + token, Domain: "example.net", Site: "home-a", Interface: "psns-" + token, Subnet: subnet},
+		id: {Token: token, Root: "/srv/paisans/" + token, Domain: "example.net", Site: "home-a", Roles: "apps", ClaimedAt: "2026-10-01T00:00:00Z", Interface: "psns-" + token, Subnet: subnet},
 	}})
 	if err != nil {
 		t.Fatal(err)

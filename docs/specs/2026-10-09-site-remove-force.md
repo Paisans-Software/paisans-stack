@@ -100,7 +100,8 @@ Everything else found is reported as kept, with why.
 
 The site's ssh user, whose authorized keys are cleaned, is `--ssh`'s user or
 the declared one. The site's roles, which decide whether a gateway's Caddy is
-handed over to the host's owner, come from this deployment's registry entry on
+kept for the host owner's sites (docs/specs/2026-10-10-gateway-caddy-kept.md),
+come from this deployment's registry entry on
 the host, not from `paisans.yaml`, so they are right for an undeclared site
 and for a host the site has left. With no registry entry, the declared roles
 are used, and an undeclared site has none.
@@ -213,7 +214,7 @@ In `internal/siteremove`, against the existing fake world:
 * An undeclared site cleaned through a destination it was not declared with;
   a host with no registry entry plans nothing.
 * Roles from the host's registry entry: an undeclared gateway whose host has a
-  `/srv/caddy.d/*.caddy` gets the Caddy hand-over.
+  `/srv/caddy.d/*.caddy` keeps its Caddy.
 * The site's own host marked as such, and its plan saying what the cluster
   loses.
 * Images: an image used only by removed containers is removed; one also used

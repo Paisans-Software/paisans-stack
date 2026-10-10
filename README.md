@@ -4692,38 +4692,46 @@ place, and everything else found is listed as kept:
 The keys go last, after the registry entry and the check that nothing else is
 left, because they may be what the command reaches the host with.
 
-**A gateway's Caddy is handed over when somebody else relies on it.** The
-host owner's site blocks in `/srv/caddy.d` (see *The gateway host's own sites
-live in `/srv/caddy.d`*) go dark if the gateway's Caddy simply stops. So when
-`internal/ownership` finds a `*.caddy` file there, the Caddy is handed over to
-the host's owner:
+**A gateway's Caddy is kept while it serves the host owner's sites.** The
+site blocks in `/srv/caddy.d` (see *The gateway host's own sites live in
+`/srv/caddy.d`*) go dark if the gateway's Caddy stops. So while
+`internal/ownership` finds a `*.caddy` file there and this deployment's Caddy
+container exists, that container stays, and its configuration is reduced to
+the owner's sites. `docs/specs/2026-10-10-gateway-caddy-kept.md` is the
+approved specification.
 
-1. `/srv/caddy/compose.yaml` (project `caddy`, no deployment label, the same
-   image, host networking, mounting `/srv/caddy.d` read only) and a
-   `/srv/caddy/Caddyfile` holding only the global options ACME needs, the
-   snippets a file in `/srv/caddy.d` may import, and `import
-   /etc/caddy.d/*.caddy`.
-2. The DNS provider's token is copied, on the host, into
-   `/srv/caddy/caddy.env`: the owner's certificates were issued and renew
-   through DNS-01. The report says plainly that it is a credential this
-   deployment no longer controls, left on the host for the owner, and that it
-   should be rotated once the owner has a token of their own.
-3. The configuration is validated in a one-off container before anything
-   stops. Then this deployment's Caddy is stopped, its `data` and `config`
-   directories moved to `/srv/caddy/`, so the certificates survive, and the new
-   Caddy started.
-4. The gate: it runs, and `caddy validate` passes inside it. A failed gate
-   stops it, moves the directories back and starts this deployment's Caddy
-   again, and the next run tries again.
-5. `/srv/caddy/HANDED-OVER` records the deployment id, domain, site and time.
-
-**From then on paisans never touches `/srv/caddy`.** A run that finds the
-marker with this id treats the hand over as done, and a `/srv/caddy` holding
-anything the hand over did not write, a marker by another deployment, or a
-compose project named `caddy` already on the host is refused. The moved data
-directory holds the certificates and keys of every hostname this deployment's
-Caddy served, the community's included, and the report says so. With no
-foreign user, the Caddy goes like every other container.
+* **The reduced Caddyfile** is built from the one on the host: its global
+  options block (the ACME email and DNS provider, so the owner's certificates
+  renew), the snippets a file in `/srv/caddy.d` may import
+  (`upstream_unavailable`, `upstream_failover`, `upstream_single`) and `import
+  /etc/caddy.d/*.caddy`, and no site block of the deployment's. A Caddyfile
+  lacking any of these is refused, and nothing is changed.
+* **It goes first, and without a gap.** The reduced file is staged beside the
+  snippets, validated inside the running container and loaded with `caddy
+  reload`, which keeps the running configuration if it fails. Only then is it
+  written over `Caddyfile`, in place, and read back. Any failure puts the
+  original back, reloads it, and stops before anything else is removed. A
+  Caddy that is not running is refused: start it and run again.
+* **What stays:** the container and its image, and under
+  `/srv/paisans/<token>/infra/` its `compose.yaml`, `caddy/Caddyfile`,
+  `caddy/caddy.env` (the DNS token, for renewals), `caddy/data` and
+  `caddy/config` (the certificates) and the `caddy/snippets` directory it
+  mounts, emptied; and the ufw allows for 80 and 443 `host prepare` added. These stay with `--delete-data` too, and the plan says so.
+  The manifest stays, listing exactly those files. Everything else goes as in
+  the table above.
+* **The registry entry stays**, marked `"kept": "caddy"`, still holding the
+  gateway role and the token, so nothing else takes ports 80 and 443 or the
+  directory from under it. `host deployments` shows it as `caddy kept`.
+* **Run it again** and, while the owner's sites are there, nothing changes and
+  the report says Caddy is kept and for which files. Once `/srv/caddy.d` holds
+  no site file, the next run removes Caddy, its files and the entry, as for
+  any container. No flag removes it sooner.
+* **Another deployment meets it.** Its host check's conflict on 80 and 443
+  names the container as that deployment's kept Caddy and says what to do:
+  move the sites and remove it, or run `site remove --force --id` once they
+  are gone. When the registry entry was deleted by hand, it says so and that
+  the container is removed by hand, and `host deployments` lists it as an
+  orphaned Caddy.
 
 **`--host-gone` is for a host that is never coming back.** The host is not
 reached at all: stages 1, 2 and 4 run and stage 3 is skipped. The report lists
@@ -4762,8 +4770,8 @@ unless it carries this deployment's id or the token taken from it: the same
 proofs as the table above, images included. A host this deployment never used
 plans nothing.
 
-The site's roles, which decide whether a gateway's Caddy is handed over, come
-from this deployment's entry in the host's registry, so they are right for an
+The site's roles, which decide whether a gateway's Caddy is kept for the host
+owner's sites, come from this deployment's entry in the host's registry, so they are right for an
 undeclared site and for a host the site has left. With no entry, the declared
 roles are used.
 
@@ -4801,6 +4809,59 @@ monitors survive on hosts that also run other people's services:
    so each name still wanted that points at a lost address is reported as a
    conflict until it is changed; the monitors' records, whose addresses are no
    longer declared, are deleted by hand too.
+
+#### `--id` cleans a host when `paisans.yaml` is lost
+
+`--force` names the deployment by the `id` in `paisans.yaml`. When that file
+is lost, the id is still on every host the deployment reached, in the
+registry. `paisans host deployments` lists it, and `--id` cleans the host of
+it, reading neither `paisans.yaml` nor the secrets file.
+`docs/specs/2026-10-10-remove-without-config.md` is the approved
+specification.
+
+```sh
+paisans host deployments --ssh admin@203.0.113.9                                   # read only
+paisans site remove --force --ssh admin@203.0.113.9 --id f2a9                      # dry run
+paisans site remove --force --ssh admin@203.0.113.9 --id f2a9 --execute            # asks for the name
+paisans site remove --force --ssh admin@203.0.113.9 --id f2a9 --execute --delete-data
+```
+
+`host deployments` shows each registry entry: id, token, domain, site, roles
+and root. Under *not in the registry* it lists any `/srv/paisans/<token>`
+directory and any labelled compose project whose deployment has no entry.
+Those are left over from something no command can name, and are removed by
+hand. It changes nothing. It never lists partly: when the registry, either
+directory or `docker ps` cannot be read, it fails, naming what failed, and
+prints nothing, rather than show a host that seems to hold less than it does.
+
+`--id` is the full id or its token, and exactly one entry must match; no match
+and several are refused, listing what the host holds. The entry must be one a
+claim by that id writes: its key an id, its token and root the id's. The host
+stage is the one `--force` runs, with the site and roles from the entry and the
+ssh user from `--ssh`, so it removes the same things, proven the same way:
+containers and networks by label, images by ID without `-f`, named volumes only
+with `--delete-data`, the files the manifest proves, the units, ufw rules and
+keys, `/srv/paisans/<token>` (empty directories, or everything with
+`--delete-data`), the deployment record and the registry entry.
+
+What needs the rest of `paisans.yaml` is not done, and the report says so, one
+line each: the secrets file is not read, other hosts are not reached, and on an
+`apps` site it is not known whether this host held Pocket ID's active instance.
+A gateway's Caddy is kept for the owner's sites exactly as with a
+configuration, since the reduced Caddyfile is built from the one on the host.
+
+Nothing says whether the deployment still runs elsewhere, so `--execute`
+always asks for the site's name at a terminal. The question names the owner's
+sites a kept Caddy goes on serving, and the data `--delete-data` deletes.
+
+| Refused | Because |
+|---|---|
+| `--id` without `--force`, or without `--ssh` | `--id` names what `--force` cleans off the host `--ssh` names |
+| `--id` with `--config`, `--secrets` or a site | it reads no configuration, and the registry entry names the site |
+| `--id` neither an id nor four hex digits | it matches no entry; Eg: `--id f2a9` |
+| no entry matches, or several do | the refusal lists every entry on the host |
+| an entry that is not the id's, or whose token or root another entry holds | everything removed is named from the id and its token |
+| `--execute` without a terminal | it asks for the site's name |
 
 ### Preflight
 
@@ -5217,9 +5278,8 @@ fine: Caddy logs a warning for an import glob that matches no file and starts
 stays on the host when the gateway role moves, and its files move by hand.
 `doctor` lists each file there, so whoever moves or stops the gateway can see
 what else depends on it. When `site remove` takes a gateway off a host whose
-`/srv/caddy.d` is in use, it hands the Caddy over to `/srv/caddy`, so those
-sites stay served, and paisans never touches `/srv/caddy` again (see *`site
-remove` takes a site out*).
+`/srv/caddy.d` is in use, it keeps the Caddy, reduced to those sites, so they
+stay served (see *`site remove` takes a site out*).
 
 ### It is a config change
 

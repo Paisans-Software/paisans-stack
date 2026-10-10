@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"github.com/paisans-software/paisans-stack/internal/deployrecord"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -112,9 +113,13 @@ type host struct {
 	networks   []hostcheck.Network
 	volumes    []hostcheck.Volume
 	rules      []string
-	handedUp   bool
 	// images are the image IDs present on the host.
 	images map[string]bool
+	// caddyLoads is every configuration `caddy reload` loaded, in order.
+	caddyLoads []string
+	// gone are the image IDs `docker image rm` removed, which the image
+	// probe then answers absent.
+	gone map[string]bool
 }
 
 func (h *host) Describe() string { return h.name }
@@ -132,7 +137,128 @@ func (h *host) WriteFile(path, content string, mode uint32) error {
 	return nil
 }
 
-func (h *host) RunInput(command, stdin string) (string, error) { return h.Run(command) }
+func (h *host) RunInput(command, stdin string) (string, error) {
+	if path, ok := strings.CutPrefix(command, "cat > '"); ok {
+		h.commands = append(h.commands, command)
+		h.w.log = append(h.w.log, h.name+": "+command)
+		h.files[strings.TrimSuffix(path, "'")] = stdin
+		return "", nil
+	}
+	return h.Run(command)
+}
+
+// caddyFile is the host file a `docker exec <id> caddy ... --config <path>`
+// reads: the container must be one of the host's, running, and the path one
+// its mounts reach.
+func (h *host) caddyFile(command string) (string, error) {
+	m := regexp.MustCompile(`^docker exec '([^']+)' caddy \w+ --config '([^']+)' --adapter caddyfile$`).FindStringSubmatch(command)
+	if m == nil {
+		return "", fmt.Errorf("not a caddy command: %s", command)
+	}
+	running := false
+	for _, c := range h.containers {
+		running = running || (c.ID == m[1] && c.PID > 0)
+	}
+	if !running {
+		return "", fmt.Errorf("Error response from daemon: container %s is not running", m[1])
+	}
+	var hostPath string
+	switch {
+	case m[2] == "/etc/caddy/Caddyfile":
+		hostPath = root + "/infra/caddy/Caddyfile"
+	case strings.HasPrefix(m[2], "/etc/caddy/snippets/"):
+		hostPath = root + "/infra/caddy/snippets/" + strings.TrimPrefix(m[2], "/etc/caddy/snippets/")
+	default:
+		return "", fmt.Errorf("%s is not mounted", m[2])
+	}
+	content, ok := h.files[hostPath]
+	if !ok {
+		return "", fmt.Errorf("open %s: no such file", m[2])
+	}
+	return content, nil
+}
+
+// keptPaths are the paths a find with -prune names, the kept ones.
+func keptPaths(command string) []string {
+	var out []string
+	for _, m := range regexp.MustCompile(`-path '([^']+)'`).FindAllStringSubmatch(command, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+func isKept(p string, kept []string) bool {
+	for _, k := range kept {
+		if p == k || strings.HasPrefix(p, k+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// keptProbe answers the probe of the deployment's directory with Caddy kept:
+// every file not under a kept path, and the directories above them, as find
+// prints them.
+func (h *host) keptProbe(command string) string {
+	kept := keptPaths(command)
+	var b strings.Builder
+	dirs := map[string]bool{}
+	for _, p := range h.sortedFiles() {
+		if !strings.HasPrefix(p, root+"/") {
+			continue
+		}
+		for d := path.Dir(p); d != root && strings.HasPrefix(d, root+"/"); d = path.Dir(d) {
+			if !dirs[d] && !isKept(d, kept) {
+				dirs[d] = true
+				b.WriteString("d " + d + "\n")
+			}
+		}
+		if !isKept(p, kept) {
+			b.WriteString("f " + p + "\n")
+		}
+	}
+	return b.String()
+}
+
+// deleteBesideKept deletes what the loops over each directory above a kept
+// path delete: each entry of the directory whose name the loop does not
+// keep, judged in the deepest directory a loop names.
+func (h *host) deleteBesideKept(command string) {
+	keep := map[string][]string{}
+	for _, m := range regexp.MustCompile(`for f in '([^']+)'/\*[^;]*; do [^;]*;( case "\$\{f##\*/\}" in ([^)]*)\))?`).FindAllStringSubmatch(command, -1) {
+		var names []string
+		for _, n := range strings.Split(m[3], "|") {
+			if n = strings.Trim(n, "'"); n != "" {
+				names = append(names, n)
+			}
+		}
+		keep[m[1]] = names
+	}
+	for p := range h.files {
+		deepest := ""
+		for d := range keep {
+			if strings.HasPrefix(p, d+"/") && len(d) > len(deepest) {
+				deepest = d
+			}
+		}
+		if deepest == "" {
+			continue
+		}
+		if !contains(keep[deepest], strings.SplitN(strings.TrimPrefix(p, deepest+"/"), "/", 2)[0]) {
+			delete(h.files, p)
+		}
+	}
+}
+
+func (h *host) hostSites() []string {
+	var out []string
+	for _, p := range h.sortedFiles() {
+		if strings.HasPrefix(p, render.HostSitesDir+"/") && strings.HasSuffix(p, ".caddy") {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 func (h *host) ran(sub string) int {
 	n := 0
@@ -166,8 +292,42 @@ func (h *host) Run(command string) (string, error) {
 		w.failOnce = ""
 		return "failed by the test", errors.New("exit status 1")
 	}
+	quoted := func(s string) []string {
+		var out []string
+		for _, m := range regexp.MustCompile(`'([^']*)'`).FindAllStringSubmatch(s, -1) {
+			out = append(out, m[1])
+		}
+		return out
+	}
 	switch {
 	case command == "true":
+		return "", nil
+
+	// copies on the host, for a kept Caddy's Caddyfile
+	case strings.HasPrefix(command, "cp -p -- '"):
+		q := quoted(command)
+		c, ok := h.files[q[0]]
+		if !ok {
+			return "cp: cannot stat", errors.New("exit status 1")
+		}
+		h.files[q[1]] = c
+		return "", nil
+	case strings.HasPrefix(command, "cat -- '"):
+		q := quoted(command)
+		h.files[q[1]] = h.files[q[0]]
+		return "", nil
+	case strings.HasPrefix(command, "if [ -f '") && strings.Contains(command, "then cat -- '"):
+		q := quoted(command)
+		c, ok := h.files[q[0]]
+		if !ok {
+			return "", errors.New("exit status 4")
+		}
+		h.files[q[2]] = c
+		return "", nil
+	case strings.HasPrefix(command, "rm -f -- '") && strings.Count(command, "'") > 2:
+		for _, f := range quoted(command) {
+			delete(h.files, f)
+		}
 		return "", nil
 
 	// apply's plumbing around a stack action, for the monitor's reseed
@@ -192,7 +352,12 @@ func (h *host) Run(command string) (string, error) {
 		list, _, _ := strings.Cut(strings.TrimPrefix(command, "for r in "), "; do")
 		var b strings.Builder
 		for _, q := range strings.Fields(list) {
-			fmt.Fprintf(&b, "present sha256:%s %s\n", hexSum(strings.Trim(q, "'")), strings.Trim(q, "'"))
+			ref := strings.Trim(q, "'")
+			if h.gone["sha256:"+hexSum(ref)] {
+				fmt.Fprintf(&b, "absent %s\n", ref)
+				continue
+			}
+			fmt.Fprintf(&b, "present sha256:%s %s\n", hexSum(ref), ref)
 		}
 		return b.String(), nil
 	case command == "docker image ls --no-trunc --format json":
@@ -370,57 +535,30 @@ func (h *host) Run(command string) (string, error) {
 	case strings.Contains(command, " ps --all --format json"):
 		return `{"Service":"x","Name":"x","State":"running","Health":""}` + "\n", nil
 
-	// the hand over
-	case strings.Contains(command, "ls -A '/srv/caddy'"):
-		var b strings.Builder
-		seen := map[string]bool{}
-		for p := range h.files {
-			if rest, ok := strings.CutPrefix(p, "/srv/caddy/"); ok {
-				seen[strings.SplitN(rest, "/", 2)[0]] = true
-			}
+	// a gateway's Caddy kept for the host owner's sites: validated and
+	// reloaded inside its container, from a path the container mounts
+	case strings.HasPrefix(command, "docker exec ") && strings.Contains(command, " caddy validate --config "):
+		if _, err := h.caddyFile(command); err != nil {
+			return err.Error(), errors.New("exit status 1")
 		}
-		for name := range seen {
-			b.WriteString("dst " + name + "\n")
-		}
-		for _, x := range []string{"data", "config"} {
-			if h.under(root + "/infra/caddy/" + x) {
-				b.WriteString("src " + x + "\n")
-			}
-		}
-		if _, ok := h.files[root+"/infra/caddy/caddy.env"]; ok {
-			b.WriteString("env\n")
-		}
-		return b.String(), nil
-	case strings.HasPrefix(command, "install -m 600 "):
-		h.files["/srv/caddy/caddy.env"] = h.files[root+"/infra/caddy/caddy.env"]
-		return "", nil
-	case strings.HasPrefix(command, "docker run --rm --network none"):
 		if w.caddyBroken {
 			return "Error: adapting config using caddyfile: unknown directive", errors.New("exit status 1")
 		}
 		return "Valid configuration\n", nil
-	case strings.HasSuffix(command, "stop caddy; fi"):
-		return "", nil
-	case strings.HasPrefix(command, "set -e; for x in data config;"):
-		h.move(root+"/infra/caddy", "/srv/caddy")
-		return "", nil
-	case strings.Contains(command, "/srv/caddy/compose.yaml down"):
-		h.handedUp = false
-		h.move("/srv/caddy", root+"/infra/caddy")
-		return "", nil
-	case strings.Contains(command, "/srv/caddy/compose.yaml up -d"):
-		if !w.caddyBroken {
-			h.handedUp = true
-			h.containers = append(h.containers, hostcheck.Container{Name: "caddy-caddy-1", Project: "caddy", Service: "caddy", PID: 9})
+	case strings.HasPrefix(command, "docker exec ") && strings.Contains(command, " caddy reload --config "):
+		content, err := h.caddyFile(command)
+		if err != nil {
+			return err.Error(), errors.New("exit status 1")
 		}
+		h.caddyLoads = append(h.caddyLoads, content)
 		return "", nil
-	case strings.Contains(command, "/srv/caddy/compose.yaml ps --status running"):
-		if h.handedUp {
-			return "deadbeef\n", nil
-		}
+	case strings.Contains(command, "-prune -o") && strings.Contains(command, "-printf"):
+		return h.keptProbe(command), nil
+	case strings.Contains(command, `case "${f##*/}" in`):
+		h.deleteBesideKept(command)
 		return "", nil
-	case strings.Contains(command, "/srv/caddy/compose.yaml exec -T caddy caddy validate"):
-		return "Valid configuration\n", nil
+	case strings.Contains(command, "-type d -empty !"):
+		return "", nil
 	case strings.Contains(command, "caddy validate"), strings.Contains(command, "caddy reload"):
 		return "", nil
 
@@ -490,9 +628,20 @@ func (h *host) Run(command string) (string, error) {
 		}
 		return "", nil
 	case strings.Contains(command, "docker ps -aq --no-trunc --filter 'label=community.paisans.deployment="+ourID+"'"):
+		if strings.Contains(command, "ls -d "+render.HostSitesDir+"/*.caddy") && len(h.hostSites()) > 0 {
+			for _, c := range h.containers {
+				if c.Deployment == ourID && c.Service == "caddy" {
+					return "a site of the host owner's is in " + render.HostSitesDir + " now", errors.New("exit status 3")
+				}
+			}
+		}
+		keep := ""
+		if m := regexp.MustCompile(`grep -vxF '([^']+)'`).FindStringSubmatch(command); m != nil {
+			keep = m[1]
+		}
 		var kept []hostcheck.Container
 		for _, c := range h.containers {
-			if c.Deployment != ourID {
+			if c.Deployment != ourID || (keep != "" && c.ID == keep) {
 				kept = append(kept, c)
 			}
 		}
@@ -539,6 +688,10 @@ func (h *host) Run(command string) (string, error) {
 				fmt.Fprintf(&b, "kept %s Error response from daemon: conflict: unable to delete (image is being used by running container)\n", id)
 			default:
 				delete(h.images, id)
+				if h.gone == nil {
+					h.gone = map[string]bool{}
+				}
+				h.gone[id] = true
 				fmt.Fprintf(&b, "removed %s\n", id)
 			}
 		}
@@ -567,6 +720,26 @@ func (h *host) Run(command string) (string, error) {
 		return out.String(), nil
 	case strings.HasPrefix(command, "rm -f -- '"):
 		delete(h.files, strings.TrimSuffix(strings.TrimPrefix(command, "rm -f -- '"), "'"))
+		return "", nil
+	case strings.Contains(command, "awk ") && strings.Contains(command, registry.Path) && strings.Contains(command, `"kept":"caddy"`):
+		r, err := registry.Parse([]byte(h.files[registry.Path]))
+		if err != nil {
+			return "paisans-registry-unreadable", errors.New("exit status 4")
+		}
+		m := regexp.MustCompile(`'entry="` + ourID + `":(\{[^']*\})'`).FindStringSubmatch(command)
+		var e registry.Entry
+		if m == nil || json.Unmarshal([]byte(m[1]), &e) != nil || e.Kept != registry.KeptCaddy {
+			return "", fmt.Errorf("not this deployment's entry marked kept: %s", command)
+		}
+		if old, ok := r.Deployments[ourID]; ok && registry.KeepCaddy(old) != e {
+			return "", fmt.Errorf("the entry marked kept is not the one there: %+v", e)
+		}
+		if want, _ := registry.ClaimCommand(ourID, e); command != want {
+			return "", fmt.Errorf("not a claim's merge: %s", command)
+		}
+		r.Deployments[ourID] = e
+		data, _ := registry.Encode(r)
+		h.files[registry.Path] = string(data)
 		return "", nil
 	case strings.Contains(command, "awk ") && strings.Contains(command, registry.Path):
 		if command != registry.RemoveCommand(ourID) {
@@ -626,22 +799,6 @@ func (h *host) under(dir string) bool {
 		}
 	}
 	return false
-}
-
-// move moves data and config from one directory to another, each only when
-// it is there and the target is not, as the hand over's mv does.
-func (h *host) move(from, to string) {
-	for _, x := range []string{"data", "config"} {
-		if !h.under(from+"/"+x) || h.under(to+"/"+x) {
-			continue
-		}
-		for p, c := range h.files {
-			if rest, ok := strings.CutPrefix(p, from+"/"+x+"/"); ok {
-				h.files[to+"/"+x+"/"+rest] = c
-				delete(h.files, p)
-			}
-		}
-	}
 }
 
 func (h *host) dirAnswer(dir string) string {
@@ -1008,7 +1165,7 @@ func newWorld(t *testing.T, edits ...func(string) string) *world {
 	reg := registry.Registry{Version: registry.Version, Deployments: map[string]registry.Entry{}}
 	id, e := registry.For(cfg, "home-b", mustTime())
 	reg.Deployments[id] = e
-	reg.Deployments[otherID] = registry.Entry{Token: "0c1d", Root: "/srv/paisans/0c1d", Domain: "example.net", Site: "x"}
+	reg.Deployments[otherID] = registry.Entry{Token: "0c1d", Root: "/srv/paisans/0c1d", Domain: "example.net", Site: "x", Roles: "apps", ClaimedAt: "2026-10-01T00:00:00Z", Interface: "psns-0c1d", Subnet: "10.45.0.0/24", Address: "10.45.0.2"}
 	b.files[registry.Path] = encode(t, reg)
 	return w
 }

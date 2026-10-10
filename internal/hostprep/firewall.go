@@ -32,6 +32,14 @@ type Rule struct {
 // prepare added for an earlier ssh.port, and keeps it.
 const sshWhy = "ssh, the bootstrap route"
 
+// gatewayHTTPWhy and gatewayHTTPSWhy are the gateway's allows for 80 and
+// 443, which a site remove keeps while the gateway's Caddy is kept for the
+// host owner's sites.
+const (
+	gatewayHTTPWhy  = "the gateway, HTTP"
+	gatewayHTTPSWhy = "the gateway, HTTPS"
+)
+
 func (r Rule) String() string {
 	if r.Interface != "" && r.To != "" {
 		return fmt.Sprintf("%d/%s on %s to %s", r.Port, r.Proto, r.Interface, r.To)
@@ -74,8 +82,8 @@ func Rules(d deployment.Deployment, site config.Site) []Rule {
 	switch {
 	case site.Has(config.RoleGateway):
 		rules = append(rules,
-			Rule{Port: 80, Proto: "tcp", Why: "the gateway, HTTP"},
-			Rule{Port: 443, Proto: "tcp", Why: "the gateway, HTTPS"},
+			Rule{Port: 80, Proto: "tcp", Why: gatewayHTTPWhy},
+			Rule{Port: 443, Proto: "tcp", Why: gatewayHTTPSWhy},
 		)
 	case site.RunsCaddy():
 		// A monitor serving its own hostname through the toolkit's Caddy.

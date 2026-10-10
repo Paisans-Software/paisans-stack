@@ -19,7 +19,7 @@ const (
 )
 
 func entry(token, domain, site string) Entry {
-	return Entry{Token: token, Root: "/srv/paisans/" + token, Domain: domain, Site: site, ClaimedAt: "2026-10-01T00:00:00Z"}
+	return Entry{Token: token, Root: "/srv/paisans/" + token, Domain: domain, Site: site, ClaimedAt: "2026-10-01T00:00:00Z", Interface: "psns-" + token}
 }
 
 func TestParseEmptyIsAnEmptyRegistry(t *testing.T) {
@@ -503,5 +503,64 @@ func TestRemoveCommandShape(t *testing.T) {
 		if order[i] <= order[i-1] {
 			t.Fatalf("the removal's steps are out of order:\n%s", command)
 		}
+	}
+}
+
+// Find names one entry by its full id or by its token, and refuses no match
+// and several, listing what the host holds either way.
+func TestFind(t *testing.T) {
+	r := Registry{Version: Version, Deployments: map[string]Entry{
+		ours:  entry("f2a9", "example.org", "watch"),
+		other: entry("0c1d", "example.net", "x"),
+	}}
+	for _, ref := range []string{ours, "f2a9"} {
+		id, e, err := Find(r, ref)
+		if err != nil || id != ours || e.Site != "watch" {
+			t.Errorf("Find(%s) = %s, %+v, %v", ref, id, e, err)
+		}
+	}
+	lists := func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), ours) && strings.Contains(err.Error(), "example.net") && strings.Contains(err.Error(), "site x")
+	}
+	if _, _, err := Find(r, "beef"); !lists(err) || !strings.Contains(err.Error(), "no deployment") {
+		t.Errorf("no match: %v", err)
+	}
+	r.Deployments[theirs] = entry("f2a9", "example.com", "y")
+	if _, _, err := Find(r, "f2a9"); !lists(err) || !strings.Contains(err.Error(), theirs) || !strings.Contains(err.Error(), "full id") {
+		t.Errorf("ambiguous: %v", err)
+	}
+	if id, _, err := Find(r, theirs); err != nil || id != theirs {
+		t.Errorf("a full id is never ambiguous: %s, %v", id, err)
+	}
+	if _, _, err := Find(Registry{Deployments: map[string]Entry{}}, "f2a9"); err == nil || !strings.Contains(err.Error(), "holds none") {
+		t.Errorf("empty registry: %v", err)
+	}
+}
+
+// Kept marks an entry whose deployment left something running on the host:
+// the merge writes it, and a claim by the same id, which For makes, drops it.
+func TestKeptCaddyEntry(t *testing.T) {
+	base := Registry{Version: Version, Deployments: map[string]Entry{ours: entry("f2a9", "example.org", "vm")}}
+	input, _ := Encode(base)
+	kept := KeepCaddy(base.Deployments[ours])
+	if kept.Kept != KeptCaddy || kept.Token != "f2a9" {
+		t.Fatalf("KeepCaddy = %+v", kept)
+	}
+	stdout, stderr, code := runMerge(t, string(input), ours, kept)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	got, err := Parse([]byte(stdout))
+	if err != nil || got.Deployments[ours] != kept {
+		t.Fatalf("got %+v, %v", got.Deployments[ours], err)
+	}
+	if !strings.Contains(stdout, `"kept":"caddy"`) {
+		t.Errorf("the entry does not say what is kept:\n%s", stdout)
+	}
+	if !strings.Contains(Describe(ours, kept), "caddy kept") {
+		t.Errorf("Describe = %s", Describe(ours, kept))
+	}
+	if strings.Contains(Describe(ours, base.Deployments[ours]), "kept") {
+		t.Errorf("Describe of an entry with nothing kept = %s", Describe(ours, base.Deployments[ours]))
 	}
 }

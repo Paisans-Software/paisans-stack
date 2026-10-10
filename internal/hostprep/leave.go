@@ -24,6 +24,8 @@ type AddedRule struct {
 	Owned bool
 	// SSH is d's SSH allow, by its comment.
 	SSH bool
+	// Web is one of d's gateway allows for 80 and 443, by its comment.
+	Web bool
 }
 
 // ParseAddedRules reads AddedRulesProbe's output for deployment d. absent
@@ -48,6 +50,7 @@ func ParseAddedRules(d deployment.Deployment, out string) (rules []AddedRule, ab
 			Comment: a.comment,
 			Owned:   a.owned(tag),
 			SSH:     a.comment == tag+" "+sshWhy,
+			Web:     a.comment == tag+" "+gatewayHTTPWhy || a.comment == tag+" "+gatewayHTTPSWhy,
 		})
 	}
 	return rules, false
