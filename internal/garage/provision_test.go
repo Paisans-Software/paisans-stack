@@ -8,6 +8,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/garage"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // fakeTransport answers canned output per command prefix, so the whole planner
@@ -528,6 +529,64 @@ func TestUnreadableBucketInfoPlansBothAndSaysSo(t *testing.T) {
 	for _, step := range talk {
 		if !strings.Contains(step, "could not be read") {
 			t.Errorf("the step does not say why it was planned: %s", step)
+		}
+	}
+}
+
+// A dry run marks each step still to run as pending, with its sentence for
+// --verbose, and under --verbose also marks what was already there as done,
+// the way host prepare and apply's dry run mark theirs. The command, which
+// may carry an S3 secret, is never shown.
+func TestShowMarksStepsPendingAndFindingsDone(t *testing.T) {
+	d := fixtureConfig(t).Deployment()
+	plan := &garage.Plan{
+		Site: "home-a",
+		Steps: []garage.Step{
+			garage.ImportStep(d, "talk", "GK00112233445566778899aabb", "not-a-real-secret-value"),
+			garage.GrantStep(d, "talk", "talk-uploads", "GK00112233445566778899aabb"),
+		},
+		Present: []string{"layout: home-a already has a role (version 1)"},
+	}
+
+	rec := &ui.Recorder{}
+	plan.Show(rec)
+	if !rec.Has("pending", "import key for talk") || !rec.Has("pending", "grant key for talk") {
+		t.Errorf("got:\n%s", rec.Lines())
+	}
+	if rec.Has("item", "") || rec.Has("done", "") {
+		t.Errorf("a step is an item, or a finding shows without --verbose:\n%s", rec.Lines())
+	}
+
+	verbose := &ui.Recorder{Verbose_: true}
+	plan.Show(verbose)
+	if !verbose.Has("done", "layout: home-a already has a role (version 1)") ||
+		!verbose.Has("detail", "import the S3 key GK00112233445566778899aabb for talk") {
+		t.Errorf("got:\n%s", verbose.Lines())
+	}
+
+	// Plain output carries the writer's own words and no label column.
+	var b strings.Builder
+	plan.Show(ui.NewPlain(&b, true))
+	out := b.String()
+	t.Logf("\n%s", out)
+	for _, want := range []string{
+		"  todo import key for talk\n",
+		"      import the S3 key GK00112233445566778899aabb for talk\n",
+		"  todo grant key for talk\n",
+		"  ok   layout: home-a already has a role (version 1)\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if strings.Contains(out, "not-a-real-secret-value") {
+		t.Error("the plan printed the S3 secret")
+	}
+	for _, label := range []string{"create ", "present "} {
+		for _, line := range strings.Split(out, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), label) {
+				t.Errorf("a padded label: %q", line)
+			}
 		}
 	}
 }

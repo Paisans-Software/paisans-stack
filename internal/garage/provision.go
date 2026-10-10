@@ -94,9 +94,9 @@ type Plan struct {
 	Site string
 	// Steps is only what is missing, in the order it must run.
 	Steps []Step
-	// Present is what was already there, for the report. An operator reading
-	// a plan with zero steps should see why, rather than a plan that looks
-	// like it found nothing to check.
+	// Present is what was already there, for the report under --verbose. An
+	// operator reading a plan with zero steps can see why, rather than a plan
+	// that looks like it found nothing to check.
 	Present []string
 }
 
@@ -561,16 +561,20 @@ func Report(plan *Plan, t Transport, r ui.Reporter) error {
 }
 
 // Show reports the plan under the section the caller has opened for the
-// site: each step still to run as an item with its sentence as a detail, and
-// what was already there as details. Like Report it reports Describe and
-// never Command, which may carry an S3 secret, and a dry run is the ordinary
-// case.
+// site, marked the way apply's dry run marks its steps: each step still to
+// run is pending under its title, with its sentence as a detail, and under
+// --verbose what was already there is marked done. Like Report it reports
+// Describe and never Command, which may carry an S3 secret, and a dry run is
+// the ordinary case.
 func (p *Plan) Show(r ui.Reporter) {
 	for _, step := range p.Steps {
-		r.Item(step.Title)
-		r.Detail("create    %s", step.Describe)
+		s := r.Step(step.Title)
+		s.Detail("%s", step.Describe)
+		s.End(ui.Pending, "")
 	}
-	for _, present := range p.Present {
-		r.Detail("present   %s", present)
+	if r.Verbose() {
+		for _, present := range p.Present {
+			r.Step(present).End(ui.OK, "")
+		}
 	}
 }
