@@ -33,9 +33,9 @@ Out, each for a stated reason:
   entry is what names the site and the roles, and is the proof the host was
   claimed by that id. They are removed by hand.
 * **Every other host.** One host at a time, as with `--force`.
-* **The secrets, DNS and Pocket ID.** Not read and not changed; the closing
-  report says so. DNS has no provider or token without a configuration, so
-  nothing there can be deleted safely.
+* **The secrets, DNS and Pocket ID.** Not read and not changed. The closing
+  report says so for DNS only: it has no provider or token without a
+  configuration, so nothing there can be deleted safely.
 
 ## `host deployments`
 
@@ -114,7 +114,7 @@ forced removal runs. The mark changes two things only:
 
 * the Pocket ID note at the head of the stage is not made, since it reads the
   configuration's apps;
-* the remains say what was not read.
+* the remains say DNS was not modified.
 
 ### A gateway
 
@@ -130,8 +130,6 @@ monitor-only one, is unaffected.
 
 Besides what the host stage keeps, with why, one line each:
 
-* **Pocket ID**, on a site with the `apps` role: not checked; if this host held
-  the active instance, sign in stops until a standby takes over.
 * **DNS:** on every `--id` run, dry run and `--execute` alike, and when the
   host holds nothing of the deployment, one warning:
 

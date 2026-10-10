@@ -65,8 +65,8 @@ func TestByIDCleansAMonitorWithNoConfiguration(t *testing.T) {
 	}
 }
 
-// What the configuration would have said is reported as unchecked, one line
-// each, and the secrets file is not mentioned.
+// DNS is the one thing the configuration would have said that is reported as
+// unchecked; neither the secrets file nor Pocket ID is mentioned.
 func TestByIDSaysWhatItDidNotRead(t *testing.T) {
 	w := setup(t)
 	remains := strings.Join(byID(t, w, "watch", "f2a9", siteremove.Options{}).Remains(), "\n")
@@ -76,12 +76,9 @@ func TestByIDSaysWhatItDidNotRead(t *testing.T) {
 	if strings.Contains(remains, "secrets") {
 		t.Errorf("an --id run mentions secrets:\n%s", remains)
 	}
-	if strings.Contains(remains, "Pocket ID") {
-		t.Errorf("a monitor-only site is told about Pocket ID:\n%s", remains)
-	}
 	remains = strings.Join(byID(t, w, "home-a", "f2a9", siteremove.Options{}).Remains(), "\n")
-	if !strings.Contains(remains, "Pocket ID: not checked") {
-		t.Errorf("an apps site is not told about Pocket ID:\n%s", remains)
+	if strings.Contains(remains, "Pocket ID") {
+		t.Errorf("an apps site is told about Pocket ID:\n%s", remains)
 	}
 }
 
