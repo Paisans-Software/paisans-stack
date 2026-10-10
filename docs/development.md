@@ -286,10 +286,13 @@ anything else is asked of the host. There is no flag to skip the check.
 
 ## `apply`, and the gates in it
 
-`apply` is one site at a time, and a dry run unless `--execute` is given. Both
+`apply --site` is one site at a time, and a dry run unless `--execute` is given. Both
 are deliberate: a staged change that half succeeds across three machines is
 worse than one that failed on one, and the difference between "show me" and "do
 it" should be a flag an operator typed rather than a habit they formed.
+`apply` without `--site` keeps both: it runs `apply --site` for each site in
+turn, as one step among the others it runs (`cmd/paisans/converge.go`), and
+is a dry run unless `--execute` is given.
 
 The order inside it is the design, not an implementation detail. Everything is
 compared first, so a conflict is found before a single byte is written; an apply

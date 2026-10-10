@@ -42,7 +42,8 @@ Usage:
   paisans render   [--config paisans.yaml] [--secrets secrets.enc.yaml] --out ./out
   paisans host prepare --site <name> [--config paisans.yaml] [--ssh <destination>]
                [--execute]
-  paisans apply    [--config paisans.yaml] [--secrets secrets.enc.yaml] [--execute]
+  paisans apply    [--config paisans.yaml] [--secrets secrets.enc.yaml]
+                   [--min-free <size>] [--keep-images] [--execute]
                    every site, from paisans.yaml to a running stack, in order
   paisans apply    --site <name> [--config paisans.yaml] [--secrets secrets.enc.yaml]
                    [--ssh <destination>] [--overwrite <path>]... [--recreate <stack>]...
@@ -89,8 +90,12 @@ Commands:
   host       Take a blank host to the state apply assumes: Docker, the
              WireGuard tools, a firewall, and a watchdog on a data site.
              Installs only what is missing. Writes nothing without --execute.
-  apply      Compare one site's rendered artifacts with what is on that host
-             and show what would change. Writes nothing without --execute.
+  apply      Without --site: take every site from paisans.yaml to a running
+             stack, running init, host prepare, apply, site add, storage
+             and dns init in the order the deployment needs. With --site:
+             compare that site's rendered artifacts with what is on its
+             host and show what would change. Writes nothing without
+             --execute.
   site       add: join a new data site to the running cluster in seven gated
              stages: preflight, mesh, etcd (learners, then promoted), the
              Patroni replica, synchronous mode, HAProxy, and each existing
@@ -488,7 +493,8 @@ func runRender(args []string) error {
 }
 
 // runApply compares one site against what is rendered for it, and changes
-// nothing unless told to.
+// nothing unless told to. Without --site it converges every site instead, by
+// runConverge.
 //
 // A dry run by default is not politeness. This is the only command that
 // reaches a machine, the machine it reaches is running a community, and the
@@ -828,7 +834,7 @@ func runStorageInit(args []string) error {
 	}
 	r := reporter()
 	if *site == "" {
-		return fmt.Errorf("storage init: --site is required. A site at a time is deliberate, the same reason apply takes one")
+		return fmt.Errorf("storage init: --site is required. A site at a time is deliberate, the same reason apply --site takes one")
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -908,7 +914,7 @@ func runHostPrepare(args []string) error {
 	}
 	r := reporter()
 	if *site == "" {
-		return fmt.Errorf("host prepare: --site is required. A site at a time is deliberate, the same reason apply takes one")
+		return fmt.Errorf("host prepare: --site is required. A site at a time is deliberate, the same reason apply --site takes one")
 	}
 
 	cfg, err := config.Load(*configPath)

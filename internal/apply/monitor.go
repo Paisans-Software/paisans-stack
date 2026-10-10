@@ -15,7 +15,7 @@ import (
 // The seed is rendered from the whole deployment (render's uptimeSeed): a
 // ping per site, a direct check per site an app runs on, and a check per
 // app. It is correct whenever the monitor site is applied, and nothing else
-// applies it: `apply` is one site at a time, and a command that joins or
+// applies it: `apply --site` is one site at a time, and a command that joins or
 // removes a site, or an app, moves files on the sites it changes and not on
 // the monitor's. Without this the monitor keeps checking a site that is gone,
 // alerting for as long as nobody applies it by hand, and never checks a site

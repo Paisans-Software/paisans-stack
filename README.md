@@ -671,7 +671,7 @@ the gateway no gate is engaged for it. A deployment with no monitor renders
 no pusher.
 
 **Topology commands reseed the monitor.** The seed is correct whenever the
-monitor site is applied, and nothing else applies it: `apply` is one site at
+monitor site is applied, and nothing else applies it: `apply --site` is one site at
 a time, and `site add`, `site remove`, `storage add` and `app remove` move
 files on the sites they change, which the monitor's is not. Left there, a
 monitor keeps pinging a site that is gone and alerting for it until somebody
@@ -1889,11 +1889,12 @@ the site is the one Garage site; joining several is `storage add`, below. Like `
 writes nothing without `--execute`.
 
 It has to run after the infrastructure stack is up, because Garage has to be
-reachable to be asked what it already has. **`paisans apply` alone leaves
-object storage unusable**: the containers come up, but no bucket exists and no
+reachable to be asked what it already has. **`paisans apply --site` alone
+leaves object storage unusable**: the containers come up, but no bucket exists and no
 application key can reach one, so the failure an adopter meets is an
 application error with no obvious cause, not a message naming a missing step.
-`storage init` is that missing step.
+`storage init` is that missing step, and `paisans apply` without `--site` runs
+it once every site is up.
 
 #### More than one Garage site: `storage add`
 

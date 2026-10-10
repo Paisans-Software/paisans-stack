@@ -386,3 +386,20 @@ func TestConvergeStopsWithTheHintThatFits(t *testing.T) {
 		}
 	}
 }
+
+// apply takes a site only when given --site, so nothing says it needs one:
+// not its usage, and not the commands that compare themselves with it.
+func TestNothingSaysApplyTakesOneSite(t *testing.T) {
+	entry := usage[strings.Index(usage, "\n  apply      "):]
+	entry = entry[:strings.Index(entry[1:], "\n  site ")]
+	if !strings.Contains(entry, "Without --site") {
+		t.Errorf("apply's usage entry does not say what it does without --site:%s", entry)
+	}
+	for name, run := range map[string]func([]string) error{"host prepare": runHostPrepare, "storage init": runStorageInit, "prune": runPrune} {
+		var err error
+		captureStdout(t, func() { err = run([]string{"--config", fixtureConfig()}) })
+		if err == nil || !strings.Contains(err.Error(), "the same reason apply --site takes one") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}
