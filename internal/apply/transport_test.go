@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/paisans-software/paisans-stack/internal/apply"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Obviously fake: an ed25519 key whose 32 bytes are all zero, and all one.
@@ -305,4 +306,60 @@ func TestARunErrorEndsWithoutANewline(t *testing.T) {
 	if err == nil || strings.HasSuffix(err.Error(), "\n") {
 		t.Errorf("err = %q", err)
 	}
+}
+
+func problemOf(t *testing.T, err error) *ui.Problem {
+	t.Helper()
+	var p *ui.Problem
+	if !errors.As(err, &p) {
+		t.Fatalf("not a ui.Problem: %v", err)
+	}
+	return p
+}
+
+// A host that stays unreachable is said as such, with ssh's own reason, and
+// is still ErrUnreachable to a caller that asks.
+func TestUnreachableIsAProblem(t *testing.T) {
+	s := &sshScript{answers: []sshAnswer{{sshTimeout, 255}}}
+	s.install(t)
+	_, err := apply.SSHTransport{User: "ubuntu", Host: "203.0.113.10", PublicKeys: []string{keyA}}.Run("true")
+	if !errors.Is(err, apply.ErrUnreachable) {
+		t.Fatalf("want ErrUnreachable, got %v", err)
+	}
+	p := problemOf(t, err)
+	if p.Hint != "ubuntu@203.0.113.10 cannot be reached over ssh" {
+		t.Errorf("hint: %q", p.Hint)
+	}
+	for _, want := range []string{"Operation timed out", "3 attempts", "is up"} {
+		if !strings.Contains(p.Explain, want) {
+			t.Errorf("the explanation lacks %q: %q", want, p.Explain)
+		}
+	}
+}
+
+// ssh refusing the host's key, not knowing it, or the host refusing the
+// operator's key each say what to do, and none is retried or called
+// unreachable: the host answered.
+func TestSSHAuthenticationFailuresAreProblems(t *testing.T) {
+	changed := "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\nHost key verification failed.\n"
+	for _, c := range []struct {
+		out, hint, explain string
+	}{
+		{changed, "ubuntu@203.0.113.10 port 2222 offered a host key other than the one known", "ssh-keygen -R '[203.0.113.10]:2222'"},
+		{"Host key verification failed.\n", "ubuntu@203.0.113.10 port 2222's host key is not known", "ssh -p 2222 ubuntu@203.0.113.10"},
+		{"ubuntu@203.0.113.10: Permission denied (publickey).\n", "ubuntu@203.0.113.10 port 2222 did not accept your ssh key", "authorized_keys"},
+	} {
+		apply.ForgetContacts()
+		s := &sshScript{answers: []sshAnswer{{c.out, 255}}}
+		s.install(t)
+		_, err := apply.SSHTransport{User: "ubuntu", Host: "203.0.113.10", Port: 2222, PublicKeys: []string{keyA}}.Run("true")
+		if s.calls != 1 || errors.Is(err, apply.ErrUnreachable) {
+			t.Errorf("%q: retried or called unreachable: %d calls, %v", c.out, s.calls, err)
+		}
+		p := problemOf(t, err)
+		if p.Hint != c.hint || !strings.Contains(p.Explain, c.explain) {
+			t.Errorf("%q: got %q\n%q", c.out, p.Hint, p.Explain)
+		}
+	}
+	apply.ForgetContacts()
 }
