@@ -200,7 +200,6 @@ var (
 	// HAProxy marks a server UP after two good checks three seconds apart.
 	haproxyWait = 60 * time.Second
 	haproxyPoll = 3 * time.Second
-
 )
 
 func attempts(wait, poll time.Duration) int {
