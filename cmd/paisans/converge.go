@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -161,7 +162,9 @@ var convergeRun func(args []string) error
 // declared: each reaches runApply, which reaches it back.
 func init() {
 	convergeRun = runStep
-	convergeCheck = func(r ui.Reporter, args []string) (string, error) { return checkStep(r, args, runStep) }
+	convergeCheck = func(r ui.Reporter, args []string) (string, []checkReport, error) {
+		return checkStep(r, args, runStep)
+	}
 }
 
 func runStep(args []string) error {
@@ -435,6 +438,7 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 		}
 		line := r.Step(s.Title)
 		line.Detail("%s", s.Why)
+		var notes []checkReport
 		var st status
 		after := ""
 		for _, w := range convergeWaits(cfg, steps, i) {
@@ -458,7 +462,14 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 		case checked:
 			st = prior
 		default:
-			summary, err := convergeCheck(r, convergeFlags(s.Args, o))
+			summary, reports, err := convergeCheck(r, convergeFlags(s.Args, o))
+			for _, c := range reports {
+				if c.Note {
+					notes = append(notes, c)
+				} else {
+					line.Detail("%s", c.Text)
+				}
+			}
 			switch {
 			case err != nil:
 				first, _, _ := strings.Cut(err.Error(), "\n")
@@ -471,6 +482,10 @@ func convergeStatus(r ui.Reporter, cfg *config.Config, steps []convergeStep, o c
 		}
 		done[s.Title] = st
 		line.End(st.mark, st.result)
+		for _, n := range notes {
+			r.Note(n.Text, n.Detail)
+		}
+		notes = nil
 	}
 }
 
@@ -572,47 +587,90 @@ func count(n int, unit string) string {
 
 // convergeCheck is one step's status in a dry run: what its own dry run
 // would change, empty for nothing. Tests replace it.
-var convergeCheck func(r ui.Reporter, args []string) (string, error)
+var convergeCheck func(r ui.Reporter, args []string) (string, []checkReport, error)
+
+// checkReport is one thing a step's own dry run reported while it was
+// checked. A note is shown after the step's line at every verbosity, since
+// it is something left for the operator; the rest is a detail of the line,
+// shown with -v.
+type checkReport struct {
+	Note   bool
+	Text   string
+	Detail string
+}
 
 // checkReporter is what a step's own dry run reports through while it is
-// checked: nothing it says is shown, since the step's line says what it
-// found, and a hold for a prompt reaches r, which draws that line's spinner.
+// checked. Its plan is not shown, since the step's line says what it found;
+// its warnings, notes, refusals and ssh retries are kept for that line, and a
+// hold for a prompt reaches r, which draws the line's spinner.
 type checkReporter struct {
 	ui.Reporter
-	r ui.Reporter
+	r       ui.Reporter
+	reports *[]checkReport
 }
 
 func (c checkReporter) Hold() (resume func()) { return ui.Hold(c.r) }
 
+func (c checkReporter) Warn(hint, detail string) {
+	*c.reports = append(*c.reports, checkReport{Text: joinDetail("! "+hint, detail)})
+}
+
+func (c checkReporter) Note(hint, detail string) {
+	*c.reports = append(*c.reports, checkReport{Note: true, Text: hint, Detail: detail})
+}
+
+func (c checkReporter) Refuse(hint, explanation string) {
+	*c.reports = append(*c.reports, checkReport{Text: joinDetail("✗ "+hint, explanation)})
+}
+
+// RetryLog is where the check's ssh retries go: kept, as a detail of the
+// step's line.
+func (c checkReporter) RetryLog() io.Writer { return retryCollector{c.reports} }
+
+type retryCollector struct{ reports *[]checkReport }
+
+func (w retryCollector) Write(p []byte) (int, error) {
+	*w.reports = append(*w.reports, checkReport{Text: strings.TrimRight(string(p), "\n")})
+	return len(p), nil
+}
+
+func joinDetail(hint, detail string) string {
+	if detail == "" {
+		return hint
+	}
+	return hint + ": " + detail
+}
+
 // checkStep runs args, a step's command without --execute, through run, in
 // this process and quietly, and returns what its dry run told dryRunFound.
 // Its reports, retries and holds are routed back to r once it returns.
-func checkStep(r ui.Reporter, args []string, run func([]string) error) (string, error) {
+func checkStep(r ui.Reporter, args []string, run func([]string) error) (string, []checkReport, error) {
 	found := false
 	var summary string
 	var stop error
+	var reports []checkReport
 	savedFound, savedOverride := dryRunFound, reporterOverride
 	dryRunFound = func(s string, err error) { found, summary, stop = true, s, err }
-	reporterOverride = checkReporter{ui.Discard, r}
+	reporterOverride = checkReporter{ui.Discard, r, &reports}
 	defer func() {
 		dryRunFound, reporterOverride = savedFound, savedOverride
 		routeRetries(r)
 		routeHolds(r)
 	}()
 	if err := run(args); err != nil {
-		return "", err
+		return "", reports, err
 	}
 	if stop != nil {
-		return "", stop
+		return "", reports, stop
 	}
 	if !found {
 		name := args[0]
 		if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
 			name += " " + args[1]
 		}
-		return "", fmt.Errorf("%s ended without saying what it would change", name)
+		return "", reports, fmt.Errorf("%s ended without saying what it would change", name)
 	}
-	return summary, nil
+	return summary, reports, nil
 }
 
 // convergeLeft names what only the operator can do: each credential the

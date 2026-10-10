@@ -77,7 +77,10 @@ Each status comes from the step's own dry run, run in this process with
 nothing it prints shown, which says how much it would change. That dry run is
 the same read only path `paisans <command>` without `--execute` takes, so a
 check changes nothing on a host. With `-v` each line is followed by why the
-step is in the plan. The detail of a pending step is its own dry run, Eg:
+step is in the plan, and by what its check reported: its warnings, its
+refusal's explanation, and its ssh retries. A note the check reported,
+something left for the operator, follows the line at every verbosity. The
+detail of a pending step is its own dry run, Eg:
 `paisans apply --site <s>`, which the closing line names.
 
 A step is checked only once every step it waits on is up to date, since until

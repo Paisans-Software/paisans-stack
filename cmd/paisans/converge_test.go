@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -174,7 +175,7 @@ func fakeConvergeArgs(t *testing.T, fail map[string]error) (*[]string, *[][]stri
 	savedRun, savedRead, savedCheck := convergeRun, convergeReadInitial, convergeCheck
 	// A dry run's checks are each step's own dry run, which reaches a host;
 	// here every step is up to date. fakeChecks says otherwise.
-	convergeCheck = func(ui.Reporter, []string) (string, error) { return "", nil }
+	convergeCheck = func(ui.Reporter, []string) (string, []checkReport, error) { return "", nil, nil }
 	convergeRun = func(args []string) error {
 		full = append(full, args)
 		title := strings.Join(args, " ")
@@ -724,7 +725,7 @@ func fakeChecks(t *testing.T, found map[string]any) *[]string {
 	t.Helper()
 	var checked []string
 	saved := convergeCheck
-	convergeCheck = func(_ ui.Reporter, args []string) (string, error) {
+	convergeCheck = func(_ ui.Reporter, args []string) (string, []checkReport, error) {
 		title := strings.Join(args, " ")
 		if i := strings.Index(title, " --config"); i >= 0 {
 			title = title[:i]
@@ -735,11 +736,11 @@ func fakeChecks(t *testing.T, found map[string]any) *[]string {
 		checked = append(checked, title)
 		switch f := found[title].(type) {
 		case error:
-			return "", f
+			return "", nil, f
 		case string:
-			return f, nil
+			return f, nil, nil
 		}
-		return "", nil
+		return "", nil, nil
 	}
 	t.Cleanup(func() { convergeCheck = saved })
 	return &checked
@@ -923,7 +924,7 @@ func TestCheckStepIsQuietAndHoldsTheRunsSpinner(t *testing.T) {
 		r.Result("Nothing changed.")
 		return nil
 	}
-	summary, err := checkStep(h, []string{"apply"}, run)
+	summary, _, err := checkStep(h, []string{"apply"}, run)
 	if err != nil || summary != "8 changes" {
 		t.Fatalf("summary %q, err %v", summary, err)
 	}
@@ -952,12 +953,12 @@ func TestCheckStepFails(t *testing.T) {
 		"stop":    func([]string) error { dryRunFound("", conflict); return nil },
 		"silence": func([]string) error { return nil },
 	} {
-		summary, err := checkStep(ui.Discard, []string{"dns", "init"}, run)
+		summary, _, err := checkStep(ui.Discard, []string{"dns", "init"}, run)
 		if err == nil || summary != "" {
 			t.Errorf("%s: summary %q, err %v", name, summary, err)
 		}
 	}
-	if _, err := checkStep(ui.Discard, []string{"dns", "init"}, func([]string) error { dryRunFound("", conflict); return nil }); !errors.Is(err, dns.ErrConflict) {
+	if _, _, err := checkStep(ui.Discard, []string{"dns", "init"}, func([]string) error { dryRunFound("", conflict); return nil }); !errors.Is(err, dns.ErrConflict) {
 		t.Errorf("the stop is not the error: %v", err)
 	}
 }
@@ -969,7 +970,7 @@ func TestHostPrepareDryRunSaysWhatItWouldChange(t *testing.T) {
 	quietSSH(t)
 	o := convergeOptions{Config: fixtureConfig(), Secrets: fixtureSecretsPath()}
 	for _, args := range [][]string{{"host", "prepare", "--site", "home-a"}, {"storage", "add"}} {
-		summary, err := checkStep(ui.Discard, convergeFlags(args, o), runStep)
+		summary, _, err := checkStep(ui.Discard, convergeFlags(args, o), runStep)
 		if err != nil {
 			t.Fatalf("%v: %v", args, err)
 		}
@@ -987,7 +988,7 @@ func TestApplyDryRunSaysWhatItWouldChangeOrRefuse(t *testing.T) {
 	quietSSH(t)
 	o := convergeOptions{Config: fixtureConfig(), Secrets: fixtureSecretsPath()}
 	args := []string{"apply", "--site", "watch"}
-	summary, err := checkStep(ui.Discard, convergeFlags(args, o), runStep)
+	summary, _, err := checkStep(ui.Discard, convergeFlags(args, o), runStep)
 	if err != nil || !regexp.MustCompile(`^[1-9][0-9]* changes?$`).MatchString(summary) {
 		t.Errorf("summary %q, err %v", summary, err)
 	}
@@ -996,7 +997,7 @@ func TestApplyDryRunSaysWhatItWouldChangeOrRefuse(t *testing.T) {
 		t.Fatal("the fake host no longer answers the volumes probe")
 	}
 	sshAnswering(t, unmounted)
-	summary, err = checkStep(ui.Discard, convergeFlags(args, o), runStep)
+	summary, _, err = checkStep(ui.Discard, convergeFlags(args, o), runStep)
 	if err == nil || summary != "" {
 		t.Errorf("a plan --execute refuses was %q, err %v", summary, err)
 	}
@@ -1176,7 +1177,7 @@ func TestStorageInitDryRunSaysWhatItWouldChange(t *testing.T) {
 	sshAnswering(t, garage)
 	one := editedFixture(t, "sites: [home-a, home-b]\n    replication: 2", "sites: [home-a]\n    replication: 1")
 	o := convergeOptions{Config: one, Secrets: fixtureSecretsPath()}
-	summary, err := checkStep(ui.Discard, convergeFlags([]string{"storage", "init", "--site", "home-a"}, o), runStep)
+	summary, _, err := checkStep(ui.Discard, convergeFlags([]string{"storage", "init", "--site", "home-a"}, o), runStep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1232,5 +1233,63 @@ func TestConvergeTitlesCoverEveryLine(t *testing.T) {
 		if !slices.Contains(titles, "read "+m+"'s etcd record") {
 			t.Errorf("the read of %s is not in convergeTitles", m)
 		}
+	}
+}
+
+// What a step's own dry run reports while it is checked is collected rather
+// than dropped: its warnings, notes, refusals and ssh retries.
+func TestCheckStepCollectsWhatTheDryRunReports(t *testing.T) {
+	t.Cleanup(func() { apply.SetRetryLog(nil) })
+	rec := &ui.Recorder{Verbose_: true}
+	summary, reports, err := checkStep(rec, []string{"apply", "--site", "home-a"}, func([]string) error {
+		inner := reporterOverride
+		inner.Warn("held back from this apply", "talk's image is newer than its pin")
+		inner.Note("secrets: smtp.password is owed", "paisans secrets set smtp.password < value")
+		inner.Refuse("garage is not running", "start it first")
+		routeRetries(inner)
+		retryOnce(t)
+		dryRunFound("3 changes", nil)
+		return nil
+	})
+	if err != nil || summary != "3 changes" {
+		t.Fatalf("summary %q, err %v", summary, err)
+	}
+	want := []checkReport{
+		{Text: "! held back from this apply: talk's image is newer than its pin"},
+		{Note: true, Text: "secrets: smtp.password is owed", Detail: "paisans secrets set smtp.password < value"},
+		{Text: "✗ garage is not running: start it first"},
+	}
+	if len(reports) != 4 || !reflect.DeepEqual(reports[:3], want) || !strings.Contains(reports[3].Text, "ssh could not connect") {
+		t.Errorf("reports:\n%#v", reports)
+	}
+	if len(rec.Events) != 0 {
+		t.Errorf("the check drew on the run's reporter:\n%s", rec.Lines())
+	}
+}
+
+// A check's reports print under its status line: everything but a note as a
+// detail of the line, which only -v shows, and a note after the line at
+// every verbosity.
+func TestCheckReportsShowUnderTheStep(t *testing.T) {
+	fakeConverge(t, nil)
+	saved := convergeCheck
+	convergeCheck = func(_ ui.Reporter, args []string) (string, []checkReport, error) {
+		if strings.Join(args[:3], " ") == "apply --site vm" {
+			return "5 changes", []checkReport{{Text: "! held back from this apply"}, {Note: true, Text: "owed", Detail: "paisans secrets set x"}}, nil
+		}
+		return "", nil, nil
+	}
+	t.Cleanup(func() { convergeCheck = saved })
+	rec := withRecorder(t, true)
+	if err := converge(t); err != nil {
+		t.Fatal(err)
+	}
+	pending := slices.IndexFunc(rec.Events, func(e ui.Event) bool { return e.Kind == "pending" && e.Text == "apply --site vm" })
+	detail := slices.IndexFunc(rec.Events, func(e ui.Event) bool {
+		return e.Kind == "detail" && e.Extra == "apply --site vm" && e.Text == "! held back from this apply"
+	})
+	note := slices.IndexFunc(rec.Events, func(e ui.Event) bool { return e.Kind == "note" && e.Text == "owed" })
+	if pending < 0 || detail < 0 || note < 0 || detail > pending || note < pending {
+		t.Errorf("pending %d, detail %d, note %d:\n%s", pending, detail, note, rec.Lines())
 	}
 }
