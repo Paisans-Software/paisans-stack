@@ -20,8 +20,9 @@ func check(t *testing.T, site string, h *fakeHost) *hostcheck.Report {
 	return r
 }
 
-// shown is what the report attaches to the host check's step, and the
-// refusal it returns, which is where its conflicts are listed.
+// shown is what the report shows under the host check's step with
+// --verbose, and the refusal it returns, which is where its conflicts are
+// listed.
 func shown(r *hostcheck.Report) (*ui.Recorder, string) {
 	rec := &ui.Recorder{Verbose_: true}
 	r.Show(rec)
@@ -44,12 +45,13 @@ func wantClass(t *testing.T, r *hostcheck.Report, class hostcheck.Class) {
 	}
 }
 
-// wantLine is a line the operator is shown: a detail of the host check with
-// --verbose, or, for a conflict, part of the refusal printed in full.
+// wantLine is a line the operator is shown: one the host check marks with
+// --verbose, as the recorder writes it, or, for a conflict, part of the
+// refusal printed in full.
 func wantLine(t *testing.T, r *hostcheck.Report, line string) {
 	t.Helper()
 	rec, refusal := shown(r)
-	if !rec.Has("detail", line) && !strings.Contains(refusal, line) {
+	if !strings.Contains(rec.Lines(), line) && !strings.Contains(refusal, line) {
 		t.Errorf("the report has no line %q:\n%s", line, printed(r))
 	}
 }
@@ -69,7 +71,45 @@ func TestAnEmptyDockerInstallIsClean(t *testing.T) {
 	if r.Shared() {
 		t.Error("a clean host reads as shared")
 	}
-	wantLine(t, r, "home-a (ubuntu@host.example.org) is clean")
+	wantLine(t, r, "detail: home-a (ubuntu@host.example.org) is clean")
+	wantLine(t, r, "done: docker 27.3.1")
+	wantLine(t, r, "done: firewall ufw inactive")
+}
+
+// The report marks what the check found the way host prepare marks its
+// plan: done for each finding, and done and not paisans for what another
+// hand put on the host. It shows only with --verbose, under the host
+// check's own line, and never with a padded label.
+func TestShowMarksWhatTheCheckFound(t *testing.T) {
+	r := check(t, "home-a", caddyHost())
+	quiet := &ui.Recorder{}
+	r.Show(quiet)
+	if len(quiet.Events) != 0 {
+		t.Errorf("the report shows without --verbose:\n%s", quiet.Lines())
+	}
+
+	var b strings.Builder
+	r.Show(ui.NewPlain(&b, true))
+	out := b.String()
+	t.Logf("\n%s", out)
+	for _, want := range []string{
+		"      home-a (ubuntu@host.example.org) is shared\n",
+		"  ok   docker: 27.3.1",
+		"  ok   firewall: ufw active, incoming deny\n",
+		"  ok   container web-caddy-1 (compose project web): not paisans\n",
+		"  ok   shared: ufw's default policy",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		for _, label := range []string{"docker ", "firewall ", "foreign ", "note ", "shared "} {
+			if strings.HasPrefix(strings.TrimSpace(line), label) {
+				t.Errorf("a padded label: %q", line)
+			}
+		}
+	}
 }
 
 // A host already running this deployment is clean: the host network
@@ -118,9 +158,9 @@ func TestAnotherDeploymentOnTheHostIsForeign(t *testing.T) {
 	r := check(t, "home-a", h)
 	wantClass(t, r, hostcheck.Shared)
 	for _, line := range []string{
-		"foreign   container paisans-0c1d-talk-app-1 (compose project paisans-0c1d-talk, paisans deployment 0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5)",
-		"foreign   container paisans-talk-app-1 (compose project paisans-talk)",
-		"foreign   docker network paisans-0c1d-talk_default (compose project paisans-0c1d-talk, paisans deployment 0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5)",
+		"done: container paisans-0c1d-talk-app-1 (compose project paisans-0c1d-talk, paisans deployment 0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5) not paisans",
+		"done: container paisans-talk-app-1 (compose project paisans-talk) not paisans",
+		"done: docker network paisans-0c1d-talk_default (compose project paisans-0c1d-talk, paisans deployment 0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5) not paisans",
 	} {
 		wantLine(t, r, line)
 	}
@@ -135,13 +175,13 @@ func TestAForeignCaddyBesideASiteThatDoesNotClaimItIsShared(t *testing.T) {
 		t.Error("Shared() is false")
 	}
 	for _, line := range []string{
-		"foreign   container web-caddy-1 (compose project web)",
-		"foreign   container shop-app-1 (compose project shop)",
-		"foreign   *:80/tcp held by container web-caddy-1 (compose project web)",
-		"foreign   203.0.113.10:8081/tcp held by container shop-app-1 (compose project shop)",
-		"foreign   docker network shop_default (compose project shop)",
-		"foreign   volume shop_data (compose project shop)",
-		"shared    ",
+		"done: container web-caddy-1 (compose project web) not paisans",
+		"done: container shop-app-1 (compose project shop) not paisans",
+		"done: *:80/tcp held by container web-caddy-1 (compose project web) not paisans",
+		"done: 203.0.113.10:8081/tcp held by container shop-app-1 (compose project shop) not paisans",
+		"done: docker network shop_default (compose project shop) not paisans",
+		"done: volume shop_data (compose project shop) not paisans",
+		"done: shared ufw's default policy",
 	} {
 		wantLine(t, r, line)
 	}
@@ -278,7 +318,7 @@ func TestABroaderRouteIsANoteNotAConflict(t *testing.T) {
 	h.answers["ip -j route"] = `[{"dst":"default","dev":"eth0"},{"dst":"10.0.0.0/8","gateway":"10.0.0.1","dev":"enp7s0"}]`
 	r := check(t, "home-a", h)
 	wantClass(t, r, hostcheck.Clean)
-	wantLine(t, r, "note      route 10.0.0.0/8 dev enp7s0 contains the mesh subnet 10.44.0.0/24")
+	wantLine(t, r, "done: route 10.0.0.0/8 dev enp7s0 contains the mesh subnet 10.44.0.0/24")
 
 	h.answers["ip -j route"] = `[{"dst":"10.44.0.0/24","dev":"tun0"}]`
 	wantClass(t, check(t, "home-a", h), hostcheck.Conflicted)

@@ -94,9 +94,11 @@ func runPrune(args []string) error {
 	return nil
 }
 
-// showVolumePrune reports the plan: each volume it would remove as an item,
-// and every verdict, kept or removed, with its size, contents and reason as
-// details, since the reason is what an operator reads before agreeing.
+// showVolumePrune reports the plan, marked the way host prepare marks its
+// plan: each volume it would remove as pending under its title, and under
+// --verbose each one kept as done. Every verdict carries the volume's whole
+// name, size, contents and reason as details, since the reason is what an
+// operator reads before agreeing.
 func showVolumePrune(r ui.Reporter, plan *apply.VolumePrune) {
 	r.Detail("%s", apply.PruneHeader)
 	if len(plan.Volumes) == 0 {
@@ -105,25 +107,40 @@ func showVolumePrune(r ui.Reporter, plan *apply.VolumePrune) {
 	}
 	var total int64
 	for _, v := range plan.Volumes {
-		verb := "keep"
 		if v.Remove {
-			verb = "remove"
 			total += v.Size
-			// Only an anonymous volume's name is shortened, since it is 64
-			// hex characters whose front tells one from another. A named
-			// volume's name is what an operator recognises, and this list
-			// is the consent to delete its data, so it is shown whole.
-			name := v.Name
-			if apply.IsAnonymousVolume(name) {
-				name = name[:12]
-			}
-			r.Item("remove volume " + name)
+			showVolume(r, "remove", v, ui.Pending)
 		}
-		entries := "empty"
-		if len(v.Entries) > 0 {
-			entries = strings.Join(v.Entries, " ")
-		}
-		r.Detail("%-9s %s  %s  [%s]\n    %s", verb, v.Name, apply.FormatSize(v.Size), entries, v.Reason)
 	}
-	r.Detail("%-9s %d of %d dangling volume(s), %s", "total", len(plan.Removals()), len(plan.Volumes), apply.FormatSize(total))
+	if r.Verbose() {
+		for _, v := range plan.Volumes {
+			if !v.Remove {
+				showVolume(r, "keep", v, ui.OK)
+			}
+		}
+	}
+	r.Detail("total: %d of %d dangling volume(s), %s", len(plan.Removals()), len(plan.Volumes), apply.FormatSize(total))
+}
+
+// showVolume is one verdict: verb and the volume's name as the title, its
+// whole name, size and contents, then its reason, as details.
+func showVolume(r ui.Reporter, verb string, v apply.DanglingVolume, m ui.Mark) {
+	// Only an anonymous volume's name is shortened, since it is 64 hex
+	// characters whose front tells one from another. A named volume's name
+	// is what an operator recognises, and this list is the consent to delete
+	// its data, so it is shown whole.
+	name := v.Name
+	if apply.IsAnonymousVolume(name) {
+		name = name[:12]
+	}
+	entries := "empty"
+	if len(v.Entries) > 0 {
+		entries = strings.Join(v.Entries, " ")
+	}
+	s := r.Step(verb + " volume " + name)
+	s.Detail("%s (%s): %s", v.Name, apply.FormatSize(v.Size), entries)
+	if v.Reason != "" {
+		s.Detail("%s", v.Reason)
+	}
+	s.End(m, "")
 }

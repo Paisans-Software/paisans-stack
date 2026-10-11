@@ -8,7 +8,7 @@ import (
 
 // hostGate runs the host check on one site before a command changes
 // anything, in a dry run as well as with --execute, as one step whose result
-// is the host's class and whose details are what the check found. It returns
+// is the host's class, with what the check found marked under it. It returns
 // the refusal for a conflict, or for a shared host whose firewall is not
 // already up and denying by default; otherwise the report, whose Shared
 // tells the command to touch only what is the toolkit's.
@@ -28,14 +28,19 @@ func gate(r ui.Reporter, title string, cfg *config.Config, site string, t hostch
 		s.Fail(err)
 		return nil, err
 	}
-	report.Show(s)
 	// The refusal carries the conflicts itself, so the step only marks the
 	// line and the error, returned for main to print, says what to move.
-	if err := report.Refusal(); err != nil {
-		s.Fail(err)
-		return nil, err
+	// What the check found is marked under the step's line, with --verbose.
+	refusal := report.Refusal()
+	if refusal != nil {
+		s.Fail(refusal)
+	} else {
+		s.Done(report.Class.String())
 	}
-	s.Done(report.Class.String())
+	report.Show(r)
+	if refusal != nil {
+		return nil, refusal
+	}
 	return report, nil
 }
 

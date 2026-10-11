@@ -2155,9 +2155,18 @@ of its own. For each record it needs, the provider holds one of three things:
 
 | Provider holds | Plan |
 |----------------|------|
-| the same record, unproxied | `present` |
-| nothing at that name of that type | `create` |
-| a different address, a CNAME, a proxied copy, or an A or AAAA the deployment does not declare | `conflict` |
+| the same record, unproxied | `✓`, shown with `-v` |
+| nothing at that name of that type | `○ create` |
+| a different address, a CNAME, a proxied copy, or an A or AAAA the deployment does not declare | `✗`, a conflict |
+
+Each line names the record whole, its type, name, address and zone. Piped
+output says `ok`, `todo` and `FAIL` instead:
+
+```
+dns cloudflare
+  ○ create A talk.example.org -> 203.0.113.10 (zone example.org)
+  ✓ A vm.example.org -> 203.0.113.10 (zone example.org)
+```
 
 **Any conflict refuses the whole run before a single record is written.** This
 is the same rule `apply` follows for a file it did not write: a record that
@@ -2243,9 +2252,26 @@ A wanted name still pointing at an old address is kept too. Replacing its
 address would be an update, which nothing in the toolkit does; `dns init`
 reports it as a conflict for a human to resolve.
 
-Every record that carries the comment and fails a rule is listed as `keep`
-with each rule it fails, so a record that was expected to go says why it did
-not. Prune lists every record in each zone the deployment's names live in,
+The plan marks each record the way `dns init` does, named whole with its
+zone and record id. A record to delete is `○ delete`. Every record that
+carries the comment and fails a rule is `✓ keep`, shown with `-v` with each
+rule it fails under it, so a record that was expected to go says why it did
+not. One kept only for its name, which every other rule would delete, is the
+operator's to vouch for or delete by hand, so it is `! keep` with its reason at
+every verbosity. Piped output says `todo`, `ok` and `WARN` instead:
+
+```
+dns prune cloudflare
+  ○ delete A media.example.org -> 203.0.113.10 (zone example.org, record rec-1)
+  ! keep A old.example.net -> 203.0.113.10 (zone example.net, record rec-2)
+       old.example.net is outside community.domain (example.org) and is not a
+       name this configuration produces, so nothing says it was ever this
+       deployment's. If it was, name it with --name old.example.net
+  ✓ keep A talk.example.org -> 203.0.113.10 (zone example.org, record rec-3)
+      this configuration still wants a record of type A at this name (apps.talk.hostname)
+```
+
+ Prune lists every record in each zone the deployment's names live in,
 every page of the listing, because it decides from what is missing from the
 configuration as well as from what is in it. After `--execute` it lists each
 zone again and fails if any deleted record is still there; a run that stopped
@@ -2669,10 +2695,23 @@ home-a (ubuntu@home-a.local)
 
 `shared` stands where `clean` does for a host that runs other services, and a
 conflict ends the step as `FAIL` with each conflict in the error. `--verbose`
-adds under the step what the check found: the Docker version, the firewall
-state, each foreign resource that makes the host shared and each note. So do
-`storage rotate-key` and `storage add`, which apply files on the sites they
-change: rotate-key checks every site the app runs on, storage add every
+adds under the step what the check found, each marked `✓` (`ok` when piped):
+the Docker version, the firewall state, each note, and each foreign resource
+that makes the host shared, which reads `not paisans`:
+
+```
+home-a (ubuntu@home-a.local)
+  ✓ host check: shared
+      home-a (ubuntu@home-a.local) is shared
+  ✓ docker: 27.3.1 (docker-ce)
+  ✓ firewall: ufw active, incoming deny
+  ✓ container web-caddy-1 (compose project web): not paisans
+  ✓ *:80/tcp held by container web-caddy-1 (compose project web): not paisans
+  ✓ shared: ufw's default policy and enabled state are left alone, superseded images are kept, and prune removes only volumes labelled with this deployment's id, as everywhere
+```
+
+`storage rotate-key` and `storage add` run the check too, since they apply
+files on the sites they change: rotate-key checks every site the app runs on, storage add every
 Garage site and the gateway, all before the first change.
 
 The check has three parts, in `internal/hostcheck`:
@@ -3914,7 +3953,12 @@ such label, anonymous ones included, cannot be attributed to any deployment on
 a host that several may share. `apply` itself removes the anonymous volumes its
 own recreates abandon, read from its own containers before they are replaced,
 so those do not wait for `prune`. The plan says what its verdicts rest on at
-the top.
+the top, then marks each volume the way `host prepare` marks its plan: `○
+remove volume <name>` for one it would remove, and with `-v` `✓ keep volume
+<name>` for one it keeps, each with its whole name, size, top level entries
+and reason under it, and the total last. Piped output says `todo` and `ok`
+instead. An anonymous volume's 64 character name is shortened to its first 12
+in the title.
 
 **`prune` lists first and removes only this deployment's volumes**, the same
 rule `apply` follows for images. **Every declared
@@ -4289,7 +4333,8 @@ Nothing changed. Re-run with --execute to apply.
 ```
 
 A group that does not exist yet adds a `create group <name>` line before the
-client. `--verbose` puts under each line the request it would send:
+client. `--verbose` puts under each line the request it would send, and
+after them marks what Pocket ID already has `ok` (`✓` on a terminal):
 
 ```
   -    create OIDC client talk
@@ -4298,6 +4343,8 @@ client. `--verbose` puts under each line the request it would send:
       allow groups members, admins on client talk: PUT /api/oidc/clients/<id>/allowed-user-groups with exactly members, admins
   -    create client secret for talk
       create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
+  ok   group members
+  ok   group admins
 ```
 
 **Each line is a Pocket ID mutation.** For an app
@@ -4399,8 +4446,8 @@ Mbin client made with the bare host moves to the connect route on the next run:
   set launch URL for client talk: PUT /api/oidc/clients/<id> with launchURL "https://talk.example.org/oauth/oidc/connect" and every other field sent back as it is now
 ```
 
-Any other value is an operator's, is reported `present` with a note, and is
-never overwritten. If `sso_dashboard_link` is set and the client holds a
+Any other value is an operator's, is reported as already there with a note,
+and is never overwritten. If `sso_dashboard_link` is set and the client holds a
 different custom value, the command also warns, naming both, and still changes
 nothing: clear the launch URL in Pocket ID's admin UI and re-run to use the
 setting, or remove the setting or make it match to keep the client's. The list
@@ -4421,7 +4468,7 @@ recorded nowhere. If the secrets file cannot be written, Pocket ID is sent
 nothing.
 
 **It is idempotent from the probe.** An existing client with the right
-callback, PKCE and restriction is `present`, and its secret is left alone
+callback, PKCE and restriction is marked `✓`, and its secret is left alone
 unless `--rotate-secret` is given. A rotation adds a secret and leaves the old
 one valid, because Pocket ID allows several (`controller/oidc_controller.go:292`),
 so the app keeps signing people in until `apply` renders the new one. A client

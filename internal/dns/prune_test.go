@@ -71,8 +71,38 @@ func TestPruneDryRunRemovesOnlyTheStaleToolkitRecord(t *testing.T) {
 	if got := p.Removes(); len(got) != 1 || got[0].ID != "rec-stale" {
 		t.Fatalf("want only rec-stale removed, got %+v", got)
 	}
-	if !strings.Contains(out.Lines(), "remove A    media.example.org -> 203.0.113.10  (zone example.org, record rec-stale)") {
-		t.Errorf("dry run should name type, name, content, zone and id:\n%s", out.Lines())
+	if !out.Has("pending", "delete A media.example.org -> 203.0.113.10 (zone example.org, record rec-stale)") || out.Has("item", "") {
+		t.Errorf("dry run should mark the delete pending, naming type, name, content, zone and id:\n%s", out.Lines())
+	}
+	// A kept record is done, with each rule it fails under it.
+	if i := out.Index("done", "keep A talk.example.org -> 203.0.113.10 (zone example.org, record rec-wanted)"); i < 0 ||
+		!out.Has("detail", "still wants a record of type A at this name") {
+		t.Errorf("a kept record is not done with its reasons:\n%s", out.Lines())
+	}
+	quiet := &ui.Recorder{}
+	p.Show(quiet)
+	if quiet.Has("done", "") || quiet.Has("note", "") || !quiet.Has("pending", "delete A media.example.org") {
+		t.Errorf("without --verbose, only the delete is a line:\n%s", quiet.Lines())
+	}
+	var b strings.Builder
+	p.Show(ui.NewPlain(&b, true))
+	shown := b.String()
+	t.Logf("\n%s", shown)
+	for _, want := range []string{
+		"  todo delete A media.example.org -> 203.0.113.10 (zone example.org, record rec-stale)\n",
+		"  ok   keep A talk.example.org -> 203.0.113.10 (zone example.org, record rec-wanted)\n",
+		"      it is a CNAME record",
+	} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	for _, line := range strings.Split(shown, "\n") {
+		for _, label := range []string{"remove ", "keep   ", "    "} {
+			if strings.HasPrefix(strings.TrimPrefix(line, "      "), label) {
+				t.Errorf("a padded label: %q", line)
+			}
+		}
 	}
 	for id, reason := range map[string]string{
 		"rec-wanted":  "still wants a record of type A at this name (apps.talk.hostname)",
@@ -147,6 +177,14 @@ func TestPruneKeepsAToolkitRecordOutsideTheDomain(t *testing.T) {
 	e, ok := entry(p, "rec-net")
 	if !ok || e.Action != Keep || !strings.Contains(strings.Join(e.Reasons, "\n"), "outside community.domain") {
 		t.Fatalf("want rec-net kept as outside the domain, got %+v", e)
+	}
+	// Every other rule would delete it, so it is the operator's to vouch
+	// for or delete: a note, with the reason, at every verbosity.
+	out := &ui.Recorder{}
+	p.Show(out)
+	i := out.Index("note", "keep A old.example.net -> 203.0.113.10 (zone example.net, record rec-net)")
+	if i < 0 || !strings.Contains(out.Events[i].Extra, "--name old.example.net") {
+		t.Errorf("the record outside the domain is not a note naming --name:\n%s", out.Lines())
 	}
 }
 

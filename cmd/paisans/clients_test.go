@@ -14,6 +14,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/acme"
 	"github.com/paisans-software/paisans-stack/internal/apply"
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/oidcclient"
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/ui"
@@ -664,5 +665,36 @@ func TestApplyExecuteListsNoClientPlanAndWarnsOnce(t *testing.T) {
 	}
 	if warnings != 1 {
 		t.Errorf("the warning showed %d times:\n%s", warnings, rec.Lines())
+	}
+}
+
+// A client's plan lists each mutation as an item with what it sends, and,
+// under --verbose, marks what Pocket ID already has done, with no label.
+func TestListClientPlanMarksWhatIsPresentDone(t *testing.T) {
+	plan := &oidcclient.Plan{
+		Steps:   []oidcclient.Step{{Kind: oidcclient.AddSecret, Title: "create client secret for talk", Detail: "create client secret for talk: generated on this workstation. Never printed"}},
+		Present: []string{"client talk (id client-1)", "group members"},
+	}
+	quiet := &ui.Recorder{}
+	listClientPlan(quiet, "talk", "auth", "home-a", plan)
+	if !quiet.Has("item", "create client secret for talk") || quiet.Has("done", "") {
+		t.Errorf("got:\n%s", quiet.Lines())
+	}
+
+	var b strings.Builder
+	listClientPlan(ui.NewPlain(&b, true), "talk", "auth", "home-a", plan)
+	out := b.String()
+	t.Logf("\n%s", out)
+	for _, want := range []string{
+		"  -    create client secret for talk\n",
+		"  ok   client talk (id client-1)\n",
+		"  ok   group members\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if strings.Contains(out, "present ") {
+		t.Errorf("a finding carries its label:\n%s", out)
 	}
 }

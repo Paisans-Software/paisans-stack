@@ -563,8 +563,14 @@ func TestAClientOnTheOldDefaultMovesToTheConnectRoute(t *testing.T) {
 	if len(again.Steps) != 0 {
 		t.Errorf("a second run plans %v", kinds(again))
 	}
-	if !strings.Contains(strings.Join(again.Present, "\n"), "present client talk launch URL "+connect) {
+	if !strings.Contains(strings.Join(again.Present, "\n"), "client talk launch URL "+connect) {
 		t.Errorf("present %v", again.Present)
+	}
+	// A finding is marked done where it is shown, so it does not say so.
+	for _, line := range again.Present {
+		if strings.HasPrefix(line, "present ") {
+			t.Errorf("a finding begins with its label: %q", line)
+		}
 	}
 }
 

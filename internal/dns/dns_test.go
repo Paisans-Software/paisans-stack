@@ -231,6 +231,10 @@ func TestFreshZonePlansCreatesAndExecuteReadsBack(t *testing.T) {
 	if len(p.Entries) != 5 || len(p.Creates()) != 5 {
 		t.Fatalf("want 5 creates, got %+v", p.Entries)
 	}
+	// Each record to create is pending, its whole line in the title.
+	if !out.Has("pending", "create A talk.example.org -> 203.0.113.10 (zone example.org)") || out.Has("item", "") {
+		t.Errorf("a create is not pending:\n%s", out.Lines())
+	}
 	if len(fake.posts) != 0 {
 		t.Fatalf("planning wrote %d record(s)", len(fake.posts))
 	}
@@ -276,6 +280,32 @@ func TestExistingMatchingRecordIsPresent(t *testing.T) {
 		}
 		if e.Action != want {
 			t.Errorf("%s: got %s, want %s", e.Name, e.Action, want)
+		}
+	}
+
+	// A record already there is done, and only with --verbose.
+	quiet := &ui.Recorder{}
+	p.Show(quiet)
+	if quiet.Has("done", "") || !quiet.Has("pending", "create A ") {
+		t.Errorf("got:\n%s", quiet.Lines())
+	}
+	var b strings.Builder
+	p.Show(ui.NewPlain(&b, true))
+	shown := b.String()
+	t.Logf("\n%s", shown)
+	for _, want := range []string{
+		"  ok   A talk.example.org -> 203.0.113.10 (zone example.org)\n",
+		"  todo create A ",
+	} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	for _, line := range strings.Split(shown, "\n") {
+		for _, label := range []string{"present ", "create ", "A    "} {
+			if strings.HasPrefix(strings.TrimSpace(line), label) {
+				t.Errorf("a padded label: %q", line)
+			}
 		}
 	}
 }
