@@ -244,7 +244,7 @@ func confirmName(stdin io.Reader, stdout io.Writer, app string) error {
 	if !stdinIsTerminal(stdin) {
 		return fmt.Errorf("app remove: --delete-data asks for the app's name at a terminal, and stdin is not one. Nothing was changed")
 	}
-	fmt.Fprintf(stdout, "\nThis deletes %s's member data above, for good. Type %s to go on: ", app, app)
+	fmt.Fprintf(stdout, "\nThis deletes %s's member data above, for good.\nType %s to go on: ", app, app)
 	answer, err := bufio.NewReader(stdin).ReadString('\n')
 	if err != nil && answer == "" {
 		return fmt.Errorf("app remove: no answer read. Nothing was changed")

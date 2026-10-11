@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/paisans-software/paisans-stack/internal/deployment"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -232,5 +234,32 @@ func TestAChangedRecordSaysRunAgain(t *testing.T) {
 	reportMissed(rec, deployrecord.Result{Missed: map[string]error{"vm": fmt.Errorf("ubuntu@vm.example.org: %w", deployrecord.ErrChanged)}})
 	if !strings.Contains(rec.Lines(), "run this command again") || strings.Contains(rec.Lines(), "brought up to date") {
 		t.Errorf("%s", rec.Lines())
+	}
+}
+
+func TestConfirmWordAsksOnALineOfItsOwn(t *testing.T) {
+	saved := isTerminal
+	isTerminal = func(*os.File) bool { return true }
+	t.Cleanup(func() { isTerminal = saved })
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.WriteString("home-a\n")
+	w.Close()
+	defer r.Close()
+	var out bytes.Buffer
+	what := "This cleans deployment 00000000-0000-4000-8000-000000000000 (example.org), site home-a, off ubuntu@192.0.2.10:22, and nothing says whether it still runs."
+	if err := confirmWord(r, &out, "home-a", what); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(out.String(), "\n")
+	if last := lines[len(lines)-1]; last != "Type home-a to go on: " {
+		t.Errorf("the prompt's line is %q, want it alone", last)
+	}
+	for _, l := range lines {
+		if len(l) > 80 {
+			t.Errorf("line longer than 80: %q", l)
+		}
 	}
 }
