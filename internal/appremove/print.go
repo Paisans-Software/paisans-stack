@@ -9,25 +9,49 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
-// Show lists the plan: a section per place it acts, an item per kind of thing
-// it does there, and each thing with what happens to it as a detail. Items of
-// one kind that follow each other are listed as one.
+// Show lists the plan: a section per place it acts, a line per kind of thing
+// it does there, and each thing with what happens to it as a detail. Lines of
+// one kind that follow each other are listed as one. What it removes is
+// pending. What it keeps is marked done under --verbose, since nothing
+// happens to it, except a file edited on the host, which is a warning: the
+// operator decides what becomes of the edit.
 func (p *Plan) Show(r ui.Reporter) {
-	last := ""
-	line := func(title, text string, args ...any) {
+	// A section opens with its first line, so a place where the plan only
+	// keeps things has no empty heading without --verbose.
+	last, heading := "", ""
+	open := func() {
+		if heading != "" {
+			r.Section(heading)
+			heading = ""
+		}
+	}
+	mark := func(title string, m ui.Mark, text string, args ...any) {
+		if m == ui.OK && !r.Verbose() {
+			return
+		}
+		open()
 		if title != last {
-			r.Item(title)
+			r.Step(title).End(m, "")
 			last = title
 		}
 		r.Detail(text, args...)
 	}
+	line := func(title, text string, args ...any) { mark(title, ui.Pending, text, args...) }
+	kept := func(title, text string, args ...any) { mark(title, ui.OK, text, args...) }
+	edited := func(text string, args ...any) {
+		open()
+		r.Warn(fmt.Sprintf(text, args...), "")
+		last = ""
+	}
 	section := func(format string, args ...any) {
-		r.Section(fmt.Sprintf(format, args...))
+		heading = fmt.Sprintf(format, args...)
 		last = ""
 	}
 	for _, s := range p.Sites {
 		if s.Empty() {
-			r.Detail("%s: nothing of %s", s.Site, p.App)
+			if r.Verbose() {
+				r.Step(fmt.Sprintf("%s: nothing of %s", s.Site, p.App)).End(ui.OK, "")
+			}
 			continue
 		}
 		section("%s", s.Site)
@@ -44,18 +68,18 @@ func (p *Plan) Show(r ui.Reporter) {
 			case Gone:
 				line("drop manifest entries", "the manifest entry for /%s, whose file is gone", f.Entry.Path)
 			case Edited:
-				line("keep edited files", "/%s and its manifest entry: edited on the host since apply wrote it", f.Entry.Path)
+				edited("keep /%s and its manifest entry: edited on the host since apply wrote it", f.Entry.Path)
 			}
 		}
 		dir := s.Dir
 		switch {
 		case !dir.Exists:
 		case p.DeleteData && s.edited(dir.Path):
-			line("keep "+dir.Path, "%s and everything in it, because a file in it was edited on the host", dir.Path)
+			edited("keep %s and everything in it, because a file in it was edited on the host", dir.Path)
 		case p.DeleteData:
 			line("delete "+dir.Path, "%s and everything in it: %d file(s), %s", dir.Path, dir.Files, size(dir.Bytes))
 		case len(s.DataEntries) > 0:
-			line("keep "+dir.Path, "%s: %s, written by the app rather than by apply (%d file(s) and %s in the directory). --delete-data deletes it", dir.Path, strings.Join(s.DataEntries, ", "), dir.Files, size(dir.Bytes))
+			kept("keep "+dir.Path, "%s: %s, written by the app rather than by apply (%d file(s) and %s in the directory). --delete-data deletes it", dir.Path, strings.Join(s.DataEntries, ", "), dir.Files, size(dir.Bytes))
 		default:
 			line("remove empty directories", "%s once it is empty", dir.Path)
 		}
@@ -63,7 +87,7 @@ func (p *Plan) Show(r ui.Reporter) {
 			if p.DeleteData {
 				line("delete volumes", "volume %s", v)
 			} else {
-				line("keep volumes", "volume %s. --delete-data deletes it", v)
+				kept("keep volumes", "volume %s. --delete-data deletes it", v)
 			}
 		}
 	}
@@ -74,7 +98,7 @@ func (p *Plan) Show(r ui.Reporter) {
 			line("delete client "+c.Delete.Name, "client %s (id %s): DELETE /api/oidc/clients/%s", c.Delete.Name, c.Delete.ID, c.Delete.ID)
 		}
 		for _, k := range c.Kept {
-			line("keep client", "%s", k)
+			kept("keep client", "%s", k)
 		}
 	}
 	if db := p.Database; db != nil && (db.DropDatabase || db.DropRole || len(db.Kept) > 0) {
@@ -86,7 +110,7 @@ func (p *Plan) Show(r ui.Reporter) {
 			line("drop role "+db.Name, "role %s", db.Name)
 		}
 		for _, k := range db.Kept {
-			line("keep database", "%s", k)
+			kept("keep database", "%s", k)
 		}
 	}
 	if st := p.Storage; st != nil && (len(st.Buckets) > 0 || len(st.Keys) > 0 || len(st.Kept) > 0) {
@@ -98,12 +122,14 @@ func (p *Plan) Show(r ui.Reporter) {
 			line("delete S3 key "+k, "S3 key %s", k)
 		}
 		for _, k := range st.Kept {
-			line("keep buckets and keys", "%s", k)
+			kept("keep buckets and keys", "%s", k)
 		}
 	}
 	for _, m := range p.Monitors {
 		if !m.Pending() {
-			r.Detail("%s: the monitor's seed already matches the render without %s", m.Site, p.App)
+			if r.Verbose() {
+				r.Step(fmt.Sprintf("%s: the monitor's seed already matches the render without %s", m.Site, p.App)).End(ui.OK, "")
+			}
 			continue
 		}
 		section("%s (the monitor)", m.Site)

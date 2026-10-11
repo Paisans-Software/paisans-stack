@@ -535,15 +535,15 @@ func (p *Plan) fail(st *Stage, err error) error {
 	return fmt.Errorf("%s\nFix the cause and run site add again: it resumes at the first stage whose gate does not pass", msg)
 }
 
-// Show lists the plan as an operator reads it: a section per stage, an item
-// per step (steps that follow each other with one title are one item) and one
-// for the gate, with the whole text of each as its detail.
+// Show lists the plan as an operator reads it: a section per stage, each step
+// (steps that follow each other with one title are one line) and the gate
+// marked pending, with the whole text of each as its detail. A stage with no
+// steps is marked done under --verbose.
 func (p *Plan) Show(r ui.Reporter) {
 	for _, st := range p.Stages {
 		r.Section(stageTitle(st))
-		if len(st.Steps) == 0 {
-			r.Item("nothing to do here")
-			r.Detail("nothing to do here, and the gate is still checked")
+		if len(st.Steps) == 0 && r.Verbose() {
+			r.Step("nothing to do here").End(ui.OK, "the gate is still checked")
 		}
 		last := ""
 		for _, step := range st.Steps {
@@ -556,12 +556,12 @@ func (p *Plan) Show(r ui.Reporter) {
 				continue
 			}
 			if t := step.title(); t != last {
-				r.Item(t)
+				r.Step(t).End(ui.Pending, "")
 				last = t
 			}
 			r.Detail("%s: %s", step.Site, step.Text)
 		}
-		r.Item("gate: " + st.Short)
+		r.Step("gate: "+st.Short).End(ui.Pending, "")
 		r.Detail("%s", st.Gate)
 		if st.OnFailure != "" {
 			r.Detail("rollback: %s", st.OnFailure)

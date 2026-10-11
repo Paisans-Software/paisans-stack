@@ -44,7 +44,7 @@ type Step struct {
 	Level string
 	// Title is the step as a line of its own. It is empty for a step that
 	// has none worth the name, which then reads as its verb and site. Steps
-	// that follow each other with one title are listed as one item.
+	// that follow each other with one title are listed as one line.
 	Title string
 }
 
@@ -510,16 +510,15 @@ func (p *Plan) fail(st *Stage, err error) error {
 	return fmt.Errorf("storage add stopped at stage %d (%s), and nothing after it ran: %v\nFix the cause and run storage add again: it resumes at the first stage whose gate does not pass", st.Number, st.Name, err)
 }
 
-// Show lists the plan as an operator reads it: a section per stage, an item
-// per kind of step and one for the gate, with the whole text of each as its
-// detail.
+// Show lists the plan as an operator reads it: a section per stage, each kind
+// of step and the gate marked pending, with the whole text of each as its
+// detail. A stage with no steps is marked done under --verbose.
 func (p *Plan) Show(r ui.Reporter) {
 	r.Detail("storage add: %s at replication %d, consistency %s", strings.Join(p.cfg.Storage.Garage.Sites, ", "), p.replication(), p.consistency())
 	for _, st := range p.Stages {
 		r.Section(stageTitle(st))
-		if len(st.Steps) == 0 {
-			r.Item("nothing to do here")
-			r.Detail("nothing to do here, and the gate is still checked")
+		if len(st.Steps) == 0 && r.Verbose() {
+			r.Step("nothing to do here").End(ui.OK, "the gate is still checked")
 		}
 		last := ""
 		for _, step := range st.Steps {
@@ -532,12 +531,12 @@ func (p *Plan) Show(r ui.Reporter) {
 				continue
 			}
 			if t := step.title(); t != last {
-				r.Item(t)
+				r.Step(t).End(ui.Pending, "")
 				last = t
 			}
 			r.Detail("%s: %s", step.Site, step.Text)
 		}
-		r.Item("gate: " + st.Short)
+		r.Step("gate: "+st.Short).End(ui.Pending, "")
 		r.Detail("%s", st.Gate)
 	}
 }

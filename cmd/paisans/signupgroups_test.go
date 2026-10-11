@@ -62,7 +62,7 @@ func TestSignupGroupsAlreadyRecordedPlanNothing(t *testing.T) {
 	if after, _ := os.ReadFile(path); string(after) != string(before) {
 		t.Error("the secrets file was written")
 	}
-	if !strings.Contains(stdout, "present group newcomers (id fixture-group-newcomers-id), recorded as pocket_id_groups.newcomers") {
+	if !strings.Contains(stdout, "  ok   group newcomers (id fixture-group-newcomers-id), recorded as pocket_id_groups.newcomers\n") || strings.Contains(stdout, "present ") {
 		t.Errorf("output:\n%s", stdout)
 	}
 	if c.groupsErr != nil {

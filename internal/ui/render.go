@@ -243,17 +243,6 @@ func (r *writer) mark(m Mark) string {
 	}
 }
 
-func (r *writer) Item(title string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.interruptLocked()
-	if r.terminal {
-		fmt.Fprintf(r.w, "  · %s\n", title)
-		return
-	}
-	fmt.Fprintf(r.w, "  -    %s\n", title)
-}
-
 func (r *writer) Warn(hint, detail string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

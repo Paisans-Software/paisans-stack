@@ -86,7 +86,7 @@ func TestTheDryRunPlansEveryStageAndChangesNothing(t *testing.T) {
 	rec := &ui.Recorder{Verbose_: true}
 	p.Show(rec)
 	t.Log("\n" + rec.Lines())
-	if !rec.Has("section", "stage 3, etcd") || !rec.Has("detail", "rollback: ") || !rec.Has("item", "gate: etcd healthy") {
+	if !rec.Has("section", "stage 3, etcd") || !rec.Has("detail", "rollback: ") || !rec.Has("pending", "gate: etcd healthy") {
 		t.Errorf("the printed plan is missing its stages:\n%s", rec.Lines())
 	}
 }
@@ -329,13 +329,13 @@ func TestHAProxyRestartsWithItsDatabaseAppsStopped(t *testing.T) {
 	rec := &ui.Recorder{Verbose_: true}
 	p.Show(rec)
 	for _, want := range []struct{ kind, text string }{
-		{"item", "stop auth, docs, talk on home-a"},
+		{"pending", "stop auth, docs, talk on home-a"},
 		{"detail", "home-a: auth, docs, talk: they reach the database through this HAProxy"},
-		{"item", "restart HAProxy on home-a"},
+		{"pending", "restart HAProxy on home-a"},
 		{"detail", "home-a: HAProxy alone"},
-		{"item", "start auth, docs, talk on home-a"},
+		{"pending", "start auth, docs, talk on home-a"},
 		{"detail", "home-a: auth, docs, talk (docker compose -f /srv/paisans/f2a9/auth/compose.yaml up -d;"},
-		{"item", "check auth, docs, talk on home-a"},
+		{"pending", "check auth, docs, talk on home-a"},
 		{"detail", "home-a: auth, docs, talk: every container running"},
 	} {
 		if !rec.Has(want.kind, want.text) {

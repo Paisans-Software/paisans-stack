@@ -140,7 +140,7 @@ func TestPocketIDAdminDryRunPlansWithoutSudoAndChangesNothing(t *testing.T) {
 	if stdout != "" {
 		t.Errorf("a dry run wrote to stdout, which carries only the login link:\n%s", stdout)
 	}
-	for _, want := range []string{"section: auth on home-a (pocket-id)", "item: create administrator founder", "item: issue login link for founder", "detail: create user founder as an administrator", "result: Nothing changed"} {
+	for _, want := range []string{"section: auth on home-a (pocket-id)", "pending: create administrator founder", "pending: issue login link for founder", "detail: create user founder as an administrator", "result: Nothing changed"} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("output lacks %q:\n%s", want, printed)
 		}

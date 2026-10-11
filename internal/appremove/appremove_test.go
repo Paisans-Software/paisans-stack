@@ -130,16 +130,16 @@ func TestThePlanTakesOnlyWhatIsProvablyTheApps(t *testing.T) {
 	p.Show(rec)
 	printed := rec.Lines()
 	for _, want := range []string{
-		"item: remove containers and networks",
+		"pending: remove containers and networks",
 		"detail: stop paisans-f2a9-docs: 2 container(s), 1 running: paisans-f2a9-docs-app-1, paisans-f2a9-docs-redis-1",
 		"detail: remove network paisans-f2a9-docs_default",
-		"item: remove files",
+		"pending: remove files",
 		"detail: " + docsEnv,
 		"detail: " + docsRoute,
 		"detail: " + docsMedia,
-		"item: keep /srv/paisans/f2a9/docs",
+		"done: keep /srv/paisans/f2a9/docs",
 		"detail: /srv/paisans/f2a9/docs: data, written by the app",
-		"item: keep volumes",
+		"done: keep volumes",
 		"detail: volume paisans-f2a9-docs_cache. --delete-data deletes it",
 	} {
 		if !strings.Contains(printed, want) {
@@ -243,8 +243,8 @@ func TestAFileEditedOnTheHostIsKept(t *testing.T) {
 	}
 	rec := &ui.Recorder{Verbose_: true}
 	p.Show(rec)
-	if !rec.Has("detail", docsEnv+" and its manifest entry: edited on the host") ||
-		!rec.Has("detail", "/srv/paisans/f2a9/docs and everything in it, because a file in it was edited") {
+	if !rec.Has("warn", docsEnv+" and its manifest entry: edited on the host") ||
+		!rec.Has("warn", "/srv/paisans/f2a9/docs and everything in it, because a file in it was edited") {
 		t.Errorf("plan:\n%s", rec.Lines())
 	}
 	ex := executor(hosts)

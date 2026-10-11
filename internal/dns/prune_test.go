@@ -71,7 +71,7 @@ func TestPruneDryRunRemovesOnlyTheStaleToolkitRecord(t *testing.T) {
 	if got := p.Removes(); len(got) != 1 || got[0].ID != "rec-stale" {
 		t.Fatalf("want only rec-stale removed, got %+v", got)
 	}
-	if !out.Has("pending", "delete A media.example.org -> 203.0.113.10 (zone example.org, record rec-stale)") || out.Has("item", "") {
+	if !out.Has("pending", "delete A media.example.org -> 203.0.113.10 (zone example.org, record rec-stale)") {
 		t.Errorf("dry run should mark the delete pending, naming type, name, content, zone and id:\n%s", out.Lines())
 	}
 	// A kept record is done, with each rule it fails under it.

@@ -3975,8 +3975,8 @@ Pocket ID's API; the commands are under *Pocket ID's administrator gets a
 login link, not a password*.
 
 The result is a user that exists, is verified and is an administrator. The
-command probes first and plans only what is missing, one line each, or
-`present` when there is nothing to do. After `--execute` it probes again and
+command probes first and plans only what is missing, one `○` line each; when
+there is nothing to do, `--verbose` marks the user `✓`. After `--execute` it probes again and
 fails unless the user is now all three, because a call that succeeds without
 doing its job is the failure nobody notices.
 
@@ -4018,19 +4018,21 @@ paisans app admin create --app auth --username founder \
     --email founder@example.org --first-name Fern --execute
 ```
 
-The dry run names each step, here for a deployment whose Mbin app reads the
-admin group `admins`:
+The dry run marks each step `○`, here for a deployment whose Mbin app reads
+the admin group `admins`:
 
 ```
 auth on home-a (pocket-id)
-  -    create administrator founder
-  -    add founder to admin groups admins
-  -    issue login link for founder
+  ○ create administrator founder
+  ○ add founder to admin groups admins
+  ○ issue login link for founder
 Nothing changed. Re-run with --execute to apply.
 ```
 
 `--verbose` puts the request behind each step under it, including the exact
-body a create would send. The link is printed once, and only with `--execute`.
+body a create would send. A user who is already an administrator is marked
+`✓` under `--verbose`. Piped output says `todo` and `ok` instead. The link is
+printed once, and only with `--execute`.
 
 The link is Pocket ID's own mechanism: an admin issues a one-time access token
 for a user (`POST /api/users/:id/one-time-access-token`,
@@ -4206,8 +4208,11 @@ instance's, as after a database started afresh, has the instance's recorded in
 its place. Pocket ID skips an ID it does not hold without a word
 (`user_service.go:374-379`), so a stale ID left in place would quietly put new
 users in nothing. The site is then planned again, the `.env` carries the IDs,
-and Pocket ID is recreated with them. A dry run prints each group's line
-(`present`, `record` or `create`) and changes nothing. Once every ID is
+and Pocket ID is recreated with them. A dry run marks each group to
+record or create `○`, and with `--verbose` each already recorded and present
+`✓`, and changes nothing. A dry run of a site whose Pocket ID has not started
+yet cannot ask it, so it marks the groups' step with a dim `·`, waiting on
+the start. Once every ID is
 recorded and present, a re-run plans nothing.
 
 A Pocket ID that cannot be asked holds nothing back and fails nothing: a
@@ -4323,28 +4328,29 @@ paisans oidc client create --app talk --rotate-secret --execute
 
 For an Mbin app that declares no groups, so that its member group is
 `members` and its admin group `admins`, and a Pocket ID that already has both
-groups, the dry run prints one line per mutation it would make:
+groups, the dry run marks each mutation it would make `○`:
 
 ```
-  -    create OIDC client talk
-  -    allow groups members, admins on talk
-  -    create client secret for talk
+  ○ create OIDC client talk
+  ○ allow groups members, admins on talk
+  ○ create client secret for talk
 Nothing changed. Re-run with --execute to apply.
 ```
 
 A group that does not exist yet adds a `create group <name>` line before the
 client. `--verbose` puts under each line the request it would send, and
-after them marks what Pocket ID already has `ok` (`✓` on a terminal):
+after them marks what Pocket ID already has `✓`. Piped output says `todo`
+and `ok` instead:
 
 ```
-  -    create OIDC client talk
+  ○ create OIDC client talk
       create client talk: POST /api/oidc/clients {"name":"talk","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],"isPublic":false,"pkceEnabled":true,"isGroupRestricted":true,"launchURL":"https://talk.example.org/oauth/oidc/connect"}
-  -    allow groups members, admins on talk
+  ○ allow groups members, admins on talk
       allow groups members, admins on client talk: PUT /api/oidc/clients/<id>/allowed-user-groups with exactly members, admins
-  -    create client secret for talk
+  ○ create client secret for talk
       create client secret for talk: generated on this workstation, written to oidc_clients.talk.client_id and oidc_clients.talk.client_secret, then sent to POST /api/oidc/clients/<id>/secrets. Never printed
-  ok   group members
-  ok   group admins
+  ✓ group members
+  ✓ group admins
 ```
 
 **Each line is a Pocket ID mutation.** For an app
@@ -4929,10 +4935,10 @@ verbosity. The dry run reads the provider and changes nothing:
 
 ```
 stage 4, dns
-  · delete A blog.example.org → 203.0.113.7
+  ○ delete A blog.example.org → 203.0.113.7
   ! keep A home-b.example.org → 203.0.113.7
     203.0.113.7 is also sites.home-a.public_address, which stays, so the record may be home-a's
-  · gate: no record of home-b's is left
+  ○ gate: no record of home-b's is left
 ```
 
 `--execute` plans again from a fresh listing, deletes each record by its id,
@@ -5030,11 +5036,11 @@ paisans site remove --force --ssh admin@203.0.113.9 --id f2a9 --execute         
 paisans site remove --force --ssh admin@203.0.113.9 --id f2a9 --execute --delete-data
 ```
 
-`host deployments` shows each registry entry: id, token, domain, site, roles
-and root. Under *not in the registry* it lists any `/srv/paisans/<token>`
-directory and any labelled compose project whose deployment has no entry.
-Those are left over from something no command can name, and are removed by
-hand. It changes nothing. It never lists partly: when the registry, either
+`host deployments` marks each registry entry `✓`: id, token, domain, site,
+roles and root. Under *not in the registry* it warns, `!`, of any
+`/srv/paisans/<token>` directory and any labelled compose project whose
+deployment has no entry. Those are left over from something no command can
+name, and are removed by hand. Piped output says `ok` and `WARN` instead. It changes nothing. It never lists partly: when the registry, either
 directory or `docker ps` cannot be read, it fails, naming what failed, and
 prints nothing, rather than show a host that seems to hold less than it does.
 

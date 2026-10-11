@@ -105,8 +105,10 @@ func TestHostDeploymentsListsEntriesAndLeftovers(t *testing.T) {
 	for _, want := range []string{
 		monitorID, "token f2a9", "example.org", "site watch", "roles monitor", "root /srv/paisans/f2a9",
 		neighbour, "token 0c1d", "example.net", "site edge", "roles apps,gateway", "root /srv/paisans/0c1d",
-		"/srv/paisans/dead: no registry entry",
-		"compose project paisans-dead-talk: no registry entry",
+		"  ok   " + monitorID + ": token f2a9",
+		"  ok   " + neighbour + ": token 0c1d",
+		"  WARN /srv/paisans/dead: no registry entry",
+		"  WARN compose project paisans-dead-talk: no registry entry",
 		"--id <id or token>",
 	} {
 		if !strings.Contains(got, want) {

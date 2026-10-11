@@ -385,12 +385,12 @@ func TestNoteAlwaysShowsDetail(t *testing.T) {
 	}
 }
 
-// A section or an item said while a step is drawing must not land on the
+// A section or a warning said while a step is drawing must not land on the
 // spinner's line.
-func TestSectionAndItemClearTheSpinnerLine(t *testing.T) {
+func TestSectionAndWarningClearTheSpinnerLine(t *testing.T) {
 	for name, say := range map[string]func(ui.Reporter){
 		"section": func(r ui.Reporter) { r.Section("home-b") },
-		"item":    func(r ui.Reporter) { r.Item("recreate app") },
+		"warning": func(r ui.Reporter) { r.Warn("recreate app", "") },
 	} {
 		var b strings.Builder
 		r := ui.NewForTest(&b, false, true, clock())

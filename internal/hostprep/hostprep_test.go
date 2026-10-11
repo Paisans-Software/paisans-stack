@@ -433,8 +433,8 @@ func TestShowMarksStepsPendingAndFindingsDone(t *testing.T) {
 	if !rec.Has("pending", "allow 2222/tcp") || !rec.Has("warn", "old SSH allow on 22 kept") {
 		t.Errorf("got:\n%s", rec.Lines())
 	}
-	if rec.Has("item", "") || rec.Has("done", "") {
-		t.Errorf("a step is an item, or a finding shows without --verbose:\n%s", rec.Lines())
+	if rec.Has("done", "") {
+		t.Errorf("a finding shows without --verbose:\n%s", rec.Lines())
 	}
 
 	verbose := &ui.Recorder{Verbose_: true}

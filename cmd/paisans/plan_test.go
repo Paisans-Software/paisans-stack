@@ -8,9 +8,9 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
-// The dry-run plan is one item per step, in the order Execute takes them;
+// The dry-run plan marks each step pending, in the order Execute takes them;
 // the reasons are details.
-func TestListPlanItemsInOrderWithReasonsAsDetail(t *testing.T) {
+func TestListPlanMarksStepsPendingInOrderWithReasonsAsDetail(t *testing.T) {
 	plan := &apply.Plan{
 		Site: "home-a", Transport: "ubuntu@192.0.2.10",
 		Changes:       []apply.Change{{Path: "/srv/paisans/f2a9/infra/compose.yaml", Kind: apply.Create}, {Path: "/srv/paisans/f2a9/talk/.env", Kind: apply.Update}},
@@ -19,10 +19,10 @@ func TestListPlanItemsInOrderWithReasonsAsDetail(t *testing.T) {
 	}
 	rec := &ui.Recorder{Verbose_: true}
 	listPlan(rec, plan)
-	order := []int{rec.Index("item", "write 2 files"), rec.Index("item", "recreate infra"), rec.Index("item", "reload gateway")}
+	order := []int{rec.Index("pending", "write 2 files"), rec.Index("pending", "recreate infra"), rec.Index("pending", "reload gateway")}
 	for i := 1; i < len(order); i++ {
 		if order[i-1] < 0 || order[i] < order[i-1] {
-			t.Fatalf("items missing or out of order:\n%s", rec.Lines())
+			t.Fatalf("steps missing or out of order:\n%s", rec.Lines())
 		}
 	}
 	if !rec.Has("detail", "an environment or compose file changed") {
@@ -78,5 +78,35 @@ func TestPlanNotesShowByDefaultOnDryRunAndExecute(t *testing.T) {
 	presentPlan(rec, plan, true, map[string]bool{})
 	if !rec.Has("detail", "gone was owed") {
 		t.Errorf("the informational note is not a detail:\n%s", rec.Lines())
+	}
+}
+
+// Piped, each step of the plan carries the writer's own word and no padded
+// column.
+func TestListPlanPlainMarksStepsTodo(t *testing.T) {
+	plan := &apply.Plan{
+		Site: "home-a", Transport: "ubuntu@192.0.2.10",
+		Changes:       []apply.Change{{Path: "/srv/paisans/f2a9/infra/compose.yaml", Kind: apply.Create}, {Path: "/srv/paisans/f2a9/talk/.env", Kind: apply.Update}},
+		Actions:       []apply.Action{{Stack: "infra", Recreate: true, Reason: "an environment or compose file changed"}},
+		GatewayReload: true,
+	}
+	var b strings.Builder
+	listPlan(ui.NewPlain(&b, true), plan)
+	out := b.String()
+	t.Logf("\n%s", out)
+	for _, want := range []string{
+		"  todo write 2 files\n",
+		"      create /srv/paisans/f2a9/infra/compose.yaml\n",
+		"  todo recreate infra\n",
+		"      an environment or compose file changed\n",
+		"  todo wait for infra\n",
+		"  todo reload gateway\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if strings.Contains(out, "  -    ") {
+		t.Errorf("a step is a padded item:\n%s", out)
 	}
 }

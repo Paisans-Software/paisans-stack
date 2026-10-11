@@ -112,16 +112,17 @@ func buildClient(d oidcclient.Desired, rec oidcclient.Recorded, state oidcclient
 	return plan, nil
 }
 
-// listClientPlan shows one app's client in a dry run: each mutation as an
-// item, with what it sends as its detail, then under --verbose what is
+// listClientPlan shows one app's client in a dry run: each mutation pending,
+// with what it sends as its detail, then under --verbose what is
 // already present marked done, since only what would change is a line by
 // default. The plan's warnings are the caller's to show, once whether or not
 // it lists the plan.
 func listClientPlan(r ui.Reporter, app, idp, where string, plan *oidcclient.Plan) {
 	r.Detail("%s's client at %s on %s (pocket-id)", app, idp, where)
 	for _, step := range plan.Steps {
-		r.Item(step.Title)
-		r.Detail("%s", step.Detail)
+		s := r.Step(step.Title)
+		s.Detail("%s", step.Detail)
+		s.End(ui.Pending, "")
 	}
 	if r.Verbose() {
 		for _, line := range plan.Present {
@@ -478,14 +479,16 @@ func unreachable(err error) string {
 // Pocket ID answers finishes it.
 func (c *clientStep) cannotAsk(apps []string, why string, waiting bool) {
 	if waiting {
-		// A dry run's plan item. --execute starts Pocket ID first and then
+		// A dry run's plan line. --execute starts Pocket ID first and then
 		// reports the clients as steps, so it is not listed there.
 		r := c.reporter()
 		if c.executing {
 			c.steps++
 			return
 		}
-		r.Item("ensure OIDC clients after " + c.idp + " starts")
+		// Waiting: what the step sends cannot be planned until Pocket ID
+		// answers, which it does only once this apply has started it.
+		r.Step("ensure OIDC clients after "+c.idp+" starts").End(ui.Waiting, "")
 		r.Detail("client for %s once pocket-id %s on %s has started and answers, before %s starts. It does not answer yet: %s",
 			strings.Join(apps, ", "), c.idp, c.site, strings.Join(apps, ", "), why)
 		c.steps++

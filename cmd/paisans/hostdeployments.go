@@ -13,6 +13,7 @@ import (
 	"github.com/paisans-software/paisans-stack/internal/deployment"
 	"github.com/paisans-software/paisans-stack/internal/registry"
 	"github.com/paisans-software/paisans-stack/internal/render"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // reachDestination is how a command with no configuration reaches the host
@@ -136,10 +137,10 @@ func runHostDeployments(args []string) error {
 		case e.Kept == registry.KeptCaddy:
 			line += fmt.Sprintf("; caddy kept, but %s holds no site now: paisans site remove --force --ssh %s --id %s removes it", render.HostSitesDir, *sshFlag, e.Token)
 		}
-		r.Item(line)
+		r.Step(line).End(ui.OK, "")
 	}
 	if len(ids) == 0 {
-		r.Item("none in " + registry.Path)
+		r.Step("none in "+registry.Path).End(ui.OK, "")
 	}
 
 	var left []string
@@ -176,8 +177,9 @@ func runHostDeployments(args []string) error {
 	if len(left) > 0 {
 		r.Section("not in the registry")
 		sort.Strings(left)
+		// Each is the operator's to remove by hand, so each is a warning.
 		for _, l := range left {
-			r.Item(l)
+			r.Warn(l, "")
 		}
 	}
 

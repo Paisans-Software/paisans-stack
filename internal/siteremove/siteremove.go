@@ -59,7 +59,7 @@ type Step struct {
 	Text string
 	// Title is the step as a line of its own. It is empty for a step that
 	// has none worth the name, which then reads as its verb and site. Steps
-	// that follow each other with one title are listed as one item.
+	// that follow each other with one title are listed as one line.
 	Title string
 }
 
@@ -103,7 +103,7 @@ type Kept struct {
 }
 
 // show reports what a stage keeps: each shown one as a note with its why,
-// and with --verbose the others as details.
+// and with --verbose the others marked done, each why as a detail.
 func (st *Stage) show(r ui.Reporter) {
 	for _, k := range st.Kept {
 		if k.Shown {
@@ -111,10 +111,11 @@ func (st *Stage) show(r ui.Reporter) {
 			continue
 		}
 		if r.Verbose() {
-			r.Detail("%s", k.Title)
+			s := r.Step(k.Title)
 			for _, why := range k.Why {
-				r.Detail("    %s", why)
+				s.Detail("%s", why)
 			}
+			s.End(ui.OK, "")
 		}
 	}
 }
@@ -628,31 +629,33 @@ func (p *Plan) fail(st *Stage, err error) error {
 	return fmt.Errorf("site remove %s stopped at stage %d (%s), and nothing after it ran: %v\nFix the cause and run site remove again: it resumes at the first stage with anything left to do", p.Site, st.Number, st.Name, err)
 }
 
-// Show lists the plan as an operator reads it: a section per stage, an item
-// per step and one for the gate, with the whole text of each as its detail.
-// What the removal leaves for later is Remains.
+// Show lists the plan as an operator reads it: a section per stage, each
+// step and the gate marked pending, with the whole text of each as its
+// detail. A skipped stage is marked done, and one with nothing to do is
+// marked done under --verbose. What the removal leaves for later is Remains.
 func (p *Plan) Show(r ui.Reporter) {
 	for _, st := range p.Stages {
 		r.Section(stageTitle(st))
 		if st.Skipped != "" {
-			r.Item(st.skipTitle())
+			// A skipped stage runs nothing, not even its gate, so its line
+			// stands for the whole stage at every verbosity.
+			r.Step(st.skipTitle()).End(ui.OK, "")
 			r.Detail("%s", st.Skipped)
 			continue
 		}
-		if len(st.Steps) == 0 && len(st.Kept) == 0 {
-			r.Item("nothing to do here")
-			r.Detail("nothing to do here, and the gate is still checked")
+		if len(st.Steps) == 0 && len(st.Kept) == 0 && r.Verbose() {
+			r.Step("nothing to do here").End(ui.OK, "the gate is still checked")
 		}
 		last := ""
 		for _, step := range st.Steps {
 			if t := step.title(); t != last {
-				r.Item(t)
+				r.Step(t).End(ui.Pending, "")
 				last = t
 			}
 			r.Detail("%s: %s", step.Site, step.Text)
 		}
 		st.show(r)
-		r.Item("gate: " + st.Short)
+		r.Step("gate: "+st.Short).End(ui.Pending, "")
 		r.Detail("%s", st.Gate)
 	}
 }

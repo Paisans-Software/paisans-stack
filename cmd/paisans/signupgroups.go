@@ -7,6 +7,7 @@ import (
 
 	"github.com/paisans-software/paisans-stack/internal/config"
 	"github.com/paisans-software/paisans-stack/internal/pocketid"
+	"github.com/paisans-software/paisans-stack/internal/ui"
 )
 
 // Pocket ID's signup default groups are named in paisans.yaml and given to
@@ -58,16 +59,24 @@ func (c *clientStep) ensureGroups(api *pocketid.Client, where string, execute bo
 		return
 	}
 	for _, p := range plans {
-		// A dry run lists what would change as an item. The full sentence,
-		// and a group already in place, are details, since the title says
-		// what the step is and the sentence says how.
-		if p.step != groupPresent {
-			if !execute {
-				r.Item(p.title())
+		// A dry run marks what would change pending under its title, with
+		// the full sentence as its detail, since the title says what the
+		// step is and the sentence says how. A group already in place is
+		// marked done under --verbose.
+		switch {
+		case p.step == groupPresent:
+			if r.Verbose() {
+				r.Step(p.line(c.idp)).End(ui.OK, "")
 			}
-			c.steps++
+			continue
+		case execute:
+			r.Detail("%s", p.line(c.idp))
+		default:
+			s := r.Step(p.title())
+			s.Detail("%s", p.line(c.idp))
+			s.End(ui.Pending, "")
 		}
-		r.Detail("%s", p.line(c.idp))
+		c.steps++
 	}
 	if !execute {
 		return
@@ -168,7 +177,7 @@ func (p groupPlan) line(idp string) string {
 	key := "pocket_id_groups." + p.name
 	switch p.step {
 	case groupPresent:
-		return fmt.Sprintf("present group %s (id %s), recorded as %s", p.name, p.id, key)
+		return fmt.Sprintf("group %s (id %s), recorded as %s", p.name, p.id, key)
 	case groupByClient:
 		return fmt.Sprintf("record %s once a client step above has created group %s, then render %s's .env again and recreate it", key, p.name, idp)
 	case groupCreate:
@@ -197,7 +206,9 @@ func (c *clientStep) groupsCannotAsk(groups []string, why string, waiting bool) 
 	}
 	r := c.reporter()
 	if waiting {
-		r.Item("resolve signup groups after " + c.idp + " starts")
+		// Waiting: the groups cannot be planned until Pocket ID answers,
+		// which it does only once this apply has started it.
+		r.Step("resolve signup groups after "+c.idp+" starts").End(ui.Waiting, "")
 		r.Detail("group %s once pocket-id %s on %s has started and answers, then render its .env again with their IDs and recreate it. It does not answer yet: %s",
 			strings.Join(groups, ", "), c.idp, c.site, why)
 		c.steps++
