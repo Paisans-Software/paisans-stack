@@ -50,12 +50,13 @@ func SetNow(at time.Time) func() {
 
 // WorstCaseRemains is every line a removal leaves for the operator, built
 // with the longest inputs a real deployment gives it: 20-character site
-// names, 36-character IDs, and 60-character paths.
+// names, 36-character IDs, and 60-character paths. A deployment's root is
+// always its fixed-length path under the base.
 func WorstCaseRemains() []string {
 	site, name, path := strings.Repeat("s", 20), strings.Repeat("n", 60), "/"+strings.Repeat("p", 59)
 	out := []string{
 		volumeKept(site, name), editedFileKept(site, path),
-		rootEditedKept(site, path), dataLeft(site, path, 99999),
+		rootEditedKept(site, path), dataLeft(site, deployment.Deployment{ID: "00000000-0000-4000-8000-000000000000"}.Root()),
 		secretsLeft(site), DNSNotModified(deployment.Deployment{ID: strings.Repeat("i", 36)}, config.Destination{Host: "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"}), ownedNote(site, name),
 		apply.LeaderPatroniEnvNote(site),
 		imageKept(site, "sha256:"+strings.Repeat("f", 64), strings.Repeat("w", 80)),

@@ -29,8 +29,8 @@ func rootEditedKept(site, root string) string {
 	return fmt.Sprintf("%s: the deployment directory kept, because a file in it was edited on the host. It is %s, with everything in it", site, root)
 }
 
-func dataLeft(site, root string, files int) string {
-	return fmt.Sprintf("%s: data left on the host; --delete-data deletes it. It is in %s: %d file(s) apply did not write, the data in its bind mounts (Eg: a database, an object store)", site, root, files)
+func dataLeft(site, root string) string {
+	return fmt.Sprintf("%s: data left on the host in %s; --delete-data deletes it", site, root)
 }
 
 func recordMissed(gw, why string) string {
