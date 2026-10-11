@@ -68,6 +68,10 @@ type PruneEntry struct {
 	Action PruneAction
 	// Reasons are every rule the record fails, for a kept one.
 	Reasons []string
+	// Unscoped is a kept record whose only failed rule is its name's: every
+	// other rule would delete it, and only the operator can say it was this
+	// deployment's, by vouching for the name or deleting it by hand.
+	Unscoped bool
 }
 
 // PrunePlan is every record in the deployment's zones that carries the
@@ -296,6 +300,7 @@ func planPrune(ctx context.Context, provider Provider, cfg *config.Config, rules
 			name := normalise(r.Name)
 			typ := strings.ToUpper(r.Type)
 			var reasons []string
+			unscoped := false
 			if typ != "A" && typ != "AAAA" {
 				reasons = append(reasons, fmt.Sprintf("it is a %s record; prune removes only A and AAAA records", typ))
 			}
@@ -308,6 +313,7 @@ func planPrune(ctx context.Context, provider Provider, cfg *config.Config, rules
 					reason += fmt.Sprintf(". If it was, name it with --name %s", name)
 				}
 				reasons = append(reasons, reason)
+				unscoped = len(reasons) == 1
 			}
 			content := strings.TrimSpace(r.Content)
 			ip := net.ParseIP(content)
@@ -337,7 +343,7 @@ func planPrune(ctx context.Context, provider Provider, cfg *config.Config, rules
 			if len(reasons) > 0 {
 				action = Keep
 			}
-			plan.Entries = append(plan.Entries, PruneEntry{Record: r, Zone: z.name, zoneID: z.id, Action: action, Reasons: reasons})
+			plan.Entries = append(plan.Entries, PruneEntry{Record: r, Zone: z.name, zoneID: z.id, Action: action, Reasons: reasons, Unscoped: unscoped && len(reasons) == 1})
 		}
 	}
 	sort.SliceStable(plan.Entries, func(i, j int) bool {
@@ -429,10 +435,12 @@ func partway(removes []PruneEntry, i int) string {
 	return fmt.Sprintf("Stopped there; deleted: %s; not deleted: %s. A re-run plans again from a fresh listing", list(removes[:i]), list(removes[i:]))
 }
 
-// Show reports a prune plan in the shape dns init's plan uses: each record
-// to delete as an item, and each one kept as a detail with the reasons it is
-// kept, since they are what an operator reads to decide whether to vouch for
-// a name.
+// Show reports a prune plan marked the way dns init marks its plan: each
+// record to delete as pending, and each one kept as done under --verbose,
+// with the rules it fails as details, since they are what an operator reads
+// to decide whether to vouch for a name. A record kept only for its name is
+// the operator's to act on, so it is a note with its reason at every
+// verbosity. Each line names the record's type, name, address, zone and id.
 func (p *PrunePlan) Show(r ui.Reporter) {
 	r.Section("dns prune " + p.Provider)
 	if len(p.Entries) == 0 {
@@ -440,12 +448,18 @@ func (p *PrunePlan) Show(r ui.Reporter) {
 		return
 	}
 	for _, e := range p.Entries {
-		if e.Action == Remove {
-			r.Item(fmt.Sprintf("delete %s %s", e.Type, e.Name))
-		}
-		r.Detail("%-6s %-4s %s -> %s  (zone %s, record %s)", e.Action, e.Type, e.Name, e.Content, e.Zone, e.ID)
-		for _, reason := range e.Reasons {
-			r.Detail("    %s", reason)
+		record := fmt.Sprintf("%s %s -> %s (zone %s, record %s)", e.Type, e.Name, e.Content, e.Zone, e.ID)
+		switch {
+		case e.Action == Remove:
+			r.Step("delete "+record).End(ui.Pending, "")
+		case e.Unscoped:
+			r.Note("keep "+record, strings.Join(e.Reasons, "; "))
+		case r.Verbose():
+			s := r.Step("keep " + record)
+			for _, reason := range e.Reasons {
+				s.Detail("%s", reason)
+			}
+			s.End(ui.OK, "")
 		}
 	}
 }

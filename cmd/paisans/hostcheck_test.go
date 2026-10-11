@@ -97,7 +97,7 @@ func TestTheGateRefusesAConflictHavingOnlyLooked(t *testing.T) {
 }
 
 // The host check is one step whose result is the host's class, with what it
-// found as the step's details.
+// found marked under it.
 func TestTheGateIsOneStepWhoseResultIsTheClass(t *testing.T) {
 	rec := &ui.Recorder{Verbose_: true}
 	if _, err := hostGate(rec, hostCheckFixture(t), "home-a", webHost(ufwUp)); err != nil {
@@ -107,8 +107,9 @@ func TestTheGateIsOneStepWhoseResultIsTheClass(t *testing.T) {
 	if i < 0 || rec.Events[i].Extra != "shared" {
 		t.Fatalf("the host check did not end with its class:\n%s", rec.Lines())
 	}
-	if !rec.Has("detail", "firewall  ufw active, incoming deny") {
-		t.Errorf("the firewall is not a detail:\n%s", rec.Lines())
+	// What it found is marked under the step's own line, with --verbose.
+	if f := rec.Index("done", "firewall"); f < i || rec.Events[f].Extra != "ufw active, incoming deny" {
+		t.Errorf("the firewall is not marked after the host check:\n%s", rec.Lines())
 	}
 
 	empty := webHost(ufwUp)

@@ -182,7 +182,7 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 		if err := checkExisting(d, client); err != nil {
 			return nil, err
 		}
-		p.Present = append(p.Present, fmt.Sprintf("present client %s (id %s)", d.App, client.ID))
+		p.Present = append(p.Present, fmt.Sprintf("client %s (id %s)", d.App, client.ID))
 	}
 
 	for _, g := range d.groups() {
@@ -190,7 +190,7 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 			body, _ := json.Marshal(map[string]string{"name": g, "friendlyName": g})
 			p.Steps = append(p.Steps, Step{Kind: CreateGroup, Group: g, Title: "create group " + g, Detail: fmt.Sprintf("create group %s: POST /api/user-groups %s", g, body)})
 		} else {
-			p.Present = append(p.Present, "present group "+g)
+			p.Present = append(p.Present, "group "+g)
 		}
 	}
 
@@ -204,11 +204,11 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 		}
 		switch {
 		case current == d.LaunchURL:
-			p.Present = append(p.Present, fmt.Sprintf("present client %s launch URL %s", d.App, d.LaunchURL))
+			p.Present = append(p.Present, fmt.Sprintf("client %s launch URL %s", d.App, d.LaunchURL))
 		case current == "" || d.setByToolkit(current):
 			p.Steps = append(p.Steps, Step{Kind: SetLaunchURL, Title: "set launch URL for " + d.App, Detail: fmt.Sprintf("set launch URL for client %s: PUT /api/oidc/clients/%s with launchURL %q and every other field sent back as it is now", d.App, client.ID, d.LaunchURL)})
 		default:
-			p.Present = append(p.Present, fmt.Sprintf("present client %s launch URL %s, not %s; left as it is, since it may have been set deliberately", d.App, current, d.LaunchURL))
+			p.Present = append(p.Present, fmt.Sprintf("client %s launch URL %s, not %s; left as it is, since it may have been set deliberately", d.App, current, d.LaunchURL))
 			if d.LaunchURLChosen {
 				p.Warnings = append(p.Warnings, fmt.Sprintf("apps.%s.settings.sso_dashboard_link gives launch URL %s, but client %s has %s, which this toolkit did not set and will not overwrite. To use the setting, clear the client's launch URL in Pocket ID's admin UI and re-run; to keep the client's, remove the setting or make it match", d.App, d.LaunchURL, d.App, current))
 			}
@@ -229,7 +229,7 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 			}
 			p.Steps = append(p.Steps, Step{Kind: AllowGroups, Title: title, Detail: fmt.Sprintf("allow groups %s on client %s: PUT /api/oidc/clients/<id>/allowed-user-groups with exactly %s", strings.Join(missing, ", "), d.App, strings.Join(d.groups(), ", "))})
 		} else {
-			p.Present = append(p.Present, fmt.Sprintf("present client %s allows %s", d.App, strings.Join(d.groups(), ", ")))
+			p.Present = append(p.Present, fmt.Sprintf("client %s allows %s", d.App, strings.Join(d.groups(), ", ")))
 		}
 	}
 
@@ -252,7 +252,7 @@ func Build(d Desired, rec Recorded, s State) (*Plan, error) {
 	case rec.ClientID == "":
 		p.Steps = append(p.Steps, Step{Kind: RecordClientID, Title: "record client id for " + d.App, Detail: fmt.Sprintf("record %s.client_id %s, beside a secret that is already live", key, client.ID)})
 	default:
-		p.Present = append(p.Present, fmt.Sprintf("present %s.client_secret, which matches an active secret of client %s by its first %d characters", key, d.App, pocketid.SecretPrefixLength))
+		p.Present = append(p.Present, fmt.Sprintf("%s.client_secret, which matches an active secret of client %s by its first %d characters", key, d.App, pocketid.SecretPrefixLength))
 	}
 
 	return p, nil

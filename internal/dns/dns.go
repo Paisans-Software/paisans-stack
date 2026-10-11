@@ -449,21 +449,25 @@ func Execute(ctx context.Context, provider Provider, plan *Plan, r ui.Reporter) 
 	return nil
 }
 
-// Show reports a plan the way the other dry-run commands do: each record to
-// create as an item, each one already present as a detail, and a conflict as
-// a refusal, since Execute will not create anything while one stands.
+// Show reports a plan marked the way host prepare marks its plan: each
+// record to create as pending, under --verbose each one already present as
+// done, and a conflict as a refusal, since Execute will not create anything
+// while one stands. Each line names the record's type, name, address and
+// zone.
 func (p *Plan) Show(r ui.Reporter) {
 	r.Section("dns " + p.Provider)
 	for _, e := range p.Entries {
+		record := fmt.Sprintf("%s %s -> %s (zone %s)", e.Type, e.Name, e.Content, e.Zone)
 		switch e.Action {
 		case Create:
-			r.Item(fmt.Sprintf("create %s %s", e.Type, e.Name))
-			r.Detail("%s, zone %s", e.Content, e.Zone)
+			r.Step("create "+record).End(ui.Pending, "")
 		case Conflict:
 			r.Refuse(fmt.Sprintf("%s %s conflicts with a record at the provider", e.Type, e.Name),
 				fmt.Sprintf("%s\nwanted: %s -> %s (zone %s)", e.Detail, e.Name, e.Content, e.Zone))
 		default:
-			r.Detail("%-9s %-4s %s -> %s  (zone %s)", e.Action, e.Type, e.Name, e.Content, e.Zone)
+			if r.Verbose() {
+				r.Step(record).End(ui.OK, "")
+			}
 		}
 	}
 	if n := len(p.Conflicts()); n > 0 {

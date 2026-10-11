@@ -458,19 +458,17 @@ func firewallGap(f Firewall) string {
 	return ""
 }
 
-// detailer is what Show attaches the report to: the host check's step, or a
-// reporter.
-type detailer interface {
-	Detail(format string, args ...any)
-}
-
-// Show attaches the report to the host check's step as details: the class,
-// Docker and the firewall as found, then one line per foreign thing and
-// note. They explain the step's result and show with --verbose. Conflicts
-// are not among them: they are in Refusal's error, which prints in full.
-func (r *Report) Show(d detailer) {
-	line := func(label, text string) { d.Detail("%-9s %s", label, text) }
-	d.Detail("%s (%s) is %s", r.Site, r.Host, r.Class)
+// Show reports what the check found, under the host check's own line and
+// only with --verbose, marked the way host prepare marks its plan: the class
+// as a detail, then Docker, the firewall, each note and, on a shared host,
+// what sharing changes as done, and each foreign thing as done and not
+// paisans. Conflicts are not among them: they are in Refusal's error, which
+// prints in full.
+func (r *Report) Show(rep ui.Reporter) {
+	if !rep.Verbose() {
+		return
+	}
+	rep.Detail("%s (%s) is %s", r.Site, r.Host, r.Class)
 	inv := r.Inventory
 	docker := "absent"
 	if inv.Docker.Present {
@@ -479,16 +477,16 @@ func (r *Report) Show(d detailer) {
 	if len(inv.Docker.Packages) > 0 {
 		docker += " (" + strings.Join(inv.Docker.Packages, ", ") + ")"
 	}
-	line("docker", docker)
-	line("firewall", firewallSummary(inv.Firewall))
+	rep.Step("docker").End(ui.OK, docker)
+	rep.Step("firewall").End(ui.OK, firewallSummary(inv.Firewall))
 	for _, f := range r.Foreign {
-		line("foreign", f)
+		rep.Step(f).End(ui.OK, "not paisans")
 	}
 	for _, n := range r.Notes {
-		line("note", n)
+		rep.Step(n).End(ui.OK, "")
 	}
 	if r.Class == Shared {
-		line("shared", "ufw's default policy and enabled state are left alone, superseded images are kept, and prune removes only volumes labelled with this deployment's id, as everywhere")
+		rep.Step("shared").End(ui.OK, "ufw's default policy and enabled state are left alone, superseded images are kept, and prune removes only volumes labelled with this deployment's id, as everywhere")
 	}
 }
 

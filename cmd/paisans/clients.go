@@ -113,17 +113,20 @@ func buildClient(d oidcclient.Desired, rec oidcclient.Recorded, state oidcclient
 }
 
 // listClientPlan shows one app's client in a dry run: each mutation as an
-// item, with what it sends as its detail, and what is already present as
-// details, since only what would change is a line by default. The plan's
-// warnings are the caller's to show, once whether or not it lists the plan.
+// item, with what it sends as its detail, then under --verbose what is
+// already present marked done, since only what would change is a line by
+// default. The plan's warnings are the caller's to show, once whether or not
+// it lists the plan.
 func listClientPlan(r ui.Reporter, app, idp, where string, plan *oidcclient.Plan) {
 	r.Detail("%s's client at %s on %s (pocket-id)", app, idp, where)
-	for _, line := range plan.Present {
-		r.Detail("%s", line)
-	}
 	for _, step := range plan.Steps {
 		r.Item(step.Title)
 		r.Detail("%s", step.Detail)
+	}
+	if r.Verbose() {
+		for _, line := range plan.Present {
+			r.Step(line).End(ui.OK, "")
+		}
 	}
 }
 
