@@ -438,8 +438,8 @@ func (p *Plan) planRoot(t apply.Transport, hp *hostPlan, inv *hostcheck.Inventor
 		if hp.manifest {
 			rendered++
 		}
-		if data := hp.root.files - rendered; data > 0 {
-			p.Kept = append(p.Kept, dataLeft(p.Site, d.Root(), data))
+		if hp.root.files > rendered {
+			p.Kept = append(p.Kept, dataLeft(p.Site, d.Root()))
 		}
 	}
 	return nil
@@ -473,7 +473,7 @@ func (p *Plan) planKeptRoot(t apply.Transport, hp *hostPlan, edited bool) error 
 			}
 		}
 		if cp.dataFiles > 0 {
-			p.Kept = append(p.Kept, dataLeft(p.Site, d.Root(), cp.dataFiles))
+			p.Kept = append(p.Kept, dataLeft(p.Site, d.Root()))
 		}
 	}
 	return nil
