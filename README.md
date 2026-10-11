@@ -4845,11 +4845,12 @@ what its host records (see *A member keeps the flags it was born with*).
 
 **The host keeps everything that is not provably this deployment's.** Each
 removal is proven a different way, because each is recorded in a different
-place, and everything else found is listed as kept:
+place. What is this deployment's and kept is listed, with why; what is not this
+deployment's is left alone and not listed:
 
 | What | Proven by | Removed |
 |---|---|---|
-| containers and networks | the deployment label carrying this id, by Docker's own filter | stopped and removed; with `--delete-data` their anonymous volumes too |
+| containers and networks | the deployment label carrying this id, by Docker's own filter | stopped and removed; with `--delete-data` their anonymous volumes too. One without that label is not this deployment's, so it stays and is not listed |
 | named volumes | the same label | only with `--delete-data` |
 | images | run by the containers above, or named by a rendered `compose.yaml` the manifest proves, and used by no other container on the host, running or stopped | removed by ID, without `-f`, after the containers and before the files, so a re-run after a stop in between still finds them; one Docker refuses, because something started from it meanwhile, is kept and named with Docker's reason |
 | rendered files | an entry in this deployment's manifest whose hash the file still has | deleted, then the manifest; a file edited on the host is kept and named |

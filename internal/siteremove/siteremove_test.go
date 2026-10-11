@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/paisans-software/paisans-stack/internal/config"
+	"github.com/paisans-software/paisans-stack/internal/hostcheck"
 	"github.com/paisans-software/paisans-stack/internal/render"
 	"github.com/paisans-software/paisans-stack/internal/siteremove"
 )
@@ -78,13 +79,14 @@ func TestTheDryRunPlansEveryStageAndChangesNothing(t *testing.T) {
 	}
 	out := printed(p)
 	t.Log("\n" + out)
-	for _, want := range []string{"someone-elses-db", "patroni.env"} {
+	for _, want := range []string{"patroni.env"} {
 		if !strings.Contains(out+strings.Join(p.Remains(), "\n"), want) {
 			t.Errorf("the plan and report do not mention %q", want)
 		}
 	}
-	// A ufw rule without this deployment's tag is not this command's business.
-	for _, unwanted := range []string{"allow 8080/tcp", "paisans-0c1d: wireguard"} {
+	// A container, network or ufw rule without this deployment's label or tag
+	// is not this command's business.
+	for _, unwanted := range []string{"someone-elses-db", "paisans-0c1d-infra-etcd-1", "theirs_default", "allow 8080/tcp", "paisans-0c1d: wireguard"} {
 		if strings.Contains(out+strings.Join(p.Remains(), "\n"), unwanted) {
 			t.Errorf("the plan or report mentions %q", unwanted)
 		}
@@ -169,6 +171,9 @@ func TestARemovalCompletesAndKeepsWhatIsNotOurs(t *testing.T) {
 	if len(b.containers) != 2 || len(b.volumes) != 1 {
 		t.Errorf("home-b's foreign containers or this deployment's volume went: %v %v", b.containers, b.volumes)
 	}
+	if !hasNetwork(b.networks, "theirs_default") {
+		t.Errorf("home-b's foreign network went: %v", b.networks)
+	}
 	for _, n := range b.networks {
 		if n.Deployment == ourID {
 			t.Errorf("network %s is still on home-b", n.Name)
@@ -223,6 +228,20 @@ func TestARemovalCompletesAndKeepsWhatIsNotOurs(t *testing.T) {
 			t.Errorf("the report does not mention %q:\n%s", want, remains)
 		}
 	}
+	for _, unwanted := range []string{"someone-elses-db", "paisans-0c1d-infra-etcd-1", "theirs_default"} {
+		if strings.Contains(remains, unwanted) {
+			t.Errorf("the report mentions %q, which is not this deployment's:\n%s", unwanted, remains)
+		}
+	}
+}
+
+func hasNetwork(nets []hostcheck.Network, name string) bool {
+	for _, n := range nets {
+		if n.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *world) publicKey(site string) string {

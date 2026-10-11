@@ -13,14 +13,6 @@ import (
 // on a line of their own under the hint, where a long one cannot push the
 // hint past a line.
 
-func containerKept(site, name string) string {
-	return fmt.Sprintf("%s: container kept; it does not carry this deployment's label. It is %s", site, name)
-}
-
-func networkKept(site, name string) string {
-	return fmt.Sprintf("%s: network kept; it does not carry this deployment's label. It is %s", site, name)
-}
-
 func volumeKept(site, name string) string {
 	return fmt.Sprintf("%s: volume kept; --delete-data deletes it. It is %s, this deployment's data", site, name)
 }
