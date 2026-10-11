@@ -8,7 +8,7 @@ import (
 
 // Event is one thing a Recorder was told.
 type Event struct {
-	Kind  string // section step done fail pending waiting item warn note refuse detail trace result
+	Kind  string // section step done fail pending waiting warn note refuse detail trace result
 	Text  string // the title, hint or text
 	Extra string // a step's result, a warning's or note's detail, a refusal's explanation, a fail's error
 }
@@ -28,7 +28,6 @@ func (r *Recorder) add(kind, text, extra string) {
 }
 
 func (r *Recorder) Section(title string)       { r.add("section", title, "") }
-func (r *Recorder) Item(title string)          { r.add("item", title, "") }
 func (r *Recorder) Warn(hint, detail string)   { r.add("warn", hint, detail) }
 func (r *Recorder) Note(hint, detail string)   { r.add("note", hint, detail) }
 func (r *Recorder) Explain(text string)        { r.add("explain", text, "") }

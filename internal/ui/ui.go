@@ -23,8 +23,6 @@ type Reporter interface {
 	Section(title string)
 	// Step starts something that ends in success or failure.
 	Step(title string) Step
-	// Item is one line of a dry run's plan: a step that would run.
-	Item(title string)
 	// Warn shows hint always and detail only when verbose.
 	Warn(hint, detail string)
 	// Note is a warning whose detail shows at every verbosity: something
@@ -149,7 +147,6 @@ type discard struct{}
 
 func (discard) Section(string)        {}
 func (discard) Step(string) Step      { return discardStep{} }
-func (discard) Item(string)           {}
 func (discard) Warn(string, string)   {}
 func (discard) Note(string, string)   {}
 func (discard) Refuse(string, string) {}
