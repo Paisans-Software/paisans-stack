@@ -256,17 +256,11 @@ func (p *Plan) buildHost() (*Stage, error) {
 		}
 		if c.Deployment == d.ID {
 			hp.containers = append(hp.containers, c.Name)
-		} else {
-			p.Kept = append(p.Kept, containerKept(p.Site, c.Name))
 		}
 	}
 	for _, n := range inv.Networks {
-		switch {
-		case n.Deployment == d.ID:
+		if n.Deployment == d.ID {
 			hp.networks = append(hp.networks, n.Name)
-		case n.Name == "bridge" || n.Name == "host" || n.Name == "none":
-		default:
-			p.Kept = append(p.Kept, networkKept(p.Site, n.Name))
 		}
 	}
 	for _, v := range inv.Volumes {
