@@ -78,7 +78,7 @@ func TestTheDNSStageListsTheSitesRecordsAndDeletesNothing(t *testing.T) {
 	out := shown(p, false)
 	t.Log("\n" + out.Lines())
 	for _, want := range []string{"delete A gone.example.org → 203.0.113.7", "delete AAAA gone.example.org → 2001:db8::7", "gate: no record of home-b's is left"} {
-		if !out.Has("item", want) {
+		if !out.Has("pending", want) {
 			t.Errorf("no item %q", want)
 		}
 	}
@@ -201,7 +201,7 @@ func TestTheDNSStageSkipsWithOneLine(t *testing.T) {
 				t.Fatalf("not skipped: %+v", st)
 			}
 			out := shown(p, false)
-			if !out.Has("item", c.line) {
+			if !out.Has("done", c.line) {
 				t.Errorf("no item %q:\n%s", c.line, out.Lines())
 			}
 			run := &ui.Recorder{}
@@ -223,7 +223,7 @@ func TestTheDNSStageSkipsWithoutAProvider(t *testing.T) {
 	w.cfg.ACME.Provider = ""
 	dest, _ := config.ParseDestination("ubuntu@192.0.2.10")
 	p := forced(t, w, w.cfg.WithoutSite("vm"), "vm", dest, dnsOptions(zone))
-	if out := shown(p, false); !out.Has("item", "skip dns: no DNS provider declared") {
+	if out := shown(p, false); !out.Has("done", "skip dns: no DNS provider declared") {
 		t.Errorf("printed:\n%s", out.Lines())
 	}
 }
@@ -260,7 +260,7 @@ func TestForcedRemovalsDNSStage(t *testing.T) {
 	}
 	dest, _ := config.ParseDestination("ubuntu@192.0.2.10")
 	p = forced(t, w, w.cfg.WithoutSite("vm"), "vm", dest, o)
-	if !shown(p, false).Has("item", "skip dns: vm is not declared; delete its records by hand") {
+	if !shown(p, false).Has("done", "skip dns: vm is not declared; delete its records by hand") {
 		t.Errorf("printed:\n%s", shown(p, false).Lines())
 	}
 	for _, p := range []*siteremove.Plan{p, forced(t, w, w.cfg, "home-b", w.cfg.Sites["home-b"].Destination(), o)} {
@@ -319,7 +319,7 @@ func TestForcedUndeclaredSaysDeleteByHand(t *testing.T) {
 	w, zone := dnsWorld(t, ownAddress)
 	dest, _ := config.ParseDestination("ubuntu@192.0.2.10")
 	p := forced(t, w, w.cfg.WithoutSite("vm"), "vm", dest, dnsOptions(zone))
-	if out := shown(p, false); !out.Has("item", "skip dns: vm is not declared; delete its records by hand") {
+	if out := shown(p, false); !out.Has("done", "skip dns: vm is not declared; delete its records by hand") {
 		t.Errorf("printed:\n%s", out.Lines())
 	}
 }

@@ -232,7 +232,7 @@ func TestFreshZonePlansCreatesAndExecuteReadsBack(t *testing.T) {
 		t.Fatalf("want 5 creates, got %+v", p.Entries)
 	}
 	// Each record to create is pending, its whole line in the title.
-	if !out.Has("pending", "create A talk.example.org -> 203.0.113.10 (zone example.org)") || out.Has("item", "") {
+	if !out.Has("pending", "create A talk.example.org -> 203.0.113.10 (zone example.org)") {
 		t.Errorf("a create is not pending:\n%s", out.Lines())
 	}
 	if len(fake.posts) != 0 {

@@ -139,7 +139,7 @@ func TestAFreshSitePlanShowsTheDatabaseBeforeTheApp(t *testing.T) {
 	order := []string{"start mesh", "recreate infra", "wait for infra", "wait for Patroni primary", "bootstrap database talk", "recreate talk", "wait for talk"}
 	last := -1
 	for _, want := range order {
-		i := rec.Index("item", want)
+		i := rec.Index("pending", want)
 		if i < 0 {
 			t.Fatalf("the plan does not show %q:\n%s", want, rec.Lines())
 		}

@@ -193,7 +193,7 @@ func TestOIDCClientCreateDryRunWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"create OIDC client talk", "create client secret for talk"} {
-		if !rec.Has("item", want) {
+		if !rec.Has("pending", want) {
 			t.Errorf("no item %q:\n%s", want, rec.Lines())
 		}
 	}

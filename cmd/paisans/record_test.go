@@ -166,9 +166,9 @@ func TestForgetInRecordsHasItsOwnSection(t *testing.T) {
 	t.Cleanup(func() { registryHost = saved })
 	rec := &ui.Recorder{}
 	forgetInRecords(rec, cfg, deployrecord.Record{Sites: []string{"monitor-a"}}, "monitor-a", false, true)
-	s, i := rec.Index("section", "deployment record"), rec.Index("item", "forget monitor-a")
+	s, i := rec.Index("section", "deployment record"), rec.Index("pending", "forget monitor-a")
 	if s < 0 || i < s {
-		t.Errorf("section %d, item %d:\n%s", s, i, rec.Lines())
+		t.Errorf("section %d, pending %d:\n%s", s, i, rec.Lines())
 	}
 }
 

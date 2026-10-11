@@ -374,18 +374,18 @@ func (r *runner) listPlan(leader, candidate, back, home string) {
 	stacks := r.databaseStacks()
 	for i, step := range []struct{ from, to string }{{leader, candidate}, {back, home}} {
 		rep.Section(fmt.Sprintf("switchover %d: %s to %s", i+1, step.from, step.to))
-		rep.Item("switch primary")
+		rep.Step("switch primary").End(ui.Pending, "")
 		rep.Detail("on %s: %s", step.from, SwitchoverCommand(r.cfg.Deployment(), step.from, step.to))
-		rep.Item("wait for cluster")
+		rep.Step("wait for cluster").End(ui.Pending, "")
 		rep.Detail("gate: %s leads, %s streams from it", step.to, step.from)
 		if len(stacks) > 0 {
 			rep.Detail("restart the apps that use the cluster database, on every apps site: the leader change dropped their connections")
 		}
 		for _, st := range stacks {
-			rep.Item(fmt.Sprintf("restart %s on %s", st.app, st.site))
+			rep.Step(fmt.Sprintf("restart %s on %s", st.app, st.site)).End(ui.Pending, "")
 			rep.Detail("on %s: %s", st.site, restartCommand(r.cfg.Deployment(), st.app))
 		}
-		rep.Item("wait for apps")
+		rep.Step("wait for apps").End(ui.Pending, "")
 		rep.Detail("gate: every app stack healthy and answering")
 	}
 	rep.Warn("writes fail twice, for several seconds each", "expected interruption, twice: writes fail from the moment the old primary demotes until the new one is promoted")

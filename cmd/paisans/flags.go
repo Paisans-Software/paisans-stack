@@ -99,7 +99,7 @@ func (d detailWriter) Write(p []byte) (int, error) {
 
 // reporterOverride, when set, is the reporter every command uses in place of
 // stdout's. A test sets it to a ui.Recorder, so it asserts on the steps and
-// items a command reports rather than on how they are drawn.
+// marks a command reports rather than on how they are drawn.
 var reporterOverride ui.Reporter
 
 // errReporter is r's verbosity on stderr, for a command whose stdout carries

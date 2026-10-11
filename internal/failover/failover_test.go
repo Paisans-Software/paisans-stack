@@ -179,7 +179,7 @@ func TestDryRunChecksAndChangesNothing(t *testing.T) {
 		"Nothing changed. Re-run with --execute",
 		"done: check auth on home-a healthy",
 		"restart the apps that use the cluster database, on every apps site",
-		"item: restart auth on home-a",
+		"pending: restart auth on home-a",
 		"detail: on home-a: docker compose -f /srv/paisans/f2a9/auth/compose.yaml restart",
 	} {
 		if !strings.Contains(text, want) {

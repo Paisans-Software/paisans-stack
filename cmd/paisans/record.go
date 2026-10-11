@@ -187,7 +187,7 @@ func forgetInRecords(r ui.Reporter, cfg *config.Config, names deployrecord.Recor
 			r.Warn("could not read the deployment record on "+gw, missing[gw].Error())
 		}
 		if listed {
-			r.Item(title)
+			r.Step(title).End(ui.Pending, "")
 		}
 		return listed
 	}

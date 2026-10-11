@@ -139,19 +139,23 @@ func runAppAdminCreate(args []string, stdin io.Reader) error {
 	}
 	r.Section(fmt.Sprintf("%s on %s (%s)", *appName, where, app.Kind))
 	if len(plan.Actions) == 0 {
-		// Nothing to do: the lines say the user is present.
-		for _, line := range plan.Lines() {
-			r.Detail("%s", line)
+		// Nothing to do: under --verbose the user is marked already there.
+		if r.Verbose() {
+			for _, line := range plan.Lines() {
+				r.Step(line).End(ui.OK, "")
+			}
 		}
 		r.Result("%s is already an administrator of %s.", *username, *appName)
 		return nil
 	}
 	if !*execute {
-		// Each action is a short title; the request behind it is its detail.
+		// Each action is pending under a short title; the request behind it
+		// is its detail.
 		lines := plan.Lines()
 		for i, title := range plan.Titles() {
-			r.Item(title)
-			r.Detail("%s", lines[i])
+			s := r.Step(title)
+			s.Detail("%s", lines[i])
+			s.End(ui.Pending, "")
 		}
 		r.Result("Nothing changed. Re-run with --execute to apply.")
 		return nil

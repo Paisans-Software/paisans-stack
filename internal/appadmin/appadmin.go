@@ -167,11 +167,12 @@ func Build(kind config.Kind, t Transport, req Request) (*Plan, error) {
 	return &Plan{Kind: kind, State: state, Actions: actions, creator: c, req: req}, nil
 }
 
-// Lines is the plan as printed: one line per action, or `present` when there
-// is nothing to do. It names the user and never a credential.
+// Lines is the plan as printed: one line per action, or the user's name alone
+// when there is nothing to do, for a line marked already there. It names the
+// user and never a credential.
 func (p *Plan) Lines() []string {
 	if len(p.Actions) == 0 {
-		return []string{"present " + p.req.Username}
+		return []string{p.req.Username}
 	}
 	out := make([]string, 0, len(p.Actions))
 	for _, a := range p.Actions {

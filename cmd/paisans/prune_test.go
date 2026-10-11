@@ -31,7 +31,7 @@ func TestPruneDryRunShowsTheAssumptionAndEachVolume(t *testing.T) {
 	showVolumePrune(rec, plan)
 	out := rec.Lines()
 	t.Log("\n" + out)
-	if !rec.Has("pending", "remove volume 3a37a98261c4") || rec.Has("pending", "other_db") || rec.Has("item", "") {
+	if !rec.Has("pending", "remove volume 3a37a98261c4") || rec.Has("pending", "other_db") {
 		t.Errorf("only the volume to remove is pending:\n%s", out)
 	}
 	if !rec.Has("done", "keep volume other_db") {

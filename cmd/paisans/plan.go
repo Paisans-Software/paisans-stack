@@ -38,7 +38,7 @@ func reportNotes(r ui.Reporter, plan *apply.Plan, seen map[string]bool) {
 	}
 }
 
-// listPlan is a dry run's plan: one item per step, in the order Execute
+// listPlan is a dry run's plan: each step marked pending, in the order Execute
 // takes them, titled as Execute titles its steps, so a dry run reads as the
 // run it previews. Why each step is there, the files it writes and the
 // checks around it are details, shown with --verbose. A refusal Execute
@@ -75,7 +75,7 @@ func listPlan(r ui.Reporter, plan *apply.Plan) {
 		writes = append(writes, kind+" "+change.Path)
 	}
 	if len(writes) > 0 {
-		r.Item(fmt.Sprintf("write %d files", len(writes)))
+		r.Step(fmt.Sprintf("write %d files", len(writes))).End(ui.Pending, "")
 		for _, w := range writes {
 			r.Detail("%s", w)
 		}
@@ -85,7 +85,7 @@ func listPlan(r ui.Reporter, plan *apply.Plan) {
 	}
 
 	if plan.WireGuard != apply.WireGuardNone {
-		r.Item(plan.WireGuard.Title(plan.Deployment))
+		r.Step(plan.WireGuard.Title(plan.Deployment)).End(ui.Pending, "")
 		r.Detail("%s", plan.WireGuard.Describe(plan.Deployment))
 	}
 
@@ -95,14 +95,14 @@ func listPlan(r ui.Reporter, plan *apply.Plan) {
 			listBootstrap(r, plan.Bootstrap)
 			bootstrapped = true
 		}
-		r.Item(apply.ActionTitle(action))
+		r.Step(apply.ActionTitle(action)).End(ui.Pending, "")
 		if action.Down {
 			// The one action that removes the stack's network as well as its
 			// containers, so it says so.
 			r.Detail("down %s, so that its compose network is created as declared", action.Stack)
 		}
 		r.Detail("%s", action.Reason)
-		r.Item("wait for " + action.Stack)
+		r.Step("wait for "+action.Stack).End(ui.Pending, "")
 		r.Detail("%s: every container running, and healthy where it has a healthcheck, before anything after it moves", action.Stack)
 		var prunes []string
 		for _, prune := range plan.Prunes {
@@ -111,7 +111,7 @@ func listPlan(r ui.Reporter, plan *apply.Plan) {
 			}
 		}
 		if len(prunes) > 0 {
-			r.Item("prune old images")
+			r.Step("prune old images").End(ui.Pending, "")
 			for _, ref := range prunes {
 				r.Detail("%s, superseded, once %s is healthy and if no container still uses it", ref, action.Stack)
 			}
@@ -122,18 +122,18 @@ func listPlan(r ui.Reporter, plan *apply.Plan) {
 	}
 
 	if plan.HostSites {
-		r.Item("ensure host sites directory")
+		r.Step("ensure host sites directory").End(ui.Pending, "")
 		r.Detail("%s, if missing, for site blocks the host's owner adds; nothing in it is ever changed", render.HostSitesDir)
 	}
 	if plan.GatewayChanging && plan.ACMEModule != "" {
-		r.Item("check gateway modules")
+		r.Step("check gateway modules").End(ui.Pending, "")
 		r.Detail("the gateway's Caddy carries %s, before anything moves", plan.ACMEModule)
 	}
 	if plan.GatewayReload {
-		r.Item("reload gateway")
+		r.Step("reload gateway").End(ui.Pending, "")
 		r.Detail("the gateway, after its assembled configuration validates")
 	} else if plan.GatewayChanging {
-		r.Item("validate gateway config")
+		r.Step("validate gateway config").End(ui.Pending, "")
 		r.Detail("the assembled gateway configuration, before the gateway is replaced")
 	}
 
@@ -157,22 +157,22 @@ func listPlan(r ui.Reporter, plan *apply.Plan) {
 // infrastructure stack and before any app stack.
 func listBootstrap(r ui.Reporter, b *apply.Bootstrap) {
 	if len(b.EtcdUnstarted) > 0 {
-		r.Item("stop after the infrastructure stack")
+		r.Step("stop after the infrastructure stack").End(ui.Pending, "")
 		r.Detail("etcd is being founded and %s runs no etcd yet, so no primary can appear. Apply %s, then this site again",
 			strings.Join(b.EtcdUnstarted, ", "), strings.Join(b.EtcdUnstarted, ", then "))
 		return
 	}
-	r.Item("wait for Patroni primary")
+	r.Step("wait for Patroni primary").End(ui.Pending, "")
 	r.Detail("for a Patroni primary at %s, up to 3 minutes; a replica leaves the rest to the leader's site", b.Patroni)
 	if len(b.Databases) == 0 {
 		return
 	}
-	// Titled as Execute titles the step, so the item and the step match.
+	// Titled as Execute titles the step, so the plan's line and the step match.
 	title := fmt.Sprintf("bootstrap %d databases", len(b.Databases))
 	if len(b.Databases) == 1 {
 		title = "bootstrap database " + b.Databases[0].Name
 	}
-	r.Item(title)
+	r.Step(title).End(ui.Pending, "")
 	for _, db := range b.Databases {
 		r.Detail("database %s: role %s with its password, database owned by it, creating only what is missing", db.App, db.Role)
 	}

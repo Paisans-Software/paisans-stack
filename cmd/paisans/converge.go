@@ -511,7 +511,7 @@ func runConverge(r ui.Reporter, o convergeOptions) error {
 			phase = s.Phase
 			r.Section(phase)
 		}
-		r.Item(s.Title + ": " + s.Why)
+		r.Step(s.Title).End(ui.Pending, s.Why)
 	}
 	for _, s := range steps {
 		if s.Title == "init" {

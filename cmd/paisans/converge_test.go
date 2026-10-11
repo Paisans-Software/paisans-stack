@@ -892,9 +892,6 @@ func TestConvergeDryRunMarksAnUpToDateDeploymentDone(t *testing.T) {
 		}
 		seen[c] = true
 	}
-	if rec.Has("item", "") {
-		t.Errorf("a dry run listed items:\n%s", rec.Lines())
-	}
 }
 
 // A pending step says what it would change, and what waits on it says so,
@@ -1021,7 +1018,7 @@ func TestCheckStepIsQuietAndHoldsTheRunsSpinner(t *testing.T) {
 		}
 		r := reporter()
 		r.Section("its own plan")
-		r.Item("write 8 files")
+		r.Step("write 8 files").End(ui.Pending, "")
 		holdOutput()()
 		dryRunFound("8 changes", nil)
 		r.Result("Nothing changed.")

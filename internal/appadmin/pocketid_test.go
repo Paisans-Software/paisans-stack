@@ -203,7 +203,7 @@ func TestPocketIDIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Actions) != 0 || plan.Lines()[0] != "present founder" {
+	if len(plan.Actions) != 0 || plan.Lines()[0] != "founder" {
 		t.Errorf("an existing admin planned %v", plan.Actions)
 	}
 

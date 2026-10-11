@@ -234,7 +234,7 @@ func TestApplyDryRunSendsNoMutation(t *testing.T) {
 	rec := &ui.Recorder{Verbose_: true}
 	c.report = rec
 	captureOutput(t, func() { c.ensure(false, c.pocketIDHere()) })
-	if !rec.Has("item", "create OIDC client talk") || !rec.Has("detail", "POST /api/oidc/clients") {
+	if !rec.Has("pending", "create OIDC client talk") || !rec.Has("detail", "POST /api/oidc/clients") {
 		t.Errorf("the dry run does not show the client:\n%s", rec.Lines())
 	}
 	if fake.mutated {
@@ -651,7 +651,7 @@ func TestApplyExecuteListsNoClientPlanAndWarnsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.Has("item", "") {
+	if rec.Has("pending", "") {
 		t.Errorf("--execute listed the client plan:\n%s", rec.Lines())
 	}
 	if !rec.Has("done", "create OIDC client talk") {
@@ -677,7 +677,7 @@ func TestListClientPlanMarksWhatIsPresentDone(t *testing.T) {
 	}
 	quiet := &ui.Recorder{}
 	listClientPlan(quiet, "talk", "auth", "home-a", plan)
-	if !quiet.Has("item", "create client secret for talk") || quiet.Has("done", "") {
+	if !quiet.Has("pending", "create client secret for talk") || quiet.Has("done", "") {
 		t.Errorf("got:\n%s", quiet.Lines())
 	}
 
@@ -686,7 +686,7 @@ func TestListClientPlanMarksWhatIsPresentDone(t *testing.T) {
 	out := b.String()
 	t.Logf("\n%s", out)
 	for _, want := range []string{
-		"  -    create client secret for talk\n",
+		"  todo create client secret for talk\n",
 		"  ok   client talk (id client-1)\n",
 		"  ok   group members\n",
 	} {

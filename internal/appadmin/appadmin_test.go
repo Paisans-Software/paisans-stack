@@ -46,7 +46,7 @@ func TestPresentAdminPlansNothingAndExecutesNothing(t *testing.T) {
 	c := &stubCreator{probes: []State{{Exists: true, Verified: true, Admin: true}}}
 	state, _ := c.Probe(nil, Request{})
 	plan := &Plan{State: state, Actions: c.Steps(state, Request{}), creator: c, req: Request{Username: "founder"}}
-	if got := plan.Lines(); len(got) != 1 || got[0] != "present founder" {
+	if got := plan.Lines(); len(got) != 1 || got[0] != "founder" {
 		t.Errorf("lines %v", got)
 	}
 	if _, err := Execute(plan, nullTransport{}); err != nil {

@@ -72,7 +72,7 @@ type Options struct {
 }
 
 // Step is one thing a stage will do, for the plan an operator reads. Steps
-// that follow each other with one title are listed as one item.
+// that follow each other with one title are listed as one line.
 type Step struct {
 	Title string
 	Text  string
@@ -557,9 +557,9 @@ func (p *Plan) fail(st *Stage, err error) error {
 	return fmt.Errorf("storage rotate-key stopped at stage %d (%s), and nothing after it ran: %v.%s\nFix the cause and run storage rotate-key again: it resumes from the secrets file", st.Number, st.Name, err, kept)
 }
 
-// Show lists the plan as an operator reads it: a section per stage, an item
-// per kind of step and one for the gate, with the whole text of each as its
-// detail. It names key IDs, which are not secret, and never a secret key.
+// Show lists the plan as an operator reads it: a section per stage, each kind
+// of step and the gate marked pending, with the whole text of each as its
+// detail. A stage with no steps is marked done under --verbose. It names key IDs, which are not secret, and never a secret key.
 func (p *Plan) Show(r ui.Reporter) {
 	r.Detail("storage rotate-key: %s, bucket %s, through %s's Garage", p.App, p.Bucket, p.Anchor)
 	r.Detail("retiring %s", p.OldKeyID)
@@ -570,19 +570,18 @@ func (p *Plan) Show(r ui.Reporter) {
 	}
 	for _, st := range p.Stages {
 		r.Section(fmt.Sprintf("stage %d, %s", st.Number, st.Name))
-		if len(st.Steps) == 0 {
-			r.Item("nothing to do here")
-			r.Detail("nothing to do here, and the gate is still checked")
+		if len(st.Steps) == 0 && r.Verbose() {
+			r.Step("nothing to do here").End(ui.OK, "the gate is still checked")
 		}
 		last := ""
 		for _, step := range st.Steps {
 			if step.Title != last {
-				r.Item(step.Title)
+				r.Step(step.Title).End(ui.Pending, "")
 				last = step.Title
 			}
 			r.Detail("%s", step.Text)
 		}
-		r.Item("gate: " + st.Short)
+		r.Step("gate: "+st.Short).End(ui.Pending, "")
 		r.Detail("%s", st.Gate)
 	}
 }
